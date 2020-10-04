@@ -1,0 +1,6 @@
+[submodule "extlibs/ton"]
+	path = extlibs/ton
+	url = https://github.com/broxus/ton.git
+[submodule "extlibs/libpqxx"]
+	path = extlibs/libpqxx
+	url = https://github.com/jtv/libpqxx.git
