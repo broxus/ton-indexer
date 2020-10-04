@@ -9,10 +9,13 @@ set(${SUBPROJ_NAME}_MINOR_VERSION         0)
 set(${SUBPROJ_NAME}_PATCH_VERSION         1)
 
 set(${SUBPROJ_NAME}_HEADERS
-        )
+        "App.hpp"
+        "Indexer.hpp")
 
 set(${SUBPROJ_NAME}_SOURCES
-        "main.cpp")
+        "main.cpp"
+        "App.cpp"
+        "Indexer.cpp")
 
 # ############################################################### #
 # Options ####################################################### #
@@ -64,7 +67,9 @@ target_include_directories(
         PRIVATE   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
         INTERFACE $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>)
 
-target_link_libraries(${SUBPROJ_NAME} PRIVATE tdactor tonlib pqxx)
+target_link_libraries(${SUBPROJ_NAME} PRIVATE
+        tonlib tdactor adnllite tl_lite_api tl-lite-utils ton_crypto ton_block lite-client-common smc-envelope
+        ftabi pqxx)
 
 # Size optimizations
 if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")

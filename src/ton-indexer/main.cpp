@@ -1,25 +1,50 @@
+#include <td/utils/OptionsParser.h>
+#include <td/utils/filesystem.h>
+
 #include <iostream>
-#include <pqxx/pqxx>
 
-constexpr auto DB_URL = "postgresql://postgres:123456@127.0.0.1:5432/ton-explorer";
+#include "App.hpp"
 
-int main()
+static auto parse_options(int argc, char** argv) -> tdx::App::Options
 {
-    try {
-        pqxx::connection conn{DB_URL};
-        std::cout << "Connected to " << conn.dbname() << std::endl;
+    td::OptionsParser args;
+    tdx::App::Options program_options{};
 
-        pqxx::work work{conn};
-        pqxx::result result{work.exec("SELECT * FROM transaction")};
-        std::cout << "Found " << result.size() << " transactions:\n";
-        for (const auto& row : result) {
-            std::cout << row[0].view() << "\n";
-        }
-    }
-    catch (const std::exception& e) {
-        std::cerr << e.what() << std::endl;
-        return 1;
+    args.add_option('h', "help", "prints help", [&]() {
+        std::cout << (PSLICE() << args).c_str();
+        std::exit(2);
+        return td::Status::OK();
+    });
+
+    args.add_option('c', "config", "global config", [&](td::Slice arg) {
+        TRY_RESULT(global_config, td::read_file(arg.str()))
+        program_options.config = std::move(global_config);
+        return td::Status::OK();
+    });
+
+    args.add_option('d', "db", "postgres db url", [&](td::Slice arg) {
+        program_options.db_url = arg.str();
+        return td::Status::OK();
+    });
+
+    auto status = args.run(argc, argv);
+    if (status.is_error()) {
+        std::cerr << status.move_as_error().message().c_str() << std::endl;
+        std::exit(1);
     }
 
+    if (program_options.config.empty() || program_options.db_url.empty()) {
+        std::cout << (PSLICE() << args).c_str();
+        std::exit(1);
+    }
+
+    return program_options;
+}
+
+int main(int argc, char** argv)
+{
+    td::actor::Scheduler scheduler({4});
+    scheduler.run_in_context([&] { td::actor::create_actor<tdx::App>("ton-indexer", parse_options(argc, argv)).release(); });
+    scheduler.run();
     return 0;
 }
