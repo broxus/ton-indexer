@@ -2,6 +2,7 @@
 
 #include <block/block-auto.h>
 #include <block/block.h>
+#include <td/utils/port/thread_local.h>
 #include <tonlib/LastBlock.h>
 #include <tonlib/LastConfig.h>
 #include <vm/boc.h>
@@ -29,15 +30,10 @@ auto split_next_block_id_(const ton::BlockIdExt& block_id, int step, bool left) 
 
 }  // namespace
 
-Indexer::Indexer(ExtClientRef ext_client_ref,
-                 const std::string& db_url,
-                 ton::BlockId block_id,
-                 td::actor::ActorShared<> parent,
-                 SpawnActor spawn_indexer,
-                 td::uint32 step)
+Indexer::Indexer(ExtClientRef ext_client_ref, Repo& repo, ton::BlockId block_id, td::actor::ActorShared<> parent, SpawnActor spawn_indexer, td::uint32 step)
     : block_id_simple_{block_id}
     , parent_{std::move(parent)}
-    , repo_{db_url}
+    , repo_{repo}
     , spawn_indexer_{std::move(spawn_indexer)}
     , step_{step}
 {
@@ -46,11 +42,15 @@ Indexer::Indexer(ExtClientRef ext_client_ref,
 
 auto Indexer::process_result() -> td::Status
 {
-    repo_.save_block_id(block_id_);
+    const auto thread_id = td::get_thread_id();
+
+    repo_.save_block_id(thread_id, block_id_);
     for (const auto& transaction_id : transactions_) {
-        repo_.save_transaction(block_id_, *transaction_id);
+        repo_.save_transaction(thread_id, block_id_, *transaction_id);
     }
-    repo_.check_commit();
+    repo_.check_commit(thread_id);
+
+    transactions_.clear();
 
     TRY_RESULT(block_header_root, vm::std_boc_deserialize(data_))
     auto virt_root = vm::MerkleProof::virtualize(block_header_root, 1);
@@ -101,7 +101,7 @@ auto Indexer::process_result() -> td::Status
         }
     }
 
-    LOG(WARNING) << "Next block: " << block_id_simple_.to_str();
+    LOG(INFO) << "Next block: " << block_id_simple_.to_str();
     td::actor::send_closure(actor_id(this), &Indexer::start_up_with_lookup);
     return td::Status::OK();
 }

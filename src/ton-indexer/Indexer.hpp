@@ -17,12 +17,7 @@ class Indexer final : public td::actor::Actor {
 public:
     using SpawnActor = std::function<void(ton::BlockId /*block_id*/, td::uint32 /*count*/)>;
 
-    Indexer(ExtClientRef ext_client_ref,
-            const std::string& db_url,
-            ton::BlockId block_id,
-            td::actor::ActorShared<> parent,
-            SpawnActor spawn_indexer,
-            td::uint32 step = 1);
+    Indexer(ExtClientRef ext_client_ref, Repo& repo, ton::BlockId block_id, td::actor::ActorShared<> parent, SpawnActor spawn_indexer, td::uint32 step = 1);
 
 protected:
     auto process_result() -> td::Status;
@@ -69,7 +64,7 @@ private:
     td::actor::ActorShared<> parent_;
     ExtClient client_;
 
-    Repo repo_;
+    Repo& repo_;
     SpawnActor spawn_indexer_;
     td::uint32 step_;
 };

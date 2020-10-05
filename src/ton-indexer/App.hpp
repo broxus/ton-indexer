@@ -47,6 +47,7 @@ private:
     td::actor::ActorOwn<tonlib::LastBlock> raw_last_block_;
     td::actor::ActorOwn<tonlib::LastConfig> raw_last_config_;
     tonlib::ExtClient client_;
+    Repo repo_;
 
     tonlib::LastBlockStorage last_block_storage_;
     std::string last_state_key_;

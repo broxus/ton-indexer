@@ -10,6 +10,7 @@ constexpr auto INITIAL_SHARD = 0x8000000000000000ull;
 
 App::App(Options&& options)
     : options_{std::move(options)}
+    , repo_{options_.db_url, options_.thread_count + 1}
 {
 }
 
@@ -22,7 +23,7 @@ void App::spawn_indexer(ton::BlockId block_id, td::uint32 count)
         actors_[id] = td::actor::create_actor<Indexer>(  //
             "Indexer",
             client_.get_client(),
-            options_.db_url,
+            repo_,
             block_id,
             actor_shared(this, id),
             [actor_id = actor_id(this)](const ton::BlockId& block_id, td::uint32 count) {
@@ -61,7 +62,7 @@ void App::start_up()
     client_.set_client(get_client_ref());
 
     spawn_indexer(ton::BlockId{-1, INITIAL_SHARD, 1}, options_.masterchain_actor_count);
-    spawn_indexer(ton::BlockId{0, INITIAL_SHARD, 1}, 1);
+    spawn_indexer(ton::BlockId{0, INITIAL_SHARD, 1}, 10);
 }
 
 auto App::get_client_ref() -> tonlib::ExtClientRef
