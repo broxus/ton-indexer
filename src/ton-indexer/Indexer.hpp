@@ -28,6 +28,7 @@ public:
             td::int32 utime,
             td::actor::ActorShared<> parent,
             SpawnActor spawn_indexer);
+    ~Indexer();
 
 private:
     auto parse_result() -> td::Status;
@@ -53,12 +54,22 @@ private:
         }
     }
 
+    void check_commit(bool force = false)
+    {
+        if (++pending_inserts_ > MAX_PENDING_INSERTS || force) {
+            repo_.commit();
+            pending_inserts_ = 0;
+        }
+    }
+
     void check(td::Status status)
     {
         if (status.is_error()) {
             stop();
         }
     }
+
+    constexpr static auto MAX_PENDING_INSERTS = 10;
 
     std::optional<ton::BlockIdExt> block_id_{};
     int mode_{};
@@ -67,6 +78,7 @@ private:
     td::int32 utime_{};
 
     td::int32 pending_queries_ = 0;
+    td::int32 pending_inserts_ = 0;
 
     td::BufferSlice data_;
     td::BufferSlice shard_data_;
@@ -78,6 +90,7 @@ private:
     ExtClient client_;
 
     pqxx::connection conn_;
+    pqxx::work repo_;
     SpawnActor spawn_indexer_;
 };
 

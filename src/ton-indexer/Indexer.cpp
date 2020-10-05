@@ -20,6 +20,7 @@ Indexer::Indexer(ExtClientRef ext_client_ref, const std::string& db_url, ton::Bl
     : block_id_{block_id}
     , parent_{std::move(parent)}
     , conn_{db_url}
+    , repo_{conn_}
     , spawn_indexer_{std::move(spawn_indexer)}
 {
     client_.set_client(std::move(ext_client_ref));
@@ -39,9 +40,15 @@ Indexer::Indexer(ExtClientRef ext_client_ref,
     , utime_{utime}
     , parent_{std::move(parent)}
     , conn_{db_url}
+    , repo_{conn_}
     , spawn_indexer_{std::move(spawn_indexer)}
 {
     client_.set_client(std::move(ext_client_ref));
+}
+
+Indexer::~Indexer()
+{
+    check_commit(/*force*/ true);
 }
 
 auto Indexer::parse_result() -> td::Status
@@ -112,19 +119,17 @@ void Indexer::finish_query()
 
 void Indexer::save_block_id(const ton::BlockIdExt& block_id)
 {
-    pqxx::work W{conn_};
-
     const auto& root_hash_slice = block_id.root_hash.as_slice();
     const auto& file_hash_slice = block_id.file_hash.as_slice();
 
-    W.exec_prepared0(INSERT_BLOCK_STMT,
-                     static_cast<td::int16>(block_id.id.workchain),
-                     static_cast<td::int64>(block_id.id.shard),
-                     static_cast<td::int32>(block_id.id.seqno),
-                     pqxx::binarystring{root_hash_slice.data(), root_hash_slice.size()},
-                     pqxx::binarystring{file_hash_slice.data(), file_hash_slice.size()});
+    repo_.exec_prepared0(INSERT_BLOCK_STMT,
+                         static_cast<td::int16>(block_id.id.workchain),
+                         static_cast<td::int64>(block_id.id.shard),
+                         static_cast<td::int32>(block_id.id.seqno),
+                         pqxx::binarystring{root_hash_slice.data(), root_hash_slice.size()},
+                         pqxx::binarystring{file_hash_slice.data(), file_hash_slice.size()});
 
-    W.commit();
+    check_commit();
 }
 
 void Indexer::start_up()
