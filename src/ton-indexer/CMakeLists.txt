@@ -71,6 +71,8 @@ target_link_libraries(${SUBPROJ_NAME} PRIVATE
         tonlib tdactor adnllite tl_lite_api tl-lite-utils ton_crypto ton_block lite-client-common smc-envelope
         ftabi pqxx)
 
+target_compile_definitions(${SUBPROJ_NAME} PUBLIC "$<$<CONFIG:DEBUG>:DEBUG>")
+
 # Size optimizations
 if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
     target_compile_options(${SUBPROJ_NAME} PRIVATE -ffunction-sections -fdata-sections)

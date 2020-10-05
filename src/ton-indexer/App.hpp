@@ -18,6 +18,8 @@ public:
     explicit App(Options&& options);
     ~App();
 
+    void spawn_indexer(const ton::BlockId& block_id);
+
 private:
     void start_up() override;
 

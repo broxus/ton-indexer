@@ -1,5 +1,7 @@
 #include "Indexer.hpp"
 
+#include <utility>
+
 #include "block/block-auto.h"
 #include "block/block-parse.h"
 #include "block/block.h"
@@ -14,10 +16,11 @@ namespace tdx
 {
 constexpr pqxx::zview INSERT_BLOCK_STMT = "insert_block";
 
-Indexer::Indexer(ExtClientRef ext_client_ref, const std::string& db_url, ton::BlockIdExt block_id, td::actor::ActorShared<> parent)
+Indexer::Indexer(ExtClientRef ext_client_ref, const std::string& db_url, ton::BlockIdExt block_id, td::actor::ActorShared<> parent, SpawnActor spawn_indexer)
     : block_id_{block_id}
     , parent_{std::move(parent)}
     , conn_{db_url}
+    , spawn_indexer_{std::move(spawn_indexer)}
 {
     client_.set_client(std::move(ext_client_ref));
 }
@@ -28,13 +31,15 @@ Indexer::Indexer(ExtClientRef ext_client_ref,
                  int mode,
                  td::int64 lt,
                  td::int32 utime,
-                 td::actor::ActorShared<> parent)
+                 td::actor::ActorShared<> parent,
+                 SpawnActor spawn_indexer)
     : mode_{mode}
     , block_id_simple_{block_id}
     , lt_{lt}
     , utime_{utime}
     , parent_{std::move(parent)}
     , conn_{db_url}
+    , spawn_indexer_{std::move(spawn_indexer)}
 {
     client_.set_client(std::move(ext_client_ref));
 }
@@ -63,9 +68,37 @@ auto Indexer::parse_result() -> td::Status
         return td::Status::Error("failed to unpack block header");
     }
 
+    block::gen::Block::Record blk;
+    if (!tlb::unpack_cell(virt_root, blk)) {
+        return td::Status::Error("failed to unpack block record");
+    }
+
+    block::gen::BlockInfo::Record info;
+    if (!tlb::unpack_cell(blk.info, info)) {
+        return td::Status::Error("failed to unpack block info");
+    }
+
+    if (info.after_merge && ton::is_right_child(block_id.id.shard)) {
+        LOG(WARNING) << "Merging right child into left " << block_id.id.to_str();
+        stop();
+        return td::Status::OK();
+    }
+
+    if (info.before_split) {
+        const auto left_block = ton::BlockId{block_id.id.workchain, ton::shard_child(block_id.id.shard, true), block_id.id.seqno + 1};
+        const auto right_block = ton::BlockId{block_id.id.workchain, ton::shard_child(block_id.id.shard, false), block_id.id.seqno + 1};
+
+        LOG(WARNING) << "Split " << block_id.id.to_str() << " -> " << left_block.to_str() << " and " << right_block.to_str();
+
+        block_id_simple_ = left_block;
+        spawn_indexer_(right_block);
+    }
+    else {
+        block_id_simple_ = ton::BlockId{block_id.id.workchain, block_id.id.shard, block_id.id.seqno + 1};
+    }
+
     block_id_.reset();
     mode_ = 1;
-    block_id_simple_ = ton::BlockId{block_id.id.workchain, block_id.id.shard, block_id.id.seqno + 1};
 
     LOG(WARNING) << "Next block: " << block_id_simple_.to_str();
     td::actor::send_closure(actor_id(this), &Indexer::start_up_with_lookup);

@@ -13,6 +13,21 @@ App::App(Options&& options)
 
 App::~App() = default;
 
+void App::spawn_indexer(const ton::BlockId& block_id)
+{
+    auto id = actor_id_++;
+    actors_[id] = td::actor::create_actor<Indexer>(  //
+        "Indexer",
+        client_.get_client(),
+        options_.db_url,
+        block_id,
+        /*mode*/ 1,
+        /*lt*/ 0,
+        /*utime*/ 0,
+        actor_shared(this, id),
+        [actor_id = actor_id(this)](const ton::BlockId& block_id) { td::actor::send_closure(actor_id, &App::spawn_indexer, block_id); });
+}
+
 void App::start_up()
 {
     config_ = tonlib::Config::parse(options_.config.as_slice().str()).move_as_ok();
@@ -39,16 +54,7 @@ void App::start_up()
 
     client_.set_client(get_client_ref());
 
-    auto actor_id = actor_id_++;
-    actors_[actor_id] = td::actor::create_actor<Indexer>(  //
-        "Indexer",
-        client_.get_client(),
-        options_.db_url,
-        ton::BlockId{last_state.zero_state_id.workchain, 0x8000000000000000u, 1},
-        /*mode*/ 1,
-        /*lt*/ 0,
-        /*utime*/ 0,
-        actor_shared(this, actor_id));
+    spawn_indexer(ton::BlockId{0, 0x8000000000000000ull, 1});
 }
 
 auto App::get_client_ref() -> tonlib::ExtClientRef

@@ -17,14 +17,17 @@ class Indexer : public td::actor::Actor {
     enum class QueryMode { Get, Lookup };
 
 public:
-    Indexer(ExtClientRef ext_client_ref, const std::string& db_url, ton::BlockIdExt block_id, td::actor::ActorShared<> parent);
+    using SpawnActor = std::function<void(const ton::BlockId&)>;
+
+    Indexer(ExtClientRef ext_client_ref, const std::string& db_url, ton::BlockIdExt block_id, td::actor::ActorShared<> parent, SpawnActor spawn_indexer);
     Indexer(ExtClientRef ext_client_ref,
             const std::string& db_url,
             ton::BlockId block_id,
             int mode,
             td::int64 lt,
             td::int32 utime,
-            td::actor::ActorShared<> parent);
+            td::actor::ActorShared<> parent,
+            SpawnActor spawn_indexer);
 
 private:
     auto parse_result() -> td::Status;
@@ -75,6 +78,7 @@ private:
     ExtClient client_;
 
     pqxx::connection conn_;
+    SpawnActor spawn_indexer_;
 };
 
 }  // namespace tdx
