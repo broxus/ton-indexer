@@ -11,10 +11,9 @@ static auto parse_options(int argc, char** argv) -> tdx::App::Options
     td::OptionsParser args;
     tdx::App::Options program_options{};
 
-    args.add_option('h', "help", "prints help", [&]() {
+    args.add_option('h', "help", "prints help", [&]() -> td::Status {
         std::cout << (PSLICE() << args).c_str();
         std::exit(2);
-        return td::Status::OK();
     });
 
     args.add_option('c', "config", "global config", [&](td::Slice arg) {
@@ -25,6 +24,12 @@ static auto parse_options(int argc, char** argv) -> tdx::App::Options
 
     args.add_option('d', "db", "postgres db url", [&](td::Slice arg) {
         program_options.db_url = arg.str();
+        return td::Status::OK();
+    });
+
+    args.add_option('t', "threads", "worker thread count", [&](td::Slice arg) {
+        TRY_RESULT(thread_count, td::to_integer_safe<td::uint32>(arg))
+        program_options.thread_count = thread_count;
         return td::Status::OK();
     });
 
@@ -44,13 +49,15 @@ static auto parse_options(int argc, char** argv) -> tdx::App::Options
 
 int main(int argc, char** argv)
 {
-#ifndef DEBUG
+#ifndef VERBOSE
     SET_VERBOSITY_LEVEL(verbosity_INFO);
     td::set_default_failure_signal_handler();
 #endif
 
-    td::actor::Scheduler scheduler({4});
-    scheduler.run_in_context([&] { td::actor::create_actor<tdx::App>("ton-indexer", parse_options(argc, argv)).release(); });
+    auto options = parse_options(argc, argv);
+
+    td::actor::Scheduler scheduler({options.thread_count});
+    scheduler.run_in_context([&] { td::actor::create_actor<tdx::App>("ton-indexer", std::move(options)).release(); });
     scheduler.run();
     return 0;
 }

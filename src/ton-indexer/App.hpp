@@ -1,35 +1,39 @@
 #pragma once
 
-#include "td/actor/actor.h"
-#include "tonlib/ExtClient.h"
-#include "tonlib/LastBlock.h"
-#include "tonlib/LastConfig.h"
-#include "tonlib/TonlibClient.h"
+#include <td/actor/actor.h>
+#include <tonlib/ExtClient.h>
+#include <tonlib/LastBlock.h>
+#include <tonlib/LastConfig.h>
+#include <tonlib/TonlibClient.h>
+
+#include "Repo.hpp"
 
 namespace tdx
 {
-class App : public td::actor::Actor {
+class App final : public td::actor::Actor {
 public:
     struct Options {
+        td::uint32 thread_count{4};
+        td::uint32 masterchain_actor_count{10};
         td::BufferSlice config{};
         std::string db_url{};
     };
 
     explicit App(Options&& options);
-    ~App();
+    ~App() final;
 
-    void spawn_indexer(const ton::BlockId& block_id);
+    void spawn_indexer(ton::BlockId block_id, td::uint32 count);
 
 private:
-    void start_up() override;
+    void start_up() final;
 
     auto get_client_ref() -> tonlib::ExtClientRef;
     void init_ext_client();
     void init_last_block(tonlib::LastBlockState state);
     void init_last_config();
 
-    void hangup_shared() override;
-    void hangup() override;
+    void hangup_shared() final;
+    void hangup() final;
     void try_stop();
 
     Options options_;

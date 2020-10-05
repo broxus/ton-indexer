@@ -10,12 +10,14 @@ set(${SUBPROJ_NAME}_PATCH_VERSION         1)
 
 set(${SUBPROJ_NAME}_HEADERS
         "App.hpp"
-        "Indexer.hpp")
+        "Indexer.hpp"
+        "Repo.cpp")
 
 set(${SUBPROJ_NAME}_SOURCES
         "main.cpp"
         "App.cpp"
-        "Indexer.cpp")
+        "Indexer.cpp"
+        "Repo.cpp")
 
 # ############################################################### #
 # Options ####################################################### #
@@ -71,7 +73,7 @@ target_link_libraries(${SUBPROJ_NAME} PRIVATE
         tonlib tdactor adnllite tl_lite_api tl-lite-utils ton_crypto ton_block lite-client-common smc-envelope
         ftabi pqxx)
 
-target_compile_definitions(${SUBPROJ_NAME} PUBLIC "$<$<CONFIG:DEBUG>:DEBUG>")
+target_compile_definitions(${SUBPROJ_NAME} PUBLIC "$<$<CONFIG:DEBUG>:VERBOSE>")
 
 # Size optimizations
 if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")

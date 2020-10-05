@@ -6,6 +6,8 @@
 
 namespace tdx
 {
+constexpr auto INITIAL_SHARD = 0x8000000000000000ull;
+
 App::App(Options&& options)
     : options_{std::move(options)}
 {
@@ -13,19 +15,23 @@ App::App(Options&& options)
 
 App::~App() = default;
 
-void App::spawn_indexer(const ton::BlockId& block_id)
+void App::spawn_indexer(ton::BlockId block_id, td::uint32 count)
 {
-    auto id = actor_id_++;
-    actors_[id] = td::actor::create_actor<Indexer>(  //
-        "Indexer",
-        client_.get_client(),
-        options_.db_url,
-        block_id,
-        /*mode*/ 1,
-        /*lt*/ 0,
-        /*utime*/ 0,
-        actor_shared(this, id),
-        [actor_id = actor_id(this)](const ton::BlockId& block_id) { td::actor::send_closure(actor_id, &App::spawn_indexer, block_id); });
+    for (auto i = 0; i < count; ++i) {
+        auto id = actor_id_++;
+        actors_[id] = td::actor::create_actor<Indexer>(  //
+            "Indexer",
+            client_.get_client(),
+            options_.db_url,
+            block_id,
+            actor_shared(this, id),
+            [actor_id = actor_id(this)](const ton::BlockId& block_id, td::uint32 count) {
+                td::actor::send_closure(actor_id, &App::spawn_indexer, block_id, count);
+            },
+            count);
+
+        ++block_id.seqno;
+    }
 }
 
 void App::start_up()
@@ -54,7 +60,8 @@ void App::start_up()
 
     client_.set_client(get_client_ref());
 
-    spawn_indexer(ton::BlockId{0, 0x8000000000000000ull, 1});
+    spawn_indexer(ton::BlockId{-1, INITIAL_SHARD, 1}, options_.masterchain_actor_count);
+    spawn_indexer(ton::BlockId{0, INITIAL_SHARD, 1}, 1);
 }
 
 auto App::get_client_ref() -> tonlib::ExtClientRef
