@@ -1,5 +1,6 @@
 #include <td/utils/OptionsParser.h>
 #include <td/utils/filesystem.h>
+#include <td/utils/port/signals.h>
 
 #include <iostream>
 
@@ -43,6 +44,9 @@ static auto parse_options(int argc, char** argv) -> tdx::App::Options
 
 int main(int argc, char** argv)
 {
+    SET_VERBOSITY_LEVEL(verbosity_INFO);
+    td::set_default_failure_signal_handler();
+
     td::actor::Scheduler scheduler({4});
     scheduler.run_in_context([&] { td::actor::create_actor<tdx::App>("ton-indexer", parse_options(argc, argv)).release(); });
     scheduler.run();
