@@ -2,6 +2,8 @@
 
 #include <tonlib/ExtClientLazy.h>
 
+#include <list>
+
 #include "Indexer.hpp"
 
 namespace tdx
@@ -36,33 +38,55 @@ void App::start_processing_workchain(td::int32 workchain)
         spawn_indexer(ton::BlockId{workchain, INITIAL_SHARD, 1}, options_.workchain_actor_count);
     }
 
+    // Sort by seqno and level
     std::sort(last_workchain_blocks.begin(), last_workchain_blocks.end(), [](const ton::BlockId& left, const ton::BlockId& right) {
-        return td::lower_bit64(left.shard) < td::lower_bit64(right.shard);
+        return left.seqno > right.seqno || td::lower_bit64(left.shard) < td::lower_bit64(right.shard);
     });
 
     std::vector<ton::BlockId> top_blocks{};
 
-    size_t current_layer = td::lower_bit64(last_workchain_blocks[0].shard);
-    size_t layer_begin = 0;
-    size_t layer_end = 0;
-    for (size_t i = 0; i < last_workchain_blocks.size(); ++i) {
-        auto block_layer = td::lower_bit64(last_workchain_blocks[i].shard);
-        if (block_layer != current_layer) {
-            current_layer = block_layer;
-            layer_begin = layer_end;
-            layer_end = i;
-        }
+    // Graph node in helper trees
+    struct Item {
+        const ton::BlockId* block{};
+        td::int32 child_count{};
+    };
 
+    // Helper trees
+    std::list<std::list<Item>> leaves;
+
+    // Process each block
+    for (const auto& block : last_workchain_blocks) {
         bool is_leaf = true;
-        for (size_t l = layer_begin; l < layer_end; ++l) {
-            if (ton::shard_is_ancestor(last_workchain_blocks[i].shard, last_workchain_blocks[l].shard)) {
+
+        // Try to find child in helper trees
+        for (auto& leaf : leaves) {
+            for (auto it = leaf.begin(); it != leaf.end(); ++it) {
+                if (!ton::shard_is_parent(block.shard, it->block->shard)) {
+                    continue;
+                }
+                // If child found
+                const auto child_it = it;
+                // Insert current block right after it
+                leaf.insert(++it, Item{.block = &block, .child_count = 0});
+                // Remove child from tree if all it's parents are found
+                if (++child_it->child_count == 2) {
+                    leaf.erase(child_it);
+                }
+                // Mark as parent and proceed to next block
                 is_leaf = false;
+                break;
+            }
+            if (!is_leaf) {
                 break;
             }
         }
 
+        // If no children are found
         if (is_leaf) {
-            top_blocks.emplace_back(last_workchain_blocks[i]);
+            // Add workers task
+            top_blocks.emplace_back(block);
+            // Create leaf tree
+            leaves.emplace_back(std::list{Item{.block = &block, .child_count = 0}});
         }
     }
 
