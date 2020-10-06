@@ -33,7 +33,7 @@ void App::start_processing_workchain(td::int32 workchain)
 {
     std::vector<ton::BlockId> last_workchain_blocks = repo_.get_last_blocks(td::get_thread_id(), workchain);
     if (last_workchain_blocks.empty()) {
-        spawn_indexer(ton::BlockId{workchain, INITIAL_SHARD, 1}, options_.masterchain_actor_count);
+        spawn_indexer(ton::BlockId{workchain, INITIAL_SHARD, 1}, options_.workchain_actor_count);
     }
 
     std::sort(last_workchain_blocks.begin(), last_workchain_blocks.end(), [](const ton::BlockId& left, const ton::BlockId& right) {
@@ -68,7 +68,7 @@ void App::start_processing_workchain(td::int32 workchain)
 
     for (const auto& block : top_blocks) {
         LOG(WARNING) << "Started processing workchain from " << block.to_str();
-        spawn_indexer(block, options_.masterchain_actor_count);
+        spawn_indexer(block, options_.workchain_actor_count);
     }
 }
 

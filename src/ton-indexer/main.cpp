@@ -27,9 +27,21 @@ static auto parse_options(int argc, char** argv) -> tdx::App::Options
         return td::Status::OK();
     });
 
-    args.add_option('t', "threads", "worker thread count", [&](td::Slice arg) {
+    args.add_option('t', "threads", "worker thread count (default 4)", [&](td::Slice arg) {
         TRY_RESULT(thread_count, td::to_integer_safe<td::uint32>(arg))
         program_options.thread_count = thread_count;
+        return td::Status::OK();
+    });
+
+    args.add_option('m', "masterchain", "masterchain worker count (default 10)", [&](td::Slice arg) {
+        TRY_RESULT(actor_count, td::to_integer_safe<td::uint32>(arg))
+        program_options.masterchain_actor_count = actor_count;
+        return td::Status::OK();
+    });
+
+    args.add_option('w', "workchain", "workchain worker count (default 10)", [&](td::Slice arg) {
+        TRY_RESULT(actor_count, td::to_integer_safe<td::uint32>(arg))
+        program_options.workchain_actor_count = actor_count;
         return td::Status::OK();
     });
 

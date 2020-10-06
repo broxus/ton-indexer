@@ -15,6 +15,7 @@ public:
     struct Options {
         td::uint32 thread_count{4};
         td::uint32 masterchain_actor_count{10};
+        td::uint32 workchain_actor_count{10};
         td::BufferSlice config{};
         std::string db_url{};
     };
