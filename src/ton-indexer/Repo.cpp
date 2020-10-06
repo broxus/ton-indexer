@@ -4,6 +4,7 @@ namespace tdx
 {
 constexpr pqxx::zview INSERT_BLOCK_STMT = "insert_block";
 constexpr pqxx::zview INSERT_TRANSACTION_STMT = "insert_transaction";
+constexpr pqxx::zview SELECT_LAST_BLOCKS = "select_last_blocks";
 
 Repo::Repo(const std::string& db_url, td::uint32 connection_count)
 {
@@ -15,6 +16,7 @@ Repo::Repo(const std::string& db_url, td::uint32 connection_count)
 
         item->conn_.prepare(INSERT_BLOCK_STMT, "INSERT INTO block VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING");
         item->conn_.prepare(INSERT_TRANSACTION_STMT, "INSERT INTO transaction VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT DO NOTHING");
+        item->conn_.prepare(SELECT_LAST_BLOCKS, "SELECT workchain, shard, MAX(seqno) FROM block WHERE workchain=$1 GROUP BY shard, workchain");
     }
 }
 
@@ -61,6 +63,20 @@ void Repo::check_commit(td::int32 conn_id, bool force)
         c.work_.commit();
         c.pending_inserts_ = 0;
     }
+}
+
+auto Repo::get_last_blocks(td::int32 conn_id, td::int32 workchain) -> std::vector<ton::BlockId>
+{
+    auto rows = conn(conn_id).work_.exec_prepared(SELECT_LAST_BLOCKS, static_cast<td::int32>(workchain));
+
+    std::vector<ton::BlockId> results;
+    results.reserve(rows.size());
+    for (const auto& row : rows) {
+        results.emplace_back(
+            ton::BlockId{row[0].as<td::int32>(), static_cast<ton::ShardId>(row[1].as<td::int64>()), static_cast<ton::BlockSeqno>(row[2].as<td::int32>())});
+    }
+
+    return results;
 }
 
 Repo::Conn& Repo::conn(td::uint32 thread_id)

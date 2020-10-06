@@ -26,12 +26,14 @@ class Repo {
     };
 
 public:
-    explicit Repo(const std::string &db_url, td::uint32 connection_count);
+    explicit Repo(const std::string& db_url, td::uint32 connection_count);
     ~Repo();
 
     void save_block_id(td::int32 conn_id, const ton::BlockIdExt& block_id);
     void save_transaction(td::int32 conn_id, const ton::BlockIdExt& block_id, const lite_api::liteServer_transactionId& transaction_id);
     void check_commit(td::int32 conn_id, bool force = false);
+
+    auto get_last_blocks(td::int32 conn_id, td::int32 workchain) -> std::vector<ton::BlockId>;
 
     Conn& conn(td::uint32 thread_id);
 

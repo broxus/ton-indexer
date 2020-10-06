@@ -16,6 +16,62 @@ App::App(Options&& options)
 
 App::~App() = default;
 
+void App::start_processing_masterchain()
+{
+    ton::BlockId last_masterchain_block;
+    if (std::vector<ton::BlockId> last_masterchain_blocks = repo_.get_last_blocks(td::get_thread_id(), -1); !last_masterchain_blocks.empty()) {
+        last_masterchain_block = last_masterchain_blocks[0];
+    }
+    else {
+        last_masterchain_block = ton::BlockId{-1, INITIAL_SHARD, 1};
+    }
+    LOG(WARNING) << "Started processing masterchain from " << last_masterchain_block.to_str();
+    spawn_indexer(last_masterchain_block, options_.masterchain_actor_count);
+}
+
+void App::start_processing_workchain(td::int32 workchain)
+{
+    std::vector<ton::BlockId> last_workchain_blocks = repo_.get_last_blocks(td::get_thread_id(), workchain);
+    if (last_workchain_blocks.empty()) {
+        spawn_indexer(ton::BlockId{workchain, INITIAL_SHARD, 1}, options_.masterchain_actor_count);
+    }
+
+    std::sort(last_workchain_blocks.begin(), last_workchain_blocks.end(), [](const ton::BlockId& left, const ton::BlockId& right) {
+        return td::lower_bit64(left.shard) < td::lower_bit64(right.shard);
+    });
+
+    std::vector<ton::BlockId> top_blocks{};
+
+    size_t current_layer = td::lower_bit64(last_workchain_blocks[0].shard);
+    size_t layer_begin = 0;
+    size_t layer_end = 0;
+    for (size_t i = 0; i < last_workchain_blocks.size(); ++i) {
+        auto block_layer = td::lower_bit64(last_workchain_blocks[i].shard);
+        if (block_layer != current_layer) {
+            current_layer = block_layer;
+            layer_begin = layer_end;
+            layer_end = i;
+        }
+
+        bool is_leaf = true;
+        for (size_t l = layer_begin; l < layer_end; ++l) {
+            if (ton::shard_is_ancestor(last_workchain_blocks[i].shard, last_workchain_blocks[l].shard)) {
+                is_leaf = false;
+                break;
+            }
+        }
+
+        if (is_leaf) {
+            top_blocks.emplace_back(last_workchain_blocks[i]);
+        }
+    }
+
+    for (const auto& block : top_blocks) {
+        LOG(WARNING) << "Started processing workchain from " << block.to_str();
+        spawn_indexer(block, options_.masterchain_actor_count);
+    }
+}
+
 void App::spawn_indexer(ton::BlockId block_id, td::uint32 count)
 {
     for (auto i = 0; i < count; ++i) {
@@ -61,8 +117,8 @@ void App::start_up()
 
     client_.set_client(get_client_ref());
 
-    spawn_indexer(ton::BlockId{-1, INITIAL_SHARD, 1}, options_.masterchain_actor_count);
-    spawn_indexer(ton::BlockId{0, INITIAL_SHARD, 1}, 10);
+    start_processing_masterchain();
+    start_processing_workchain(0);
 }
 
 auto App::get_client_ref() -> tonlib::ExtClientRef

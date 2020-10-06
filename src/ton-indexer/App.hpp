@@ -22,6 +22,8 @@ public:
     explicit App(Options&& options);
     ~App() final;
 
+    void start_processing_masterchain();
+    void start_processing_workchain(td::int32 workchain);
     void spawn_indexer(ton::BlockId block_id, td::uint32 count);
 
 private:
