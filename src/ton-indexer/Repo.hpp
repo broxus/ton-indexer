@@ -30,7 +30,15 @@ public:
     ~Repo();
 
     void save_block_id(td::int32 conn_id, const ton::BlockIdExt& block_id);
-    void save_transaction(td::int32 conn_id, const ton::BlockIdExt& block_id, const lite_api::liteServer_transactionId& transaction_id);
+    void save_transaction(td::int32 conn_id, const ton::BlockIdExt& block_id, const td::Bits256& addr, const td::Bits256& hash, td::uint64 lt);
+    void save_message(td::int32 conn_id,
+                      const td::Bits256& body_hash,
+                      bool out,
+                      size_t n,
+                      ton::WorkchainId workchain,
+                      const td::Bits256& addr,
+                      const td::Bits256& hash,
+                      td::uint64 lt);
     void check_commit(td::int32 conn_id, bool force = false);
 
     auto get_last_blocks(td::int32 conn_id, td::int32 workchain) -> std::vector<ton::BlockId>;

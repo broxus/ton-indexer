@@ -4,6 +4,7 @@ namespace tdx
 {
 constexpr pqxx::zview INSERT_BLOCK_STMT = "insert_block";
 constexpr pqxx::zview INSERT_TRANSACTION_STMT = "insert_transaction";
+constexpr pqxx::zview INSERT_MESSAGE_STMT = "insert_message";
 constexpr pqxx::zview SELECT_LAST_BLOCKS = "select_last_blocks";
 
 Repo::Repo(const std::string& db_url, td::uint32 connection_count)
@@ -16,6 +17,7 @@ Repo::Repo(const std::string& db_url, td::uint32 connection_count)
 
         item->conn_.prepare(INSERT_BLOCK_STMT, "INSERT INTO block VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING");
         item->conn_.prepare(INSERT_TRANSACTION_STMT, "INSERT INTO transaction VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT DO NOTHING");
+        item->conn_.prepare(INSERT_MESSAGE_STMT, "INSERT INTO message VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT DO NOTHING");
         item->conn_.prepare(SELECT_LAST_BLOCKS, "SELECT workchain, shard, MAX(seqno) FROM block WHERE workchain=$1 GROUP BY shard, workchain");
     }
 }
@@ -41,19 +43,42 @@ void Repo::save_block_id(td::int32 conn_id, const ton::BlockIdExt& block_id)
                                        pqxx::binarystring{file_hash_slice.data(), file_hash_slice.size()});
 }
 
-void Repo::save_transaction(td::int32 conn_id, const ton::BlockIdExt& block_id, const lite_api::liteServer_transactionId& transaction_id)
+void Repo::save_transaction(td::int32 conn_id, const ton::BlockIdExt& block_id, const td::Bits256& addr, const td::Bits256& hash, td::uint64 lt)
 {
-    const auto account_addr_slice = transaction_id.account_.as_slice();
-    const auto transaction_hash_slice = transaction_id.hash_.as_slice();
+    const auto account_addr_slice = addr.as_slice();
+    const auto transaction_hash_slice = hash.as_slice();
 
     conn(conn_id).work_.exec_prepared0(INSERT_TRANSACTION_STMT,
                                        static_cast<td::int16>(block_id.id.workchain),
                                        pqxx::binarystring{account_addr_slice.data(), account_addr_slice.size()},
                                        pqxx::binarystring{transaction_hash_slice.data(), transaction_hash_slice.size()},
-                                       static_cast<td::int64>(transaction_id.lt_),
+                                       static_cast<td::int64>(lt),
                                        static_cast<td::int16>(block_id.id.workchain),
                                        static_cast<td::int64>(block_id.id.shard),
                                        static_cast<td::int32>(block_id.id.seqno));
+}
+
+void Repo::save_message(td::int32 conn_id,
+                        const td::Bits256& body_hash,
+                        bool out,
+                        size_t n,
+                        ton::WorkchainId workchain,
+                        const td::Bits256& addr,
+                        const td::Bits256& hash,
+                        td::uint64 lt)
+{
+    const auto body_hash_slice = body_hash.as_slice();
+    const auto account_addr_slice = addr.as_slice();
+    const auto transaction_hash_slice = hash.as_slice();
+
+    conn(conn_id).work_.exec_prepared0(INSERT_MESSAGE_STMT,
+                                       pqxx::binarystring{body_hash_slice.data(), body_hash_slice.size()},
+                                       out,
+                                       static_cast<td::int16>(n),
+                                       static_cast<td::int32>(workchain),
+                                       pqxx::binarystring{account_addr_slice.data(), account_addr_slice.size()},
+                                       pqxx::binarystring{transaction_hash_slice.data(), transaction_hash_slice.size()},
+                                       static_cast<td::int64>(lt));
 }
 
 void Repo::check_commit(td::int32 conn_id, bool force)

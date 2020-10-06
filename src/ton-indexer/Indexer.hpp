@@ -19,19 +19,17 @@ public:
 
     Indexer(ExtClientRef ext_client_ref, Repo& repo, ton::BlockId block_id, td::actor::ActorShared<> parent, SpawnActor spawn_indexer, td::uint32 step = 1);
 
-protected:
+private:
+    auto process_transaction(const td::Bits256& addr, td::Ref<vm::Cell>&& value) -> td::Status;
     auto process_result() -> td::Status;
 
-private:
     void finish_query();
 
     void start_up() final;
     void start_up_with_lookup();
     void proceed_with_block_id(const ton::BlockIdExt& block_id);
-
     void got_block_header(lite_api_ptr<ton::lite_api::liteServer_blockHeader>&& result);
-    void got_shard_info(lite_api_ptr<ton::lite_api::liteServer_allShardsInfo>&& result);
-    void got_transactions(lite_api_ptr<ton::lite_api::liteServer_blockTransactions>&& result);
+    void got_block_data(lite_api_ptr<ton::lite_api::liteServer_blockData>&& result);
 
     void hangup() final { check(TonlibError::Cancelled()); }
 
@@ -56,10 +54,7 @@ private:
     td::int32 pending_queries_ = 0;
 
     td::BufferSlice data_;
-    td::BufferSlice shard_data_;
-
-    std::vector<lite_api_ptr<lite_api::liteServer_transactionId>> transactions_{};
-    td::uint32 trans_req_count_{};
+    td::BufferSlice block_data_;
 
     td::actor::ActorShared<> parent_;
     ExtClient client_;
