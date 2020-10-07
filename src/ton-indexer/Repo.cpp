@@ -16,7 +16,7 @@ Repo::Repo(const std::string& db_url, td::uint32 connection_count)
         Conn* item = new (reinterpret_cast<Conn*>(connections_.data()) + i) Conn{db_url};
 
         item->conn_.prepare(INSERT_BLOCK_STMT, "INSERT INTO block VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING");
-        item->conn_.prepare(INSERT_TRANSACTION_STMT, "INSERT INTO transaction VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT DO NOTHING");
+        item->conn_.prepare(INSERT_TRANSACTION_STMT, "INSERT INTO transaction VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT DO NOTHING");
         item->conn_.prepare(INSERT_MESSAGE_STMT, "INSERT INTO message VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT DO NOTHING");
         item->conn_.prepare(SELECT_LAST_BLOCKS, "SELECT workchain, shard, MAX(seqno) FROM block WHERE workchain=$1 GROUP BY shard, workchain");
     }
@@ -53,7 +53,6 @@ void Repo::save_transaction(td::int32 conn_id, const ton::BlockIdExt& block_id, 
                                        pqxx::binarystring{account_addr_slice.data(), account_addr_slice.size()},
                                        pqxx::binarystring{transaction_hash_slice.data(), transaction_hash_slice.size()},
                                        static_cast<td::int64>(lt),
-                                       static_cast<td::int16>(block_id.id.workchain),
                                        static_cast<td::int64>(block_id.id.shard),
                                        static_cast<td::int32>(block_id.id.seqno));
 }
