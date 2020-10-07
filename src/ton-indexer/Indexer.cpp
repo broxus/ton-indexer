@@ -69,12 +69,10 @@ auto Indexer::process_result() -> td::Status
 {
     const auto thread_id = td::get_thread_id();
 
-    repo_.save_block_id(thread_id, block_id_);
-    repo_.check_commit(thread_id);
-
     TRY_RESULT(block_root, vm::std_boc_deserialize(block_data_))
 
-    std::vector<lite_api::liteServer_transactionId> result;
+    repo_.save_block_id(thread_id, block_id_);
+
     try {
         block::gen::Block::Record blk;
         block::gen::BlockExtra::Record extra;
@@ -155,6 +153,8 @@ auto Indexer::process_result() -> td::Status
     catch (const vm::VmError& err) {
         return td::Status::Error(PSLICE() << "error while parsing AccountBlocks of block " << block_id_.to_str() << " : " << err.get_msg());
     }
+
+    repo_.check_commit(thread_id);
 
     LOG(INFO) << "Next block: " << block_id_simple_.to_str();
     td::actor::send_closure(actor_id(this), &Indexer::start_up_with_lookup);
