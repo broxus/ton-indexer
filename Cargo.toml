@@ -14,13 +14,29 @@ path = "src/main.rs"
 required-features = ["binary"]
 
 [dependencies]
+async-trait = "0.1"
 anyhow = "1.0"
+base64 = "0.13"
 config = "0.11"
 clap = { version = "3.0.0-beta.2", optional = true }
+dashmap = "4.0"
+external-ip = "4.1"
+futures = "0.3"
+hex = "0.4"
+log = "0.4"
 log4rs = { version = "1.0", optional = true }
+rand = "0.7"
 serde = { version = "1.0", features = ["derive"] }
 serde_yaml = { version = "0.8", optional = true }
 tokio = { version = "1.6", features = ["sync"] }
+
+ton_api = { git = "https://github.com/broxus/ton-labs-tl.git", package = "ton_api", branch = "original", default-features = false }
+adnl = { git = "https://github.com/broxus/ton-labs-adnl", default-features = false, features = ["node"] }
+dht = { git = "https://github.com/broxus/ton-labs-dht.git" }
+rldp = { git = "https://github.com/broxus/ton-labs-rldp.git" }
+overlay = { git = "https://github.com/broxus/ton-labs-overlay.git" }
+ton_block = { git = "https://github.com/tonlabs/ton-labs-block.git" }
+ton_types = { git = "https://github.com/tonlabs/ton-labs-types.git" }
 
 [features]
 binary = ["clap", "log4rs", "serde_yaml", "tokio/rt-multi-thread", "tokio/macros"]
