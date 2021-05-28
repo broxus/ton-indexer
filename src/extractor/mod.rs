@@ -1,9 +1,8 @@
-use ton_block::{AccountBlock, Deserializable, MsgAddressInt};
+use ton_block::{AccountBlock, Deserializable, MsgAddrVar, MsgAddressInt};
 use ton_types::BuilderData;
 
 #[derive(Debug)]
 pub struct TonExtractor {
-    addresses: Vec<MsgAddressInt>,
     ton_abi_functions: Vec<ton_abi::Function>,
 }
 
@@ -19,17 +18,14 @@ trait Extractor {
 }
 
 impl TonExtractor {
-    pub fn new(addresses: Vec<MsgAddressInt>, ton_abi_functions: Vec<ton_abi::Function>) -> Self {
-        Self {
-            addresses,
-            ton_abi_functions,
-        }
+    pub fn new(ton_abi_functions: Vec<ton_abi::Function>) -> Self {
+        Self { ton_abi_functions }
     }
 }
 
 impl Extractor for TonExtractor {
     fn handle_block(&self, block: ton_block::Block) -> Vec<ParsedValue> {
-        match parse_block(&self.addresses, &self.ton_abi_functions, &block) {
+        match parse_block(&self.ton_abi_functions, &block) {
             Ok(res) => res.unwrap_or_default(),
             Err(e) => {
                 log::error!("error on parsing block - {}", e);
@@ -40,7 +36,6 @@ impl Extractor for TonExtractor {
 }
 
 pub fn parse_block(
-    addresses: &[MsgAddressInt],
     ton_abi_functions: &[ton_abi::Function],
     block: &ton_block::Block,
 ) -> Result<Option<Vec<ParsedValue>>, anyhow::Error> {
@@ -56,14 +51,11 @@ pub fn parse_block(
             .iter()
             .filter_map(|account_block| {
                 if let Ok((builder, mut slice)) = account_block {
-                    for address in addresses {
-                        let addr = BuilderData::with_bitstring(address.address().get_bytestring(0))
-                            .unwrap_or_default();
-                        if builder == addr {
-                            return AccountBlock::construct_from(&mut slice)
-                                .ok()
-                                .map(|b| (address.clone(), b));
-                        }
+                    let mut address = MsgAddressInt::AddrVar(MsgAddrVar::default());
+                    if address.read_from(&mut builder.into()).is_ok() {
+                        return AccountBlock::construct_from(&mut slice)
+                            .ok()
+                            .map(|b| (address, b));
                     }
                 }
                 None
