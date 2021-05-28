@@ -67,6 +67,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "ansi_term"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ee49baf6cb617b853aa8d93bf420db2383fab46d314482ca2803b40d5fde979b"
+dependencies = [
+ "winapi",
+]
+
+[[package]]
 name = "anyhow"
 version = "1.0.40"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -411,7 +420,7 @@ dependencies = [
  "base64 0.13.0",
  "dashmap",
  "failure",
- "hex",
+ "hex 0.4.3",
  "log",
  "overlay",
  "rand 0.7.3",
@@ -420,6 +429,12 @@ dependencies = [
  "ton_api",
  "ton_types",
 ]
+
+[[package]]
+name = "difference"
+version = "2.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "524cbf6897b527295dff137cec09ecf3a05f4fddffd7dfcd1585403449e74198"
 
 [[package]]
 name = "digest"
@@ -734,6 +749,12 @@ checksum = "322f4de77956e22ed0e5032c359a0f1273f1f7f0d79bfa3b8ffbc730d7fbcc5c"
 dependencies = [
  "libc",
 ]
+
+[[package]]
+name = "hex"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "805026a5d0141ffc30abb3be3173848ad46a1b1664fe632428479619a3644d77"
 
 [[package]]
 name = "hex"
@@ -1275,7 +1296,7 @@ dependencies = [
  "base64 0.13.0",
  "dashmap",
  "failure",
- "hex",
+ "hex 0.4.3",
  "lockfree",
  "log",
  "rand 0.7.3",
@@ -1373,6 +1394,16 @@ name = "ppv-lite86"
 version = "0.2.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ac74c624d6b2d21f425f752262f42188365d7b8ff1aff74c82e45136510a4857"
+
+[[package]]
+name = "pretty_assertions"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3a029430f0d744bc3d15dd474d591bed2402b645d024583082b9f63bb936dac6"
+dependencies = [
+ "ansi_term",
+ "difference",
+]
 
 [[package]]
 name = "proc-macro-error"
@@ -2021,7 +2052,7 @@ dependencies = [
  "dht",
  "external-ip",
  "futures",
- "hex",
+ "hex 0.4.3",
  "log",
  "log4rs",
  "overlay",
@@ -2029,8 +2060,33 @@ dependencies = [
  "rldp",
  "serde 1.0.126",
  "serde_yaml",
+ "thiserror",
  "tokio",
+ "ton_abi",
  "ton_api",
+ "ton_block",
+ "ton_types",
+]
+
+[[package]]
+name = "ton_abi"
+version = "1.0.0"
+source = "git+https://github.com/tonlabs/ton-labs-abi.git#a31773891cc64dbba8fcc0f9ac93d6acb3d36918"
+dependencies = [
+ "base64 0.10.1",
+ "byteorder",
+ "chrono",
+ "ed25519",
+ "ed25519-dalek",
+ "failure",
+ "hex 0.3.2",
+ "num-bigint",
+ "num-traits 0.2.14",
+ "pretty_assertions",
+ "serde 1.0.126",
+ "serde_derive",
+ "serde_json",
+ "sha2 0.8.2",
  "ton_block",
  "ton_types",
 ]
@@ -2044,7 +2100,7 @@ dependencies = [
  "erased-serde",
  "extfmt",
  "failure",
- "hex",
+ "hex 0.4.3",
  "lazy_static",
  "ordered-float",
  "rand 0.7.3",
@@ -2066,7 +2122,7 @@ dependencies = [
  "ed25519",
  "ed25519-dalek",
  "failure",
- "hex",
+ "hex 0.4.3",
  "log",
  "num",
  "num-traits 0.2.14",
@@ -2096,7 +2152,7 @@ dependencies = [
  "base64 0.11.0",
  "crc",
  "failure",
- "hex",
+ "hex 0.4.3",
  "lockfree",
  "log",
  "num",
