@@ -2,20 +2,17 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use bb8::PooledConnection;
-use ton_api::ton;
 
 use super::adnl_pool::AdnlManageConnection;
-use super::connection::*;
 use super::errors::*;
-use shared_deps::ton_api::ton;
-use shared_deps::ton_block::ShardIdent;
+use ton_api::ton;
+use ton_block::ShardIdent;
 use dashmap::DashMap;
+use crate::query;
 
-type ShardCache = DashMap<ShardIdent, ton::>;
 
 pub struct LastBlock {
     id: parking_lot::RwLock<Option<(QueryResult<ton::ton_node::blockidext::BlockIdExt>, Instant)>>,
-    shard_cache:ShardCache,
     threshold: Duration,
     in_process: AtomicBool,
 }
@@ -26,7 +23,6 @@ impl LastBlock {
             id: parking_lot::RwLock::new(None),
             threshold: *threshold,
             in_process: AtomicBool::new(false),
-            shard_cache:DashMap::default()
         }
     }
 

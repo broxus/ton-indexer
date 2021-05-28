@@ -1,8 +1,6 @@
 use adnl::client::{AdnlClient, AdnlClientConfig};
 use anyhow::Error;
-use async_trait::async_trait;
 use bb8::PooledConnection;
-use shared_deps::async_trait::async_trait;
 use std::ops::DerefMut;
 
 pub struct AdnlManageConnection {
@@ -15,7 +13,7 @@ impl AdnlManageConnection {
     }
 }
 
-#[async_trait]
+#[async_trait::async_trait]
 impl bb8::ManageConnection for AdnlManageConnection {
     type Connection = AdnlClient;
     type Error = Error;

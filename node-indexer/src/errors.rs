@@ -1,4 +1,4 @@
-use shared_deps::ton_api::ton;
+use ton_api::ton;
 
 pub type QueryResult<T> = Result<T, QueryError>;
 
