@@ -33,3 +33,4 @@ ton_types = { git = "https://github.com/tonlabs/ton-labs-types.git" }
 ton_vm = { git = "https://github.com/broxus/ton-labs-vm.git" }
 log = "0.4.14"
 tryhard = "0.3.0"
+tokio-stream = "0.1.6"

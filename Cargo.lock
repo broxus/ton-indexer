@@ -18,7 +18,7 @@ checksum = "f26201604c87b1e01bd3d98f8d5d9a8fcbb815e8cedb41ffccbeb4bf593a35fe"
 [[package]]
 name = "adnl"
 version = "0.3.0"
-source = "git+https://github.com/broxus/ton-labs-adnl#aefceffe18a643244946753658d5763a520f3b64"
+source = "git+git://github.com/broxus/ton-labs-adnl.git#aefceffe18a643244946753658d5763a520f3b64"
 dependencies = [
  "aes",
  "arrayref",
@@ -712,6 +712,7 @@ dependencies = [
  "shared-deps",
  "thiserror",
  "tokio",
+ "tokio-stream",
  "ton_abi",
  "ton_api",
  "ton_block",
@@ -1351,9 +1352,9 @@ dependencies = [
 
 [[package]]
 name = "tokio"
-version = "1.6.0"
+version = "1.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bd3076b5c8cc18138b8f8814895c11eb4de37114a5d127bafdc5e55798ceef37"
+checksum = "0a38d31d7831c6ed7aad00aa4c12d9375fd225a6dd77da1d25b707346319a975"
 dependencies = [
  "autocfg",
  "bytes",
@@ -1362,6 +1363,7 @@ dependencies = [
  "mio",
  "parking_lot",
  "pin-project-lite",
+ "tokio-macros",
 ]
 
 [[package]]
@@ -1378,11 +1380,22 @@ dependencies = [
 name = "tokio-macros"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "90c49f106be240de154571dd31fbe48acb10ba6c6dd6f6517ad603abffa42de9"
+checksum = "c49e3df43841dafb86046472506755d8501c5615673955f6aa17181125d13c37"
 dependencies = [
  "proc-macro2 1.0.27",
  "quote 1.0.9",
  "syn 1.0.72",
+]
+
+[[package]]
+name = "tokio-stream"
+version = "0.1.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f8864d706fdb3cc0843a49647ac892720dac98a6eeb818b77190592cf4994066"
+dependencies = [
+ "futures-core",
+ "pin-project-lite",
+ "tokio",
 ]
 
 [[package]]

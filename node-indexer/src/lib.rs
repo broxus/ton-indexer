@@ -1,30 +1,43 @@
 use std::sync::Arc;
+use std::time::Duration;
 
-use adnl::client::{AdnlClient, AdnlClientConfig};
 use anyhow::Result;
 use bb8::{Pool, PooledConnection};
 use futures::{Sink, SinkExt};
-use parking_lot::{Mutex, RwLock};
-use tokio::sync::mpsc::UnboundedSender;
+
 use ton_api::ton;
 use ton_api::ton::ton_node::blockid::BlockId;
-use ton_block::{Block, Deserializable, ShardDescr, ShardIdent};
+use ton_block::{Deserializable, ShardDescr, ShardIdent};
 
-use shared_deps::NoFailure;
-
+use crate::adnl_config::AdnlConfig;
 use crate::adnl_pool::AdnlManageConnection;
 use crate::errors::{QueryError, QueryResult};
 use crate::last_block::LastBlock;
 
+pub mod adnl_config;
 mod adnl_pool;
 mod errors;
 mod last_block;
 
-struct Config {}
+#[derive(Debug, Clone)]
+pub struct Config {
+    indexer_interval: Duration,
+    adnl: AdnlConfig,
+    threshold: Duration,
+}
 
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            indexer_interval: Duration::from_secs(1),
+            adnl: AdnlConfig::default_mainnet_config(),
+            threshold: Duration::from_secs(1),
+        }
+    }
+}
 type ShardBlocks = Arc<dashmap::DashMap<i64, i32>>;
 
-struct NodeClient {
+pub struct NodeClient {
     pool: Pool<AdnlManageConnection>,
     last_block: LastBlock,
     config: Config,
@@ -32,11 +45,17 @@ struct NodeClient {
 }
 
 impl NodeClient {
-    pub async fn new(config: AdnlClientConfig) -> Result<Self> {
+    pub async fn new(config: Config) -> Result<Self> {
+        let manager = AdnlManageConnection::new(config.adnl.tonlib_config()?);
+        let pool = Pool::builder()
+            .max_lifetime(None)
+            .max_size(10)
+            .build(manager)
+            .await?;
         Ok(Self {
-            pool: Pool::builder(),
-            last_block: LastBlock::new(),
-            config: Config {},
+            pool,
+            last_block: LastBlock::new(&config.threshold),
+            config,
             shard_cache: ShardBlocks::default(),
         })
     }
@@ -58,7 +77,7 @@ impl NodeClient {
 
     pub async fn spawn_indexer(
         self: &Arc<Self>,
-        sink: impl Sink<ton_block::Block> + Clone + Send + Sync + Unpin,
+        sink: impl Sink<ton_block::Block> + Clone + Send + Sync + Unpin + 'static,
     ) -> QueryResult<()> {
         let indexer = Arc::downgrade(self);
         let mut connection = self.acquire_connection().await?;
@@ -80,6 +99,7 @@ impl NodeClient {
                 };
 
                 match indexer
+                    .clone()
                     .indexer_step(sink.clone(), &mut connection, &curr_mc_block_id)
                     .await
                 {
@@ -234,5 +254,26 @@ where
             Ok(error) => Err(QueryError::LiteServer(error)),
             Err(_) => Err(QueryError::Unknown),
         },
+    }
+}
+
+mod test {
+    use super::Config;
+    use futures::StreamExt;
+    use std::sync::Arc;
+
+    #[tokio::test]
+    async fn test_blocks() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let config = super::Config::default();
+        let node = Arc::new(super::NodeClient::new(config).await.unwrap());
+        node.spawn_indexer(tx).await.unwrap();
+        while let Some(a) = tokio_stream::wrappers::UnboundedReceiverStream::new(rx)
+            .next()
+            .await
+        {
+            println!("a");
+            return;
+        }
     }
 }

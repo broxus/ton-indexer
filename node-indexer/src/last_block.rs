@@ -6,10 +6,8 @@ use bb8::PooledConnection;
 use super::adnl_pool::AdnlManageConnection;
 use super::errors::*;
 use ton_api::ton;
-use ton_block::ShardIdent;
-use dashmap::DashMap;
-use crate::query;
 
+use crate::query;
 
 pub struct LastBlock {
     id: parking_lot::RwLock<Option<(QueryResult<ton::ton_node::blockidext::BlockIdExt>, Instant)>>,
