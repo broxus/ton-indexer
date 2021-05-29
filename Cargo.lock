@@ -1362,7 +1362,6 @@ dependencies = [
  "mio",
  "parking_lot",
  "pin-project-lite",
- "tokio-macros",
 ]
 
 [[package]]
@@ -1379,7 +1378,7 @@ dependencies = [
 name = "tokio-macros"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c49e3df43841dafb86046472506755d8501c5615673955f6aa17181125d13c37"
+checksum = "90c49f106be240de154571dd31fbe48acb10ba6c6dd6f6517ad603abffa42de9"
 dependencies = [
  "proc-macro2 1.0.27",
  "quote 1.0.9",
