@@ -1,7 +1,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use bb8::PooledConnection;
+use bb8::{Pool, PooledConnection};
 
 use super::adnl_pool::AdnlManageConnection;
 use super::errors::*;
@@ -26,7 +26,7 @@ impl LastBlock {
 
     pub async fn get_last_block(
         &self,
-        connection: &mut PooledConnection<'_, AdnlManageConnection>,
+        connection: Pool<AdnlManageConnection>,
     ) -> QueryResult<ton::ton_node::blockidext::BlockIdExt> {
         let now = {
             let id = self.id.read();

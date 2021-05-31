@@ -19,14 +19,14 @@ impl bb8::ManageConnection for AdnlManageConnection {
     type Error = Error;
 
     async fn connect(&self) -> Result<Self::Connection, Self::Error> {
-        log::debug!("Establishing adnl connection...");
+        log::trace!("Establishing adnl connection...");
 
         let connection = AdnlClient::connect(&self.config).await.map_err(|e| {
-            log::debug!("Connection error: {:?}", e);
+            log::error!("Connection error: {:?}", e);
             Error::msg(e.to_string())
         })?;
 
-        log::debug!("Established adnl connection");
+        log::trace!("Established adnl connection");
 
         Ok(connection)
     }
@@ -34,10 +34,10 @@ impl bb8::ManageConnection for AdnlManageConnection {
     async fn is_valid(&self, conn: &mut PooledConnection<'_, Self>) -> Result<(), Self::Error> {
         log::trace!("Check if connection is valid...");
 
-        conn.deref_mut().ping().await.map(|_| ()).map_err(|e| {
-            log::error!("Ping error: {:?}", e);
-            Error::msg(e.to_string())
-        })?;
+        // conn.deref_mut().ping().await.map(|_| ()).map_err(|e| {
+        //     log::error!("Ping error: {:?}", e);
+        //     Error::msg(e.to_string())
+        // })?;
 
         log::trace!("Connection is valid");
 

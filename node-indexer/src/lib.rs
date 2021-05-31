@@ -4,7 +4,7 @@ use std::time::Duration;
 use anyhow::Result;
 use bb8::{Pool, PooledConnection};
 use either::Either;
-use futures::Sink;
+use futures::{Sink, SinkExt, StreamExt};
 use ton_api::ton;
 use ton_api::ton::ton_node::blockid::BlockId;
 use ton_block::{Block, Deserializable, ShardDescr, ShardIdent};
@@ -45,11 +45,12 @@ pub struct NodeClient {
 }
 
 impl NodeClient {
-    pub async fn new(config: Config) -> Result<Self> {
+    pub async fn new(config: Config, pool_size: u32) -> Result<Self> {
         let manager = AdnlManageConnection::new(config.adnl.tonlib_config()?);
         let pool = Pool::builder()
             .max_lifetime(None)
-            .max_size(10)
+            .max_size(pool_size)
+            .connection_timeout(Duration::from_secs(5))
             .build(manager)
             .await?;
         Ok(Self {
@@ -86,11 +87,10 @@ impl NodeClient {
 
     pub async fn spawn_indexer(
         self: &Arc<Self>,
-        sink: impl Sink<ton_block::Block> + Clone + Send + Sync + Unpin + 'static,
+        mut sink: impl Sink<ton_block::Block> + Clone + Send + Sync + Unpin + 'static,
     ) -> QueryResult<()> {
         let indexer = Arc::downgrade(self);
-        let mut connection = self.acquire_connection().await?;
-        let curr_mc_block_id = self.last_block.get_last_block(&mut connection).await?;
+        let curr_mc_block_id = self.last_block.get_last_block(self.pool.clone()).await?;
 
         tokio::spawn(async move {
             loop {
@@ -102,22 +102,22 @@ impl NodeClient {
                 tokio::time::sleep(indexer.config.indexer_interval).await;
                 log::debug!("Indexer step");
 
-                let mut connection = match indexer.acquire_connection().await {
-                    Ok(connection) => connection,
-                    Err(_) => continue,
-                };
-
-                match indexer
-                    .clone()
-                    .indexer_step(&mut connection, &curr_mc_block_id)
-                    .await
-                {
+                match indexer.clone().indexer_step(&curr_mc_block_id).await {
                     Ok(a) => match a {
                         IndexerStepResult::NoChanges => {
                             log::info!("Mc block not changed")
                         }
-                        IndexerStepResult::NewBlock { .. } => {
-                            todo!()
+                        IndexerStepResult::NewBlock {
+                            good,
+                            bad,
+                            mc_block_id,
+                        } => {
+                            for block in good {
+                                sink.send(block).await;
+                            }
+                            for block in bad {
+                                dbg!(block);
+                            }
                         }
                     },
                     Err(e) => {
@@ -131,16 +131,17 @@ impl NodeClient {
     }
 
     async fn indexer_step(
-        self: Arc<Self>,
-        connection: &mut PooledConnection<'_, AdnlManageConnection>,
+        self: &Arc<Self>,
         prev_mc_block_id: &ton::ton_node::blockidext::BlockIdExt,
     ) -> Result<IndexerStepResult> {
-        let curr_mc_block_id = self.last_block.get_last_block(connection).await?;
-        if prev_mc_block_id == &curr_mc_block_id {
+        use futures::stream::StreamExt;
+
+        let curr_mc_block_id = self.last_block.get_last_block(self.pool.clone()).await?;
+        if curr_mc_block_id.seqno <= prev_mc_block_id.seqno {
             return Ok(IndexerStepResult::NoChanges);
         }
 
-        let curr_mc_block = query_block(connection, curr_mc_block_id.clone()).await?;
+        let curr_mc_block = query_block(self.pool.clone(), curr_mc_block_id.clone()).await?;
         let extra = curr_mc_block
             .extra
             .read_struct()
@@ -151,7 +152,7 @@ impl NodeClient {
             Some(extra) => extra,
             None => return Ok(IndexerStepResult::NoChanges),
         };
-        let mut futs = Vec::new();
+        let mut futs = futures::stream::FuturesUnordered::new();
         extra
             .shards()
             .iterate_shards(|shard_id, shard| {
@@ -163,17 +164,16 @@ impl NodeClient {
             })
             .map_err(|e| anyhow::anyhow!("Failed to iterate shards: {:?}", e))?;
 
-        let (ok, bad) = futures::future::join_all(futs)
-            .await
-            .into_iter()
-            .flatten()
-            .fold((Vec::new(), Vec::new()), |(mut ok, mut bad), x| {
+        let (ok, bad) = futs.collect::<Vec<_>>().await.into_iter().flatten().fold(
+            (Vec::new(), Vec::new()),
+            |(mut ok, mut bad), x| {
                 match x {
                     Either::Left(a) => ok.push(a),
                     Either::Right(a) => bad.push(a),
                 };
                 (ok, bad)
-            });
+            },
+        );
 
         log::debug!("Next masterchain block id: {:?}", curr_mc_block_id);
         Ok(IndexerStepResult::NewBlock {
@@ -190,19 +190,25 @@ impl NodeClient {
     ) -> Vec<Either<Block, BlockId>> {
         let workchain = shard_id.workchain_id();
         let shard_id = shard_id.shard_prefix_with_tag() as i64;
-        let last_known_block = *self
+        let current_seqno = shard.seq_no as i32;
+
+        log::debug!("Acquiring shard_cache for {:016x}", shard_id);
+        let now = std::time::Instant::now();
+        let last_known_block = self
             .shard_cache
             .entry(shard_id)
-            .or_insert(shard.seq_no as i32)
-            .value();
-        log::trace!(
-            "Processing blocks {}..{} in shard {:016x}",
+            .or_insert(current_seqno)
+            .value()
+            .clone();
+        log::debug!(
+            "Processing blocks {}..{} in shard {:016x}. Spent: {:?}",
             last_known_block,
             shard.seq_no,
-            shard_id
+            shard_id,
+            std::time::Instant::now() - now
         );
-        let mut futs = Vec::new();
-        for seq_no in last_known_block..(shard.seq_no as i32) {
+        let mut futs = futures::stream::FuturesUnordered::new();
+        for seq_no in last_known_block..(current_seqno) {
             let pool = self.pool.clone();
             let task = async move {
                 let id = BlockId {
@@ -211,14 +217,7 @@ impl NodeClient {
                     seqno: seq_no,
                 };
 
-                let mut connection = match acquire_connection(&pool).await {
-                    Ok(a) => a,
-                    Err(e) => {
-                        log::error!("Failed acquiring connection: {:?}", e);
-                        return either::Right(id);
-                    }
-                };
-                let block = query_block_by_seqno(&mut connection, id.clone()).await;
+                let block = query_block_by_seqno(pool.clone(), id.clone()).await;
                 match block {
                     Ok(a) => either::Left(a),
                     Err(e) => {
@@ -229,11 +228,13 @@ impl NodeClient {
             };
             futs.push(task);
         }
-        futures::future::join_all(futs).await
+        let res = futs.collect().await;
+        self.shard_cache.insert(shard_id, current_seqno);
+        res
     }
 }
 pub async fn query_block(
-    connection: &mut PooledConnection<'_, AdnlManageConnection>,
+    connection: Pool<AdnlManageConnection>,
     id: ton::ton_node::blockidext::BlockIdExt,
 ) -> QueryResult<ton_block::Block> {
     let block = query(connection, ton::rpc::lite_server::GetBlock { id }).await?;
@@ -245,11 +246,11 @@ pub async fn query_block(
 }
 
 pub async fn query_block_by_seqno(
-    connection: &mut PooledConnection<'_, AdnlManageConnection>,
+    connection: Pool<AdnlManageConnection>,
     id: ton::ton_node::blockid::BlockId,
 ) -> QueryResult<ton_block::Block> {
     let block_id = query(
-        connection,
+        connection.clone(),
         ton::rpc::lite_server::LookupBlock {
             mode: 0x1,
             id,
@@ -262,17 +263,14 @@ pub async fn query_block_by_seqno(
     query_block(connection, block_id.only().id).await
 }
 
-pub async fn query<T>(
-    connection: &mut PooledConnection<'_, AdnlManageConnection>,
-    query: T,
-) -> QueryResult<T::Reply>
+pub async fn query<T>(connection: Pool<AdnlManageConnection>, query: T) -> QueryResult<T::Reply>
 where
     T: ton_api::Function,
 {
     let query_bytes = query
         .boxed_serialized_bytes()
         .map_err(|_| QueryError::FailedToSerialize)?;
-
+    let mut connection = acquire_connection(&connection).await?;
     let response = connection
         .query(&ton::TLObject::new(ton::rpc::lite_server::Query {
             data: query_bytes.into(),
@@ -305,18 +303,20 @@ mod test {
         let node = Arc::new(super::NodeClient::new(config).await.unwrap());
         log::info!("here");
         node.spawn_indexer(tx).await.unwrap();
-        while let Some(a) = rx.next().await {
-            let data: Block = a;
-            let info = data.read_info().unwrap();
-            let hash = info.hash().unwrap();
-            let seq = info.seq_no();
-            let wc = info.shard().workchain_id();
-            let shard = info.shard().shard_prefix_with_tag();
-            println!(
-                "Hash: {:?} Seq: {} Wc: {}, shard: {:016x}",
-                hash, seq, wc, shard
-            );
-            return;
+        let mut rx = rx.enumerate();
+        while let Some((n, ref a)) = rx.next().await {
+            println!("{}", n);
+            // let data: Block = a;
+            // let info = data.read_info().unwrap();
+            // let hash = info.hash().unwrap();
+            // let seq = info.seq_no();
+            // let wc = info.shard().workchain_id();
+            // let shard = info.shard().shard_prefix_with_tag();
+            // println!(
+            //     "Hash: {:?} Seq: {} Wc: {}, shard: {:016x}",
+            //     hash, seq, wc, shard
+            // );
+            // return;
         }
     }
 }
