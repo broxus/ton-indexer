@@ -3,11 +3,11 @@ use std::time::Duration;
 
 use anyhow::Result;
 use bb8::{Pool, PooledConnection};
-use futures::{Sink, SinkExt};
-
+use either::Either;
+use futures::Sink;
 use ton_api::ton;
 use ton_api::ton::ton_node::blockid::BlockId;
-use ton_block::{Deserializable, ShardDescr, ShardIdent};
+use ton_block::{Block, Deserializable, ShardDescr, ShardIdent};
 
 use crate::adnl_config::AdnlConfig;
 use crate::adnl_pool::AdnlManageConnection;
@@ -70,6 +70,15 @@ async fn acquire_connection(
     })
 }
 
+enum IndexerStepResult {
+    NoChanges,
+    NewBlock {
+        good: Vec<Block>,
+        bad: Vec<BlockId>,
+        mc_block_id: ton::ton_node::blockidext::BlockIdExt,
+    },
+}
+
 impl NodeClient {
     async fn acquire_connection(&self) -> QueryResult<PooledConnection<'_, AdnlManageConnection>> {
         acquire_connection(&self.pool).await
@@ -81,7 +90,7 @@ impl NodeClient {
     ) -> QueryResult<()> {
         let indexer = Arc::downgrade(self);
         let mut connection = self.acquire_connection().await?;
-        let mut curr_mc_block_id = self.last_block.get_last_block(&mut connection).await?;
+        let curr_mc_block_id = self.last_block.get_last_block(&mut connection).await?;
 
         tokio::spawn(async move {
             loop {
@@ -100,12 +109,19 @@ impl NodeClient {
 
                 match indexer
                     .clone()
-                    .indexer_step(sink.clone(), &mut connection, &curr_mc_block_id)
+                    .indexer_step(&mut connection, &curr_mc_block_id)
                     .await
                 {
-                    Ok(next_block_id) => curr_mc_block_id = next_block_id,
+                    Ok(a) => match a {
+                        IndexerStepResult::NoChanges => {
+                            log::info!("Mc block not changed")
+                        }
+                        IndexerStepResult::NewBlock { .. } => {
+                            todo!()
+                        }
+                    },
                     Err(e) => {
-                        log::error!("Indexer step error: {:?}", e);
+                        log::error!("Fatal indexer step error: {}", e)
                     }
                 }
             }
@@ -116,13 +132,12 @@ impl NodeClient {
 
     async fn indexer_step(
         self: Arc<Self>,
-        tx: impl Sink<ton_block::Block> + Clone + Send + Sync + Unpin + 'static,
         connection: &mut PooledConnection<'_, AdnlManageConnection>,
         prev_mc_block_id: &ton::ton_node::blockidext::BlockIdExt,
-    ) -> Result<ton::ton_node::blockidext::BlockIdExt> {
+    ) -> Result<IndexerStepResult> {
         let curr_mc_block_id = self.last_block.get_last_block(connection).await?;
         if prev_mc_block_id == &curr_mc_block_id {
-            return Ok(curr_mc_block_id);
+            return Ok(IndexerStepResult::NoChanges);
         }
 
         let curr_mc_block = query_block(connection, curr_mc_block_id.clone()).await?;
@@ -134,30 +149,45 @@ impl NodeClient {
 
         let extra = match extra {
             Some(extra) => extra,
-            None => return Ok(curr_mc_block_id),
+            None => return Ok(IndexerStepResult::NoChanges),
         };
-
+        let mut futs = Vec::new();
         extra
             .shards()
             .iterate_shards(|shard_id, shard| {
                 log::debug!("Shard id: {:?}, shard block: {}", shard_id, shard.seq_no);
                 let idxr = self.clone();
-                let tx = tx.clone();
-                tokio::spawn(async move { idxr.process_shard(shard_id, shard, tx).await });
+                let task = idxr.process_shard(shard_id, shard);
+                futs.push(task);
                 Ok(true)
             })
             .map_err(|e| anyhow::anyhow!("Failed to iterate shards: {:?}", e))?;
 
+        let (ok, bad) = futures::future::join_all(futs)
+            .await
+            .into_iter()
+            .flatten()
+            .fold((Vec::new(), Vec::new()), |(mut ok, mut bad), x| {
+                match x {
+                    Either::Left(a) => ok.push(a),
+                    Either::Right(a) => bad.push(a),
+                };
+                (ok, bad)
+            });
+
         log::debug!("Next masterchain block id: {:?}", curr_mc_block_id);
-        Ok(curr_mc_block_id)
+        Ok(IndexerStepResult::NewBlock {
+            good: ok,
+            bad,
+            mc_block_id: curr_mc_block_id,
+        })
     }
 
     pub async fn process_shard(
         self: Arc<Self>,
         shard_id: ShardIdent,
         shard: ShardDescr,
-        tx: impl Sink<ton_block::Block> + Clone + Send + Sync + Unpin + 'static,
-    ) {
+    ) -> Vec<Either<Block, BlockId>> {
         let workchain = shard_id.workchain_id();
         let shard_id = shard_id.shard_prefix_with_tag() as i64;
         let last_known_block = *self
@@ -165,39 +195,41 @@ impl NodeClient {
             .entry(shard_id)
             .or_insert(shard.seq_no as i32)
             .value();
-
+        log::trace!(
+            "Processing blocks {}..{} in shard {:016x}",
+            last_known_block,
+            shard.seq_no,
+            shard_id
+        );
+        let mut futs = Vec::new();
         for seq_no in last_known_block..(shard.seq_no as i32) {
-            let mut tx = tx.clone();
             let pool = self.pool.clone();
-            tokio::spawn(async move {
+            let task = async move {
+                let id = BlockId {
+                    workchain,
+                    shard: shard_id,
+                    seqno: seq_no,
+                };
+
                 let mut connection = match acquire_connection(&pool).await {
                     Ok(a) => a,
                     Err(e) => {
-                        log::error!("Failed aquiring connection: {:?}", e);
-                        return;
+                        log::error!("Failed acquiring connection: {:?}", e);
+                        return either::Right(id);
                     }
                 };
-                let block = query_block_by_seqno(
-                    &mut connection,
-                    BlockId {
-                        workchain,
-                        shard: shard_id,
-                        seqno: seq_no,
-                    },
-                )
-                .await;
+                let block = query_block_by_seqno(&mut connection, id.clone()).await;
                 match block {
-                    Ok(a) => {
-                        if let Err(e) = tx.send(a).await {
-                            log::error!("Failed sending");
-                        }
-                    }
+                    Ok(a) => either::Left(a),
                     Err(e) => {
                         log::error!("Query error: {:?}", e);
+                        either::Right(id)
                     }
                 }
-            });
+            };
+            futs.push(task);
         }
+        futures::future::join_all(futs).await
     }
 }
 pub async fn query_block(
@@ -258,21 +290,32 @@ where
 }
 
 mod test {
-    use super::Config;
-    use futures::StreamExt;
     use std::sync::Arc;
+
+    use futures::StreamExt;
+    use ton_block::{Block, GetRepresentationHash};
+
+    use super::Config;
 
     #[tokio::test]
     async fn test_blocks() {
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        env_logger::init();
+        let (tx, mut rx) = futures::channel::mpsc::unbounded();
         let config = super::Config::default();
         let node = Arc::new(super::NodeClient::new(config).await.unwrap());
+        log::info!("here");
         node.spawn_indexer(tx).await.unwrap();
-        while let Some(a) = tokio_stream::wrappers::UnboundedReceiverStream::new(rx)
-            .next()
-            .await
-        {
-            println!("a");
+        while let Some(a) = rx.next().await {
+            let data: Block = a;
+            let info = data.read_info().unwrap();
+            let hash = info.hash().unwrap();
+            let seq = info.seq_no();
+            let wc = info.shard().workchain_id();
+            let shard = info.shard().shard_prefix_with_tag();
+            println!(
+                "Hash: {:?} Seq: {} Wc: {}, shard: {:016x}",
+                hash, seq, wc, shard
+            );
             return;
         }
     }

@@ -23,6 +23,7 @@ serde = { version = "1.0", features = ["derive"] }
 serde_yaml = { version = "0.8" }
 serde_json = "1.0"
 tokio = { version = "1", features = ["sync"] }
+env_logger = "0.8.3"
 
 
 ton_abi = { git = "https://github.com/tonlabs/ton-labs-abi.git" }
@@ -34,3 +35,4 @@ ton_vm = { git = "https://github.com/broxus/ton-labs-vm.git" }
 log = "0.4.14"
 tryhard = "0.3.0"
 tokio-stream = "0.1.6"
+either = "1.6.1"
