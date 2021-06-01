@@ -1,5 +1,3 @@
-[workspace]
-members = ["node-indexer", "shared-deps"]
 [package]
 name = "ton-indexer"
 version = "0.1.0"
@@ -8,7 +6,7 @@ edition = "2018"
 
 
 [workspace]
-members = ["indexer_lib"]
+members = ["indexer-lib", "node-indexer"]
 [lib]
 name = "ton_indexer_lib"
 path = "src/lib.rs"

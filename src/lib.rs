@@ -1,6 +1,5 @@
 mod block;
 mod config;
-mod extractor;
 mod network;
 mod utils;
 
