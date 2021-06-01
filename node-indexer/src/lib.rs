@@ -21,9 +21,9 @@ mod last_block;
 
 #[derive(Debug, Clone)]
 pub struct Config {
-    indexer_interval: Duration,
-    adnl: AdnlConfig,
-    threshold: Duration,
+    pub indexer_interval: Duration,
+    pub adnl: AdnlConfig,
+    pub threshold: Duration,
 }
 
 impl Default for Config {
@@ -48,9 +48,10 @@ impl NodeClient {
     pub async fn new(config: Config, pool_size: u32) -> Result<Self> {
         let manager = AdnlManageConnection::new(config.adnl.tonlib_config()?);
         let pool = Pool::builder()
-            .max_lifetime(None)
+            .max_lifetime(Some(Duration::from_secs(2)))
+            .min_idle(Some(pool_size))
             .max_size(pool_size)
-            .connection_timeout(Duration::from_secs(5))
+            // .connection_timeout(Duration::from_secs(5))
             .build(manager)
             .await?;
         Ok(Self {
@@ -80,6 +81,10 @@ enum IndexerStepResult {
     },
 }
 
+// async fn bad_block_resolver(){
+//
+// }
+
 impl NodeClient {
     async fn acquire_connection(&self) -> QueryResult<PooledConnection<'_, AdnlManageConnection>> {
         acquire_connection(&self.pool).await
@@ -87,10 +92,23 @@ impl NodeClient {
 
     pub async fn spawn_indexer(
         self: &Arc<Self>,
+        // seqno: BlockId,
         mut sink: impl Sink<ton_block::Block> + Clone + Send + Sync + Unpin + 'static,
     ) -> QueryResult<()> {
         let indexer = Arc::downgrade(self);
         let curr_mc_block_id = self.last_block.get_last_block(self.pool.clone()).await?;
+        // let curr_mc_block_id = query(
+        //     self.pool.clone(),
+        //     ton::rpc::lite_server::LookupBlock {
+        //         mode: 0x1,
+        //         id: seqno,
+        //         lt: None,
+        //         utime: None,
+        //     },
+        // )
+        // .await?
+        // .id()
+        // .clone();
 
         tokio::spawn(async move {
             loop {
@@ -101,7 +119,6 @@ impl NodeClient {
 
                 tokio::time::sleep(indexer.config.indexer_interval).await;
                 log::debug!("Indexer step");
-
                 match indexer.clone().indexer_step(&curr_mc_block_id).await {
                     Ok(a) => match a {
                         IndexerStepResult::NoChanges => {
@@ -115,9 +132,10 @@ impl NodeClient {
                             for block in good {
                                 sink.send(block).await;
                             }
-                            for block in bad {
-                                dbg!(block);
+                            if !bad.is_empty() {
+                                log::error!("EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE: {}",bad.len());
                             }
+                            drop(mc_block_id)
                         }
                     },
                     Err(e) => {
@@ -134,13 +152,10 @@ impl NodeClient {
         self: &Arc<Self>,
         prev_mc_block_id: &ton::ton_node::blockidext::BlockIdExt,
     ) -> Result<IndexerStepResult> {
-        use futures::stream::StreamExt;
-
         let curr_mc_block_id = self.last_block.get_last_block(self.pool.clone()).await?;
         if curr_mc_block_id.seqno <= prev_mc_block_id.seqno {
             return Ok(IndexerStepResult::NoChanges);
         }
-
         let curr_mc_block = query_block(self.pool.clone(), curr_mc_block_id.clone()).await?;
         let extra = curr_mc_block
             .extra
@@ -152,6 +167,7 @@ impl NodeClient {
             Some(extra) => extra,
             None => return Ok(IndexerStepResult::NoChanges),
         };
+
         let mut futs = futures::stream::FuturesUnordered::new();
         extra
             .shards()
@@ -176,6 +192,7 @@ impl NodeClient {
         );
 
         log::debug!("Next masterchain block id: {:?}", curr_mc_block_id);
+        log::info!("Good: {}", ok.len());
         Ok(IndexerStepResult::NewBlock {
             good: ok,
             bad,
@@ -192,20 +209,16 @@ impl NodeClient {
         let shard_id = shard_id.shard_prefix_with_tag() as i64;
         let current_seqno = shard.seq_no as i32;
 
-        log::debug!("Acquiring shard_cache for {:016x}", shard_id);
-        let now = std::time::Instant::now();
-        let last_known_block = self
+        let last_known_block = *self
             .shard_cache
             .entry(shard_id)
             .or_insert(current_seqno)
-            .value()
-            .clone();
+            .value();
+
         log::debug!(
-            "Processing blocks {}..{} in shard {:016x}. Spent: {:?}",
-            last_known_block,
-            shard.seq_no,
+            "Processing blocks {} in shard {:016x}.",
+            current_seqno - last_known_block,
             shard_id,
-            std::time::Instant::now() - now
         );
         let mut futs = futures::stream::FuturesUnordered::new();
         for seq_no in last_known_block..(current_seqno) {
@@ -216,8 +229,7 @@ impl NodeClient {
                     shard: shard_id,
                     seqno: seq_no,
                 };
-
-                let block = query_block_by_seqno(pool.clone(), id.clone()).await;
+                let block = query_block_by_seqno(pool, id.clone()).await;
                 match block {
                     Ok(a) => either::Left(a),
                     Err(e) => {
@@ -233,12 +245,15 @@ impl NodeClient {
         res
     }
 }
+
 pub async fn query_block(
     connection: Pool<AdnlManageConnection>,
     id: ton::ton_node::blockidext::BlockIdExt,
 ) -> QueryResult<ton_block::Block> {
+    let now = std::time::Instant::now();
     let block = query(connection, ton::rpc::lite_server::GetBlock { id }).await?;
-
+    let spent = std::time::Instant::now() - now;
+    log::error!("Spent in query_block: {:#?}", spent);
     let block = ton_block::Block::construct_from_bytes(&block.only().data.0)
         .map_err(|_| QueryError::InvalidBlock)?;
 
@@ -249,6 +264,7 @@ pub async fn query_block_by_seqno(
     connection: Pool<AdnlManageConnection>,
     id: ton::ton_node::blockid::BlockId,
 ) -> QueryResult<ton_block::Block> {
+    let now = std::time::Instant::now();
     let block_id = query(
         connection.clone(),
         ton::rpc::lite_server::LookupBlock {
@@ -259,7 +275,6 @@ pub async fn query_block_by_seqno(
         },
     )
     .await?;
-
     query_block(connection, block_id.only().id).await
 }
 
@@ -270,14 +285,19 @@ where
     let query_bytes = query
         .boxed_serialized_bytes()
         .map_err(|_| QueryError::FailedToSerialize)?;
-    let mut connection = acquire_connection(&connection).await?;
-    let response = connection
+    let now = std::time::Instant::now();
+    let spent = std::time::Instant::now() - now;
+    // log::error!("Spent: {:#?}", spent);
+    let now = std::time::Instant::now();
+    let response = acquire_connection(&connection)
+        .await?
         .query(&ton::TLObject::new(ton::rpc::lite_server::Query {
             data: query_bytes.into(),
         }))
         .await
         .map_err(|_| QueryError::ConnectionError)?;
-
+    let spent = std::time::Instant::now() - now;
+    // log::error!("Spent query: {:#?}", spent);
     match response.downcast::<T::Reply>() {
         Ok(reply) => Ok(reply),
         Err(error) => match error.downcast::<ton::lite_server::Error>() {
@@ -288,12 +308,11 @@ where
 }
 
 mod test {
-    use std::sync::Arc;
-
     use futures::StreamExt;
     use ton_block::{Block, GetRepresentationHash};
 
     use super::Config;
+    use std::sync::Arc;
 
     #[tokio::test]
     async fn test_blocks() {

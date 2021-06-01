@@ -36,6 +36,7 @@ log = "0.4.14"
 tryhard = "0.3.0"
 tokio-stream = "0.1.6"
 either = "1.6.1"
-
+chrono = "0.4.19"
+hex ="0.4.3"
 [profile.release]
 debug=true

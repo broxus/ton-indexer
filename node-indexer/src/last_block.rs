@@ -1,7 +1,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use bb8::{Pool, PooledConnection};
+use bb8::Pool;
 
 use super::adnl_pool::AdnlManageConnection;
 use super::errors::*;
@@ -50,7 +50,6 @@ impl LastBlock {
         };
 
         log::debug!("Getting mc block");
-
         let id = query(connection, ton::rpc::lite_server::GetMasterchainInfo)
             .await
             .map(|result| result.only().last);
