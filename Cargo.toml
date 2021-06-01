@@ -4,6 +4,9 @@ version = "0.1.0"
 authors = ["Ivan Kalinin <i.kalinin@dexpa.io>"]
 edition = "2018"
 
+
+[workspace]
+members = ["indexer_lib"]
 [lib]
 name = "ton_indexer_lib"
 path = "src/lib.rs"
