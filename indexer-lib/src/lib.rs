@@ -1,5 +1,5 @@
 use ton_block::{AccountBlock, Deserializable, MsgAddrVar, MsgAddressInt};
-use ton_types::BuilderData;
+use ton_types::{BuilderData, SliceData};
 
 #[derive(Debug)]
 pub struct TonExtractor {
@@ -42,6 +42,8 @@ pub fn parse_block(
     use ton_block::HashmapAugType;
     use ton_types::HashmapType;
 
+    let info = block.info.read_struct().unwrap();
+    let workchain_id = info.shard().workchain_id() as i8;
     let account_blocks: Vec<(MsgAddressInt, AccountBlock)> = match block
         .extra
         .read_struct()
@@ -51,8 +53,12 @@ pub fn parse_block(
             .iter()
             .filter_map(|account_block| {
                 if let Ok((builder, mut slice)) = account_block {
-                    let mut address = MsgAddressInt::AddrVar(MsgAddrVar::default());
-                    if address.read_from(&mut builder.into()).is_ok() {
+                    let builder: SliceData = builder.into();
+                    if let Ok(address) = MsgAddressInt::with_standart(
+                        None,
+                        workchain_id,
+                        builder.get_bytestring(0).into(),
+                    ) {
                         return AccountBlock::construct_from(&mut slice)
                             .ok()
                             .map(|b| (address, b));
