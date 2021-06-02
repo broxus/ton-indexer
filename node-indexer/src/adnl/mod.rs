@@ -14,12 +14,15 @@ use tokio::sync::mpsc;
 use ton_api::{ton, BoxedSerialize, Deserializer, IntoBoxed, Serializer};
 
 use self::node_id::*;
+use self::ping_cache::*;
 use self::queries_cache::*;
 
 mod node_id;
+mod ping_cache;
 mod queries_cache;
 
 pub struct AdnlClient {
+    ping_cache: Arc<PingCache>,
     queries_cache: Arc<QueriesCache>,
     sender: mpsc::UnboundedSender<PacketToSend>,
 }
@@ -31,6 +34,34 @@ pub struct AdnlClientConfig {
 }
 
 impl AdnlClient {
+    pub async fn ping(&self, timeout: u64) -> Result<()> {
+        let (seqno, pending_ping) = self.ping_cache.add_query();
+        let message = serialize(&ton::TLObject::new(pending_ping.as_tl()))?;
+        let _ = self.sender.send(PacketToSend {
+            data: message,
+            should_encrypt: true,
+        });
+
+        tokio::spawn({
+            let ping_cache = self.ping_cache.clone();
+
+            async move {
+                let timeout = Duration::from_secs(timeout);
+                tokio::time::sleep(timeout).await;
+
+                match ping_cache.update_query(seqno, false).await {
+                    Ok(true) => log::info!("Dropped ping query"),
+                    Err(_) => log::info!("Failed to drop ping query"),
+                    _ => {}
+                }
+            }
+        });
+
+        pending_ping.wait().await?;
+
+        Ok(())
+    }
+
     pub async fn query(&self, query: &ton::TLObject) -> Result<ton::TLObject> {
         let (query_id, message) = build_query(query)?;
         let message = serialize(&message)?;
@@ -87,6 +118,7 @@ impl AdnlClient {
         );
 
         let client = Arc::new(AdnlClient {
+            ping_cache: Arc::new(Default::default()),
             queries_cache: Arc::new(Default::default()),
             sender: tx,
         });
@@ -157,6 +189,10 @@ impl AdnlClient {
                     buffer.truncate(length - 32);
                     buffer.drain(..32);
 
+                    if buffer.len() == 0 {
+                        continue;
+                    }
+
                     let data = match deserialize(&buffer) {
                         Ok(data) => data,
                         Err(e) => {
@@ -176,7 +212,16 @@ impl AdnlClient {
                                 _ => log::error!("Failed to resolve query"),
                             }
                         }
-                        _ => log::error!("Got unknown ADNL message"),
+                        Ok(_) => log::error!("Got unknown ADNL message"),
+                        Err(message) => match message.downcast::<ton::tcp::Pong>() {
+                            Ok(pong) => {
+                                client
+                                    .ping_cache
+                                    .update_query(*pong.random_id(), true)
+                                    .await;
+                            }
+                            _ => log::error!("Got unknown TL response object"),
+                        },
                     }
                 }
             }
