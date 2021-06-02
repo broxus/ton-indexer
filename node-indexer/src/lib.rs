@@ -1,3 +1,4 @@
+use std::net::{Ipv4Addr, SocketAddrV4};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -5,17 +6,17 @@ use anyhow::Result;
 use bb8::{Pool, PooledConnection};
 use either::Either;
 use futures::{Sink, SinkExt, StreamExt};
-use ton_api::ton;
 use ton_api::ton::ton_node::blockid::BlockId;
+use ton_api::{ton, IntoBoxed};
 use ton_block::{Block, Deserializable, ShardDescr, ShardIdent};
 
-use crate::adnl_config::AdnlConfig;
+use crate::adnl::AdnlClientConfig;
 use crate::adnl_pool::AdnlManageConnection;
 use crate::errors::{QueryError, QueryResult};
 use crate::last_block::LastBlock;
+use std::convert::TryInto;
 
 mod adnl;
-pub mod adnl_config;
 mod adnl_pool;
 mod errors;
 mod last_block;
@@ -23,7 +24,7 @@ mod last_block;
 #[derive(Debug, Clone)]
 pub struct Config {
     pub indexer_interval: Duration,
-    pub adnl: AdnlConfig,
+    pub adnl: AdnlClientConfig,
     pub threshold: Duration,
 }
 
@@ -31,11 +32,22 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             indexer_interval: Duration::from_secs(1),
-            adnl: AdnlConfig::default_mainnet_config(),
+            adnl: default_mainnet_config(),
             threshold: Duration::from_secs(1),
         }
     }
 }
+
+pub fn default_mainnet_config() -> AdnlClientConfig {
+    let key =
+        hex::decode("b8d4512fee9e9d08ee899fece99faf3bbcb151447bbb175fcc8cbe4719040ab7").unwrap();
+
+    AdnlClientConfig {
+        server_address: SocketAddrV4::new(Ipv4Addr::new(54, 158, 97, 195), 3031).into(),
+        server_key: ed25519_dalek::PublicKey::from_bytes(&key).unwrap(),
+    }
+}
+
 type ShardBlocks = Arc<dashmap::DashMap<i64, i32>>;
 
 pub struct NodeClient {
@@ -47,9 +59,9 @@ pub struct NodeClient {
 
 impl NodeClient {
     pub async fn new(config: Config, pool_size: u32) -> Result<Self> {
-        let manager = AdnlManageConnection::new(config.adnl.tonlib_config()?);
+        let manager = AdnlManageConnection::new(config.adnl.clone());
         let pool = Pool::builder()
-            .max_lifetime(Some(Duration::from_secs(2)))
+            //.max_lifetime(Some(Duration::from_secs(2)))
             .min_idle(Some(pool_size))
             .max_size(pool_size)
             // .connection_timeout(Duration::from_secs(5))

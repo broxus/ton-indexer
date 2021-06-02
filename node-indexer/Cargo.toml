@@ -12,7 +12,7 @@ bb8 = "0.7.0"
 thiserror = "1.0.25"
 dashmap = "4.0.2"
 aes = { version = "0.7", features = ["ctr"] }
-generic-array = "0.12"
+generic-array = "0.14"
 anyhow = "1.0"
 async-trait = "0.1.50"
 rand = "0.7"

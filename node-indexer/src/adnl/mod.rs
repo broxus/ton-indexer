@@ -3,8 +3,10 @@ use std::net::{Ipv4Addr, SocketAddrV4};
 use std::sync::Arc;
 use std::time::Duration;
 
+use aes::cipher::NewCipher;
 use aes::cipher::StreamCipher;
 use anyhow::Result;
+use rand::Rng;
 use sha2::Digest;
 use shared_deps::*;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -17,23 +19,27 @@ use self::queries_cache::*;
 mod node_id;
 mod queries_cache;
 
-struct AdnlClient {
+pub struct AdnlClient {
     queries_cache: Arc<QueriesCache>,
-    sender: mpsc::UnboundedSender<Vec<u8>>,
+    sender: mpsc::UnboundedSender<PacketToSend>,
 }
 
+#[derive(Debug, Clone)]
 pub struct AdnlClientConfig {
     pub server_address: SocketAddrV4,
-    pub server_key: ton::PublicKey,
+    pub server_key: ed25519_dalek::PublicKey,
 }
 
 impl AdnlClient {
-    pub async fn query<T>(&self, query: &ton::TLObject) -> Result<ton::TLObject> {
+    pub async fn query(&self, query: &ton::TLObject) -> Result<ton::TLObject> {
         let (query_id, message) = build_query(query)?;
         let message = serialize(&message)?;
 
         let pending_query = self.queries_cache.add_query(query_id);
-        let _ = self.sender.send(message);
+        let _ = self.sender.send(PacketToSend {
+            data: message,
+            should_encrypt: true,
+        });
 
         tokio::spawn({
             let queries_cache = self.queries_cache.clone();
@@ -56,15 +62,29 @@ impl AdnlClient {
         }
     }
 
-    pub async fn connect(address: SocketAddrV4) -> Result<Arc<Self>> {
+    pub async fn connect(config: AdnlClientConfig) -> Result<Arc<Self>> {
+        let (peer_id_full, peer_id) = config.server_key.compute_node_ids()?;
+
         let socket = tokio::net::TcpSocket::new_v4()?;
         socket.set_reuseaddr(true);
 
-        let socket = tokio::net::TcpStream::connect(address).await?;
+        let socket = tokio::net::TcpStream::connect(config.server_address).await?;
         socket.set_linger(Some(Duration::from_secs(0)));
         let (mut socket_rx, mut socket_tx) = socket.into_split();
 
         let (tx, mut rx) = mpsc::unbounded_channel();
+
+        let mut rng = rand::thread_rng();
+        let mut initial_buffer: Vec<u8> = (0..160).map(|_| rng.gen()).collect();
+
+        let mut cipher_receive = aes::Aes256Ctr::new(
+            generic_array::GenericArray::from_slice(&initial_buffer[0..32]),
+            generic_array::GenericArray::from_slice(&initial_buffer[64..80]),
+        );
+        let mut cipher_send = aes::Aes256Ctr::new(
+            generic_array::GenericArray::from_slice(&initial_buffer[32..64]),
+            generic_array::GenericArray::from_slice(&initial_buffer[80..96]),
+        );
 
         let client = Arc::new(AdnlClient {
             queries_cache: Arc::new(Default::default()),
@@ -72,8 +92,27 @@ impl AdnlClient {
         });
 
         tokio::spawn(async move {
-            while let Some(packet) = rx.recv().await {
-                socket_tx.write_all(&packet).await;
+            while let Some(mut packet) = rx.recv().await {
+                if packet.should_encrypt {
+                    let packet = &mut packet.data;
+
+                    let len = packet.len();
+
+                    packet.reserve(len + 68);
+                    packet.resize(len + 36, 0);
+                    packet[..].copy_within(..len, 36);
+                    packet[..4].copy_from_slice(&((len + 64) as u32).to_le_bytes());
+
+                    let nonce: [u8; 32] = rand::thread_rng().gen();
+                    packet[4..36].copy_from_slice(&nonce);
+
+                    packet.extend_from_slice(sha2::Sha256::digest(&packet[4..]).as_slice());
+                    cipher_send.apply_keystream(packet);
+                }
+
+                if let Err(e) = socket_tx.write_all(&packet.data).await {
+                    log::error!("Failed to send packet: {}", e);
+                }
             }
         });
 
@@ -81,23 +120,74 @@ impl AdnlClient {
             let client = Arc::downgrade(&client);
 
             async move {
-                let mut buffer = bytes::BytesMut::with_capacity(2048);
                 loop {
-                    let _client = match client.upgrade() {
+                    let client = match client.upgrade() {
                         Some(client) => client,
                         None => return,
                     };
 
-                    let len = match socket_rx.read_buf(&mut buffer).await {
-                        Ok(0) => continue,
-                        Ok(len) => len,
+                    let mut length = [0; 4];
+                    if let Err(e) = socket_rx.read_exact(&mut length).await {
+                        log::error!("Failed to read packet length: {}", e);
+                        continue;
+                    }
+                    cipher_receive.apply_keystream(&mut length);
+
+                    let length = u32::from_le_bytes(length) as usize;
+                    if length < 64 {
+                        log::error!("Too small size for ADNL packet: {}", length);
+                        continue;
+                    }
+
+                    let mut buffer = vec![0; length];
+                    if let Err(e) = socket_rx.read_exact(&mut buffer).await {
+                        log::error!("Failed to read buffer of length {}: {}", length, e);
+                        continue;
+                    }
+                    cipher_receive.apply_keystream(&mut buffer);
+
+                    if !sha2::Sha256::digest(&buffer[..length - 32])
+                        .as_slice()
+                        .eq(&buffer[length - 32..length])
+                    {
+                        log::error!("Invalid ADNL packet checksum");
+                        continue;
+                    }
+
+                    buffer.truncate(length - 32);
+                    buffer.drain(..32);
+
+                    let data = match deserialize(&buffer) {
+                        Ok(data) => data,
                         Err(e) => {
-                            log::error!("Failed to receive data: {}", e);
+                            log::error!("Got invalid ADNL packet: {}", e);
                             continue;
                         }
                     };
+
+                    match data.downcast::<ton::adnl::Message>() {
+                        Ok(ton::adnl::Message::Adnl_Message_Answer(message)) => {
+                            match client
+                                .queries_cache
+                                .update_query(message.query_id.0, Some(message.answer.0))
+                                .await
+                            {
+                                Ok(true) => {}
+                                _ => log::error!("Failed to resolve query"),
+                            }
+                        }
+                        _ => log::error!("Got unknown ADNL message"),
+                    }
                 }
             }
+        });
+
+        log::info!("Created connection. Sending init packet...");
+
+        build_handshake_packet(&peer_id, &peer_id_full, &mut initial_buffer);
+        client.sender.send(PacketToSend {
+            data: initial_buffer,
+            should_encrypt: false,
         });
 
         Ok(client)
@@ -200,3 +290,8 @@ pub fn deserialize(bytes: &[u8]) -> Result<ton::TLObject> {
 #[derive(thiserror::Error, Debug)]
 #[error("Query timeout")]
 struct QueryTimeout;
+
+struct PacketToSend {
+    data: Vec<u8>,
+    should_encrypt: bool,
+}

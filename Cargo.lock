@@ -1145,7 +1145,7 @@ dependencies = [
  "either",
  "env_logger",
  "futures",
- "generic-array 0.12.4",
+ "generic-array 0.14.4",
  "hex 0.4.3",
  "log",
  "parking_lot",
