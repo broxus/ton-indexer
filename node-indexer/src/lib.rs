@@ -14,6 +14,7 @@ use crate::adnl_pool::AdnlManageConnection;
 use crate::errors::{QueryError, QueryResult};
 use crate::last_block::LastBlock;
 
+mod adnl;
 pub mod adnl_config;
 mod adnl_pool;
 mod errors;

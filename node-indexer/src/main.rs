@@ -24,7 +24,7 @@ fn main() {
     rt.block_on(async move {
         let (tx, mut rx) = futures::channel::mpsc::unbounded();
         let mut config = Config::default();
-        config.adnl.server_address = ":3031".parse().unwrap();
+        config.adnl.server_address = "44.192.25.57:3031".parse().unwrap();
         let node = Arc::new(NodeClient::new(config, 10).await.unwrap());
         log::info!("here");
         node.spawn_indexer(
@@ -64,9 +64,6 @@ fn main() {
             //     hash, seq, wc, shard
             // );
             // return;
-            if n == 1200 {
-                break;
-            }
         }
         dbg!(map
             .into_iter()
