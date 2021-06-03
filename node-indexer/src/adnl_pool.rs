@@ -1,6 +1,8 @@
-use adnl::client::{AdnlClient, AdnlClientConfig};
 use anyhow::Error;
 use bb8::PooledConnection;
+use std::sync::Arc;
+
+use crate::adnl::{AdnlClient, AdnlClientConfig};
 
 pub struct AdnlManageConnection {
     config: AdnlClientConfig,
@@ -14,26 +16,30 @@ impl AdnlManageConnection {
 
 #[async_trait::async_trait]
 impl bb8::ManageConnection for AdnlManageConnection {
-    type Connection = AdnlClient;
+    type Connection = Arc<AdnlClient>;
     type Error = Error;
 
     async fn connect(&self) -> Result<Self::Connection, Self::Error> {
         log::trace!("Establishing adnl connection...");
-        let connection = AdnlClient::connect(&self.config).await.map_err(|e| {
-            log::error!("Connection error: {:?}", e);
-            Error::msg(e.to_string())
-        })?;
+        let client = AdnlClient::connect(self.config.clone())
+            .await
+            .map_err(|e| {
+                log::error!("Connection error: {:?}", e);
+                Error::msg(e.to_string())
+            })?;
 
         log::info!("Established adnl connection");
 
-        Ok(connection)
+        Ok(client)
     }
 
-    async fn is_valid(&self, _conn: &mut PooledConnection<'_, Self>) -> Result<(), Self::Error> {
-        anyhow::bail!("(")
+    async fn is_valid(&self, conn: &mut PooledConnection<'_, Self>) -> Result<(), Self::Error> {
+        conn.ping(10).await?;
+
+        Ok(())
     }
 
     fn has_broken(&self, _: &mut Self::Connection) -> bool {
-        true
+        false
     }
 }

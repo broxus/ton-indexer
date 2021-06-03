@@ -26,11 +26,7 @@ impl QueriesCache {
         }
     }
 
-    pub async fn update_query(
-        &self,
-        query_id: QueryId,
-        answer: Option<&ton::bytes>,
-    ) -> Result<bool> {
+    pub async fn update_query(&self, query_id: QueryId, answer: Option<Vec<u8>>) -> Result<bool> {
         use dashmap::mapref::entry::Entry;
 
         let old = match self.queries.entry(query_id) {
@@ -38,7 +34,7 @@ impl QueriesCache {
             Entry::Occupied(entry) => match entry.get() {
                 QueryState::Sent(_) => {
                     let (_, old) = entry.replace_entry(match answer {
-                        Some(bytes) => QueryState::Received(bytes.to_vec()),
+                        Some(bytes) => QueryState::Received(bytes),
                         None => QueryState::Timeout,
                     });
                     Some(old)

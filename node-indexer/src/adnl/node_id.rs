@@ -1,9 +1,11 @@
-use std::convert::TryFrom;
+use std::convert::{TryFrom, TryInto};
 
 use anyhow::Result;
-use ton_api::ton;
-
+use sha2::Digest;
 use shared_deps::*;
+use ton_api::{ton, BoxedSerialize, IntoBoxed};
+
+use crate::adnl::serialize;
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub struct AdnlNodeIdFull([u8; 32]);
@@ -123,4 +125,13 @@ impl ComputeNodeIds for ed25519_dalek::PublicKey {
 enum AdnlNodeIdError {
     #[error("Unsupported public key")]
     UnsupportedPublicKey,
+}
+
+pub fn hash<T: IntoBoxed>(object: T) -> Result<[u8; 32]> {
+    hash_boxed(&object.into_boxed())
+}
+
+pub fn hash_boxed<T: BoxedSerialize>(object: &T) -> Result<[u8; 32]> {
+    let buf = sha2::Sha256::digest(&serialize(object)?);
+    Ok(buf.as_slice().try_into().unwrap())
 }
