@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::net::{Ipv4Addr, SocketAddrV4};
 use std::sync::Arc;
 use std::time::Duration;
@@ -6,10 +7,9 @@ use anyhow::Result;
 use bb8::{Pool, PooledConnection};
 use either::Either;
 use futures::{Sink, SinkExt, StreamExt};
-use ton_block::{Block, Deserializable, ShardDescr, ShardIdent};
-
+use ton::ton_node::blockid::BlockId;
 use ton_api::ton;
-use ton_api::ton::ton_node::blockid::BlockId;
+use ton_block::{Block, Deserializable, ShardDescr, ShardIdent};
 
 use crate::adnl::AdnlClientConfig;
 use crate::adnl_pool::AdnlManageConnection;
@@ -89,15 +89,36 @@ enum IndexerStepResult {
     },
 }
 
-// async fn bad_block_resolver(){
-//
-// }
+async fn bad_block_resolver<S>(
+    mut bad_block_queue: tokio::sync::mpsc::UnboundedReceiver<BlockId>,
+    pool: Pool<AdnlManageConnection>,
+    mut sink: S,
+) where
+    S: Sink<ton_block::Block> + Clone + Send + Sync + Unpin + 'static,
+    <S as futures::Sink<ton_block::Block>>::Error: std::error::Error,
+{
+    let mut bad = HashMap::new();
+    while let Some(id) = bad_block_queue.recv().await {
+        match query_block_by_seqno(pool.clone(), id.clone()).await {
+            Ok(a) => {
+                if let Err(e) = sink.send(a).await {
+                    log::error!("Failed sending answer: {}", e);
+                }
+                bad.remove(&id);
+            }
+            Err(e) => {
+                log::error!("Failed quering info about block: {}", e);
+                let entry = bad.entry(id.clone()).or_insert(5);
+                *entry -= 1;
+                if *entry == 0 {
+                    bad.remove(&id);
+                }
+            }
+        };
+    }
+}
 
 impl NodeClient {
-    async fn acquire_connection(&self) -> QueryResult<PooledConnection<'_, AdnlManageConnection>> {
-        acquire_connection(&self.pool).await
-    }
-
     pub async fn spawn_indexer<S>(
         self: &Arc<Self>,
         // seqno: BlockId,
@@ -107,6 +128,7 @@ impl NodeClient {
         S: Sink<ton_block::Block> + Clone + Send + Sync + Unpin + 'static,
         <S as futures::Sink<ton_block::Block>>::Error: std::error::Error,
     {
+        let (bad_blocks_tx, bad_blocks_rx) = tokio::sync::mpsc::unbounded_channel();
         let indexer = Arc::downgrade(self);
         let curr_mc_block_id = self.last_block.get_last_block(self.pool.clone()).await?;
         // let curr_mc_block_id = query(
@@ -121,7 +143,11 @@ impl NodeClient {
         // .await?
         // .id()
         // .clone();
-
+        tokio::spawn(bad_block_resolver(
+            bad_blocks_rx,
+            self.pool.clone(),
+            sink.clone(),
+        ));
         tokio::spawn(async move {
             loop {
                 let indexer = match indexer.upgrade() {
@@ -146,8 +172,10 @@ impl NodeClient {
                                     log::error!("{:?}", e);
                                 }
                             }
-                            if !bad.is_empty() {
-                                log::error!("EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE: {}",bad.len());
+                            for bl in bad {
+                                if let Err(e) = bad_blocks_tx.send(bl) {
+                                    log::error!("Bad blocks channel have broken: {:?}", e);
+                                }
                             }
                             drop(mc_block_id)
                         }
