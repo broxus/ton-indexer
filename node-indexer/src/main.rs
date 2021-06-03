@@ -2,8 +2,11 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use futures::StreamExt;
+
+use chrono::TimeZone;
 use indexer_lib::parse_block;
 use node_indexer::{Config, NodeClient};
+use ton_api::ton::ton_node::blockid::BlockId;
 
 fn main() {
     let rt = tokio::runtime::Builder::new_multi_thread()
@@ -22,14 +25,15 @@ fn main() {
         let (tx,  rx) = futures::channel::mpsc::unbounded();
         let mut config = Config::default();
         config.adnl.server_address = "44.192.25.57:3031".parse().unwrap();
-        let node = Arc::new(NodeClient::new(config, 10).await.unwrap());
+        let node = Arc::new(NodeClient::new(config, 100).await.unwrap());
         log::info!("here");
         node.spawn_indexer(
-            // BlockId {
-            //     workchain: -1,
-            //     shard: u64::from_str_radix("8000000000000000", 16).unwrap() as i64,
-            //     seqno: 9012000,
-            // },
+            Some(BlockId {
+                workchain: -1,
+                shard: u64::from_str_radix("8000000000000000", 16).unwrap() as i64,
+                seqno: 9058543,
+            }),
+            // None,
             tx,
         )
         .await
@@ -176,6 +180,9 @@ fn main() {
                     log::info!("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA: {:?}", a);
                 }
             };
+            let now = a.info.read_struct().unwrap().gen_utime().0;
+            let time = chrono::Utc.timestamp(now as i64,0);
+            println!("{}", chrono::Utc::now() - time);
         }
 })
 }

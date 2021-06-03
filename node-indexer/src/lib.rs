@@ -9,6 +9,7 @@ use either::Either;
 use futures::{Sink, SinkExt, StreamExt};
 use ton::ton_node::blockid::BlockId;
 use ton_api::ton;
+use ton_api::ton::ton_node::BlockIdExt;
 use ton_block::{Block, Deserializable, ShardDescr, ShardIdent};
 
 use crate::adnl::AdnlClientConfig;
@@ -80,13 +81,9 @@ async fn acquire_connection(
     })
 }
 
-enum IndexerStepResult {
-    NoChanges,
-    NewBlock {
-        good: Vec<Block>,
-        bad: Vec<BlockId>,
-        mc_block_id: ton::ton_node::blockidext::BlockIdExt,
-    },
+struct IndexerStepResult {
+    good: Vec<Block>,
+    bad: Vec<BlockId>,
 }
 
 async fn bad_block_resolver<S>(
@@ -118,10 +115,72 @@ async fn bad_block_resolver<S>(
     }
 }
 
+async fn get_block_ext_id(
+    pool: Pool<AdnlManageConnection>,
+    id: BlockId,
+) -> Result<ton_api::ton::ton_node::blockidext::BlockIdExt> {
+    Ok(query(
+        pool.clone(),
+        ton::rpc::lite_server::LookupBlock {
+            mode: 0x1,
+            id,
+            lt: None,
+            utime: None,
+        },
+    )
+    .await?
+    .id()
+    .clone())
+}
+
 impl NodeClient {
+    async fn blocks_producer(
+        self: Arc<Self>,
+        start_block: Option<BlockId>,
+        new_mc_blocks_queue: tokio::sync::mpsc::Sender<ton::ton_node::blockidext::BlockIdExt>,
+    ) -> Result<()> {
+        let mut top_block = self.last_block.get_last_block(self.pool.clone()).await?;
+
+        let mut current_block = match start_block {
+            Some(a) => get_block_ext_id(self.pool.clone(), a).await?,
+            None => top_block.clone(),
+        };
+
+        loop {
+            if current_block.seqno < top_block.seqno {
+                let block = get_block_ext_id(
+                    self.pool.clone(),
+                    BlockId {
+                        workchain: current_block.workchain,
+                        shard: current_block.shard,
+                        seqno: current_block.seqno + 1,
+                    },
+                )
+                .await?;
+                current_block = block;
+                new_mc_blocks_queue.send(current_block.clone()).await?;
+            } else if current_block == top_block {
+                log::info!("Synced");
+                log::info!("Current mc height: {}", current_block.seqno);
+
+                let mut block = self.last_block.get_last_block(self.pool.clone()).await?;
+                loop {
+                    let mut current_block =
+                        self.last_block.get_last_block(self.pool.clone()).await?;
+                    if current_block.seqno == block.seqno {
+                        tokio::time::sleep(self.config.indexer_interval).await;
+                    } else {
+                        block = current_block;
+                        new_mc_blocks_queue.send(block.clone()).await;
+                    }
+                }
+            }
+        }
+    }
+
     pub async fn spawn_indexer<S>(
         self: &Arc<Self>,
-        // seqno: BlockId,
+        seqno: Option<BlockId>,
         mut sink: S,
     ) -> QueryResult<()>
     where
@@ -130,56 +189,40 @@ impl NodeClient {
     {
         let (bad_blocks_tx, bad_blocks_rx) = tokio::sync::mpsc::unbounded_channel();
         let indexer = Arc::downgrade(self);
-        let curr_mc_block_id = self.last_block.get_last_block(self.pool.clone()).await?;
-        // let curr_mc_block_id = query(
-        //     self.pool.clone(),
-        //     ton::rpc::lite_server::LookupBlock {
-        //         mode: 0x1,
-        //         id: seqno,
-        //         lt: None,
-        //         utime: None,
-        //     },
-        // )
-        // .await?
-        // .id()
-        // .clone();
+
         tokio::spawn(bad_block_resolver(
             bad_blocks_rx,
             self.pool.clone(),
             sink.clone(),
         ));
+
+        let (masterchain_blocks_tx, mut masterchain_blocks_rx) = tokio::sync::mpsc::channel(2);
+
+        tokio::spawn(self.clone().blocks_producer(seqno, masterchain_blocks_tx));
         tokio::spawn(async move {
-            loop {
+            while let Some(block) = masterchain_blocks_rx.recv().await {
                 let indexer = match indexer.upgrade() {
                     Some(indexer) => indexer,
                     None => return,
                 };
 
-                tokio::time::sleep(indexer.config.indexer_interval).await;
                 log::debug!("Indexer step");
-                match indexer.clone().indexer_step(&curr_mc_block_id).await {
-                    Ok(a) => match a {
-                        IndexerStepResult::NoChanges => {
-                            log::info!("Mc block not changed")
-                        }
-                        IndexerStepResult::NewBlock {
-                            good,
-                            bad,
-                            mc_block_id,
-                        } => {
-                            for block in good {
-                                if let Err(e) = sink.send(block).await {
-                                    log::error!("{:?}", e);
-                                }
+
+                match indexer.indexer_step(block).await {
+                    Ok(a) => {
+                        let IndexerStepResult { good, bad } = a;
+
+                        for block in good {
+                            if let Err(e) = sink.send(block).await {
+                                log::error!("{:?}", e);
                             }
-                            for bl in bad {
-                                if let Err(e) = bad_blocks_tx.send(bl) {
-                                    log::error!("Bad blocks channel have broken: {:?}", e);
-                                }
-                            }
-                            drop(mc_block_id)
                         }
-                    },
+                        for bad_block in bad {
+                            if let Err(e) = bad_blocks_tx.send(bad_block) {
+                                log::error!("Bad blocks channel have broken: {:?}", e);
+                            }
+                        }
+                    }
                     Err(e) => {
                         log::error!("Fatal indexer step error: {}", e)
                     }
@@ -192,14 +235,11 @@ impl NodeClient {
 
     async fn indexer_step(
         self: &Arc<Self>,
-        prev_mc_block_id: &ton::ton_node::blockidext::BlockIdExt,
+        mc_block: ton::ton_node::blockidext::BlockIdExt,
     ) -> Result<IndexerStepResult> {
-        let curr_mc_block_id = self.last_block.get_last_block(self.pool.clone()).await?;
-        if curr_mc_block_id.seqno <= prev_mc_block_id.seqno {
-            return Ok(IndexerStepResult::NoChanges);
-        }
-        let curr_mc_block = query_block(self.pool.clone(), curr_mc_block_id.clone()).await?;
-        let extra = curr_mc_block
+        let futs = futures::stream::FuturesUnordered::new();
+        let block = query_block(self.pool.clone(), mc_block).await?;
+        let extra = block
             .extra
             .read_struct()
             .and_then(|extra| extra.read_custom())
@@ -207,10 +247,9 @@ impl NodeClient {
 
         let extra = match extra {
             Some(extra) => extra,
-            None => return Ok(IndexerStepResult::NoChanges),
+            None => anyhow::bail!("No extra in block"),
         };
 
-        let futs = futures::stream::FuturesUnordered::new();
         extra
             .shards()
             .iterate_shards(|shard_id, shard| {
@@ -233,13 +272,8 @@ impl NodeClient {
             },
         );
 
-        log::debug!("Next masterchain block id: {:?}", curr_mc_block_id);
         log::info!("Good: {}", ok.len());
-        Ok(IndexerStepResult::NewBlock {
-            good: ok,
-            bad,
-            mc_block_id: curr_mc_block_id,
-        })
+        Ok(IndexerStepResult { good: ok, bad })
     }
 
     pub async fn process_shard(
