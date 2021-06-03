@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::net::{Ipv4Addr, SocketAddrV4};
 use std::sync::Arc;
 use std::time::Duration;
@@ -6,15 +7,14 @@ use anyhow::Result;
 use bb8::{Pool, PooledConnection};
 use either::Either;
 use futures::{Sink, SinkExt, StreamExt};
-use ton_api::ton::ton_node::blockid::BlockId;
-use ton_api::{ton, IntoBoxed};
+use ton::ton_node::blockid::BlockId;
+use ton_api::ton;
 use ton_block::{Block, Deserializable, ShardDescr, ShardIdent};
 
 use crate::adnl::AdnlClientConfig;
 use crate::adnl_pool::AdnlManageConnection;
 use crate::errors::{QueryError, QueryResult};
 use crate::last_block::LastBlock;
-use std::convert::TryInto;
 
 mod adnl;
 mod adnl_pool;
@@ -43,7 +43,7 @@ pub fn default_mainnet_config() -> AdnlClientConfig {
         hex::decode("b8d4512fee9e9d08ee899fece99faf3bbcb151447bbb175fcc8cbe4719040ab7").unwrap();
 
     AdnlClientConfig {
-        server_address: SocketAddrV4::new(Ipv4Addr::new(54, 158, 97, 195), 3031).into(),
+        server_address: SocketAddrV4::new(Ipv4Addr::new(54, 158, 97, 195), 3031),
         server_key: ed25519_dalek::PublicKey::from_bytes(&key).unwrap(),
     }
 }
@@ -60,13 +60,8 @@ pub struct NodeClient {
 impl NodeClient {
     pub async fn new(config: Config, pool_size: u32) -> Result<Self> {
         let manager = AdnlManageConnection::new(config.adnl.clone());
-        let pool = Pool::builder()
-            //.max_lifetime(Some(Duration::from_secs(2)))
-            .min_idle(Some(pool_size))
-            .max_size(pool_size)
-            // .connection_timeout(Duration::from_secs(5))
-            .build(manager)
-            .await?;
+        let pool = Pool::builder().max_size(pool_size).build(manager).await?;
+
         Ok(Self {
             pool,
             last_block: LastBlock::new(&config.threshold),
@@ -94,20 +89,46 @@ enum IndexerStepResult {
     },
 }
 
-// async fn bad_block_resolver(){
-//
-// }
+async fn bad_block_resolver<S>(
+    mut bad_block_queue: tokio::sync::mpsc::UnboundedReceiver<BlockId>,
+    pool: Pool<AdnlManageConnection>,
+    mut sink: S,
+) where
+    S: Sink<ton_block::Block> + Clone + Send + Sync + Unpin + 'static,
+    <S as futures::Sink<ton_block::Block>>::Error: std::error::Error,
+{
+    let mut bad = HashMap::new();
+    while let Some(id) = bad_block_queue.recv().await {
+        match query_block_by_seqno(pool.clone(), id.clone()).await {
+            Ok(a) => {
+                if let Err(e) = sink.send(a).await {
+                    log::error!("Failed sending answer: {}", e);
+                }
+                bad.remove(&id);
+            }
+            Err(e) => {
+                log::error!("Failed quering info about block: {}", e);
+                let entry = bad.entry(id.clone()).or_insert(5);
+                *entry -= 1;
+                if *entry == 0 {
+                    bad.remove(&id);
+                }
+            }
+        };
+    }
+}
 
 impl NodeClient {
-    async fn acquire_connection(&self) -> QueryResult<PooledConnection<'_, AdnlManageConnection>> {
-        acquire_connection(&self.pool).await
-    }
-
-    pub async fn spawn_indexer(
+    pub async fn spawn_indexer<S>(
         self: &Arc<Self>,
         // seqno: BlockId,
-        mut sink: impl Sink<ton_block::Block> + Clone + Send + Sync + Unpin + 'static,
-    ) -> QueryResult<()> {
+        mut sink: S,
+    ) -> QueryResult<()>
+    where
+        S: Sink<ton_block::Block> + Clone + Send + Sync + Unpin + 'static,
+        <S as futures::Sink<ton_block::Block>>::Error: std::error::Error,
+    {
+        let (bad_blocks_tx, bad_blocks_rx) = tokio::sync::mpsc::unbounded_channel();
         let indexer = Arc::downgrade(self);
         let curr_mc_block_id = self.last_block.get_last_block(self.pool.clone()).await?;
         // let curr_mc_block_id = query(
@@ -122,7 +143,11 @@ impl NodeClient {
         // .await?
         // .id()
         // .clone();
-
+        tokio::spawn(bad_block_resolver(
+            bad_blocks_rx,
+            self.pool.clone(),
+            sink.clone(),
+        ));
         tokio::spawn(async move {
             loop {
                 let indexer = match indexer.upgrade() {
@@ -143,10 +168,14 @@ impl NodeClient {
                             mc_block_id,
                         } => {
                             for block in good {
-                                sink.send(block).await;
+                                if let Err(e) = sink.send(block).await {
+                                    log::error!("{:?}", e);
+                                }
                             }
-                            if !bad.is_empty() {
-                                log::error!("EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE: {}",bad.len());
+                            for bl in bad {
+                                if let Err(e) = bad_blocks_tx.send(bl) {
+                                    log::error!("Bad blocks channel have broken: {:?}", e);
+                                }
                             }
                             drop(mc_block_id)
                         }
@@ -181,7 +210,7 @@ impl NodeClient {
             None => return Ok(IndexerStepResult::NoChanges),
         };
 
-        let mut futs = futures::stream::FuturesUnordered::new();
+        let futs = futures::stream::FuturesUnordered::new();
         extra
             .shards()
             .iterate_shards(|shard_id, shard| {
@@ -233,7 +262,7 @@ impl NodeClient {
             current_seqno - last_known_block,
             shard_id,
         );
-        let mut futs = futures::stream::FuturesUnordered::new();
+        let futs = futures::stream::FuturesUnordered::new();
         for seq_no in last_known_block..(current_seqno) {
             let pool = self.pool.clone();
             let task = async move {
@@ -277,7 +306,6 @@ pub async fn query_block_by_seqno(
     connection: Pool<AdnlManageConnection>,
     id: ton::ton_node::blockid::BlockId,
 ) -> QueryResult<ton_block::Block> {
-    let now = std::time::Instant::now();
     let block_id = query(
         connection.clone(),
         ton::rpc::lite_server::LookupBlock {
@@ -298,10 +326,6 @@ where
     let query_bytes = query
         .boxed_serialized_bytes()
         .map_err(|_| QueryError::FailedToSerialize)?;
-    let now = std::time::Instant::now();
-    let spent = std::time::Instant::now() - now;
-    // log::error!("Spent: {:#?}", spent);
-    let now = std::time::Instant::now();
     let response = acquire_connection(&connection)
         .await?
         .query(&ton::TLObject::new(ton::rpc::lite_server::Query {
@@ -309,46 +333,11 @@ where
         }))
         .await
         .map_err(|_| QueryError::ConnectionError)?;
-    let spent = std::time::Instant::now() - now;
-    // log::error!("Spent query: {:#?}", spent);
     match response.downcast::<T::Reply>() {
         Ok(reply) => Ok(reply),
         Err(error) => match error.downcast::<ton::lite_server::Error>() {
             Ok(error) => Err(QueryError::LiteServer(error)),
             Err(_) => Err(QueryError::Unknown),
         },
-    }
-}
-
-mod test {
-    use futures::StreamExt;
-    use ton_block::{Block, GetRepresentationHash};
-
-    use super::Config;
-    use std::sync::Arc;
-
-    #[tokio::test]
-    async fn test_blocks() {
-        env_logger::init();
-        let (tx, mut rx) = futures::channel::mpsc::unbounded();
-        let config = super::Config::default();
-        let node = Arc::new(super::NodeClient::new(config).await.unwrap());
-        log::info!("here");
-        node.spawn_indexer(tx).await.unwrap();
-        let mut rx = rx.enumerate();
-        while let Some((n, ref a)) = rx.next().await {
-            println!("{}", n);
-            // let data: Block = a;
-            // let info = data.read_info().unwrap();
-            // let hash = info.hash().unwrap();
-            // let seq = info.seq_no();
-            // let wc = info.shard().workchain_id();
-            // let shard = info.shard().shard_prefix_with_tag();
-            // println!(
-            //     "Hash: {:?} Seq: {} Wc: {}, shard: {:016x}",
-            //     hash, seq, wc, shard
-            // );
-            // return;
-        }
     }
 }

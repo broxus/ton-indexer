@@ -14,3 +14,4 @@ ton_types = { git = "https://github.com/tonlabs/ton-labs-types.git" }
 log = "0.4.14"
 anyhow = "1.0.40"
 thiserror = "1.0.25"
+shared-deps = { path = "../shared-deps" }

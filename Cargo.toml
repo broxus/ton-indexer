@@ -7,14 +7,8 @@ edition = "2018"
 
 [workspace]
 members = ["indexer-lib", "node-indexer"]
-[lib]
-name = "ton_indexer_lib"
-path = "src/lib.rs"
 
-[[bin]]
-name = "ton_indexer"
-path = "src/main.rs"
-required-features = ["binary"]
+
 
 [dependencies]
 async-trait = "0.1"
@@ -43,15 +37,11 @@ overlay = { git = "https://github.com/broxus/ton-labs-overlay.git" }
 ton_block = { git = "https://github.com/tonlabs/ton-labs-block.git" }
 ton_types = { git = "https://github.com/tonlabs/ton-labs-types.git" }
 
-[features]
-binary = ["clap", "log4rs", "serde_yaml", "tokio/rt-multi-thread", "tokio/macros"]
+[dev-dependencies]
+criterion = { version = "0.3", features = ["html_reports"] }
+indexer-lib = { path = "./indexer-lib" }
 
-#[[bin]]
-#name = "ton_indexer"
-#path = "src/main.rs"
-#required-features = ["binary"]
-#
-#[dependencies]
-#
-#[features]
-#binary = ["clap", "log4rs", "serde_yaml", "tokio/rt-multi-thread", "tokio/macros"]
+
+[[bench]]
+name = "block_parse"
+harness = false

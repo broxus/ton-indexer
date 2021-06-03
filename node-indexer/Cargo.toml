@@ -38,14 +38,14 @@ ton_abi = { git = "https://github.com/tonlabs/ton-labs-abi.git" }
 ton_block = { git = "https://github.com/tonlabs/ton-labs-block.git" }
 ton_types = { git = "https://github.com/tonlabs/ton-labs-types.git" }
 
+indexer-lib = {path ="../indexer-lib"}
 shared-deps = { path = "../shared-deps" }
 
 [dependencies.ton_api]
 git = "https://github.com/broxus/ton-labs-tl.git"
 branch = "original"
 package = "ton_api"
-default-features = false
-features = ["lite_api"]
+features = ["lite_api", "ton_api"]
 
 [profile.release]
 debug = true
