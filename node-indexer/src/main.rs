@@ -1,11 +1,7 @@
-use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
-use chrono::TimeZone;
 use futures::StreamExt;
-use ton_block::{Block, BlockExtra, BlockIdExt, GetRepresentationHash, Serializable};
-
 use indexer_lib::parse_block;
 use node_indexer::{Config, NodeClient};
 
@@ -23,7 +19,7 @@ fn main() {
     env_logger::init();
     log::info!("Started");
     rt.block_on(async move {
-        let (tx, mut rx) = futures::channel::mpsc::unbounded();
+        let (tx,  rx) = futures::channel::mpsc::unbounded();
         let mut config = Config::default();
         config.adnl.server_address = "44.192.25.57:3031".parse().unwrap();
         let node = Arc::new(NodeClient::new(config, 10).await.unwrap());

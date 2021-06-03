@@ -2,7 +2,6 @@ use std::convert::{TryFrom, TryInto};
 
 use anyhow::Result;
 use sha2::Digest;
-use shared_deps::*;
 use ton_api::{ton, BoxedSerialize, IntoBoxed};
 
 use crate::adnl::serialize;

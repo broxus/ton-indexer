@@ -1330,6 +1330,7 @@ dependencies = [
  "futures",
  "generic-array 0.14.4",
  "hex 0.4.3",
+ "indexer-lib",
  "log",
  "parking_lot",
  "rand 0.7.3",

@@ -3,7 +3,6 @@ use std::sync::{Arc, Weak};
 use anyhow::Result;
 use dashmap::DashMap;
 use tokio::sync::Barrier;
-use ton_api::ton;
 
 pub type QueryId = [u8; 32];
 

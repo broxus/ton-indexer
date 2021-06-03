@@ -1,5 +1,5 @@
 use std::convert::TryInto;
-use std::net::{Ipv4Addr, SocketAddrV4};
+use std::net::SocketAddrV4;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -97,10 +97,10 @@ impl AdnlClient {
         let (peer_id_full, peer_id) = config.server_key.compute_node_ids()?;
 
         let socket = tokio::net::TcpSocket::new_v4()?;
-        socket.set_reuseaddr(true);
+        socket.set_reuseaddr(true)?;
 
         let socket = tokio::net::TcpStream::connect(config.server_address).await?;
-        socket.set_linger(Some(Duration::from_secs(0)));
+        socket.set_linger(Some(Duration::from_secs(0)))?;
         let (mut socket_rx, mut socket_tx) = socket.into_split();
 
         let (tx, mut rx) = mpsc::unbounded_channel();
@@ -189,7 +189,7 @@ impl AdnlClient {
                     buffer.truncate(length - 32);
                     buffer.drain(..32);
 
-                    if buffer.len() == 0 {
+                    if buffer.is_empty() {
                         continue;
                     }
 
@@ -240,8 +240,6 @@ impl AdnlClient {
 }
 
 pub fn build_query(query: &ton::TLObject) -> Result<(QueryId, ton::adnl::Message)> {
-    use rand::Rng;
-
     let query_id: QueryId = rand::thread_rng().gen();
     let query = serialize(query)?;
 
@@ -290,8 +288,6 @@ pub fn build_handshake_packet(
 }
 
 pub fn build_packet_cipher(shared_secret: &[u8; 32], checksum: &[u8; 32]) -> aes::Aes256Ctr {
-    use aes::cipher::NewCipher;
-
     let mut aes_key_bytes: [u8; 32] = *shared_secret;
     aes_key_bytes[16..32].copy_from_slice(&checksum[16..32]);
     let mut aes_ctr_bytes: [u8; 16] = checksum[0..16].try_into().unwrap();
