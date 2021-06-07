@@ -4,7 +4,7 @@ use std::sync::Arc;
 use futures::StreamExt;
 
 use chrono::TimeZone;
-use indexer_lib::parse_block;
+use indexer_lib::extract_functions_from_block;
 use node_indexer::{Config, NodeClient};
 use ton_api::ton::ton_node::blockid::BlockId;
 
@@ -39,7 +39,7 @@ fn main() {
         .await
         .unwrap();
         let mut rx = rx.enumerate();
-        let parse_fn = ton_abi::Contract::load(std::io::Cursor::new(r#"{
+        let contract = ton_abi::Contract::load(std::io::Cursor::new(r#"{
 	"ABI version": 2,
 	"header": ["pubkey", "time", "expire"],
 	"functions": [
@@ -164,9 +164,9 @@ fn main() {
 }
 "#)).unwrap();
 
-        let parse_fn1 = parse_fn.function("confirmTransaction").unwrap();
-        let parse_fn2 = parse_fn.function("sendTransaction").unwrap();
-        let parse_fn3 = parse_fn.function("submitTransaction").unwrap();
+        let parse_fn1 = contract.function("confirmTransaction").unwrap();
+        let parse_fn2 = contract.function("sendTransaction").unwrap();
+        let parse_fn3 = contract.function("submitTransaction").unwrap();
         let fns = [parse_fn1.clone(), parse_fn2.clone(), parse_fn3.clone()];
 
         while let Some((n, a)) = rx.next().await {
@@ -174,7 +174,7 @@ fn main() {
             // let extra :BlockExtra= block.extra
             //     .read_struct().unwrap();
             //
-            let res = parse_block(&fns,&a).unwrap();
+            let res = extract_functions_from_block(&fns,&a).unwrap();
             if let Some(a) = res{
                 if !a.is_empty(){
                     log::info!("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA: {:?}", a);

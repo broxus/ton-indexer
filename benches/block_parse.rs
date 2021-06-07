@@ -143,7 +143,7 @@ fn criterion_benchmark(c: &mut Criterion) {
     let block = Block::construct_from_base64(block_boc).unwrap();
 
     c.bench_function("block_parse_one_fn", |b| {
-        b.iter(|| indexer_lib::parse_block(black_box(&fns), black_box(&block)))
+        b.iter(|| indexer_lib::extract_functions_from_block(black_box(&fns), black_box(&block)))
     });
 }
 

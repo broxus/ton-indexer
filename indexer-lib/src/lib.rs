@@ -1,45 +1,51 @@
 use anyhow::Result;
 use ton_block::{AccountBlock, CurrencyCollection, Deserializable, MsgAddressInt};
 
-#[derive(Debug)]
-pub struct TonExtractor {
-    ton_abi_functions: Vec<ton_abi::Function>,
-}
-
 #[derive(Debug, Clone)]
-pub struct ParsedValue {
+pub struct ParsedFunction {
     pub address: MsgAddressInt,
     pub function_name: String,
     pub input: Vec<ton_abi::Token>,
     pub output: Vec<ton_abi::Token>,
 }
 
-trait Extractor {
-    fn handle_block(&self, block: ton_block::Block) -> Vec<ParsedValue>;
-}
-
-impl TonExtractor {
-    pub fn new(ton_abi_functions: Vec<ton_abi::Function>) -> Self {
-        Self { ton_abi_functions }
-    }
-}
-
-impl Extractor for TonExtractor {
-    fn handle_block(&self, block: ton_block::Block) -> Vec<ParsedValue> {
-        match parse_block(&self.ton_abi_functions, &block) {
-            Ok(res) => res.unwrap_or_default(),
-            Err(e) => {
-                log::error!("error on parsing block - {}", e);
-                vec![]
-            }
-        }
-    }
-}
-
-pub fn parse_block(
+pub fn extract_functions_from_block(
     ton_abi_functions: &[ton_abi::Function],
     block: &ton_block::Block,
-) -> Result<Option<Vec<ParsedValue>>, anyhow::Error> {
+) -> Result<Option<Vec<ParsedFunction>>, anyhow::Error> {
+    extract_from_block(
+        ton_abi_functions,
+        block,
+        extract_functions_from_transaction_messages,
+    )
+}
+
+#[derive(Debug, Clone)]
+pub struct ParsedEvent {
+    pub address: MsgAddressInt,
+    pub function_name: String,
+    pub input: Vec<ton_abi::Token>,
+}
+
+pub fn extract_events_from_block(
+    ton_abi_events: &[ton_abi::Event],
+    block: &ton_block::Block,
+) -> Result<Option<Vec<ParsedEvent>>, anyhow::Error> {
+    extract_from_block(
+        ton_abi_events,
+        block,
+        extract_events_from_transaction_messages,
+    )
+}
+
+fn extract_from_block<T, V, E>(
+    ton_abi_events: &[T],
+    block: &ton_block::Block,
+    extract: E,
+) -> Result<Option<Vec<V>>, anyhow::Error>
+    where
+        E: Fn(TransactionMessages, MsgAddressInt, &[T]) -> Vec<V>,
+{
     use ton_types::HashmapType;
 
     let info = block.info.read_struct().unwrap();
@@ -94,41 +100,75 @@ pub fn parse_block(
             };
 
             let messages = parse_transaction_messages(&transaction)?;
-            for ton_abi_function in ton_abi_functions {
-                let abi_out_messages_tokens =
-                    process_out_messages(&messages.out_messages, ton_abi_function)
-                        .unwrap_or_default();
-                if !abi_out_messages_tokens.is_empty() {
-                    result.push(ParsedValue {
-                        address: address.clone(),
-                        function_name: ton_abi_function.name.clone(),
-                        input: vec![],
-                        output: abi_out_messages_tokens,
-                    });
-                }
-            }
-
-            if let Some(message) = messages.in_message {
-                for ton_abi_function in ton_abi_functions {
-                    let abi_in_message_tokens =
-                        process_in_message(&message, ton_abi_function).unwrap_or_default();
-                    if !abi_in_message_tokens.is_empty() {
-                        result.push(ParsedValue {
-                            address: address.clone(),
-                            function_name: ton_abi_function.name.clone(),
-                            input: abi_in_message_tokens,
-                            output: vec![],
-                        });
-                        break;
-                    }
-                }
-            }
+            let mut extracted_values = extract(messages, address.clone(), ton_abi_events);
+            result.append(&mut extracted_values);
         }
     }
     Ok(Some(result))
 }
 
-pub fn process_out_messages(
+fn extract_functions_from_transaction_messages(
+    messages: TransactionMessages,
+    address: MsgAddressInt,
+    ton_abi_functions: &[ton_abi::Function],
+) -> Vec<ParsedFunction> {
+    let mut result = vec![];
+    for ton_abi_function in ton_abi_functions {
+        let abi_out_messages_tokens =
+            process_function_out_messages(&messages.out_messages, ton_abi_function)
+                .unwrap_or_default();
+        if !abi_out_messages_tokens.is_empty() {
+            result.push(ParsedFunction {
+                address: address.clone(),
+                function_name: ton_abi_function.name.clone(),
+                input: vec![],
+                output: abi_out_messages_tokens,
+            });
+        }
+    }
+
+    if let Some(message) = messages.in_message {
+        for ton_abi_function in ton_abi_functions {
+            let abi_in_message_tokens =
+                process_function_in_message(&message, ton_abi_function).unwrap_or_default();
+            if !abi_in_message_tokens.is_empty() {
+                result.push(ParsedFunction {
+                    address: address.clone(),
+                    function_name: ton_abi_function.name.clone(),
+                    input: abi_in_message_tokens,
+                    output: vec![],
+                });
+                break;
+            }
+        }
+    }
+    result
+}
+
+fn extract_events_from_transaction_messages(
+    messages: TransactionMessages,
+    address: MsgAddressInt,
+    ton_abi_events: &[ton_abi::Event],
+) -> Vec<ParsedEvent> {
+    let mut result = vec![];
+    if let Some(message) = messages.in_message {
+        for ton_abi_event in ton_abi_events {
+            let abi_in_message_tokens =
+                process_event_in_message(&message, ton_abi_event).unwrap_or_default();
+            if !abi_in_message_tokens.is_empty() {
+                result.push(ParsedEvent {
+                    address: address.clone(),
+                    function_name: ton_abi_event.name.clone(),
+                    input: abi_in_message_tokens,
+                });
+                break;
+            }
+        }
+    }
+    result
+}
+
+fn process_function_out_messages(
     messages: &[ton_block::Message],
     abi_function: &ton_abi::Function,
 ) -> Result<Vec<ton_abi::Token>, anyhow::Error> {
@@ -161,7 +201,7 @@ pub fn process_out_messages(
     }
 }
 
-pub fn process_in_message(
+fn process_function_in_message(
     msg: &ton_block::Message,
     abi_function: &ton_abi::Function,
 ) -> Result<Vec<ton_abi::Token>, anyhow::Error> {
@@ -179,6 +219,36 @@ pub fn process_in_message(
     {
         let tokens = abi_function
             .decode_input(body, false)
+            .map_err(|e| anyhow::anyhow!("{}", e))?;
+
+        input = Some(tokens);
+    }
+
+    match input {
+        Some(a) => Ok(a),
+        None if !abi_function.has_input() => Ok(Default::default()),
+        _ => Err(AbiError::NoMessagesProduced.into()),
+    }
+}
+
+fn process_event_in_message(
+    msg: &ton_block::Message,
+    abi_function: &ton_abi::Event,
+) -> Result<Vec<ton_abi::Token>, anyhow::Error> {
+    let mut input = None;
+
+    if !matches!(msg.header(), ton_block::CommonMsgInfo::ExtInMsgInfo(_)) {
+        return Ok(vec![]);
+    }
+
+    let body = msg.body().ok_or(AbiError::InvalidOutputMessage)?;
+
+    if abi_function
+        .is_my_message(body.clone(), false)
+        .map_err(|e| anyhow::anyhow!("{}", e))?
+    {
+        let tokens = abi_function
+            .decode_input(body)
             .map_err(|e| anyhow::anyhow!("{}", e))?;
 
         input = Some(tokens);
@@ -217,7 +287,7 @@ fn parse_transaction_messages(
     })
 }
 
-pub struct TransactionMessages {
+struct TransactionMessages {
     pub in_message: Option<ton_block::Message>,
     pub out_messages: Vec<ton_block::Message>,
 }
@@ -234,7 +304,7 @@ enum AbiError {
 mod test {
     use ton_block::{Block, Deserializable};
 
-    use crate::parse_block;
+    use crate::extract_functions_from_block;
 
     const abi: &str = r#"{
 	"ABI version": 2,
@@ -370,6 +440,6 @@ mod test {
             .clone()];
 
         let block = Block::construct_from_base64(block_boc).unwrap();
-        let res = parse_block(&fns, &block).unwrap().unwrap();
+        let res = extract_functions_from_block(&fns, &block).unwrap().unwrap();
     }
 }
