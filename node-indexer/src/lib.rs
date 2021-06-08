@@ -178,14 +178,19 @@ impl NodeClient {
         }
     }
 
-    pub async fn spawn_indexer<S>(
+    pub async fn spawn_indexer<S, McBlocks>(
         self: &Arc<Self>,
         seqno: Option<BlockId>,
         mut sink: S,
+        mut mc_blocks: McBlocks,
     ) -> QueryResult<()>
     where
         S: Sink<ton_block::Block> + Clone + Send + Sync + Unpin + 'static,
         <S as futures::Sink<ton_block::Block>>::Error: std::error::Error,
+        McBlocks:
+            Sink<ton::ton_node::blockidext::BlockIdExt> + Clone + Send + Sync + Unpin + 'static,
+        <McBlocks as futures::Sink<ton::ton_node::blockidext::BlockIdExt>>::Error:
+            std::error::Error,
     {
         let (bad_blocks_tx, bad_blocks_rx) = tokio::sync::mpsc::unbounded_channel();
         let indexer = Arc::downgrade(self);
@@ -208,10 +213,10 @@ impl NodeClient {
 
                 log::debug!("Indexer step");
 
-                match indexer.indexer_step(block).await {
+                match indexer.indexer_step(block.clone()).await {
                     Ok(a) => {
                         let IndexerStepResult { good, bad } = a;
-
+                        mc_blocks.send(block);
                         for block in good {
                             if let Err(e) = sink.send(block).await {
                                 log::error!("{:?}", e);

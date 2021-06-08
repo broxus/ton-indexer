@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use adnl::common::{serialize_append, KeyId, KeyOption};
-use adnl::node::{AddressCacheIterator, AdnlNode, AdnlNodeConfig};
+use adnl::node::{AddressCacheIterator, AdnlNode};
 use anyhow::{anyhow, Result};
 use dashmap::{DashMap, DashSet};
 use dht::DhtNode;

@@ -43,8 +43,8 @@ fn extract_from_block<T, V, E>(
     block: &ton_block::Block,
     extract: E,
 ) -> Result<Option<Vec<V>>, anyhow::Error>
-    where
-        E: Fn(TransactionMessages, MsgAddressInt, &[T]) -> Vec<V>,
+where
+    E: Fn(TransactionMessages, MsgAddressInt, &[T]) -> Vec<V>,
 {
     use ton_types::HashmapType;
 
@@ -133,7 +133,7 @@ fn extract_functions_from_transaction_messages(
                 process_function_in_message(&message, ton_abi_function).unwrap_or_default();
             if !abi_in_message_tokens.is_empty() {
                 result.push(ParsedFunction {
-                    address: address.clone(),
+                    address,
                     function_name: ton_abi_function.name.clone(),
                     input: abi_in_message_tokens,
                     output: vec![],
@@ -151,7 +151,7 @@ fn extract_events_from_transaction_messages(
     ton_abi_events: &[ton_abi::Event],
 ) -> Vec<ParsedEvent> {
     let mut result = vec![];
-    if let Some(message) = messages.in_message {
+    for message in messages.out_messages {
         for ton_abi_event in ton_abi_events {
             let abi_in_message_tokens =
                 process_event_in_message(&message, ton_abi_event).unwrap_or_default();
@@ -237,12 +237,16 @@ fn process_event_in_message(
 ) -> Result<Vec<ton_abi::Token>, anyhow::Error> {
     let mut input = None;
 
-    if !matches!(msg.header(), ton_block::CommonMsgInfo::ExtInMsgInfo(_)) {
+    if !matches!(msg.header(), ton_block::CommonMsgInfo::ExtOutMsgInfo(_)) {
         return Ok(vec![]);
     }
+    use std::fs::OpenOptions;
+    use std::io::Write;
 
+    let mut file = OpenOptions::new().write(true).open("res.txt").unwrap();
     let body = msg.body().ok_or(AbiError::InvalidOutputMessage)?;
-
+    let id = body.clone().get_next_u32().unwrap();
+    writeln!(&file, "ID: {}", id);
     if abi_function
         .is_my_message(body.clone(), false)
         .map_err(|e| anyhow::anyhow!("{}", e))?
@@ -279,7 +283,7 @@ fn parse_transaction_messages(
         .map_err(|e| anyhow::anyhow!("{}", e))?;
     let in_message = transaction
         .read_in_msg()
-        .map_err(|e| anyhow::anyhow!("{}", e))?;
+        .map_err(|e| anyhow::anyhow!("Failed parsing in messages {}", e))?;
 
     Ok(TransactionMessages {
         in_message,
@@ -441,5 +445,484 @@ mod test {
 
         let block = Block::construct_from_base64(block_boc).unwrap();
         let res = extract_functions_from_block(&fns, &block).unwrap().unwrap();
+    }
+
+    const DEX_ABI: &str = r#"
+    {
+	"ABI version": 2,
+	"header": ["pubkey", "time", "expire"],
+	"functions": [
+		{
+			"name": "constructor",
+			"inputs": [
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "resetGas",
+			"inputs": [
+				{"name":"receiver","type":"address"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "getRoot",
+			"inputs": [
+				{"name":"_answer_id","type":"uint32"}
+			],
+			"outputs": [
+				{"name":"dex_root","type":"address"}
+			]
+		},
+		{
+			"name": "getTokenRoots",
+			"inputs": [
+				{"name":"_answer_id","type":"uint32"}
+			],
+			"outputs": [
+				{"name":"left","type":"address"},
+				{"name":"right","type":"address"},
+				{"name":"lp","type":"address"}
+			]
+		},
+		{
+			"name": "getTokenWallets",
+			"inputs": [
+				{"name":"_answer_id","type":"uint32"}
+			],
+			"outputs": [
+				{"name":"left","type":"address"},
+				{"name":"right","type":"address"},
+				{"name":"lp","type":"address"}
+			]
+		},
+		{
+			"name": "getVersion",
+			"inputs": [
+				{"name":"_answer_id","type":"uint32"}
+			],
+			"outputs": [
+				{"name":"version","type":"uint32"}
+			]
+		},
+		{
+			"name": "getVault",
+			"inputs": [
+				{"name":"_answer_id","type":"uint32"}
+			],
+			"outputs": [
+				{"name":"dex_vault","type":"address"}
+			]
+		},
+		{
+			"name": "getVaultWallets",
+			"inputs": [
+				{"name":"_answer_id","type":"uint32"}
+			],
+			"outputs": [
+				{"name":"left","type":"address"},
+				{"name":"right","type":"address"}
+			]
+		},
+		{
+			"name": "setFeeParams",
+			"inputs": [
+				{"name":"numerator","type":"uint16"},
+				{"name":"denominator","type":"uint16"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "getFeeParams",
+			"inputs": [
+				{"name":"_answer_id","type":"uint32"}
+			],
+			"outputs": [
+				{"name":"numerator","type":"uint16"},
+				{"name":"denominator","type":"uint16"}
+			]
+		},
+		{
+			"name": "isActive",
+			"inputs": [
+				{"name":"_answer_id","type":"uint32"}
+			],
+			"outputs": [
+				{"name":"value0","type":"bool"}
+			]
+		},
+		{
+			"name": "getBalances",
+			"inputs": [
+				{"name":"_answer_id","type":"uint32"}
+			],
+			"outputs": [
+				{"components":[{"name":"lp_supply","type":"uint128"},{"name":"left_balance","type":"uint128"},{"name":"right_balance","type":"uint128"}],"name":"value0","type":"tuple"}
+			]
+		},
+		{
+			"name": "buildExchangePayload",
+			"inputs": [
+				{"name":"id","type":"uint64"},
+				{"name":"deploy_wallet_grams","type":"uint128"},
+				{"name":"expected_amount","type":"uint128"}
+			],
+			"outputs": [
+				{"name":"value0","type":"cell"}
+			]
+		},
+		{
+			"name": "buildDepositLiquidityPayload",
+			"inputs": [
+				{"name":"id","type":"uint64"},
+				{"name":"deploy_wallet_grams","type":"uint128"}
+			],
+			"outputs": [
+				{"name":"value0","type":"cell"}
+			]
+		},
+		{
+			"name": "buildWithdrawLiquidityPayload",
+			"inputs": [
+				{"name":"id","type":"uint64"},
+				{"name":"deploy_wallet_grams","type":"uint128"}
+			],
+			"outputs": [
+				{"name":"value0","type":"cell"}
+			]
+		},
+		{
+			"name": "tokensReceivedCallback",
+			"inputs": [
+				{"name":"token_wallet","type":"address"},
+				{"name":"token_root","type":"address"},
+				{"name":"tokens_amount","type":"uint128"},
+				{"name":"sender_public_key","type":"uint256"},
+				{"name":"sender_address","type":"address"},
+				{"name":"sender_wallet","type":"address"},
+				{"name":"original_gas_to","type":"address"},
+				{"name":"value7","type":"uint128"},
+				{"name":"payload","type":"cell"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "expectedDepositLiquidity",
+			"inputs": [
+				{"name":"_answer_id","type":"uint32"},
+				{"name":"left_amount","type":"uint128"},
+				{"name":"right_amount","type":"uint128"},
+				{"name":"auto_change","type":"bool"}
+			],
+			"outputs": [
+				{"components":[{"name":"step_1_left_deposit","type":"uint128"},{"name":"step_1_right_deposit","type":"uint128"},{"name":"step_1_lp_reward","type":"uint128"},{"name":"step_2_left_to_right","type":"bool"},{"name":"step_2_right_to_left","type":"bool"},{"name":"step_2_spent","type":"uint128"},{"name":"step_2_fee","type":"uint128"},{"name":"step_2_received","type":"uint128"},{"name":"step_3_left_deposit","type":"uint128"},{"name":"step_3_right_deposit","type":"uint128"},{"name":"step_3_lp_reward","type":"uint128"}],"name":"value0","type":"tuple"}
+			]
+		},
+		{
+			"name": "depositLiquidity",
+			"inputs": [
+				{"name":"call_id","type":"uint64"},
+				{"name":"left_amount","type":"uint128"},
+				{"name":"right_amount","type":"uint128"},
+				{"name":"expected_lp_root","type":"address"},
+				{"name":"auto_change","type":"bool"},
+				{"name":"account_owner","type":"address"},
+				{"name":"value6","type":"uint32"},
+				{"name":"send_gas_to","type":"address"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "expectedWithdrawLiquidity",
+			"inputs": [
+				{"name":"_answer_id","type":"uint32"},
+				{"name":"lp_amount","type":"uint128"}
+			],
+			"outputs": [
+				{"name":"expected_left_amount","type":"uint128"},
+				{"name":"expected_right_amount","type":"uint128"}
+			]
+		},
+		{
+			"name": "withdrawLiquidity",
+			"inputs": [
+				{"name":"call_id","type":"uint64"},
+				{"name":"lp_amount","type":"uint128"},
+				{"name":"expected_lp_root","type":"address"},
+				{"name":"account_owner","type":"address"},
+				{"name":"value4","type":"uint32"},
+				{"name":"send_gas_to","type":"address"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "expectedExchange",
+			"inputs": [
+				{"name":"_answer_id","type":"uint32"},
+				{"name":"amount","type":"uint128"},
+				{"name":"spent_token_root","type":"address"}
+			],
+			"outputs": [
+				{"name":"expected_amount","type":"uint128"},
+				{"name":"expected_fee","type":"uint128"}
+			]
+		},
+		{
+			"name": "expectedSpendAmount",
+			"inputs": [
+				{"name":"_answer_id","type":"uint32"},
+				{"name":"receive_amount","type":"uint128"},
+				{"name":"receive_token_root","type":"address"}
+			],
+			"outputs": [
+				{"name":"expected_amount","type":"uint128"},
+				{"name":"expected_fee","type":"uint128"}
+			]
+		},
+		{
+			"name": "exchange",
+			"inputs": [
+				{"name":"call_id","type":"uint64"},
+				{"name":"spent_amount","type":"uint128"},
+				{"name":"spent_token_root","type":"address"},
+				{"name":"receive_token_root","type":"address"},
+				{"name":"expected_amount","type":"uint128"},
+				{"name":"account_owner","type":"address"},
+				{"name":"value6","type":"uint32"},
+				{"name":"send_gas_to","type":"address"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "checkPair",
+			"inputs": [
+				{"name":"call_id","type":"uint64"},
+				{"name":"account_owner","type":"address"},
+				{"name":"value2","type":"uint32"},
+				{"name":"send_gas_to","type":"address"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "upgrade",
+			"inputs": [
+				{"name":"code","type":"cell"},
+				{"name":"new_version","type":"uint32"},
+				{"name":"send_gas_to","type":"address"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "afterInitialize",
+			"inputs": [
+				{"name":"send_gas_to","type":"address"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "liquidityTokenRootDeployed",
+			"inputs": [
+				{"name":"lp_root_","type":"address"},
+				{"name":"send_gas_to","type":"address"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "liquidityTokenRootNotDeployed",
+			"inputs": [
+				{"name":"value0","type":"address"},
+				{"name":"send_gas_to","type":"address"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "expectedWalletAddressCallback",
+			"inputs": [
+				{"name":"wallet","type":"address"},
+				{"name":"wallet_public_key","type":"uint256"},
+				{"name":"owner_address","type":"address"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "platform_code",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"platform_code","type":"cell"}
+			]
+		},
+		{
+			"name": "lp_wallet",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"lp_wallet","type":"address"}
+			]
+		},
+		{
+			"name": "left_wallet",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"left_wallet","type":"address"}
+			]
+		},
+		{
+			"name": "right_wallet",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"right_wallet","type":"address"}
+			]
+		},
+		{
+			"name": "vault_left_wallet",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"vault_left_wallet","type":"address"}
+			]
+		},
+		{
+			"name": "vault_right_wallet",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"vault_right_wallet","type":"address"}
+			]
+		},
+		{
+			"name": "lp_root",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"lp_root","type":"address"}
+			]
+		},
+		{
+			"name": "lp_supply",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"lp_supply","type":"uint128"}
+			]
+		},
+		{
+			"name": "left_balance",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"left_balance","type":"uint128"}
+			]
+		},
+		{
+			"name": "right_balance",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"right_balance","type":"uint128"}
+			]
+		}
+	],
+	"data": [
+	],
+	"events": [
+		{
+			"name": "PairCodeUpgraded",
+			"inputs": [
+				{"name":"version","type":"uint32"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "FeesParamsUpdated",
+			"inputs": [
+				{"name":"numerator","type":"uint16"},
+				{"name":"denominator","type":"uint16"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "DepositLiquidity",
+			"inputs": [
+				{"name":"left","type":"uint128"},
+				{"name":"right","type":"uint128"},
+				{"name":"lp","type":"uint128"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "WithdrawLiquidity",
+			"inputs": [
+				{"name":"lp","type":"uint128"},
+				{"name":"left","type":"uint128"},
+				{"name":"right","type":"uint128"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "ExchangeLeftToRight",
+			"inputs": [
+				{"name":"left","type":"uint128"},
+				{"name":"fee","type":"uint128"},
+				{"name":"right","type":"uint128"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "ExchangeRightToLeft",
+			"inputs": [
+				{"name":"right","type":"uint128"},
+				{"name":"fee","type":"uint128"},
+				{"name":"left","type":"uint128"}
+			],
+			"outputs": [
+			]
+		}
+	]
+}
+    "#;
+
+    #[test]
+    fn parse_event() {
+        let contract = ton_abi::Contract::load(std::io::Cursor::new(DEX_ABI)).unwrap();
+        let mem = contract.events();
+        let id1 = mem.get("DepositLiquidity").unwrap();
+        let parse_ev1 = contract.event_by_id(id1.id).unwrap();
+        let id2 = mem.get("WithdrawLiquidity").unwrap();
+        let parse_ev2 = contract.event_by_id(id2.id).unwrap();
+        let id3 = mem.get("ExchangeLeftToRight").unwrap();
+        let parse_ev3 = contract.event_by_id(id3.id).unwrap();
+        let id4 = mem.get("ExchangeRightToLeft").unwrap();
+        let parse_ev4 = contract.event_by_id(id4.id).unwrap();
+        let evs = [
+            parse_ev1.clone(),
+            parse_ev2.clone(),
+            parse_ev3.clone(),
+            parse_ev4.clone(),
+        ];
+        dbg!(&evs);
+        let block = Block::construct_from_base64("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").unwrap();
+        let res = super::extract_events_from_block(&evs, &block).unwrap();
+        dbg!(res);
     }
 }
