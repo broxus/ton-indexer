@@ -153,13 +153,12 @@ fn extract_events_from_transaction_messages(
     let mut result = vec![];
     for message in messages.out_messages {
         for ton_abi_event in ton_abi_events {
-            let abi_in_message_tokens =
-                process_event_in_message(&message, ton_abi_event).unwrap_or_default();
-            if !abi_in_message_tokens.is_empty() {
+            let message_tokens = process_event_message(&message, ton_abi_event).unwrap_or_default();
+            if !message_tokens.is_empty() {
                 result.push(ParsedEvent {
                     address: address.clone(),
                     function_name: ton_abi_event.name.clone(),
-                    input: abi_in_message_tokens,
+                    input: message_tokens,
                 });
                 break;
             }
@@ -231,7 +230,7 @@ fn process_function_in_message(
     }
 }
 
-fn process_event_in_message(
+fn process_event_message(
     msg: &ton_block::Message,
     abi_function: &ton_abi::Event,
 ) -> Result<Vec<ton_abi::Token>, anyhow::Error> {
