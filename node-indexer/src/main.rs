@@ -503,14 +503,14 @@ fn main() {
         let (tx_block, rx_block) = futures::channel::mpsc::unbounded();
         let mut config = Config::default();
         config.adnl.server_address = "44.192.25.57:3031".parse().unwrap();
-        let node = Arc::new(NodeClient::new(config, 300).await.unwrap());
+        let node = Arc::new(NodeClient::new(config).await.unwrap());
         log::info!("here");
 
         node.spawn_indexer(
             Some(BlockId {
                 workchain: -1,
                 shard: u64::from_str_radix("8000000000000000", 16).unwrap() as i64,
-                seqno: 9159427,
+                seqno: 9149427,
             }),
             // None,
             tx,
@@ -538,12 +538,16 @@ fn main() {
                         a
                     );
                     file.write_all(format!("{:?}", a).as_ref()).unwrap();
-                    return;
+                    // return;
                 }
             };
             let now = a.info.read_struct().unwrap().gen_utime().0;
             let time = chrono::Utc.timestamp(now as i64, 0);
-            println!("{}", chrono::Utc::now() - time);
+            let diff = chrono::Utc::now() - time;
+            // println!("{}", diff);
+            if diff.num_seconds() < 40 {
+                println!("Synced");
+            }
         }
     })
 }

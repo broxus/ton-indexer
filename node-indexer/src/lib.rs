@@ -27,6 +27,7 @@ pub struct Config {
     pub indexer_interval: Duration,
     pub adnl: AdnlClientConfig,
     pub threshold: Duration,
+    pub pool_size: u32,
 }
 
 impl Default for Config {
@@ -35,6 +36,7 @@ impl Default for Config {
             indexer_interval: Duration::from_secs(1),
             adnl: default_mainnet_config(),
             threshold: Duration::from_secs(1),
+            pool_size: 100,
         }
     }
 }
@@ -59,9 +61,12 @@ pub struct NodeClient {
 }
 
 impl NodeClient {
-    pub async fn new(config: Config, pool_size: u32) -> Result<Self> {
+    pub async fn new(config: Config) -> Result<Self> {
         let manager = AdnlManageConnection::new(config.adnl.clone());
-        let pool = Pool::builder().max_size(pool_size).build(manager).await?;
+        let pool = Pool::builder()
+            .max_size(config.pool_size)
+            .build(manager)
+            .await?;
 
         Ok(Self {
             pool,
@@ -138,6 +143,7 @@ impl NodeClient {
         self: Arc<Self>,
         start_block: Option<BlockId>,
         new_mc_blocks_queue: tokio::sync::mpsc::Sender<ton::ton_node::blockidext::BlockIdExt>,
+        pool_size: u32,
     ) -> Result<()> {
         let mut top_block = self.last_block.get_last_block(self.pool.clone()).await?;
 
@@ -147,13 +153,16 @@ impl NodeClient {
         };
 
         loop {
-            if current_block.seqno < top_block.seqno {
+            let blocks_diff = top_block.seqno - current_block.seqno;
+            if blocks_diff != 0 {
+                let query_count = (blocks_diff / 10).max(1).min((pool_size as i32) * 8);
+                log::info!("Query count: {}, diff: {}", query_count, blocks_diff);
                 let block = get_block_ext_id(
                     self.pool.clone(),
                     BlockId {
                         workchain: current_block.workchain,
                         shard: current_block.shard,
-                        seqno: current_block.seqno + 1,
+                        seqno: current_block.seqno + query_count,
                     },
                 )
                 .await?;
@@ -174,6 +183,19 @@ impl NodeClient {
                         new_mc_blocks_queue.send(block.clone()).await;
                     }
                 }
+            } else {
+                log::info!("Near head");
+                let block = get_block_ext_id(
+                    self.pool.clone(),
+                    BlockId {
+                        workchain: current_block.workchain,
+                        shard: current_block.shard,
+                        seqno: current_block.seqno + 1,
+                    },
+                )
+                .await?;
+                current_block = block;
+                new_mc_blocks_queue.send(current_block.clone()).await?;
             }
         }
     }
@@ -203,7 +225,11 @@ impl NodeClient {
 
         let (masterchain_blocks_tx, mut masterchain_blocks_rx) = tokio::sync::mpsc::channel(2);
 
-        tokio::spawn(self.clone().blocks_producer(seqno, masterchain_blocks_tx));
+        tokio::spawn(self.clone().blocks_producer(
+            seqno,
+            masterchain_blocks_tx,
+            self.config.pool_size,
+        ));
         tokio::spawn(async move {
             while let Some(block) = masterchain_blocks_rx.recv().await {
                 let indexer = match indexer.upgrade() {
@@ -334,7 +360,7 @@ pub async fn query_block(
     let now = std::time::Instant::now();
     let block = query(connection, ton::rpc::lite_server::GetBlock { id }).await?;
     let spent = std::time::Instant::now() - now;
-    log::error!("Spent in query_block: {:#?}", spent);
+    log::trace!("Spent in query_block: {:#?}", spent);
     let block = ton_block::Block::construct_from_bytes(&block.only().data.0)
         .map_err(|_| QueryError::InvalidBlock)?;
 
