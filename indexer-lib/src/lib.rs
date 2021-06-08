@@ -240,13 +240,8 @@ fn process_event_in_message(
     if !matches!(msg.header(), ton_block::CommonMsgInfo::ExtOutMsgInfo(_)) {
         return Ok(vec![]);
     }
-    use std::fs::OpenOptions;
-    use std::io::Write;
 
-    let mut file = OpenOptions::new().write(true).open("res.txt").unwrap();
     let body = msg.body().ok_or(AbiError::InvalidOutputMessage)?;
-    let id = body.clone().get_next_u32().unwrap();
-    writeln!(&file, "ID: {}", id);
     if abi_function
         .is_my_message(body.clone(), false)
         .map_err(|e| anyhow::anyhow!("{}", e))?
