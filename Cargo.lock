@@ -565,7 +565,7 @@ dependencies = [
 [[package]]
 name = "dht"
 version = "0.1.35"
-source = "git+https://github.com/broxus/ton-labs-dht.git#77aacd1da9eac353f64139b3f5a03bf6f40d8128"
+source = "git+https://github.com/broxus/ton-labs-dht.git?branch=old-raptorq#b89af883a3da75f6180a06ce710425af8c63fc4e"
 dependencies = [
  "adnl",
  "arrayref",
@@ -1560,7 +1560,7 @@ checksum = "afb2e1c3ee07430c2cf76151675e583e0f19985fa6efae47d6848a3e2c824f85"
 [[package]]
 name = "overlay"
 version = "0.1.35"
-source = "git+https://github.com/broxus/ton-labs-overlay.git#2e50c2c2120a8ea8909b9500deb2ff83b10ba381"
+source = "git+https://github.com/broxus/ton-labs-overlay.git?branch=old-raptorq#41e1bcde7526d8d001fc1fe3adef770812652909"
 dependencies = [
  "adnl",
  "arrayref",
@@ -1572,7 +1572,7 @@ dependencies = [
  "lockfree",
  "log",
  "rand 0.7.3",
- "rldp 0.1.35 (git+https://github.com/broxus/ton-labs-rldp.git)",
+ "rldp",
  "sha2 0.8.2",
  "tokio",
  "ton_api",
@@ -1882,11 +1882,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "raptorq"
-version = "1.6.3"
-source = "git+https://github.com/Rexagon/raptorq#36a81e30afd88f20c674787bd1f37a49e410260b"
-
-[[package]]
 name = "rayon"
 version = "1.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1971,25 +1966,6 @@ dependencies = [
 [[package]]
 name = "rldp"
 version = "0.1.35"
-source = "git+https://github.com/broxus/ton-labs-rldp.git#8c58783bb9782df2d3df6630d551d7d549b93327"
-dependencies = [
- "adnl",
- "async-trait",
- "base64 0.11.0",
- "dashmap",
- "failure",
- "lockfree",
- "log",
- "rand 0.7.3",
- "raptorq 1.6.3",
- "tokio",
- "ton_api",
- "ton_types",
-]
-
-[[package]]
-name = "rldp"
-version = "0.1.35"
 source = "git+https://github.com/broxus/ton-labs-rldp.git?branch=old-raptorq#0ee14d936a0ce5c9fc72f5e685fc94066469a2e8"
 dependencies = [
  "adnl",
@@ -2000,7 +1976,7 @@ dependencies = [
  "lockfree",
  "log",
  "rand 0.7.3",
- "raptorq 1.2.1",
+ "raptorq",
  "tokio",
  "ton_api",
  "ton_types",
@@ -2523,7 +2499,7 @@ dependencies = [
  "log4rs",
  "overlay",
  "rand 0.7.3",
- "rldp 0.1.35 (git+https://github.com/broxus/ton-labs-rldp.git?branch=old-raptorq)",
+ "rldp",
  "serde 1.0.126",
  "serde_yaml",
  "thiserror",
