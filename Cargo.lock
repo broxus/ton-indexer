@@ -1572,7 +1572,7 @@ dependencies = [
  "lockfree",
  "log",
  "rand 0.7.3",
- "rldp",
+ "rldp 0.1.35 (git+https://github.com/broxus/ton-labs-rldp.git)",
  "sha2 0.8.2",
  "tokio",
  "ton_api",
@@ -1875,6 +1875,14 @@ dependencies = [
 
 [[package]]
 name = "raptorq"
+version = "1.2.1"
+source = "git+https://github.com/broxus/ton-labs-rldp.git?branch=old-raptorq#0ee14d936a0ce5c9fc72f5e685fc94066469a2e8"
+dependencies = [
+ "serde 1.0.126",
+]
+
+[[package]]
+name = "raptorq"
 version = "1.6.3"
 source = "git+https://github.com/Rexagon/raptorq#36a81e30afd88f20c674787bd1f37a49e410260b"
 
@@ -1973,7 +1981,26 @@ dependencies = [
  "lockfree",
  "log",
  "rand 0.7.3",
- "raptorq",
+ "raptorq 1.6.3",
+ "tokio",
+ "ton_api",
+ "ton_types",
+]
+
+[[package]]
+name = "rldp"
+version = "0.1.35"
+source = "git+https://github.com/broxus/ton-labs-rldp.git?branch=old-raptorq#0ee14d936a0ce5c9fc72f5e685fc94066469a2e8"
+dependencies = [
+ "adnl",
+ "async-trait",
+ "base64 0.11.0",
+ "dashmap",
+ "failure",
+ "lockfree",
+ "log",
+ "rand 0.7.3",
+ "raptorq 1.2.1",
  "tokio",
  "ton_api",
  "ton_types",
@@ -2496,7 +2523,7 @@ dependencies = [
  "log4rs",
  "overlay",
  "rand 0.7.3",
- "rldp",
+ "rldp 0.1.35 (git+https://github.com/broxus/ton-labs-rldp.git?branch=old-raptorq)",
  "serde 1.0.126",
  "serde_yaml",
  "thiserror",

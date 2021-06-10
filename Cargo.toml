@@ -42,7 +42,7 @@ ton_abi = { git = "https://github.com/tonlabs/ton-labs-abi.git" }
 ton_api = { git = "https://github.com/broxus/ton-labs-tl.git", package = "ton_api", branch = "original", default-features = false }
 adnl = { git = "https://github.com/broxus/ton-labs-adnl", default-features = false, features = ["node"] }
 dht = { git = "https://github.com/broxus/ton-labs-dht.git" }
-rldp = { git = "https://github.com/broxus/ton-labs-rldp.git" }
+rldp = { git = "https://github.com/broxus/ton-labs-rldp.git", branch = "old-raptorq" }
 overlay = { git = "https://github.com/broxus/ton-labs-overlay.git" }
 ton_block = { git = "https://github.com/tonlabs/ton-labs-block.git" }
 ton_types = { git = "https://github.com/tonlabs/ton-labs-types.git" }
