@@ -18,7 +18,7 @@ checksum = "f26201604c87b1e01bd3d98f8d5d9a8fcbb815e8cedb41ffccbeb4bf593a35fe"
 [[package]]
 name = "adnl"
 version = "0.3.0"
-source = "git+git://github.com/broxus/ton-labs-adnl.git#f07c2db8e85bb23eabdaf869ead71586e88bee80"
+source = "git+https://github.com/broxus/ton-labs-adnl#f07c2db8e85bb23eabdaf869ead71586e88bee80"
 dependencies = [
  "aes",
  "arrayref",
@@ -573,7 +573,7 @@ dependencies = [
  "base64 0.13.0",
  "dashmap",
  "failure",
- "hex 0.4.3",
+ "hex 0.3.2",
  "log",
  "overlay",
  "rand 0.7.3",
@@ -1568,7 +1568,7 @@ dependencies = [
  "base64 0.13.0",
  "dashmap",
  "failure",
- "hex 0.4.3",
+ "hex 0.3.2",
  "lockfree",
  "log",
  "rand 0.7.3",
@@ -1876,8 +1876,7 @@ dependencies = [
 [[package]]
 name = "raptorq"
 version = "1.6.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0713b99964ca1c1b7e79bf6f95fa95d2d5eb36cd3600cc85f36e9b78d9243df2"
+source = "git+https://github.com/Rexagon/raptorq#36a81e30afd88f20c674787bd1f37a49e410260b"
 
 [[package]]
 name = "rayon"
@@ -1964,7 +1963,7 @@ dependencies = [
 [[package]]
 name = "rldp"
 version = "0.1.35"
-source = "git+https://github.com/broxus/ton-labs-rldp.git#1fe358f1ac6829f84d9328472c87504712a7356d"
+source = "git+https://github.com/broxus/ton-labs-rldp.git#8c58783bb9782df2d3df6630d551d7d549b93327"
 dependencies = [
  "adnl",
  "async-trait",
@@ -2553,8 +2552,8 @@ dependencies = [
 
 [[package]]
 name = "ton_block"
-version = "1.0.29"
-source = "git+https://github.com/tonlabs/ton-labs-block.git#4e7079719d540f6b6c4353781aeff171516e2289"
+version = "1.0.73"
+source = "git+https://github.com/tonlabs/ton-labs-block.git#a90e47fd43dd26d0d0f830893766de6ea886a2b3"
 dependencies = [
  "base64 0.10.1",
  "clear_on_drop",
@@ -2586,8 +2585,8 @@ dependencies = [
 
 [[package]]
 name = "ton_types"
-version = "1.0.29"
-source = "git+https://github.com/tonlabs/ton-labs-types.git#388a833017c3d46b315b023c5c336afb8bf4ae89"
+version = "1.2.12"
+source = "git+https://github.com/tonlabs/ton-labs-types.git#4e6585715a10d2c1b97519f9756d17bf392fc651"
 dependencies = [
  "base64 0.11.0",
  "crc",
