@@ -551,3 +551,5 @@ fn main() {
         }
     })
 }
+
+fn data_from_tokens(tokens: Vec<To>) {}

@@ -1057,6 +1057,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "log",
+ "serde 1.0.126",
  "shared-deps",
  "thiserror",
  "ton_abi",

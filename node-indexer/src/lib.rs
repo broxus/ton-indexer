@@ -9,7 +9,6 @@ use either::Either;
 use futures::{Sink, SinkExt, StreamExt};
 use ton::ton_node::blockid::BlockId;
 use ton_api::ton;
-use ton_api::ton::ton_node::BlockIdExt;
 use ton_block::{Block, Deserializable, ShardDescr, ShardIdent};
 
 use crate::adnl::AdnlClientConfig;
@@ -145,7 +144,7 @@ impl NodeClient {
         new_mc_blocks_queue: tokio::sync::mpsc::Sender<ton::ton_node::blockidext::BlockIdExt>,
         pool_size: u32,
     ) -> Result<()> {
-        let mut top_block = self.last_block.get_last_block(self.pool.clone()).await?;
+        let top_block = self.last_block.get_last_block(self.pool.clone()).await?;
 
         let mut current_block = match start_block {
             Some(a) => get_block_ext_id(self.pool.clone(), a).await?,
