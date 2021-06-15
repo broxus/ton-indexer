@@ -1,4 +1,5 @@
 use anyhow::Result;
+use shared_deps::TrustMe;
 use ton_block::{
     AccountBlock, CurrencyCollection, Deserializable, GetRepresentationHash, MsgAddressInt,
 };
@@ -29,7 +30,7 @@ pub struct ParsedEvent {
     pub address: MsgAddressInt,
     pub function_name: String,
     pub input: Vec<ton_abi::Token>,
-    pub msg_hash: Option<UInt256>,
+    pub msg_hash: [u8; 32],
     pub time: u32,
 }
 
@@ -189,7 +190,7 @@ fn extract_events_from_transaction_messages(
                     continue;
                 }
             };
-            let msg_hash = message.msg.hash().ok();
+            let msg_hash = *message.msg.hash().trust_me().as_slice();
             match message_tokens {
                 None => {}
                 Some(output) => {

@@ -37,8 +37,9 @@ x25519-dalek = "1"
 ton_abi = { git = "https://github.com/tonlabs/ton-labs-abi.git" }
 ton_block = { git = "https://github.com/tonlabs/ton-labs-block.git" }
 ton_types = { git = "https://github.com/tonlabs/ton-labs-types.git" }
+nekoton = { git = "https://github.com/broxus/nekoton.git", default-features = false }
 
-indexer-lib = {path ="../indexer-lib"}
+indexer-lib = { path = "../indexer-lib" }
 shared-deps = { path = "../shared-deps" }
 
 [dependencies.ton_api]

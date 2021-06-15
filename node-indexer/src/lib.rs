@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::convert::TryInto;
 use std::net::{Ipv4Addr, SocketAddrV4};
 use std::sync::Arc;
 use std::time::Duration;
@@ -9,7 +10,9 @@ use either::Either;
 use futures::{Sink, SinkExt, StreamExt};
 use ton::ton_node::blockid::BlockId;
 use ton_api::ton;
-use ton_block::{Block, Deserializable, ShardDescr, ShardIdent};
+use ton_block::{Block, Deserializable, MsgAddressInt, ShardDescr, ShardIdent};
+
+use shared_deps::NoFailure;
 
 use crate::adnl::AdnlClientConfig;
 use crate::adnl_pool::AdnlManageConnection;
@@ -173,8 +176,7 @@ impl NodeClient {
 
                 let mut block = self.last_block.get_last_block(self.pool.clone()).await?;
                 loop {
-                    let mut current_block =
-                        self.last_block.get_last_block(self.pool.clone()).await?;
+                    let current_block = self.last_block.get_last_block(self.pool.clone()).await?;
                     if current_block.seqno == block.seqno {
                         tokio::time::sleep(self.config.indexer_interval).await;
                     } else {
@@ -197,6 +199,38 @@ impl NodeClient {
                 new_mc_blocks_queue.send(current_block.clone()).await?;
             }
         }
+    }
+
+    pub async fn run_local(
+        &self,
+        contract_address: MsgAddressInt,
+        function: &ton_abi::Function,
+        input: &[ton_abi::Token],
+    ) -> Result<nekoton::helpers::abi::ExecutionOutput> {
+        use nekoton::core::models::{GenTimings, LastTransactionId};
+        use nekoton::helpers::abi::FunctionExt;
+        let last_block = self.last_block.get_last_block(self.pool.clone()).await?;
+        let id = contract_address
+            .address()
+            .get_bytestring(0)
+            .as_slice()
+            .try_into()?;
+        let get_state = ton::rpc::lite_server::GetAccountState {
+            id: last_block,
+            account: ton::lite_server::accountid::AccountId {
+                workchain: contract_address.workchain_id(),
+                id: ton::int256(id),
+            },
+        };
+        let state = query(self.pool.clone(), get_state).await?.only();
+        let state = ton_block::AccountStuff::construct_from_bytes(&state.state).convert()?;
+        let latest_lt = state.storage.last_trans_lt;
+        function.run_local(
+            state,
+            GenTimings::Unknown,
+            &LastTransactionId::Inexact { latest_lt },
+            input,
+        )
     }
 
     pub async fn spawn_indexer<S, McBlocks>(
