@@ -39,7 +39,7 @@ tokio = { version = "1.6", features = ["sync"] }
 thiserror = "*"
 
 ton_abi = { git = "https://github.com/tonlabs/ton-labs-abi.git" }
-ton_api = { git = "https://github.com/broxus/ton-labs-tl.git", package = "ton_api", branch = "original", default-features = false }
+ton_api = { git = "https://github.com/broxus/ton-labs-tl.git", package = "ton_api", branch = "original" }
 adnl = { git = "https://github.com/broxus/ton-labs-adnl", default-features = false, features = ["node"] }
 dht = { git = "https://github.com/broxus/ton-labs-dht.git", branch = "old-raptorq" }
 rldp = { git = "https://github.com/broxus/ton-labs-rldp.git", branch = "old-raptorq" }

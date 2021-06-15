@@ -1,12 +1,16 @@
 use anyhow::Result;
-use ton_block::{AccountBlock, CurrencyCollection, Deserializable, MsgAddressInt};
+use ton_block::{
+    AccountBlock, CurrencyCollection, Deserializable, GetRepresentationHash, MsgAddressInt,
+};
+use ton_types::UInt256;
 
 #[derive(Debug, Clone)]
 pub struct ParsedFunction {
     pub address: MsgAddressInt,
     pub function_name: String,
-    pub input: Vec<ton_abi::Token>,
-    pub output: Vec<ton_abi::Token>,
+    pub input: Option<Vec<ton_abi::Token>>,
+    pub output: Option<Vec<ton_abi::Token>>,
+    pub time: u32,
 }
 
 pub fn extract_functions_from_block(
@@ -25,6 +29,8 @@ pub struct ParsedEvent {
     pub address: MsgAddressInt,
     pub function_name: String,
     pub input: Vec<ton_abi::Token>,
+    pub msg_hash: Option<UInt256>,
+    pub time: u32,
 }
 
 pub fn extract_events_from_block(
@@ -99,7 +105,10 @@ where
                 Err(_) => continue,
             };
 
-            let messages = parse_transaction_messages(&transaction)?;
+            let messages = match parse_transaction_messages(&transaction)? {
+                None => continue,
+                Some(a) => a,
+            };
             let mut extracted_values = extract(messages, address.clone(), ton_abi_events);
             result.append(&mut extracted_values);
         }
@@ -112,39 +121,59 @@ fn extract_functions_from_transaction_messages(
     address: MsgAddressInt,
     ton_abi_functions: &[ton_abi::Function],
 ) -> Vec<ParsedFunction> {
-    let mut result = vec![];
+    let mut result = Vec::new();
     for ton_abi_function in ton_abi_functions {
         let abi_out_messages_tokens =
-            process_function_out_messages(&messages.out_messages, ton_abi_function)
-                .unwrap_or_default();
-        if !abi_out_messages_tokens.is_empty() {
-            result.push(ParsedFunction {
-                address: address.clone(),
-                function_name: ton_abi_function.name.clone(),
-                input: vec![],
-                output: abi_out_messages_tokens,
-            });
+            match process_function_out_messages(&messages.out_messages, ton_abi_function) {
+                Ok(a) => a,
+                Err(e) => {
+                    log::error!("Failed processing out messages: {:?}", e);
+                    continue;
+                }
+            };
+        match abi_out_messages_tokens {
+            None => continue,
+            Some(output) => {
+                result.push(ParsedFunction {
+                    address: address.clone(),
+                    function_name: ton_abi_function.name.clone(),
+                    input: None,
+                    output: Some(output.tokens),
+                    time: output.time,
+                });
+            }
         }
     }
 
     if let Some(message) = messages.in_message {
         for ton_abi_function in ton_abi_functions {
             let abi_in_message_tokens =
-                process_function_in_message(&message, ton_abi_function).unwrap_or_default();
-            if !abi_in_message_tokens.is_empty() {
-                result.push(ParsedFunction {
-                    address,
-                    function_name: ton_abi_function.name.clone(),
-                    input: abi_in_message_tokens,
-                    output: vec![],
-                });
-                break;
+                match process_function_in_message(&message, ton_abi_function) {
+                    Ok(a) => a,
+                    Err(e) => {
+                        log::error!("Failed processing out messages: {:?}", e);
+                        continue;
+                    }
+                };
+            match abi_in_message_tokens {
+                None => continue,
+                Some(output) => {
+                    result.push(ParsedFunction {
+                        address,
+                        function_name: ton_abi_function.name.clone(),
+                        input: Some(output.tokens),
+                        output: None,
+                        time: output.time,
+                    });
+                    break;
+                }
             }
         }
     }
     result
 }
 
+//todo make it not O(n^2)?
 fn extract_events_from_transaction_messages(
     messages: TransactionMessages,
     address: MsgAddressInt,
@@ -153,27 +182,45 @@ fn extract_events_from_transaction_messages(
     let mut result = vec![];
     for message in messages.out_messages {
         for ton_abi_event in ton_abi_events {
-            let message_tokens = process_event_message(&message, ton_abi_event).unwrap_or_default();
-            if !message_tokens.is_empty() {
-                result.push(ParsedEvent {
-                    address: address.clone(),
-                    function_name: ton_abi_event.name.clone(),
-                    input: message_tokens,
-                });
-                break;
+            let message_tokens = match process_event_message(&message, ton_abi_event) {
+                Ok(a) => a,
+                Err(e) => {
+                    log::error!("Failed processing event messages: {:?}", e);
+                    continue;
+                }
+            };
+            let msg_hash = message.msg.hash().ok();
+            match message_tokens {
+                None => {}
+                Some(output) => {
+                    result.push(ParsedEvent {
+                        address: address.clone(),
+                        function_name: ton_abi_event.name.clone(),
+                        input: output.tokens,
+                        msg_hash,
+                        time: output.time,
+                    });
+                }
             }
         }
     }
     result
 }
 
+#[derive(Debug, Clone)]
+struct ProcessFunctionOutput {
+    tokens: Vec<ton_abi::Token>,
+    time: u32,
+}
+
 fn process_function_out_messages(
-    messages: &[ton_block::Message],
+    messages: &[MessageData],
     abi_function: &ton_abi::Function,
-) -> Result<Vec<ton_abi::Token>, anyhow::Error> {
+) -> Result<Option<ProcessFunctionOutput>, AbiError> {
     let mut output = None;
 
     for msg in messages {
+        let MessageData { time, msg } = msg;
         if !matches!(msg.header(), ton_block::CommonMsgInfo::ExtOutMsgInfo(_)) {
             continue;
         }
@@ -182,86 +229,95 @@ fn process_function_out_messages(
 
         if abi_function
             .is_my_output_message(body.clone(), false)
-            .map_err(|e| anyhow::anyhow!("{}", e))?
+            .map_err(|e| AbiError::DecodingError(e.to_string()))?
         {
             let tokens = abi_function
                 .decode_output(body, false)
-                .map_err(|e| anyhow::anyhow!("{}", e))?;
+                .map_err(|e| AbiError::DecodingError(e.to_string()))?;
 
-            output = Some(tokens);
+            output = Some(ProcessFunctionOutput {
+                tokens,
+                time: *time,
+            });
             break;
         }
     }
 
     match output {
-        Some(a) => Ok(a),
-        None if !abi_function.has_output() => Ok(Default::default()),
-        _ => Err(AbiError::NoMessagesProduced.into()),
+        Some(a) => Ok(Some(a)),
+        None if !abi_function.has_output() => Ok(None),
+        _ => Err(AbiError::NoMessagesProduced),
     }
 }
 
 fn process_function_in_message(
-    msg: &ton_block::Message,
+    msg: &MessageData,
     abi_function: &ton_abi::Function,
-) -> Result<Vec<ton_abi::Token>, anyhow::Error> {
+) -> Result<Option<ProcessFunctionOutput>, AbiError> {
     let mut input = None;
-
+    let MessageData { time, msg } = msg;
     if !matches!(msg.header(), ton_block::CommonMsgInfo::ExtInMsgInfo(_)) {
-        return Ok(vec![]);
+        return Ok(None);
     }
 
     let body = msg.body().ok_or(AbiError::InvalidOutputMessage)?;
 
     if abi_function
         .is_my_input_message(body.clone(), false)
-        .map_err(|e| anyhow::anyhow!("{}", e))?
+        .map_err(|e| AbiError::DecodingError(e.to_string()))?
     {
         let tokens = abi_function
             .decode_input(body, false)
-            .map_err(|e| anyhow::anyhow!("{}", e))?;
+            .map_err(|e| AbiError::DecodingError(e.to_string()))?;
 
-        input = Some(tokens);
+        input = Some(ProcessFunctionOutput {
+            tokens,
+            time: *time,
+        });
     }
 
     match input {
-        Some(a) => Ok(a),
-        None if !abi_function.has_input() => Ok(Default::default()),
-        _ => Err(AbiError::NoMessagesProduced.into()),
+        Some(a) => Ok(Some(a)),
+        None if !abi_function.has_input() => Ok(None),
+        _ => Err(AbiError::NoMessagesProduced),
     }
 }
 
 fn process_event_message(
-    msg: &ton_block::Message,
+    msg: &MessageData,
     abi_function: &ton_abi::Event,
-) -> Result<Vec<ton_abi::Token>, anyhow::Error> {
+) -> Result<Option<ProcessFunctionOutput>, AbiError> {
     let mut input = None;
+    let MessageData { time, msg } = msg;
 
     if !matches!(msg.header(), ton_block::CommonMsgInfo::ExtOutMsgInfo(_)) {
-        return Ok(vec![]);
+        return Ok(None);
     }
-
     let body = msg.body().ok_or(AbiError::InvalidOutputMessage)?;
     if abi_function
         .is_my_message(body.clone(), false)
-        .map_err(|e| anyhow::anyhow!("{}", e))?
+        .map_err(|e| AbiError::DecodingError(e.to_string()))?
     {
         let tokens = abi_function
             .decode_input(body)
-            .map_err(|e| anyhow::anyhow!("{}", e))?;
+            .map_err(|e| AbiError::DecodingError(e.to_string()))?;
 
         input = Some(tokens);
     }
 
     match input {
-        Some(a) => Ok(a),
-        None if !abi_function.has_input() => Ok(Default::default()),
-        _ => Err(AbiError::NoMessagesProduced.into()),
+        Some(a) => Ok(Some(ProcessFunctionOutput {
+            tokens: a,
+            time: *time,
+        })),
+        None if !abi_function.has_input() => Ok(None),
+        _ => Err(AbiError::NoMessagesProduced),
     }
 }
 
 fn parse_transaction_messages(
     transaction: &ton_block::Transaction,
-) -> Result<TransactionMessages, anyhow::Error> {
+) -> Result<Option<TransactionMessages>, AbiError> {
     let mut out_messages = Vec::new();
     transaction
         .out_msgs
@@ -270,24 +326,39 @@ fn parse_transaction_messages(
                 .reference(0)
                 .and_then(ton_block::Message::construct_from_cell)
             {
+                let message = MessageData {
+                    time: transaction.now(),
+                    msg: message,
+                };
                 out_messages.push(message);
             }
             Ok(true)
         })
-        .map_err(|e| anyhow::anyhow!("{}", e))?;
+        .map_err(|e| AbiError::DecodingError(e.to_string()))?;
+
     let in_message = transaction
         .read_in_msg()
-        .map_err(|e| anyhow::anyhow!("Failed parsing in messages {}", e))?;
+        .map_err(|e| AbiError::DecodingError(e.to_string()))?
+        .map(|x| MessageData {
+            time: transaction.now(),
+            msg: x,
+        });
 
-    Ok(TransactionMessages {
+    Ok(Some(TransactionMessages {
         in_message,
         out_messages,
-    })
+    }))
+}
+
+#[derive(Debug, Clone)]
+struct MessageData {
+    time: u32,
+    msg: ton_block::Message,
 }
 
 struct TransactionMessages {
-    pub in_message: Option<ton_block::Message>,
-    pub out_messages: Vec<ton_block::Message>,
+    pub in_message: Option<MessageData>,
+    pub out_messages: Vec<MessageData>,
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -296,6 +367,8 @@ enum AbiError {
     InvalidOutputMessage,
     #[error("No external output messages")]
     NoMessagesProduced,
+    #[error("Failed decoding: `{0}`")]
+    DecodingError(String),
 }
 
 #[cfg(test)]
