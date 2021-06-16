@@ -1,9 +1,9 @@
 use anyhow::Result;
-use shared_deps::TrustMe;
 use ton_block::{
     AccountBlock, CurrencyCollection, Deserializable, GetRepresentationHash, MsgAddressInt,
 };
-use ton_types::UInt256;
+
+use shared_deps::TrustMe;
 
 #[derive(Debug, Clone)]
 pub struct ParsedFunction {

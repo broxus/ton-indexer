@@ -1,14 +1,348 @@
 use std::io::Write;
+use std::str::FromStr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use chrono::TimeZone;
 use futures::StreamExt;
 use ton_abi::Event;
-use ton_api::ton::ton_node::blockid::BlockId;
+use ton_block::{MsgAddress, MsgAddressInt};
 
 use indexer_lib::{extract_events_from_block, extract_functions_from_block};
 use node_indexer::{Config, NodeClient};
+
+const ROOT_ABI: &str = r#"{
+	"ABI version": 2,
+	"header": ["pubkey", "time", "expire"],
+	"functions": [
+		{
+			"name": "constructor",
+			"inputs": [
+				{"name":"initial_owner","type":"address"},
+				{"name":"initial_vault","type":"address"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "installPlatformOnce",
+			"inputs": [
+				{"name":"code","type":"cell"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "installOrUpdateAccountCode",
+			"inputs": [
+				{"name":"code","type":"cell"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "installOrUpdatePairCode",
+			"inputs": [
+				{"name":"code","type":"cell"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "getAccountVersion",
+			"inputs": [
+				{"name":"_answer_id","type":"uint32"}
+			],
+			"outputs": [
+				{"name":"value0","type":"uint32"}
+			]
+		},
+		{
+			"name": "getPairVersion",
+			"inputs": [
+				{"name":"_answer_id","type":"uint32"}
+			],
+			"outputs": [
+				{"name":"value0","type":"uint32"}
+			]
+		},
+		{
+			"name": "setVaultOnce",
+			"inputs": [
+				{"name":"new_vault","type":"address"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "getVault",
+			"inputs": [
+				{"name":"_answer_id","type":"uint32"}
+			],
+			"outputs": [
+				{"name":"value0","type":"address"}
+			]
+		},
+		{
+			"name": "setActive",
+			"inputs": [
+				{"name":"new_active","type":"bool"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "isActive",
+			"inputs": [
+				{"name":"_answer_id","type":"uint32"}
+			],
+			"outputs": [
+				{"name":"value0","type":"bool"}
+			]
+		},
+		{
+			"name": "upgrade",
+			"inputs": [
+				{"name":"code","type":"cell"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "requestUpgradeAccount",
+			"inputs": [
+				{"name":"current_version","type":"uint32"},
+				{"name":"send_gas_to","type":"address"},
+				{"name":"account_owner","type":"address"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "forceUpgradeAccount",
+			"inputs": [
+				{"name":"account_owner","type":"address"},
+				{"name":"send_gas_to","type":"address"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "upgradePair",
+			"inputs": [
+				{"name":"left_root","type":"address"},
+				{"name":"right_root","type":"address"},
+				{"name":"send_gas_to","type":"address"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "resetGas",
+			"inputs": [
+				{"name":"receiver","type":"address"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "resetTargetGas",
+			"inputs": [
+				{"name":"target","type":"address"},
+				{"name":"receiver","type":"address"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "getOwner",
+			"inputs": [
+				{"name":"_answer_id","type":"uint32"}
+			],
+			"outputs": [
+				{"name":"dex_owner","type":"address"}
+			]
+		},
+		{
+			"name": "getPendingOwner",
+			"inputs": [
+				{"name":"_answer_id","type":"uint32"}
+			],
+			"outputs": [
+				{"name":"dex_pending_owner","type":"address"}
+			]
+		},
+		{
+			"name": "transferOwner",
+			"inputs": [
+				{"name":"new_owner","type":"address"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "acceptOwner",
+			"inputs": [
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "getExpectedAccountAddress",
+			"inputs": [
+				{"name":"_answer_id","type":"uint32"},
+				{"name":"account_owner","type":"address"}
+			],
+			"outputs": [
+				{"name":"value0","type":"address"}
+			]
+		},
+		{
+			"name": "getExpectedPairAddress",
+			"inputs": [
+				{"name":"_answer_id","type":"uint32"},
+				{"name":"left_root","type":"address"},
+				{"name":"right_root","type":"address"}
+			],
+			"outputs": [
+				{"name":"value0","type":"address"}
+			]
+		},
+		{
+			"name": "deployAccount",
+			"inputs": [
+				{"name":"account_owner","type":"address"},
+				{"name":"send_gas_to","type":"address"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "deployPair",
+			"inputs": [
+				{"name":"left_root","type":"address"},
+				{"name":"right_root","type":"address"},
+				{"name":"send_gas_to","type":"address"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "onPairCreated",
+			"inputs": [
+				{"name":"left_root","type":"address"},
+				{"name":"right_root","type":"address"},
+				{"name":"send_gas_to","type":"address"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "platform_code",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"platform_code","type":"cell"}
+			]
+		},
+		{
+			"name": "account_code",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"account_code","type":"cell"}
+			]
+		},
+		{
+			"name": "pair_code",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"pair_code","type":"cell"}
+			]
+		}
+	],
+	"data": [
+		{"key":1,"name":"_nonce","type":"uint32"}
+	],
+	"events": [
+		{
+			"name": "AccountCodeUpgraded",
+			"inputs": [
+				{"name":"version","type":"uint32"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "PairCodeUpgraded",
+			"inputs": [
+				{"name":"version","type":"uint32"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "RootCodeUpgraded",
+			"inputs": [
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "ActiveUpdated",
+			"inputs": [
+				{"name":"new_active","type":"bool"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "RequestedPairUpgrade",
+			"inputs": [
+				{"name":"left_root","type":"address"},
+				{"name":"right_root","type":"address"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "RequestedForceAccountUpgrade",
+			"inputs": [
+				{"name":"account_owner","type":"address"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "RequestedOwnerTransfer",
+			"inputs": [
+				{"name":"old_owner","type":"address"},
+				{"name":"new_owner","type":"address"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "OwnerTransferAccepted",
+			"inputs": [
+				{"name":"old_owner","type":"address"},
+				{"name":"new_owner","type":"address"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "NewPairCreated",
+			"inputs": [
+				{"name":"left_root","type":"address"},
+				{"name":"right_root","type":"address"}
+			],
+			"outputs": [
+			]
+		}
+	]
+}"#;
 
 const DEX_ABI: &str = r#"
     {
@@ -507,17 +841,42 @@ fn main() {
         log::info!("here");
 
         node.spawn_indexer(
-            Some(BlockId {
-                workchain: -1,
-                shard: u64::from_str_radix("8000000000000000", 16).unwrap() as i64,
-                seqno: 9149427,
-            }),
-            // None,
-            tx,
-            tx_block,
+            // Some(BlockId {
+            //     workchain: -1,
+            //     shard: u64::from_str_radix("8000000000000000", 16).unwrap() as i64,
+            //     seqno: 9149427,
+            // }),
+            None, tx, tx_block,
         )
         .await
         .unwrap();
+
+        let contract = ton_abi::Contract::load(std::io::Cursor::new(ROOT_ABI)).unwrap();
+        let fun = contract.function("getExpectedPairAddress").unwrap();
+        let input = ton_abi::TokenValue::Address(
+            MsgAddress::from_str(
+                "0:943bad2e74894aa28ae8ddbe673be09a0f3818fd170d12b4ea8ef1ea8051e940",
+            )
+            .unwrap(),
+        );
+        let left = ton_abi::Token::new("left_root", input.clone());
+        let right = ton_abi::Token::new("right_root", input);
+        let id = ton_abi::Token::new(
+            "_answer_id",
+            ton_abi::TokenValue::Uint(ton_abi::Uint::new(1337, 32)),
+        );
+        let res = node
+            .run_local(
+                MsgAddressInt::from_str(
+                    "0:943bad2e74894aa28ae8ddbe673be09a0f3818fd170d12b4ea8ef1ea8051e940",
+                )
+                .unwrap(),
+                fun,
+                &[id, left, right],
+            )
+            .await;
+        dbg!(res);
+        return;
         let mut rx = rx.enumerate();
         let evs = prep_event();
         let mut file = std::fs::OpenOptions::new()
@@ -551,5 +910,3 @@ fn main() {
         }
     })
 }
-
-fn data_from_tokens(tokens: Vec<To>) {}

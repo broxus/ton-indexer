@@ -8,11 +8,11 @@ use anyhow::Result;
 use bb8::{Pool, PooledConnection};
 use either::Either;
 use futures::{Sink, SinkExt, StreamExt};
+use nekoton::core::models::TransactionId;
+use nekoton::transport::models::{ExistingContract, RawContractState};
 use ton::ton_node::blockid::BlockId;
 use ton_api::ton;
-use ton_block::{Block, Deserializable, MsgAddressInt, ShardDescr, ShardIdent};
-
-use shared_deps::NoFailure;
+use ton_block::{Block, Deserializable, HashmapAugType, MsgAddressInt, ShardDescr, ShardIdent};
 
 use crate::adnl::AdnlClientConfig;
 use crate::adnl_pool::AdnlManageConnection;
@@ -181,7 +181,9 @@ impl NodeClient {
                         tokio::time::sleep(self.config.indexer_interval).await;
                     } else {
                         block = current_block;
-                        new_mc_blocks_queue.send(block.clone()).await;
+                        if let Err(e) = new_mc_blocks_queue.send(block.clone()).await {
+                            log::error!("Fail sending block id: {}", e);
+                        }
                     }
                 }
             } else {
@@ -222,13 +224,61 @@ impl NodeClient {
                 id: ton::int256(id),
             },
         };
-        let state = query(self.pool.clone(), get_state).await?.only();
-        let state = ton_block::AccountStuff::construct_from_bytes(&state.state).convert()?;
-        let latest_lt = state.storage.last_trans_lt;
+        let response = query(self.pool.clone(), get_state).await?.only();
+        let state = match ton_block::Account::construct_from_bytes(&response.state.0) {
+            Ok(ton_block::Account::Account(account)) => {
+                let q_roots =
+                    ton_types::deserialize_cells_tree(&mut std::io::Cursor::new(&response.proof.0))
+                        .map_err(|_| anyhow::anyhow!("InvalidAccountStateProof"))?;
+                if q_roots.len() != 2 {
+                    anyhow::bail!("InvalidAccountStateProof")
+                }
+
+                let merkle_proof = ton_block::MerkleProof::construct_from_cell(q_roots[0].clone())
+                    .map_err(|_| anyhow::anyhow!("InvalidAccountStateProof"))?;
+                let proof_root = merkle_proof.proof.virtualize(1);
+
+                let ss = ton_block::ShardStateUnsplit::construct_from(&mut proof_root.into())
+                    .map_err(|_| anyhow::anyhow!("InvalidAccountStateProof"))?;
+
+                let shard_info = ss
+                    .read_accounts()
+                    .and_then(|accounts| {
+                        accounts.get(&ton_types::UInt256::from(
+                            // contract_address.get_address().get_bytestring(0),
+                            id,
+                        ))
+                    })
+                    .map_err(|_| anyhow::anyhow!("InvalidAccountStateProof"))?;
+
+                if let Some(shard_info) = shard_info {
+                    RawContractState::Exists(ExistingContract {
+                        account,
+                        timings: GenTimings::Known {
+                            gen_lt: ss.gen_lt(),
+                            gen_utime: (chrono::Utc::now().timestamp() - 10) as u32, // TEMP!!!!!, replace with ss.gen_time(),
+                        },
+                        last_transaction_id: LastTransactionId::Exact(TransactionId {
+                            lt: shard_info.last_trans_lt(),
+                            hash: *shard_info.last_trans_hash(),
+                        }),
+                    })
+                } else {
+                    RawContractState::NotExists
+                }
+            }
+            _ => RawContractState::NotExists,
+        };
+        let state = match state {
+            RawContractState::NotExists => {
+                anyhow::bail!("Account doesn't exist")
+            }
+            RawContractState::Exists(a) => a,
+        };
         function.run_local(
-            state,
-            GenTimings::Unknown,
-            &LastTransactionId::Inexact { latest_lt },
+            state.account,
+            state.timings,
+            &state.last_transaction_id,
             input,
         )
     }
@@ -275,7 +325,9 @@ impl NodeClient {
                 match indexer.indexer_step(block.clone()).await {
                     Ok(a) => {
                         let IndexerStepResult { good, bad } = a;
-                        mc_blocks.send(block);
+                        if let Err(e) = mc_blocks.send(block).await {
+                            log::error!("Failed sending block id: {}", e);
+                        }
                         for block in good {
                             if let Err(e) = sink.send(block).await {
                                 log::error!("{:?}", e);
@@ -340,7 +392,7 @@ impl NodeClient {
         Ok(IndexerStepResult { good: ok, bad })
     }
 
-    pub async fn process_shard(
+    async fn process_shard(
         self: Arc<Self>,
         shard_id: ShardIdent,
         shard: ShardDescr,
