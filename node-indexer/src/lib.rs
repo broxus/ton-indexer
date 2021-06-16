@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::convert::TryInto;
 use std::net::{Ipv4Addr, SocketAddrV4};
 use std::sync::Arc;
@@ -9,10 +9,12 @@ use bb8::{Pool, PooledConnection};
 use either::Either;
 use futures::{Sink, SinkExt, StreamExt};
 use nekoton::core::models::TransactionId;
-use nekoton::transport::models::{ExistingContract, RawContractState};
+use nekoton::transport::models::{ExistingContract, RawContractState, RawTransaction};
 use ton::ton_node::blockid::BlockId;
 use ton_api::ton;
 use ton_block::{Block, Deserializable, HashmapAugType, MsgAddressInt, ShardDescr, ShardIdent};
+
+use shared_deps::TrustMe;
 
 use crate::adnl::AdnlClientConfig;
 use crate::adnl_pool::AdnlManageConnection;
@@ -203,14 +205,42 @@ impl NodeClient {
         }
     }
 
-    pub async fn run_local(
+    /// Return all transactions  for `contract_address`. Latest transaction first
+    pub async fn get_all_transactions(
         &self,
         contract_address: MsgAddressInt,
-        function: &ton_abi::Function,
-        input: &[ton_abi::Token],
-    ) -> Result<nekoton::helpers::abi::ExecutionOutput> {
+    ) -> Result<BTreeSet<RawTransaction>> {
+        let mut all_transactions = BTreeSet::new();
+        let mut tx_id = None;
+        loop {
+            let res = self
+                .get_transactions(contract_address.clone(), tx_id, 16)
+                .await?;
+            if res.is_empty() {
+                break;
+            }
+            log::debug!("Got {} transactions", res.len());
+            // Checked on previous step
+            let hash = res.last().as_ref().trust_me().hash;
+            let lt = res.last().as_ref().trust_me().data.lt;
+            log::debug!("Getting txs before {}, lt: {}", hex::encode(&hash), lt);
+
+            let id = TransactionId { lt, hash };
+            if Some(id) == tx_id {
+                break;
+            }
+            tx_id = Some(id);
+            all_transactions.extend(res);
+        }
+        Ok(all_transactions)
+    }
+
+    pub async fn get_contract_state(
+        &self,
+        contract_address: MsgAddressInt,
+    ) -> Result<nekoton::transport::models::RawContractState> {
         use nekoton::core::models::{GenTimings, LastTransactionId};
-        use nekoton::helpers::abi::FunctionExt;
+
         let last_block = self.last_block.get_last_block(self.pool.clone()).await?;
         let id = contract_address
             .address()
@@ -269,6 +299,78 @@ impl NodeClient {
             }
             _ => RawContractState::NotExists,
         };
+        Ok(state)
+    }
+
+    pub async fn get_transactions(
+        &self,
+        address: MsgAddressInt,
+        from: Option<TransactionId>,
+        count: u8,
+    ) -> Result<Vec<RawTransaction>> {
+        async fn get_transactions_inner(
+            client: &NodeClient,
+            address: MsgAddressInt,
+            from: Option<TransactionId>,
+            count: u8,
+        ) -> Result<Vec<u8>> {
+            let from = match from {
+                Some(id) => id,
+                None => match client.get_contract_state(address.clone()).await? {
+                    RawContractState::Exists(contract) => {
+                        contract.last_transaction_id.to_transaction_id()
+                    }
+                    RawContractState::NotExists => {
+                        let transactions =
+                            ton_types::serialize_toc(&ton_types::Cell::default()).unwrap();
+
+                        return Ok(transactions);
+                    }
+                },
+            };
+
+            let response = query(
+                client.pool.clone(),
+                ton::rpc::lite_server::GetTransactions {
+                    count: count as i32,
+                    account: ton::lite_server::accountid::AccountId {
+                        workchain: address.workchain_id() as i32,
+                        id: ton::int256(
+                            ton_types::UInt256::from(address.address().get_bytestring(0)).into(),
+                        ),
+                    },
+                    lt: from.lt as i64,
+                    hash: from.hash.into(),
+                },
+            )
+            .await?;
+
+            Ok(response.transactions().0.clone())
+        }
+        let data = get_transactions_inner(self, address, from, count).await?;
+        let transactions = ton_types::deserialize_cells_tree(&mut std::io::Cursor::new(data))
+            .map_err(|_| anyhow::anyhow!("Invalid transaction list"))?;
+
+        let mut result = Vec::with_capacity(transactions.len());
+        for item in transactions.into_iter().rev() {
+            result.push(RawTransaction {
+                hash: item.repr_hash(),
+                data: ton_block::Transaction::construct_from_cell(item)
+                    .map_err(|_| anyhow::anyhow!("Invalid transaction"))?,
+            });
+        }
+        Ok(result)
+    }
+
+    pub async fn run_local(
+        &self,
+        contract_address: MsgAddressInt,
+        function: &ton_abi::Function,
+        input: &[ton_abi::Token],
+    ) -> Result<nekoton::helpers::abi::ExecutionOutput> {
+        use nekoton::helpers::abi::FunctionExt;
+
+        let state = self.get_contract_state(contract_address).await?;
         let state = match state {
             RawContractState::NotExists => {
                 anyhow::bail!("Account doesn't exist")
