@@ -4,7 +4,7 @@ use std::net::{Ipv4Addr, SocketAddrV4};
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{Error, Result};
 use bb8::{Pool, PooledConnection};
 use either::Either;
 use futures::{Sink, SinkExt, StreamExt};
@@ -13,6 +13,7 @@ use nekoton::transport::models::{ExistingContract, RawContractState, RawTransact
 use ton::ton_node::blockid::BlockId;
 use ton_api::ton;
 use ton_block::{Block, Deserializable, HashmapAugType, MsgAddressInt, ShardDescr, ShardIdent};
+use ton_types::Cell;
 
 use shared_deps::TrustMe;
 
@@ -209,28 +210,26 @@ impl NodeClient {
     pub async fn get_all_transactions(
         &self,
         contract_address: MsgAddressInt,
-    ) -> Result<BTreeSet<RawTransaction>> {
-        let mut all_transactions = BTreeSet::new();
+    ) -> Result<Vec<RawTransaction>> {
+        let mut all_transactions = Vec::new();
         let mut tx_id = None;
         loop {
-            let res = self
+            let mut res = self
                 .get_transactions(contract_address.clone(), tx_id, 16)
                 .await?;
             if res.is_empty() {
+                log::debug!("Empty answer, no more transactions");
                 break;
             }
             log::debug!("Got {} transactions", res.len());
             // Checked on previous step
-            let hash = res.last().as_ref().trust_me().hash;
-            let lt = res.last().as_ref().trust_me().data.lt;
-            log::debug!("Getting txs before {}, lt: {}", hex::encode(&hash), lt);
+            let hash = res.last().as_ref().trust_me().data.prev_trans_hash;
+            let lt = res.last().as_ref().trust_me().data.prev_trans_lt;
 
+            log::debug!("Getting txs before {}, lt: {}", hex::encode(&hash), lt);
             let id = TransactionId { lt, hash };
-            if Some(id) == tx_id {
-                break;
-            }
             tx_id = Some(id);
-            all_transactions.extend(res);
+            all_transactions.append(&mut res);
         }
         Ok(all_transactions)
     }
@@ -348,8 +347,14 @@ impl NodeClient {
             Ok(response.transactions().0.clone())
         }
         let data = get_transactions_inner(self, address, from, count).await?;
-        let transactions = ton_types::deserialize_cells_tree(&mut std::io::Cursor::new(data))
-            .map_err(|_| anyhow::anyhow!("Invalid transaction list"))?;
+        let transactions = match ton_types::deserialize_cells_tree(&mut std::io::Cursor::new(data))
+        {
+            Ok(a) => a,
+            Err(e) => {
+                log::error!("Failed deserilizing transactions list: {}", e);
+                return Ok(Vec::new());
+            }
+        };
 
         let mut result = Vec::with_capacity(transactions.len());
         for item in transactions.into_iter().rev() {
