@@ -117,7 +117,7 @@ where
     Ok(Some(result))
 }
 
-fn extract_functions_from_transaction_messages(
+pub fn extract_functions_from_transaction_messages(
     messages: TransactionMessages,
     address: MsgAddressInt,
     ton_abi_functions: &[ton_abi::Function],
@@ -175,7 +175,7 @@ fn extract_functions_from_transaction_messages(
 }
 
 //todo make it not O(n^2)?
-fn extract_events_from_transaction_messages(
+pub fn extract_events_from_transaction_messages(
     messages: TransactionMessages,
     address: MsgAddressInt,
     ton_abi_events: &[ton_abi::Event],
@@ -316,7 +316,7 @@ fn process_event_message(
     }
 }
 
-fn parse_transaction_messages(
+pub fn parse_transaction_messages(
     transaction: &ton_block::Transaction,
 ) -> Result<Option<TransactionMessages>, AbiError> {
     let mut out_messages = Vec::new();
@@ -357,7 +357,7 @@ struct MessageData {
     msg: ton_block::Message,
 }
 
-struct TransactionMessages {
+pub struct TransactionMessages {
     pub in_message: Option<MessageData>,
     pub out_messages: Vec<MessageData>,
 }
