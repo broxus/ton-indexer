@@ -352,9 +352,9 @@ pub fn parse_transaction_messages(
 }
 
 #[derive(Debug, Clone)]
-struct MessageData {
-    time: u32,
-    msg: ton_block::Message,
+pub struct MessageData {
+    pub time: u32,
+    pub msg: ton_block::Message,
 }
 
 pub struct TransactionMessages {
@@ -363,7 +363,7 @@ pub struct TransactionMessages {
 }
 
 #[derive(thiserror::Error, Debug)]
-enum AbiError {
+pub enum AbiError {
     #[error("Invalid output message")]
     InvalidOutputMessage,
     #[error("No external output messages")]
