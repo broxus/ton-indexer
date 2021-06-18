@@ -1,10 +1,10 @@
-use std::collections::{BTreeSet, HashMap};
+use std::collections::HashMap;
 use std::convert::TryInto;
 use std::net::{Ipv4Addr, SocketAddrV4};
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{Error, Result};
+use anyhow::Result;
 use bb8::{Pool, PooledConnection};
 use either::Either;
 use futures::{Sink, SinkExt, StreamExt};
@@ -13,7 +13,6 @@ use nekoton::transport::models::{ExistingContract, RawContractState, RawTransact
 use ton::ton_node::blockid::BlockId;
 use ton_api::ton;
 use ton_block::{Block, Deserializable, HashmapAugType, MsgAddressInt, ShardDescr, ShardIdent};
-use ton_types::Cell;
 
 use shared_deps::TrustMe;
 
@@ -399,10 +398,8 @@ impl NodeClient {
     where
         S: Sink<ton_block::Block> + Clone + Send + Sync + Unpin + 'static,
         <S as futures::Sink<ton_block::Block>>::Error: std::error::Error,
-        McBlocks:
-            Sink<ton::ton_node::blockidext::BlockIdExt> + Clone + Send + Sync + Unpin + 'static,
-        <McBlocks as futures::Sink<ton::ton_node::blockidext::BlockIdExt>>::Error:
-            std::error::Error,
+        McBlocks: Sink<BlockId> + Clone + Send + Sync + Unpin + 'static,
+        <McBlocks as futures::Sink<BlockId>>::Error: std::error::Error,
     {
         let (bad_blocks_tx, bad_blocks_rx) = tokio::sync::mpsc::unbounded_channel();
         let indexer = Arc::downgrade(self);
@@ -432,7 +429,12 @@ impl NodeClient {
                 match indexer.indexer_step(block.clone()).await {
                     Ok(a) => {
                         let IndexerStepResult { good, bad } = a;
-                        if let Err(e) = mc_blocks.send(block).await {
+                        let block_id = BlockId {
+                            workchain: block.workchain,
+                            shard: block.shard,
+                            seqno: block.seqno,
+                        };
+                        if let Err(e) = mc_blocks.send(block_id).await {
                             log::error!("Failed sending block id: {}", e);
                         }
                         for block in good {
