@@ -1,16 +1,16 @@
 use std::convert::{TryFrom, TryInto};
-use std::net::SocketAddr;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
 
-use adnl::common::KeyOption;
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use ton_api::{ton, IntoBoxed};
 
 use crate::utils::*;
+use tiny_adnl::utils::AdnlNodeIdFull;
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Serialize, Deserialize)]
 pub struct Config {
-    pub adnl: AdnlNodeConfig,
+    pub adnl: Option<AdnlNodeConfig>,
     pub zero_state: ZeroState,
     pub global_config: DhtGlobalConfig,
 }
@@ -18,7 +18,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            adnl: Default::default(),
+            adnl: Some(AdnlNodeConfig::default()),
             zero_state: Default::default(),
             global_config: Default::default(),
         }
@@ -36,12 +36,10 @@ pub struct ZeroState {
     pub file_hash: Vec<u8>,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Serialize, Deserialize)]
 pub struct AdnlNodeConfig {
-    pub ip_address: SocketAddr,
+    pub ip_address: SocketAddrV4,
     pub keys: Vec<AdnlNodeKey>,
-    #[serde(default)]
-    pub throughput: Option<u32>,
 }
 
 impl Default for AdnlNodeConfig {
@@ -61,42 +59,60 @@ impl Default for AdnlNodeConfig {
         .join()
         .unwrap();
 
+        let ip = match ip {
+            IpAddr::V4(ip) => ip,
+            IpAddr::V6(_) => Ipv4Addr::LOCALHOST,
+        };
+
         Self {
-            ip_address: SocketAddr::new(ip, DEFAULT_PORT),
+            ip_address: SocketAddrV4::new(ip, DEFAULT_PORT),
             keys: vec![],
-            throughput: None,
         }
     }
 }
 
-impl TryFrom<AdnlNodeConfig> for adnl::node::AdnlNodeConfig {
+impl TryFrom<AdnlNodeConfig> for tiny_adnl::AdnlNodeConfig {
     type Error = anyhow::Error;
 
     fn try_from(value: AdnlNodeConfig) -> Result<Self, Self::Error> {
-        let mut config = adnl::node::AdnlNodeConfig::from_ip_address_and_keys(
-            value.ip_address,
+        tiny_adnl::AdnlNodeConfig::from_ip_address_and_keys(
+            value.ip_address.into(),
             value
                 .keys
                 .into_iter()
-                .map(|item| {
-                    Ok((
-                        adnl::common::KeyOption::from_private_key(&item.key)?,
-                        item.tag,
-                    ))
-                })
-                .collect::<ton_types::Result<Vec<_>>>()
-                .map_err(|e| anyhow!("Failed to parse ADNL key: {:?}", e))?,
+                .map(|item| (item.key, item.tag))
+                .collect::<Vec<_>>(),
         )
-        .map_err(|e| anyhow::anyhow!("{:?}", e))?;
-        config.set_throughput(value.throughput);
-        Ok(config)
     }
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Serialize, Deserialize)]
 pub struct AdnlNodeKey {
     pub tag: usize,
-    pub key: adnl::common::KeyOptionJson,
+    #[serde(with = "serde_private_key")]
+    pub key: ed25519_dalek::SecretKey,
+}
+
+pub mod serde_private_key {
+    use serde::de::Error;
+    use serde::Deserialize;
+
+    pub fn serialize<S>(data: &ed25519_dalek::SecretKey, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(&hex::encode(data.as_bytes()))
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<ed25519_dalek::SecretKey, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let data = String::deserialize(deserializer)?;
+        let bytes = hex::decode(&data).map_err(|_| D::Error::custom("Invalid SecretKey"))?;
+        ed25519_dalek::SecretKey::from_bytes(&bytes)
+            .map_err(|_| D::Error::custom("Invalid PublicKey"))
+    }
 }
 
 #[derive(Clone, Default, Serialize, Deserialize)]
@@ -171,10 +187,7 @@ impl DhtGlobalConfig {
                 continue;
             };
             let node = ton::dht::node::Node {
-                id: ton::pub_::publickey::Ed25519 {
-                    key: ton::int256(*key.pub_key().convert()?),
-                }
-                .into_boxed(),
+                id: key.as_tl().into_boxed(),
                 addr_list,
                 version,
                 signature: ton::bytes(base64::decode(signature)?),
@@ -216,15 +229,13 @@ struct IdDhtNode {
 pub const PUB_ED25519: &str = "pub.ed25519";
 
 impl IdDhtNode {
-    pub fn convert_key(&self) -> Result<KeyOption> {
+    pub fn convert_key(&self) -> Result<AdnlNodeIdFull> {
         let type_id = self
             .type_node
             .as_ref()
             .ok_or_else(|| anyhow!("Type_node is not set!"))?;
 
-        let type_id = if type_id.eq(PUB_ED25519) {
-            KeyOption::KEY_ED25519
-        } else {
+        if type_id != PUB_ED25519 {
             return Err(anyhow!("unknown type_node!"));
         };
 
@@ -233,10 +244,7 @@ impl IdDhtNode {
         } else {
             return Err(anyhow!("No public key!"));
         };
-
-        let pub_key = key[..32].try_into()?;
-        let ret = KeyOption::from_type_and_public_key(type_id, &pub_key);
-        Ok(ret)
+        Ok(ed25519_dalek::PublicKey::from_bytes(&key[..32])?.into())
     }
 }
 

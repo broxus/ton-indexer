@@ -25,7 +25,10 @@ async fn main() -> Result<()> {
             let config = read_config(config)?;
             init_logger(&config.logger_settings)?;
 
-            ton_indexer_lib::start(config.indexer).await?
+            if let Err(e) = ton_indexer_lib::start(config.indexer).await {
+                eprintln!("{:?}", e);
+                std::process::exit(1);
+            }
         }
         _ => Arguments::into_app().print_help()?,
     }
@@ -33,7 +36,7 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Serialize, Deserialize)]
 struct Config {
     indexer: ton_indexer_lib::Config,
 

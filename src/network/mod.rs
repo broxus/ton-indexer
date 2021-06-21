@@ -1,17 +1,14 @@
 mod awaiters_pool;
 mod neighbours;
 
-use std::convert::TryInto;
+use std::convert::{TryFrom, TryInto};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use adnl::common::{serialize_append, KeyId, KeyOption};
-use adnl::node::{AddressCacheIterator, AdnlNode};
 use anyhow::{anyhow, Result};
 use dashmap::{DashMap, DashSet};
-use dht::DhtNode;
-use overlay::{OverlayId, OverlayNode, OverlayShortId};
-use rldp::RldpNode;
+use tiny_adnl::utils::*;
+use tiny_adnl::{AdnlNode, AdnlNodeConfig, DhtNode, ExternalDhtIterator, OverlayNode, RldpNode};
 use ton_api::ton::rpc;
 use ton_api::ton::{self, TLObject};
 use ton_api::{BoxedDeserialize, BoxedSerialize, Deserializer};
@@ -26,10 +23,10 @@ pub struct NodeNetwork {
     dht: Arc<DhtNode>,
     overlay: Arc<OverlayNode>,
     rldp: Arc<RldpNode>,
-    masterchain_overlay_short_id: Arc<OverlayShortId>,
-    masterchain_overlay_id: OverlayId,
-    overlays: Arc<DashMap<Arc<OverlayShortId>, Arc<NodeClientOverlay>>>,
-    overlay_awaiters: AwaitersPool<Arc<OverlayShortId>, Arc<dyn FullNodeOverlayClient>>,
+    masterchain_overlay_short_id: OverlayIdShort,
+    masterchain_overlay_id: OverlayIdFull,
+    overlays: Arc<DashMap<OverlayIdShort, Arc<NodeClientOverlay>>>,
+    overlay_awaiters: AwaitersPool<OverlayIdShort, Arc<dyn FullNodeOverlayClient>>,
 }
 
 impl NodeNetwork {
@@ -40,25 +37,21 @@ impl NodeNetwork {
     const PERIOD_STORE_IP_ADDRESS: u64 = 500; // seconds
     const PERIOD_UPDATE_PEERS: u64 = 5; // seconds
 
-    pub async fn new(config: Config) -> Result<Arc<Self>> {
+    pub async fn new(mut config: Config) -> Result<Arc<Self>> {
         let masterchain_zero_state_id = config.zero_state;
 
-        let adnl = AdnlNode::with_config(config.adnl.clone().try_into()?)
-            .await
-            .map_err(|e| anyhow!("Failed to create ADNL node: {}", e))?;
-        let dht = DhtNode::with_adnl_node(adnl.clone(), Self::TAG_DHT_KEY)
-            .map_err(|e| anyhow!("Failed to create DHT node: {}", e))?;
+        let adnl = AdnlNode::with_config(config.adnl.take().unwrap().try_into()?);
+        let dht = DhtNode::with_adnl_node(adnl.clone(), Self::TAG_DHT_KEY)?;
+
         let overlay = OverlayNode::with_adnl_node_and_zero_state(
             adnl.clone(),
             masterchain_zero_state_id.file_hash.as_slice().try_into()?,
             Self::TAG_DHT_KEY,
-        )
-        .map_err(|e| anyhow!("Failed to create overlay node: {}", e))?;
+        )?;
         let rldp = RldpNode::with_adnl_node(adnl.clone(), vec![overlay.clone()]);
 
         for peer in config.global_config.get_dht_nodes_configs()? {
-            dht.add_peer(&peer)
-                .map_err(|e| anyhow!("Failed to add DHT peer: {}", e))?;
+            dht.add_peer(peer)?;
         }
 
         let masterchain_shard_id = ton_block::ShardIdent::with_tagged_prefix(
@@ -67,28 +60,17 @@ impl NodeNetwork {
         )
         .map_err(|e| anyhow!("Failed to create masterchain shard id: {}", e))?;
 
-        let masterchain_overlay_id = overlay
-            .calc_overlay_id(
-                masterchain_shard_id.workchain_id(),
-                masterchain_shard_id.shard_prefix_with_tag() as i64,
-            )
-            .map_err(|e| anyhow!("Failed to calculate overlay id: {}", e))?;
-        let masterchain_overlay_short_id = overlay
-            .calc_overlay_short_id(
-                masterchain_shard_id.workchain_id(),
-                masterchain_shard_id.shard_prefix_with_tag() as i64,
-            )
-            .map_err(|e| anyhow!("Failed to calculate overlay short id: {}", e))?;
+        let masterchain_overlay_id = overlay.compute_overlay_id(
+            masterchain_shard_id.workchain_id(),
+            masterchain_shard_id.shard_prefix_with_tag() as i64,
+        )?;
+        let masterchain_overlay_short_id = masterchain_overlay_id.compute_short_id()?;
 
-        let dht_key = adnl
-            .key_by_tag(Self::TAG_DHT_KEY)
-            .map_err(|e| anyhow!("DHT key not found: {}", e))?;
-        NodeNetwork::periodic_store_ip_addr(dht.clone(), dht_key, None);
+        let dht_key = adnl.key_by_tag(Self::TAG_DHT_KEY)?;
+        NodeNetwork::periodic_store_ip_addr(&dht, &dht_key, None);
 
-        let overlay_key = adnl
-            .key_by_tag(Self::TAG_OVERLAY_KEY)
-            .map_err(|e| anyhow!("Overlay key not found: {}", e))?;
-        NodeNetwork::periodic_store_ip_addr(dht.clone(), overlay_key, None);
+        let overlay_key = adnl.key_by_tag(Self::TAG_OVERLAY_KEY)?;
+        NodeNetwork::periodic_store_ip_addr(&dht, &overlay_key, None);
 
         let node_network = Arc::new(NodeNetwork {
             adnl,
@@ -104,56 +86,121 @@ impl NodeNetwork {
         Ok(node_network)
     }
 
-    pub async fn stop(&self) {
-        self.adnl.stop().await
+    pub async fn start(self: &Arc<Self>) -> Result<Arc<dyn FullNodeOverlayClient>> {
+        self.adnl
+            .start(vec![
+                self.dht.clone(),
+                self.overlay.clone(),
+                self.rldp.clone(),
+            ])
+            .await?;
+
+        let overlay = self
+            .clone()
+            .get_overlay(
+                self.masterchain_overlay_id,
+                self.masterchain_overlay_short_id,
+            )
+            .await?;
+
+        Ok(overlay)
+    }
+
+    async fn get_overlay(
+        self: &Arc<Self>,
+        overlay_full_id: OverlayIdFull,
+        overlay_id: OverlayIdShort,
+    ) -> Result<Arc<dyn FullNodeOverlayClient>> {
+        loop {
+            if let Some(overlay) = self.overlays.get(&overlay_id) {
+                return Ok(overlay.value().clone() as Arc<dyn FullNodeOverlayClient>);
+            }
+
+            let overlay_opt = self
+                .overlay_awaiters
+                .do_or_wait(
+                    &overlay_id,
+                    None,
+                    self.clone().get_overlay_worker(overlay_full_id, overlay_id),
+                )
+                .await?;
+
+            if let Some(overlay) = overlay_opt {
+                return Ok(overlay);
+            }
+        }
+    }
+
+    async fn get_overlay_worker(
+        self: &Arc<Self>,
+        overlay_full_id: OverlayIdFull,
+        overlay_id: OverlayIdShort,
+    ) -> Result<Arc<dyn FullNodeOverlayClient>> {
+        use dashmap::mapref::entry::Entry;
+
+        self.overlay.add_public_overlay(&overlay_id)?;
+        let node = self.overlay.get_signed_node(&overlay_id)?;
+
+        NodeNetwork::periodic_store_overlay_node(self.dht.clone(), overlay_full_id, node);
+
+        let peers = self.update_overlay_peers(&overlay_id, &mut None).await?;
+        if peers.is_empty() {
+            log::warn!("No nodes were found in overlay {}", &overlay_id);
+        }
+
+        let neighbours = Neighbours::new(&peers, &self.dht, &self.overlay, overlay_id)?;
+        let peers = Arc::new(neighbours);
+
+        let client_overlay = Arc::new(NodeClientOverlay::new(
+            overlay_id,
+            self.overlay.clone(),
+            self.rldp.clone(),
+            peers.clone(),
+        ));
+
+        peers.start_ping();
+        peers.start_reload();
+        peers.start_rnd_peers_process();
+
+        self.start_update_peers(&client_overlay);
+
+        NodeNetwork::process_overlay_peers(&peers, &self.dht, &self.overlay, &overlay_id);
+
+        let result = self
+            .overlays
+            .entry(overlay_id)
+            .or_insert(client_overlay)
+            .clone();
+
+        Ok(result as Arc<dyn FullNodeOverlayClient>)
     }
 
     async fn update_overlay_peers(
         &self,
-        overlay_id: &Arc<OverlayShortId>,
-        iter: &mut Option<AddressCacheIterator>,
-    ) -> Result<Vec<Arc<KeyId>>> {
+        overlay_id: &OverlayIdShort,
+        external_iter: &mut Option<ExternalDhtIterator>,
+    ) -> Result<Vec<AdnlNodeIdShort>> {
         log::info!("Overlay {} node search in progress...", overlay_id);
-        let nodes = DhtNode::find_overlay_nodes(&self.dht, overlay_id, iter)
-            .await
-            .map_err(|e| anyhow!("Failed to find overlay nodes: {}", e))?;
+        let nodes = self
+            .dht
+            .find_overlay_nodes(overlay_id, external_iter)
+            .await?;
         log::trace!("Found overlay nodes ({}):", nodes.len());
 
         let mut result = Vec::new();
-        for (ip, node) in nodes.iter() {
+        for (ip, node) in nodes.into_iter() {
             log::trace!("Node: {:?}, address: {}", node, ip);
-            if let Some(peer) = self
-                .overlay
-                .add_public_peer(ip, node, overlay_id)
-                .map_err(|e| anyhow!("Failed to add public peer: {}", e))?
-            {
+            if let Some(peer) = self.overlay.add_public_peer(overlay_id, ip, &node)? {
                 result.push(peer);
             }
         }
         Ok(result)
     }
 
-    pub async fn start(self: Arc<Self>) -> Result<Arc<dyn FullNodeOverlayClient>> {
-        AdnlNode::start(
-            &self.adnl,
-            vec![self.dht.clone(), self.overlay.clone(), self.rldp.clone()],
-        )
-        .await
-        .map_err(|e| anyhow!("Failed to start ADNL node: {}", e))?;
-
-        Ok(self
-            .clone()
-            .get_overlay((
-                self.masterchain_overlay_short_id.clone(),
-                self.masterchain_overlay_id,
-            ))
-            .await?)
-    }
-
     async fn update_peers(
         &self,
         client_overlay: &Arc<NodeClientOverlay>,
-        iter: &mut Option<AddressCacheIterator>,
+        iter: &mut Option<ExternalDhtIterator>,
     ) -> Result<()> {
         let mut peers = self
             .update_overlay_peers(client_overlay.overlay_id(), iter)
@@ -164,13 +211,15 @@ impl NodeNetwork {
         Ok(())
     }
 
-    fn start_update_peers(self: Arc<Self>, client_overlay: &Arc<NodeClientOverlay>) {
+    fn start_update_peers(self: &Arc<Self>, client_overlay: &Arc<NodeClientOverlay>) {
+        let network = self.clone();
         let client_overlay = client_overlay.clone();
+
         tokio::spawn(async move {
             let mut iter = None;
             loop {
                 log::trace!("find overlay nodes by dht...");
-                if let Err(e) = self.update_peers(&client_overlay, &mut iter).await {
+                if let Err(e) = network.update_peers(&client_overlay, &mut iter).await {
                     log::warn!("Error find overlay nodes by dht: {}", e);
                 }
                 if client_overlay.peers().count() >= neighbours::MAX_NEIGHBOURS {
@@ -186,7 +235,7 @@ impl NodeNetwork {
         neighbours: &Arc<Neighbours>,
         dht: &Arc<DhtNode>,
         overlay: &Arc<OverlayNode>,
-        overlay_id: &Arc<OverlayShortId>,
+        overlay_id: &OverlayIdShort,
     ) -> Result<()> {
         let peers = overlay
             .wait_for_peers(&overlay_id)
@@ -194,21 +243,17 @@ impl NodeNetwork {
             .map_err(|e| anyhow!("Failed to wait for peers: {}", e))?;
 
         for peer in peers.iter() {
-            let peer_key = KeyOption::from_tl_public_key(&peer.id)
-                .map_err(|e| anyhow!("Failed to create peer key: {}", e))?;
+            let peer_full_id = AdnlNodeIdFull::try_from(&peer.id)?;
+            let peer_id = peer_full_id.compute_short_id()?;
 
-            if neighbours.contains_overlay_peer(peer_key.id()) {
+            if neighbours.contains_overlay_peer(&peer_id) {
                 continue;
             }
-            let (ip, _) = DhtNode::find_address(dht, peer_key.id())
-                .await
-                .map_err(|e| anyhow!("Failed to find peer address: {}", e))?;
 
-            overlay
-                .add_public_peer(&ip, peer, overlay_id)
-                .map_err(|e| anyhow!("Failed to add public peer: {}", e))?;
+            let ip = dht.find_address(&peer_id).await?.0;
 
-            neighbours.add_overlay_peer(peer_key.id().clone());
+            overlay.add_public_peer(overlay_id, ip, peer)?;
+            neighbours.add_overlay_peer(peer_id);
 
             log::trace!(
                 "add_overlay_peers: add overlay peer {:?}, address: {}",
@@ -219,97 +264,24 @@ impl NodeNetwork {
         Ok(())
     }
 
-    async fn get_overlay(
-        self: Arc<Self>,
-        overlay_id: (Arc<OverlayShortId>, OverlayId),
-    ) -> Result<Arc<dyn FullNodeOverlayClient>> {
-        loop {
-            if let Some(overlay) = self.overlays.get(&overlay_id.0) {
-                return Ok(overlay.value().clone() as Arc<dyn FullNodeOverlayClient>);
-            }
-
-            let overlay_opt = self
-                .overlay_awaiters
-                .do_or_wait(
-                    &overlay_id.0.clone(),
-                    None,
-                    Arc::clone(&self).get_overlay_worker(overlay_id.clone()),
-                )
-                .await?;
-
-            if let Some(overlay) = overlay_opt {
-                return Ok(overlay);
-            }
-        }
-    }
-
-    async fn get_overlay_worker(
-        self: Arc<Self>,
-        overlay_id: (Arc<OverlayShortId>, OverlayId),
-    ) -> Result<Arc<dyn FullNodeOverlayClient>> {
-        use dashmap::mapref::entry::Entry;
-
-        self.overlay
-            .add_shard(None, &overlay_id.0)
-            .map_err(|e| anyhow!("Failed to add shard: {}", e))?;
-
-        let node = self
-            .overlay
-            .get_signed_node(&overlay_id.0)
-            .map_err(|e| anyhow!("Failed to get signed node: {}", e))?;
-
-        NodeNetwork::periodic_store_overlay_node(self.dht.clone(), overlay_id.1, node);
-
-        let peers = self.update_overlay_peers(&overlay_id.0, &mut None).await?;
-        if peers.first().is_none() {
-            log::warn!("No nodes were found in overlay {}", &overlay_id.0);
-        }
-
-        let neighbours = Neighbours::new(&peers, &self.dht, &self.overlay, overlay_id.0.clone())?;
-        let peers = Arc::new(neighbours);
-
-        let client_overlay = NodeClientOverlay::new(
-            overlay_id.0.clone(),
-            self.overlay.clone(),
-            self.rldp.clone(),
-            Arc::clone(&peers),
-        );
-
-        let client_overlay = Arc::new(client_overlay);
-
-        Neighbours::start_ping(Arc::clone(&peers));
-        Neighbours::start_reload(Arc::clone(&peers));
-        Neighbours::start_rnd_peers_process(Arc::clone(&peers));
-        NodeNetwork::start_update_peers(self.clone(), &client_overlay);
-        NodeNetwork::process_overlay_peers(
-            peers,
-            self.dht.clone(),
-            self.overlay.clone(),
-            overlay_id.0.clone(),
-        );
-
-        let result = match self.overlays.entry(overlay_id.0) {
-            Entry::Vacant(entry) => entry.insert(client_overlay).value().clone(),
-            Entry::Occupied(entry) => entry.get().clone(),
-        };
-
-        Ok(result as Arc<dyn FullNodeOverlayClient>)
-    }
-
     fn periodic_store_ip_addr(
-        dht: Arc<DhtNode>,
-        node_key: Arc<KeyOption>,
-        validator_keys: Option<Arc<DashMap<Arc<KeyId>, usize>>>,
+        dht: &Arc<DhtNode>,
+        node_key: &Arc<StoredAdnlNodeKey>,
+        validator_keys: Option<Arc<DashMap<AdnlNodeIdShort, usize>>>,
     ) {
+        let dht = dht.clone();
+        let node_key = node_key.clone();
+
         tokio::spawn(async move {
-            let node_key = node_key.clone();
             loop {
-                if let Err(e) = DhtNode::store_ip_address(&dht, &node_key).await {
+                if let Err(e) = dht.store_ip_address(&node_key).await {
                     log::warn!("store ip address is ERROR: {}", e)
                 }
+
                 tokio::time::sleep(Duration::from_secs(Self::PERIOD_STORE_IP_ADDRESS)).await;
-                if let Some(actual_validator_adnl_keys) = validator_keys.clone() {
-                    if actual_validator_adnl_keys.get(node_key.id()).is_none() {
+
+                if let Some(actual_validator_adnl_keys) = &validator_keys {
+                    if !actual_validator_adnl_keys.contains_key(node_key.id()) {
                         break;
                     }
                 }
@@ -319,25 +291,31 @@ impl NodeNetwork {
 
     fn periodic_store_overlay_node(
         dht: Arc<DhtNode>,
-        overlay_id: OverlayId,
-        overlay_node: ton_api::ton::overlay::node::Node,
+        overlay_full_id: OverlayIdFull,
+        overlay_node: ton::overlay::node::Node,
     ) {
         tokio::spawn(async move {
             let overlay_node = overlay_node;
             loop {
-                let res = DhtNode::store_overlay_node(&dht, &overlay_id, &overlay_node).await;
-                log::info!("overlay_store status: {:?}", res);
+                let result =
+                    DhtNode::store_overlay_node(&dht, &overlay_full_id, &overlay_node).await;
+                log::info!("overlay_store status: {:?}", result);
                 tokio::time::sleep(Duration::from_secs(Self::PERIOD_STORE_IP_ADDRESS)).await;
             }
         });
     }
 
     fn process_overlay_peers(
-        neighbours: Arc<Neighbours>,
-        dht: Arc<DhtNode>,
-        overlay: Arc<OverlayNode>,
-        overlay_id: Arc<OverlayShortId>,
+        neighbours: &Arc<Neighbours>,
+        dht: &Arc<DhtNode>,
+        overlay: &Arc<OverlayNode>,
+        overlay_id: &OverlayIdShort,
     ) {
+        let neighbours = neighbours.clone();
+        let dht = dht.clone();
+        let overlay = overlay.clone();
+        let overlay_id = *overlay_id;
+
         tokio::spawn(async move {
             loop {
                 if let Err(e) =
@@ -395,7 +373,7 @@ impl FullNodeOverlayClient for NodeClientOverlay {
 
 #[derive(Clone)]
 pub struct NodeClientOverlay {
-    overlay_id: Arc<OverlayShortId>,
+    overlay_id: OverlayIdShort,
     overlay: Arc<OverlayNode>,
     rldp: Arc<RldpNode>,
     peers: Arc<Neighbours>,
@@ -408,7 +386,7 @@ impl NodeClientOverlay {
     const TIMEOUT_NO_NEIGHBOURS: u64 = 1000; // Milliseconds
 
     pub fn new(
-        overlay_id: Arc<OverlayShortId>,
+        overlay_id: OverlayIdShort,
         overlay: Arc<OverlayNode>,
         rldp: Arc<RldpNode>,
         peers: Arc<Neighbours>,
@@ -421,7 +399,7 @@ impl NodeClientOverlay {
         }
     }
 
-    pub fn overlay_id(&self) -> &Arc<OverlayShortId> {
+    pub fn overlay_id(&self) -> &OverlayIdShort {
         &self.overlay_id
     }
 
@@ -451,12 +429,11 @@ impl NodeClientOverlay {
         log::trace!("USE PEER {}, {}", peer.id(), request_str);
 
         let now = Instant::now();
-        let timeout = timeout.or_else(|| Some(AdnlNode::calc_timeout(peer.roundtrip_adnl())));
+        let timeout = timeout.or_else(|| Some(compute_timeout(peer.roundtrip_adnl())));
         let answer = self
             .overlay
-            .query(peer.id(), &data, &self.overlay_id, timeout)
-            .await
-            .map_err(|e| anyhow!("Failed to send ADNL query: {}", e))?;
+            .query(&self.overlay_id, peer.id(), &data, timeout)
+            .await?;
 
         let roundtrip = now.elapsed().as_millis() as u64;
 
@@ -485,7 +462,7 @@ impl NodeClientOverlay {
         request: R,
         attempts: Option<u32>,
         timeout: Option<u64>,
-        active_peers: Option<&Arc<DashSet<Arc<KeyId>>>>,
+        active_peers: Option<&Arc<DashSet<AdnlNodeIdShort>>>,
     ) -> Result<(D, Arc<Neighbour>)>
     where
         R: ton_api::AnyBoxedSerialize,
@@ -599,13 +576,13 @@ impl NodeClientOverlay {
         let (answer, roundtrip) = self
             .overlay
             .query_via_rldp(
-                &self.rldp,
+                &self.overlay_id,
                 peer.id(),
                 &data,
+                &self.rldp,
                 Some(10 * 1024 * 1024),
                 peer.roundtrip_rldp()
                     .map(|t| t + attempt as u64 * Self::TIMEOUT_DELTA),
-                &self.overlay_id,
             )
             .await
             .map_err(|e| anyhow!("RLDP query failed: {}", e))?;
@@ -621,5 +598,14 @@ impl NodeClientOverlay {
                 peer.id()
             ))
         }
+    }
+}
+
+pub fn compute_timeout(roundtrip: Option<u64>) -> u64 {
+    let timeout = roundtrip.unwrap_or(AdnlNode::MAX_QUERY_TIMEOUT);
+    if timeout < AdnlNode::MIN_QUERY_TIMEOUT {
+        AdnlNode::MIN_QUERY_TIMEOUT
+    } else {
+        timeout
     }
 }
