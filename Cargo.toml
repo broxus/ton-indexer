@@ -41,7 +41,8 @@ thiserror = "*"
 
 ton_abi = { git = "https://github.com/tonlabs/ton-labs-abi.git" }
 ton_api = { git = "https://github.com/broxus/ton-labs-tl.git", package = "ton_api", branch = "original", default-features = false }
-tiny-adnl = { git = "https://github.com/broxus/tiny-adnl.git" }
+#tiny-adnl = { git = "https://github.com/broxus/tiny-adnl.git" }
+tiny-adnl = { path = "../tiny-adnl" }
 ton_block = { git = "https://github.com/tonlabs/ton-labs-block.git" }
 ton_types = { git = "https://github.com/tonlabs/ton-labs-types.git" }
 

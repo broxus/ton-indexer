@@ -1,5 +1,4 @@
 mod awaiters_pool;
-mod neighbours;
 
 use std::convert::{TryFrom, TryInto};
 use std::sync::Arc;
@@ -8,7 +7,7 @@ use std::time::{Duration, Instant};
 use anyhow::{anyhow, Result};
 use dashmap::{DashMap, DashSet};
 use tiny_adnl::utils::*;
-use tiny_adnl::{AdnlNode, AdnlNodeConfig, DhtNode, ExternalDhtIterator, OverlayNode, RldpNode};
+use tiny_adnl::*;
 use ton_api::ton::rpc;
 use ton_api::ton::{self, TLObject};
 use ton_api::{BoxedDeserialize, BoxedSerialize, Deserializer};
@@ -16,7 +15,6 @@ use ton_api::{BoxedDeserialize, BoxedSerialize, Deserializer};
 use crate::block::{convert_block_id_ext_api2blk, convert_block_id_ext_blk2api, BlockStuff};
 use crate::config::Config;
 use crate::network::awaiters_pool::AwaitersPool;
-use crate::network::neighbours::{Neighbour, Neighbours};
 
 pub struct NodeNetwork {
     adnl: Arc<AdnlNode>,
@@ -148,23 +146,22 @@ impl NodeNetwork {
             log::warn!("No nodes were found in overlay {}", &overlay_id);
         }
 
-        let neighbours = Neighbours::new(&peers, &self.dht, &self.overlay, overlay_id)?;
-        let peers = Arc::new(neighbours);
+        let neighbours = Neighbours::new(&self.dht, &self.overlay, &overlay_id, &peers);
 
         let client_overlay = Arc::new(NodeClientOverlay::new(
             overlay_id,
             self.overlay.clone(),
             self.rldp.clone(),
-            peers.clone(),
+            neighbours.clone(),
         ));
 
-        peers.start_ping();
-        peers.start_reload();
-        peers.start_rnd_peers_process();
+        neighbours.start_pinging_neighbours();
+        neighbours.start_reloading_neighbours();
+        neighbours.start_searching_peers();
 
         self.start_update_peers(&client_overlay);
 
-        NodeNetwork::process_overlay_peers(&peers, &self.dht, &self.overlay, &overlay_id);
+        NodeNetwork::process_overlay_peers(&neighbours, &self.dht, &self.overlay, &overlay_id);
 
         let result = self
             .overlays
@@ -178,7 +175,7 @@ impl NodeNetwork {
     async fn update_overlay_peers(
         &self,
         overlay_id: &OverlayIdShort,
-        external_iter: &mut Option<ExternalDhtIterator>,
+        external_iter: &mut Option<ExternalDhtIter>,
     ) -> Result<Vec<AdnlNodeIdShort>> {
         log::info!("Overlay {} node search in progress...", overlay_id);
         let nodes = self
@@ -200,13 +197,13 @@ impl NodeNetwork {
     async fn update_peers(
         &self,
         client_overlay: &Arc<NodeClientOverlay>,
-        iter: &mut Option<ExternalDhtIterator>,
+        iter: &mut Option<ExternalDhtIter>,
     ) -> Result<()> {
         let mut peers = self
             .update_overlay_peers(client_overlay.overlay_id(), iter)
             .await?;
         while let Some(peer) = peers.pop() {
-            client_overlay.peers().add(peer)?;
+            client_overlay.peers().add(peer);
         }
         Ok(())
     }
@@ -222,7 +219,7 @@ impl NodeNetwork {
                 if let Err(e) = network.update_peers(&client_overlay, &mut iter).await {
                     log::warn!("Error find overlay nodes by dht: {}", e);
                 }
-                if client_overlay.peers().count() >= neighbours::MAX_NEIGHBOURS {
+                if client_overlay.peers().len() >= MAX_NEIGHBOURS {
                     log::trace!("finish find overlay nodes.");
                     return;
                 }
@@ -347,17 +344,17 @@ impl FullNodeOverlayClient for NodeClientOverlay {
             prev_block: convert_block_id_ext_blk2api(prev_id),
         };
 
-        let peer = if let Some(p) = self.peers.choose_neighbour()? {
-            p
+        let neighbour = if let Some(neighbour) = self.neighbours.choose_neighbour() {
+            neighbour
         } else {
             tokio::time::sleep(Duration::from_millis(Self::TIMEOUT_NO_NEIGHBOURS)).await;
             return Err(anyhow!("neighbour is not found!"));
         };
-        log::trace!("USE PEER {}, REQUEST {:?}", peer.id(), request);
+        log::trace!("USE PEER {}, REQUEST {:?}", neighbour.peer_id(), request);
 
         // Download
         let data_full: ton::ton_node::DataFull =
-            self.send_rldp_query_typed(request, peer, 0).await?;
+            self.send_rldp_query_typed(request, neighbour, 0).await?;
 
         // Parse
         match data_full {
@@ -376,7 +373,7 @@ pub struct NodeClientOverlay {
     overlay_id: OverlayIdShort,
     overlay: Arc<OverlayNode>,
     rldp: Arc<RldpNode>,
-    peers: Arc<Neighbours>,
+    neighbours: Arc<Neighbours>,
 }
 
 impl NodeClientOverlay {
@@ -395,7 +392,7 @@ impl NodeClientOverlay {
             overlay_id,
             overlay,
             rldp,
-            peers,
+            neighbours: peers,
         }
     }
 
@@ -408,12 +405,12 @@ impl NodeClientOverlay {
     }
 
     pub fn peers(&self) -> &Arc<Neighbours> {
-        &self.peers
+        &self.neighbours
     }
 
     async fn send_adnl_query_to_peer<R, D>(
         &self,
-        peer: &Arc<Neighbour>,
+        neighbour: &Arc<Neighbour>,
         data: &TLObject,
         timeout: Option<u64>,
     ) -> Result<Option<D>>
@@ -426,13 +423,13 @@ impl NodeClientOverlay {
         } else {
             String::default()
         };
-        log::trace!("USE PEER {}, {}", peer.id(), request_str);
+        log::trace!("USE PEER {}, {}", neighbour.peer_id(), request_str);
 
         let now = Instant::now();
-        let timeout = timeout.or_else(|| Some(compute_timeout(peer.roundtrip_adnl())));
+        let timeout = timeout.or_else(|| Some(compute_timeout(neighbour.roundtrip_adnl())));
         let answer = self
             .overlay
-            .query(&self.overlay_id, peer.id(), &data, timeout)
+            .query(&self.overlay_id, neighbour.peer_id(), &data, timeout)
             .await?;
 
         let roundtrip = now.elapsed().as_millis() as u64;
@@ -440,19 +437,24 @@ impl NodeClientOverlay {
         if let Some(answer) = answer {
             match answer.downcast::<D>() {
                 Ok(answer) => {
-                    peer.query_success(roundtrip, false);
+                    neighbour.query_succeeded(roundtrip, false);
                     return Ok(Some(answer));
                 }
                 Err(obj) => {
-                    log::warn!("Wrong answer {:?} to {:?} from {}", obj, data, peer.id())
+                    log::warn!(
+                        "Wrong answer {:?} to {:?} from {}",
+                        obj,
+                        data,
+                        neighbour.peer_id()
+                    )
                 }
             }
         } else {
-            log::warn!("No reply to {:?} from {}", data, peer.id())
+            log::warn!("No reply to {:?} from {}", data, neighbour.peer_id())
         }
 
-        self.peers
-            .update_neighbour_stats(peer.id(), roundtrip, false, false, true)?;
+        self.neighbours
+            .update_neighbour_stats(neighbour.peer_id(), roundtrip, false, false, true);
         Ok(None)
     }
 
@@ -472,31 +474,31 @@ impl NodeClientOverlay {
         let attempts = attempts.unwrap_or(Self::ADNL_ATTEMPTS);
 
         for _ in 0..attempts {
-            let peer = if let Some(p) = self.peers.choose_neighbour()? {
-                p
+            let neighbour = if let Some(neighbour) = self.neighbours.choose_neighbour() {
+                neighbour
             } else {
                 tokio::time::sleep(Duration::from_millis(Self::TIMEOUT_NO_NEIGHBOURS)).await;
                 anyhow::bail!("Neighbour not found")
             };
 
             if let Some(active_peers) = &active_peers {
-                active_peers.insert(peer.id().clone());
+                active_peers.insert(*neighbour.peer_id());
             }
 
             match self
-                .send_adnl_query_to_peer::<R, D>(&peer, &data, timeout)
+                .send_adnl_query_to_peer::<R, D>(&neighbour, &data, timeout)
                 .await
             {
                 Err(e) => {
                     if let Some(active_peers) = &active_peers {
-                        active_peers.remove(peer.id());
+                        active_peers.remove(neighbour.peer_id());
                     }
                     return Err(e);
                 }
-                Ok(Some(answer)) => return Ok((answer, peer)),
+                Ok(Some(answer)) => return Ok((answer, neighbour)),
                 Ok(None) => {
                     if let Some(active_peers) = &active_peers {
-                        active_peers.remove(peer.id());
+                        active_peers.remove(neighbour.peer_id());
                     }
                 }
             }
@@ -519,29 +521,34 @@ impl NodeClientOverlay {
         T: BoxedSerialize + std::fmt::Debug,
     {
         let (answer, peer, roundtrip) = self.send_rldp_query(request, peer, attempt).await?;
-        peer.query_success(roundtrip, true);
+        peer.query_succeeded(roundtrip, true);
         Ok(answer)
     }
 
     async fn send_rldp_query_typed<T, D>(
         &self,
         request: &T,
-        peer: Arc<Neighbour>,
+        neighbour: Arc<Neighbour>,
         attempt: u32,
     ) -> Result<D>
     where
         T: BoxedSerialize + std::fmt::Debug,
         D: BoxedDeserialize,
     {
-        let (answer, peer, roundtrip) = self.send_rldp_query(request, peer, attempt).await?;
+        let (answer, peer, roundtrip) = self.send_rldp_query(request, neighbour, attempt).await?;
         match Deserializer::new(&mut std::io::Cursor::new(answer)).read_boxed() {
             Ok(data) => {
-                peer.query_success(roundtrip, true);
+                peer.query_succeeded(roundtrip, true);
                 Ok(data)
             }
             Err(e) => {
-                self.peers
-                    .update_neighbour_stats(peer.id(), roundtrip, false, true, true)?;
+                self.neighbours.update_neighbour_stats(
+                    peer.peer_id(),
+                    roundtrip,
+                    false,
+                    true,
+                    true,
+                );
                 Err(anyhow!(e))
             }
         }
@@ -550,7 +557,7 @@ impl NodeClientOverlay {
     async fn send_rldp_query<T>(
         &self,
         request: &T,
-        peer: Arc<Neighbour>,
+        neighbour: Arc<Neighbour>,
         attempt: u32,
     ) -> Result<(Vec<u8>, Arc<Neighbour>, u64)>
     where
@@ -571,31 +578,37 @@ impl NodeClientOverlay {
             String::default()
         };
 
-        log::trace!("USE PEER {}, {}", peer.id(), request_str);
+        log::trace!("USE PEER {}, {}", neighbour.peer_id(), request_str);
 
         let (answer, roundtrip) = self
             .overlay
             .query_via_rldp(
                 &self.overlay_id,
-                peer.id(),
+                neighbour.peer_id(),
                 &data,
                 &self.rldp,
                 Some(10 * 1024 * 1024),
-                peer.roundtrip_rldp()
+                neighbour
+                    .roundtrip_rldp()
                     .map(|t| t + attempt as u64 * Self::TIMEOUT_DELTA),
             )
             .await
             .map_err(|e| anyhow!("RLDP query failed: {}", e))?;
 
         if let Some(answer) = answer {
-            Ok((answer, peer, roundtrip))
+            Ok((answer, neighbour, roundtrip))
         } else {
-            self.peers
-                .update_neighbour_stats(peer.id(), roundtrip, false, true, true)?;
+            self.neighbours.update_neighbour_stats(
+                neighbour.peer_id(),
+                roundtrip,
+                false,
+                true,
+                true,
+            );
             Err(anyhow!(
                 "No RLDP answer to {:?} from {}",
                 request,
-                peer.id()
+                neighbour.peer_id()
             ))
         }
     }
