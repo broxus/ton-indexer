@@ -16,12 +16,11 @@ use ton_block::{Block, Deserializable, HashmapAugType, MsgAddressInt, ShardDescr
 
 use shared_deps::TrustMe;
 
-use crate::adnl::AdnlClientConfig;
 use crate::adnl_pool::AdnlManageConnection;
 use crate::errors::{QueryError, QueryResult};
 use crate::last_block::LastBlock;
+use tiny_adnl::AdnlTcpClientConfig;
 
-mod adnl;
 mod adnl_pool;
 mod errors;
 mod last_block;
@@ -29,7 +28,7 @@ mod last_block;
 #[derive(Debug, Clone)]
 pub struct Config {
     pub indexer_interval: Duration,
-    pub adnl: AdnlClientConfig,
+    pub adnl: AdnlTcpClientConfig,
     pub threshold: Duration,
     pub pool_size: u32,
 }
@@ -45,11 +44,11 @@ impl Default for Config {
     }
 }
 
-pub fn default_mainnet_config() -> AdnlClientConfig {
+pub fn default_mainnet_config() -> AdnlTcpClientConfig {
     let key =
         hex::decode("b8d4512fee9e9d08ee899fece99faf3bbcb151447bbb175fcc8cbe4719040ab7").unwrap();
 
-    AdnlClientConfig {
+    AdnlTcpClientConfig {
         server_address: SocketAddrV4::new(Ipv4Addr::new(54, 158, 97, 195), 3031),
         server_key: ed25519_dalek::PublicKey::from_bytes(&key).unwrap(),
     }

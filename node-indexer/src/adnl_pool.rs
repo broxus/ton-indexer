@@ -2,26 +2,27 @@ use anyhow::Error;
 use bb8::PooledConnection;
 use std::sync::Arc;
 
-use crate::adnl::{AdnlClient, AdnlClientConfig};
+use std::sync::atomic::Ordering;
+use tiny_adnl::{AdnlTcpClient, AdnlTcpClientConfig};
 
 pub struct AdnlManageConnection {
-    config: AdnlClientConfig,
+    config: AdnlTcpClientConfig,
 }
 
 impl AdnlManageConnection {
-    pub fn new(config: AdnlClientConfig) -> Self {
+    pub fn new(config: AdnlTcpClientConfig) -> Self {
         Self { config }
     }
 }
 
 #[async_trait::async_trait]
 impl bb8::ManageConnection for AdnlManageConnection {
-    type Connection = Arc<AdnlClient>;
+    type Connection = Arc<AdnlTcpClient>;
     type Error = Error;
 
     async fn connect(&self) -> Result<Self::Connection, Self::Error> {
         log::trace!("Establishing adnl connection...");
-        let client = AdnlClient::connect(self.config.clone())
+        let client = AdnlTcpClient::connect(self.config.clone())
             .await
             .map_err(|e| {
                 log::error!("Connection error: {:?}", e);
@@ -35,11 +36,14 @@ impl bb8::ManageConnection for AdnlManageConnection {
 
     async fn is_valid(&self, conn: &mut PooledConnection<'_, Self>) -> Result<(), Self::Error> {
         conn.ping(10).await?;
-
         Ok(())
     }
 
-    fn has_broken(&self, _: &mut Self::Connection) -> bool {
-        false
+    fn has_broken(&self, conn: &mut Self::Connection) -> bool {
+        let res = conn.has_broken.load(Ordering::Acquire);
+        if res {
+            log::error!("Connection has broken");
+        }
+        res
     }
 }
