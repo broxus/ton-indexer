@@ -10,6 +10,7 @@ use either::Either;
 use futures::{Sink, SinkExt, StreamExt};
 use nekoton::core::models::TransactionId;
 use nekoton::transport::models::{ExistingContract, RawContractState, RawTransaction};
+use tiny_adnl::AdnlTcpClientConfig;
 use ton::ton_node::blockid::BlockId;
 use ton_api::ton;
 use ton_block::{Block, Deserializable, HashmapAugType, MsgAddressInt, ShardDescr, ShardIdent};
@@ -19,7 +20,6 @@ use shared_deps::TrustMe;
 use crate::adnl_pool::AdnlManageConnection;
 use crate::errors::{QueryError, QueryResult};
 use crate::last_block::LastBlock;
-use tiny_adnl::AdnlTcpClientConfig;
 
 mod adnl_pool;
 mod errors;
@@ -148,36 +148,67 @@ impl NodeClient {
         new_mc_blocks_queue: tokio::sync::mpsc::Sender<ton::ton_node::blockidext::BlockIdExt>,
         pool_size: u32,
     ) -> Result<()> {
-        let top_block = self.last_block.get_last_block(self.pool.clone()).await?;
+        async fn get_block_id(
+            pool: &Pool<AdnlManageConnection>,
+            id: BlockId,
+        ) -> Result<ton_api::ton::ton_node::blockidext::BlockIdExt> {
+            tryhard::retry_fn(|| async {
+                let pool = pool.clone();
+                let id = id.clone();
+                get_block_ext_id(pool.clone(), id).await
+            })
+            .retries(100)
+            .exponential_backoff(Duration::from_secs(1))
+            .await
+        }
+        let top_block = tryhard::retry_fn(|| self.last_block.get_last_block(self.pool.clone()))
+            .retries(100)
+            .await
+            .expect("Fatal block producer error");
 
         let mut current_block = match start_block {
-            Some(a) => get_block_ext_id(self.pool.clone(), a).await?,
+            Some(a) => get_block_id(&self.pool, a)
+                .await
+                .expect("Fatal block producer error"),
             None => top_block.clone(),
         };
+
+        macro_rules! get_last_block {
+            () => {
+                tryhard::retry_fn(|| self.last_block.get_last_block(self.pool.clone()))
+                    .retries(10)
+                    .exponential_backoff(Duration::from_secs(1))
+                    .await
+                    .expect("Fatal block producer error");
+            };
+        }
 
         loop {
             let blocks_diff = top_block.seqno - current_block.seqno;
             if blocks_diff != 0 {
-                new_mc_blocks_queue.send(current_block.clone()).await?;
+                new_mc_blocks_queue
+                    .send(current_block.clone())
+                    .await
+                    .expect("Channel is broken");
                 let query_count = (blocks_diff / 10).max(1).min((pool_size as i32) * 8);
                 log::info!("Query count: {}, diff: {}", query_count, blocks_diff);
-                let block = get_block_ext_id(
-                    self.pool.clone(),
+                let block = get_block_id(
+                    &self.pool,
                     BlockId {
                         workchain: current_block.workchain,
                         shard: current_block.shard,
                         seqno: current_block.seqno + query_count,
                     },
                 )
-                .await?;
+                .await
+                .expect("Fatal block producer error");
                 current_block = block;
             } else if current_block == top_block {
                 log::info!("Synced");
                 log::info!("Current mc height: {}", current_block.seqno);
-
-                let mut block = self.last_block.get_last_block(self.pool.clone()).await?;
+                let mut block = get_last_block!();
                 loop {
-                    let current_block = self.last_block.get_last_block(self.pool.clone()).await?;
+                    let current_block = get_last_block!();
                     if current_block.seqno == block.seqno {
                         tokio::time::sleep(self.config.indexer_interval).await;
                     } else {
@@ -189,15 +220,16 @@ impl NodeClient {
                 }
             } else {
                 log::error!("Logic has broken");
-                let block = get_block_ext_id(
-                    self.pool.clone(),
+                let block = get_block_id(
+                    &self.pool,
                     BlockId {
                         workchain: current_block.workchain,
                         shard: current_block.shard,
                         seqno: current_block.seqno + 1,
                     },
                 )
-                .await?;
+                .await
+                .expect("Fatal block producer error");
                 current_block = block;
                 new_mc_blocks_queue.send(current_block.clone()).await?;
             }
@@ -432,8 +464,12 @@ impl NodeClient {
                     shard: block.shard,
                     seqno: block.seqno,
                 };
-
-                match indexer.indexer_step(block).await {
+                let step_result =
+                    tryhard::retry_fn(|| async { indexer.indexer_step(block.clone()).await })
+                        .retries(10)
+                        .exponential_backoff(Duration::from_secs(1))
+                        .await;
+                match step_result {
                     Ok(a) => {
                         let IndexerStepResult { good, bad } = a;
 

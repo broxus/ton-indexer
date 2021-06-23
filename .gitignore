@@ -1,3 +1,5 @@
 /.idea
 /target
 config.yaml
+
+Cargo.lock
