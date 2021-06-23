@@ -294,8 +294,9 @@ impl NodeNetwork {
         tokio::spawn(async move {
             let overlay_node = overlay_node;
             loop {
-                let result =
-                    DhtNode::store_overlay_node(&dht, &overlay_full_id, &overlay_node).await;
+                let result = dht
+                    .store_overlay_node(&overlay_full_id, &overlay_node)
+                    .await;
                 log::info!("overlay_store status: {:?}", result);
                 tokio::time::sleep(Duration::from_secs(Self::PERIOD_STORE_IP_ADDRESS)).await;
             }
@@ -324,18 +325,56 @@ impl NodeNetwork {
             }
         });
     }
+
+    pub fn add_masterchain_subscriber(&self, consumer: Arc<dyn OverlaySubscriber>) {
+        self.overlay
+            .add_subscriber(self.masterchain_overlay_short_id, consumer);
+    }
 }
 
 #[async_trait::async_trait]
 pub trait FullNodeOverlayClient: Send + Sync {
+    async fn download_zero_state(
+        &self,
+        id: &ton_block::BlockIdExt,
+    ) -> Result<Option<ton_block::BlockIdExt>>;
+
     async fn download_next_block_full(
         &self,
         prev_id: &ton_block::BlockIdExt,
     ) -> Result<Option<BlockStuff>>;
+
+    async fn download_next_key_blocks_ids(
+        &self,
+        block_id: &ton_block::BlockIdExt,
+        max_size: i32,
+    ) -> Result<Vec<ton_block::BlockIdExt>>;
+
+    async fn wait_broadcast(&self) -> Result<(ton::ton_node::Broadcast, AdnlNodeIdShort)>;
 }
 
 #[async_trait::async_trait]
 impl FullNodeOverlayClient for NodeClientOverlay {
+    async fn download_zero_state(
+        &self,
+        id: &ton_block::BlockIdExt,
+    ) -> Result<Option<ton_block::BlockIdExt>> {
+        // Prepare
+        let (prepare, _good_peer): (ton::ton_node::PreparedState, _) = self
+            .send_adnl_query(
+                TLObject::new(rpc::ton_node::PrepareZeroState {
+                    block: convert_block_id_ext_blk2api(id),
+                }),
+                None,
+                Some(Self::TIMEOUT_PREPARE),
+                None,
+            )
+            .await?;
+
+        log::info!("Got prepared state: {:?}", prepare);
+        Ok(Some(id.clone()))
+    }
+
     async fn download_next_block_full(
         &self,
         prev_id: &ton_block::BlockIdExt,
@@ -363,6 +402,43 @@ impl FullNodeOverlayClient for NodeClientOverlay {
                 let id = convert_block_id_ext_api2blk(&data_full.id)?;
                 let block = BlockStuff::deserialize_checked(id, data_full.block.to_vec())?;
                 Ok(Some(block))
+            }
+        }
+    }
+
+    async fn download_next_key_blocks_ids(
+        &self,
+        block_id: &ton_block::BlockIdExt,
+        max_size: i32,
+    ) -> Result<Vec<ton_block::BlockIdExt>> {
+        let query = TLObject::new(ton::rpc::ton_node::GetNextKeyBlockIds {
+            block: convert_block_id_ext_blk2api(block_id),
+            max_size,
+        });
+
+        self.send_adnl_query(query, None, None, None)
+            .await
+            .and_then(|(ids, _): (ton::ton_node::KeyBlocks, _)| {
+                ids.blocks()
+                    .iter()
+                    .map(convert_block_id_ext_api2blk)
+                    .collect()
+            })
+    }
+
+    async fn wait_broadcast(&self) -> Result<(ton::ton_node::Broadcast, AdnlNodeIdShort)> {
+        let receiver = self.overlay.clone();
+        let id = self.overlay_id.clone();
+        loop {
+            match receiver.wait_for_broadcast(&id).await {
+                Ok(info) => {
+                    let answer: ton::ton_node::Broadcast =
+                        Deserializer::new(&mut std::io::Cursor::new(info.data))
+                            .read_boxed()
+                            .map_err(|e| anyhow::Error::msg(e.to_string()))?;
+                    break Ok((answer, info.from));
+                }
+                Err(e) => log::error!("broadcast waiting error: {}", e),
             }
         }
     }
