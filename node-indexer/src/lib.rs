@@ -159,6 +159,7 @@ impl NodeClient {
         loop {
             let blocks_diff = top_block.seqno - current_block.seqno;
             if blocks_diff != 0 {
+                new_mc_blocks_queue.send(current_block.clone()).await?;
                 let query_count = (blocks_diff / 10).max(1).min((pool_size as i32) * 8);
                 log::info!("Query count: {}, diff: {}", query_count, blocks_diff);
                 let block = get_block_ext_id(
@@ -171,7 +172,6 @@ impl NodeClient {
                 )
                 .await?;
                 current_block = block;
-                new_mc_blocks_queue.send(current_block.clone()).await?;
             } else if current_block == top_block {
                 log::info!("Synced");
                 log::info!("Current mc height: {}", current_block.seqno);
@@ -189,7 +189,7 @@ impl NodeClient {
                     }
                 }
             } else {
-                log::info!("Near head");
+                log::error!("Logic has broken");
                 let block = get_block_ext_id(
                     self.pool.clone(),
                     BlockId {
@@ -421,19 +421,23 @@ impl NodeClient {
             while let Some(block) = masterchain_blocks_rx.recv().await {
                 let indexer = match indexer.upgrade() {
                     Some(indexer) => indexer,
-                    None => return,
+                    None => {
+                        log::error!("Indexer refs are empty. Quiting");
+                        return;
+                    }
                 };
 
-                log::debug!("Indexer step");
+                log::debug!("Indexer step. Id: {}", block.seqno);
+                let block_id = BlockId {
+                    workchain: block.workchain,
+                    shard: block.shard,
+                    seqno: block.seqno,
+                };
 
-                match indexer.indexer_step(block.clone()).await {
+                match indexer.indexer_step(block).await {
                     Ok(a) => {
                         let IndexerStepResult { good, bad } = a;
-                        let block_id = BlockId {
-                            workchain: block.workchain,
-                            shard: block.shard,
-                            seqno: block.seqno,
-                        };
+
                         if let Err(e) = mc_blocks.send(block_id).await {
                             log::error!("Failed sending block id: {}", e);
                         }
@@ -444,7 +448,7 @@ impl NodeClient {
                         }
                         for bad_block in bad {
                             if let Err(e) = bad_blocks_tx.send(bad_block) {
-                                log::error!("Bad blocks channel have broken: {:?}", e);
+                                log::error!("Bad blocks channel has broken: {:?}", e);
                             }
                         }
                     }

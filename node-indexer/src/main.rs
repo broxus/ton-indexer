@@ -10,6 +10,7 @@ use ton_block::{MsgAddress, MsgAddressInt};
 
 use indexer_lib::{extract_events_from_block, extract_functions_from_block};
 use node_indexer::{Config, NodeClient};
+use std::collections::{BTreeSet, HashSet};
 
 const ROOT_ABI: &str = r#"{
 	"ABI version": 2,
@@ -850,6 +851,23 @@ fn main() {
         )
         .await
         .unwrap();
+
+        let mut asdds = BTreeSet::new();
+        let all = node
+            .get_all_transactions(
+                MsgAddressInt::from_str(
+                    "0:943bad2e74894aa28ae8ddbe673be09a0f3818fd170d12b4ea8ef1ea8051e940",
+                )
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        all.iter().for_each(|x| {
+            println!("{}", x.data.lt);
+            asdds.insert(x.hash);
+        });
+        println!("Len: {}, Normal: {}", all.len(), asdds.len());
+        return;
 
         let contract = ton_abi::Contract::load(std::io::Cursor::new(ROOT_ABI)).unwrap();
         let fun = contract.function("getExpectedPairAddress").unwrap();
