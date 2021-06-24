@@ -60,58 +60,73 @@ pub async fn start(config: Config) -> Result<()> {
 
     let overlay = node_network.start().await?;
 
-    loop {
-        match overlay.wait_broadcast().await {
-            Ok((broadcast, peer_id)) => {
-                //log::warn!("Broadcast {:?} from {}", broadcast, peer_id)
-                match broadcast {
-                    ton::ton_node::Broadcast::TonNode_BlockBroadcast(block) => {
-                        log::warn!("Got new block: {}", block.id.seqno);
-                    }
-                    _ => {}
-                }
-            }
-            Err(e) => {
-                log::error!("Failed to wait broadcast: {:?}", e);
-            }
-        }
-    }
+    // loop {
+    //     match overlay.wait_broadcast().await {
+    //         Ok((broadcast, peer_id)) => {
+    //             //log::warn!("Broadcast {:?} from {}", broadcast, peer_id)
+    //             match broadcast {
+    //                 ton::ton_node::Broadcast::TonNode_BlockBroadcast(block) => {
+    //                     log::warn!("Got new block: {}", block.id.seqno);
+    //                 }
+    //                 _ => {}
+    //             }
+    //         }
+    //         Err(e) => {
+    //             log::error!("Failed to wait broadcast: {:?}", e);
+    //         }
+    //     }
+    // }
 
-    // let mut block_id = ton_block::BlockIdExt {
-    //     shard_id: ton_block::ShardIdent::with_tagged_prefix(
-    //         zero_state.workchain,
-    //         zero_state.shard as u64,
-    //     )
-    //     .unwrap(),
-    //     seq_no: zero_state.seqno as u32,
-    //     root_hash: zero_state.root_hash.into(),
-    //     file_hash: zero_state.file_hash.into(),
-    // };
+    let mut block_id = ton_block::BlockIdExt {
+        shard_id: ton_block::ShardIdent::with_tagged_prefix(
+            zero_state.workchain,
+            zero_state.shard as u64,
+        )
+        .unwrap(),
+        seq_no: zero_state.seqno as u32,
+        root_hash: zero_state.root_hash.into(),
+        file_hash: zero_state.file_hash.into(),
+    };
     //
     // loop {
-    //     log::info!("Downloading block {}", block_id.seq_no);
-    //     match overlay.download_next_key_blocks_ids(&block_id, 5).await {
-    //         Ok(blocks) => {
-    //             log::info!("Downloaded key blocks:");
-    //             for block in blocks.iter() {
-    //                 log::warn!("--- keyblock id: {}", block.seq_no);
-    //             }
-    //
-    //             if let Some(block) = blocks.last() {
-    //                 block_id = block.clone();
-    //             }
-    //
-    //             blocks.into_iter().map(|block_id| {
-    //                 overlay.download_next_block_full(&block_id)
-    //             }).collect::<futures::stream::FuturesUnordered>()
-    //
+    //     log::info!("Downloading block {}", block_id.seq_no + 1);
+    //     match overlay.download_next_block_full(&block_id).await {
+    //         Ok(Some(block)) => {
+    //             log::info!("Downloaded blocks: {:?}", block);
+    //             continue;
+    //         }
+    //         Ok(None) => {
+    //             log::info!("No blocks found");
     //             continue;
     //         }
     //         Err(e) => {
-    //             log::error!("Failed to load key blocks: {}", e);
+    //             log::error!("Failed to load block: {}", e);
     //         }
     //     }
     //
     //     tokio::time::sleep(Duration::from_millis(10)).await;
     // }
+
+    loop {
+        log::info!("Fetching key block ids {}", block_id.seq_no);
+        match overlay.download_next_key_blocks_ids(&block_id, 5).await {
+            Ok(blocks) => {
+                log::info!("Got key block ids for:");
+                for block in blocks.iter() {
+                    log::warn!("--- keyblock: {}", block.seq_no);
+                }
+
+                if let Some(block) = blocks.last() {
+                    block_id = block.clone();
+                }
+
+                continue;
+            }
+            Err(e) => {
+                log::error!("Failed to load key blocks: {}", e);
+            }
+        }
+
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
 }

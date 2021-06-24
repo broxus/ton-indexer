@@ -1,5 +1,3 @@
-mod awaiters_pool;
-
 use std::convert::{TryFrom, TryInto};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -14,7 +12,6 @@ use ton_api::{BoxedDeserialize, BoxedSerialize, Deserializer};
 
 use crate::block::{convert_block_id_ext_api2blk, convert_block_id_ext_blk2api, BlockStuff};
 use crate::config::Config;
-use crate::network::awaiters_pool::AwaitersPool;
 
 pub struct NodeNetwork {
     adnl: Arc<AdnlNode>,
@@ -23,8 +20,8 @@ pub struct NodeNetwork {
     rldp: Arc<RldpNode>,
     masterchain_overlay_short_id: OverlayIdShort,
     masterchain_overlay_id: OverlayIdFull,
-    overlays: Arc<DashMap<OverlayIdShort, Arc<NodeClientOverlay>>>,
-    overlay_awaiters: AwaitersPool<OverlayIdShort, Arc<dyn FullNodeOverlayClient>>,
+    overlays: Arc<DashMap<OverlayIdShort, Arc<OverlayClient>>>,
+    overlay_awaiters: OperationsPool<OverlayIdShort, Arc<dyn FullNodeOverlayClient>>,
 }
 
 impl NodeNetwork {
@@ -78,7 +75,7 @@ impl NodeNetwork {
             masterchain_overlay_short_id,
             masterchain_overlay_id,
             overlays: Arc::new(Default::default()),
-            overlay_awaiters: AwaitersPool::new("overlay_awaiters"),
+            overlay_awaiters: OperationsPool::new("overlay_operations"),
         });
 
         Ok(node_network)
@@ -94,7 +91,6 @@ impl NodeNetwork {
             .await?;
 
         let overlay = self
-            .clone()
             .get_overlay(
                 self.masterchain_overlay_id,
                 self.masterchain_overlay_short_id,
@@ -102,6 +98,11 @@ impl NodeNetwork {
             .await?;
 
         Ok(overlay)
+    }
+
+    pub fn add_masterchain_subscriber(&self, consumer: Arc<dyn OverlaySubscriber>) {
+        self.overlay
+            .add_subscriber(self.masterchain_overlay_short_id, consumer);
     }
 
     async fn get_overlay(
@@ -119,7 +120,7 @@ impl NodeNetwork {
                 .do_or_wait(
                     &overlay_id,
                     None,
-                    self.clone().get_overlay_worker(overlay_full_id, overlay_id),
+                    self.get_overlay_worker(overlay_full_id, overlay_id),
                 )
                 .await?;
 
@@ -134,8 +135,6 @@ impl NodeNetwork {
         overlay_full_id: OverlayIdFull,
         overlay_id: OverlayIdShort,
     ) -> Result<Arc<dyn FullNodeOverlayClient>> {
-        use dashmap::mapref::entry::Entry;
-
         self.overlay.add_public_overlay(&overlay_id)?;
         let node = self.overlay.get_signed_node(&overlay_id)?;
 
@@ -148,25 +147,25 @@ impl NodeNetwork {
 
         let neighbours = Neighbours::new(&self.dht, &self.overlay, &overlay_id, &peers);
 
-        let client_overlay = Arc::new(NodeClientOverlay::new(
-            overlay_id,
+        let overlay_client = Arc::new(OverlayClient::new(
             self.overlay.clone(),
             self.rldp.clone(),
             neighbours.clone(),
+            overlay_id,
         ));
 
         neighbours.start_pinging_neighbours();
         neighbours.start_reloading_neighbours();
         neighbours.start_searching_peers();
 
-        self.start_update_peers(&client_overlay);
+        self.start_updating_peers(&overlay_client);
 
         NodeNetwork::process_overlay_peers(&neighbours, &self.dht, &self.overlay, &overlay_id);
 
         let result = self
             .overlays
             .entry(overlay_id)
-            .or_insert(client_overlay)
+            .or_insert(overlay_client)
             .clone();
 
         Ok(result as Arc<dyn FullNodeOverlayClient>)
@@ -196,30 +195,30 @@ impl NodeNetwork {
 
     async fn update_peers(
         &self,
-        client_overlay: &Arc<NodeClientOverlay>,
+        overlay_client: &Arc<OverlayClient>,
         iter: &mut Option<ExternalDhtIter>,
     ) -> Result<()> {
         let mut peers = self
-            .update_overlay_peers(client_overlay.overlay_id(), iter)
+            .update_overlay_peers(overlay_client.overlay_id(), iter)
             .await?;
-        while let Some(peer) = peers.pop() {
-            client_overlay.peers().add(peer);
+        for peer_id in peers {
+            overlay_client.neighbours().add(peer_id);
         }
         Ok(())
     }
 
-    fn start_update_peers(self: &Arc<Self>, client_overlay: &Arc<NodeClientOverlay>) {
+    fn start_updating_peers(self: &Arc<Self>, overlay_client: &Arc<OverlayClient>) {
         let network = self.clone();
-        let client_overlay = client_overlay.clone();
+        let overlay_client = overlay_client.clone();
 
         tokio::spawn(async move {
             let mut iter = None;
             loop {
                 log::trace!("find overlay nodes by dht...");
-                if let Err(e) = network.update_peers(&client_overlay, &mut iter).await {
+                if let Err(e) = network.update_peers(&overlay_client, &mut iter).await {
                     log::warn!("Error find overlay nodes by dht: {}", e);
                 }
-                if client_overlay.peers().len() >= MAX_NEIGHBOURS {
+                if overlay_client.neighbours().len() >= MAX_NEIGHBOURS {
                     log::trace!("finish find overlay nodes.");
                     return;
                 }
@@ -325,11 +324,6 @@ impl NodeNetwork {
             }
         });
     }
-
-    pub fn add_masterchain_subscriber(&self, consumer: Arc<dyn OverlaySubscriber>) {
-        self.overlay
-            .add_subscriber(self.masterchain_overlay_short_id, consumer);
-    }
 }
 
 #[async_trait::async_trait]
@@ -354,7 +348,7 @@ pub trait FullNodeOverlayClient: Send + Sync {
 }
 
 #[async_trait::async_trait]
-impl FullNodeOverlayClient for NodeClientOverlay {
+impl FullNodeOverlayClient for OverlayClient {
     async fn download_zero_state(
         &self,
         id: &ton_block::BlockIdExt,
@@ -366,7 +360,7 @@ impl FullNodeOverlayClient for NodeClientOverlay {
                     block: convert_block_id_ext_blk2api(id),
                 }),
                 None,
-                Some(Self::TIMEOUT_PREPARE),
+                Some(PREPARE_TIMEOUT),
                 None,
             )
             .await?;
@@ -379,21 +373,22 @@ impl FullNodeOverlayClient for NodeClientOverlay {
         &self,
         prev_id: &ton_block::BlockIdExt,
     ) -> Result<Option<BlockStuff>> {
-        let request = &rpc::ton_node::DownloadNextBlockFull {
+        const NO_NEIGHBOURS_DELAY: u64 = 1000; // Milliseconds
+
+        let query = &rpc::ton_node::DownloadNextBlockFull {
             prev_block: convert_block_id_ext_blk2api(prev_id),
         };
 
-        let neighbour = if let Some(neighbour) = self.neighbours.choose_neighbour() {
+        let neighbour = if let Some(neighbour) = self.neighbours().choose_neighbour() {
             neighbour
         } else {
-            tokio::time::sleep(Duration::from_millis(Self::TIMEOUT_NO_NEIGHBOURS)).await;
+            tokio::time::sleep(Duration::from_millis(NO_NEIGHBOURS_DELAY)).await;
             return Err(anyhow!("neighbour is not found!"));
         };
-        log::trace!("USE PEER {}, REQUEST {:?}", neighbour.peer_id(), request);
+        log::trace!("USE PEER {}, REQUEST {:?}", neighbour.peer_id(), query);
 
         // Download
-        let data_full: ton::ton_node::DataFull =
-            self.send_rldp_query_typed(request, neighbour, 0).await?;
+        let data_full: ton::ton_node::DataFull = self.send_rldp_query(query, neighbour, 0).await?;
 
         // Parse
         match data_full {
@@ -427,10 +422,8 @@ impl FullNodeOverlayClient for NodeClientOverlay {
     }
 
     async fn wait_broadcast(&self) -> Result<(ton::ton_node::Broadcast, AdnlNodeIdShort)> {
-        let receiver = self.overlay.clone();
-        let id = self.overlay_id.clone();
         loop {
-            match receiver.wait_for_broadcast(&id).await {
+            match self.overlay().wait_for_broadcast(self.overlay_id()).await {
                 Ok(info) => {
                     let answer: ton::ton_node::Broadcast =
                         Deserializer::new(&mut std::io::Cursor::new(info.data))
@@ -444,257 +437,4 @@ impl FullNodeOverlayClient for NodeClientOverlay {
     }
 }
 
-#[derive(Clone)]
-pub struct NodeClientOverlay {
-    overlay_id: OverlayIdShort,
-    overlay: Arc<OverlayNode>,
-    rldp: Arc<RldpNode>,
-    neighbours: Arc<Neighbours>,
-}
-
-impl NodeClientOverlay {
-    const ADNL_ATTEMPTS: u32 = 50;
-    const TIMEOUT_PREPARE: u64 = 6000; // Milliseconds
-    const TIMEOUT_DELTA: u64 = 50; // Milliseconds
-    const TIMEOUT_NO_NEIGHBOURS: u64 = 1000; // Milliseconds
-
-    pub fn new(
-        overlay_id: OverlayIdShort,
-        overlay: Arc<OverlayNode>,
-        rldp: Arc<RldpNode>,
-        peers: Arc<Neighbours>,
-    ) -> Self {
-        Self {
-            overlay_id,
-            overlay,
-            rldp,
-            neighbours: peers,
-        }
-    }
-
-    pub fn overlay_id(&self) -> &OverlayIdShort {
-        &self.overlay_id
-    }
-
-    pub fn overlay(&self) -> &Arc<OverlayNode> {
-        &self.overlay
-    }
-
-    pub fn peers(&self) -> &Arc<Neighbours> {
-        &self.neighbours
-    }
-
-    async fn send_adnl_query_to_peer<R, D>(
-        &self,
-        neighbour: &Arc<Neighbour>,
-        data: &TLObject,
-        timeout: Option<u64>,
-    ) -> Result<Option<D>>
-    where
-        R: ton_api::AnyBoxedSerialize,
-        D: ton_api::AnyBoxedSerialize,
-    {
-        let request_str = if log::log_enabled!(log::Level::Trace) {
-            format!("ADNL {}", std::any::type_name::<R>())
-        } else {
-            String::default()
-        };
-        log::trace!("USE PEER {}, {}", neighbour.peer_id(), request_str);
-
-        let now = Instant::now();
-        let timeout = timeout.or_else(|| Some(compute_timeout(neighbour.roundtrip_adnl())));
-        let answer = self
-            .overlay
-            .query(&self.overlay_id, neighbour.peer_id(), &data, timeout)
-            .await?;
-
-        let roundtrip = now.elapsed().as_millis() as u64;
-
-        if let Some(answer) = answer {
-            match answer.downcast::<D>() {
-                Ok(answer) => {
-                    neighbour.query_succeeded(roundtrip, false);
-                    return Ok(Some(answer));
-                }
-                Err(obj) => {
-                    log::warn!(
-                        "Wrong answer {:?} to {:?} from {}",
-                        obj,
-                        data,
-                        neighbour.peer_id()
-                    )
-                }
-            }
-        } else {
-            log::warn!("No reply to {:?} from {}", data, neighbour.peer_id())
-        }
-
-        self.neighbours
-            .update_neighbour_stats(neighbour.peer_id(), roundtrip, false, false, true);
-        Ok(None)
-    }
-
-    // use this function if request size and answer size < 768 bytes (send query via ADNL)
-    async fn send_adnl_query<R, D>(
-        &self,
-        request: R,
-        attempts: Option<u32>,
-        timeout: Option<u64>,
-        active_peers: Option<&Arc<DashSet<AdnlNodeIdShort>>>,
-    ) -> Result<(D, Arc<Neighbour>)>
-    where
-        R: ton_api::AnyBoxedSerialize,
-        D: ton_api::AnyBoxedSerialize,
-    {
-        let data = TLObject::new(request);
-        let attempts = attempts.unwrap_or(Self::ADNL_ATTEMPTS);
-
-        for _ in 0..attempts {
-            let neighbour = if let Some(neighbour) = self.neighbours.choose_neighbour() {
-                neighbour
-            } else {
-                tokio::time::sleep(Duration::from_millis(Self::TIMEOUT_NO_NEIGHBOURS)).await;
-                anyhow::bail!("Neighbour not found")
-            };
-
-            if let Some(active_peers) = &active_peers {
-                active_peers.insert(*neighbour.peer_id());
-            }
-
-            match self
-                .send_adnl_query_to_peer::<R, D>(&neighbour, &data, timeout)
-                .await
-            {
-                Err(e) => {
-                    if let Some(active_peers) = &active_peers {
-                        active_peers.remove(neighbour.peer_id());
-                    }
-                    return Err(e);
-                }
-                Ok(Some(answer)) => return Ok((answer, neighbour)),
-                Ok(None) => {
-                    if let Some(active_peers) = &active_peers {
-                        active_peers.remove(neighbour.peer_id());
-                    }
-                }
-            }
-        }
-
-        Err(anyhow!(
-            "Cannot send query {:?} in {} attempts",
-            data,
-            attempts
-        ))
-    }
-
-    async fn send_rldp_query_raw<T>(
-        &self,
-        request: &T,
-        peer: Arc<Neighbour>,
-        attempt: u32,
-    ) -> Result<Vec<u8>>
-    where
-        T: BoxedSerialize + std::fmt::Debug,
-    {
-        let (answer, peer, roundtrip) = self.send_rldp_query(request, peer, attempt).await?;
-        peer.query_succeeded(roundtrip, true);
-        Ok(answer)
-    }
-
-    async fn send_rldp_query_typed<T, D>(
-        &self,
-        request: &T,
-        neighbour: Arc<Neighbour>,
-        attempt: u32,
-    ) -> Result<D>
-    where
-        T: BoxedSerialize + std::fmt::Debug,
-        D: BoxedDeserialize,
-    {
-        let (answer, peer, roundtrip) = self.send_rldp_query(request, neighbour, attempt).await?;
-        match Deserializer::new(&mut std::io::Cursor::new(answer)).read_boxed() {
-            Ok(data) => {
-                peer.query_succeeded(roundtrip, true);
-                Ok(data)
-            }
-            Err(e) => {
-                self.neighbours.update_neighbour_stats(
-                    peer.peer_id(),
-                    roundtrip,
-                    false,
-                    true,
-                    true,
-                );
-                Err(anyhow!(e))
-            }
-        }
-    }
-
-    async fn send_rldp_query<T>(
-        &self,
-        request: &T,
-        neighbour: Arc<Neighbour>,
-        attempt: u32,
-    ) -> Result<(Vec<u8>, Arc<Neighbour>, u64)>
-    where
-        T: BoxedSerialize + std::fmt::Debug,
-    {
-        let mut query = self
-            .overlay
-            .get_query_prefix(&self.overlay_id)
-            .map_err(|e| anyhow!("Failed to get query prefix: {}", e))?;
-
-        serialize_append(&mut query, request)
-            .map_err(|e| anyhow!("Failed to serialize query: {}", e))?;
-        let data = Arc::new(query);
-
-        let request_str = if log::log_enabled!(log::Level::Trace) {
-            std::any::type_name::<T>().to_string()
-        } else {
-            String::default()
-        };
-
-        log::trace!("USE PEER {}, {}", neighbour.peer_id(), request_str);
-
-        let (answer, roundtrip) = self
-            .overlay
-            .query_via_rldp(
-                &self.overlay_id,
-                neighbour.peer_id(),
-                &data,
-                &self.rldp,
-                Some(10 * 1024 * 1024),
-                neighbour
-                    .roundtrip_rldp()
-                    .map(|t| t + attempt as u64 * Self::TIMEOUT_DELTA),
-            )
-            .await
-            .map_err(|e| anyhow!("RLDP query failed: {}", e))?;
-
-        if let Some(answer) = answer {
-            Ok((answer, neighbour, roundtrip))
-        } else {
-            self.neighbours.update_neighbour_stats(
-                neighbour.peer_id(),
-                roundtrip,
-                false,
-                true,
-                true,
-            );
-            Err(anyhow!(
-                "No RLDP answer to {:?} from {}",
-                request,
-                neighbour.peer_id()
-            ))
-        }
-    }
-}
-
-pub fn compute_timeout(roundtrip: Option<u64>) -> u64 {
-    let timeout = roundtrip.unwrap_or(AdnlNode::MAX_QUERY_TIMEOUT);
-    if timeout < AdnlNode::MIN_QUERY_TIMEOUT {
-        AdnlNode::MIN_QUERY_TIMEOUT
-    } else {
-        timeout
-    }
-}
+const PREPARE_TIMEOUT: u64 = 6000; // Milliseconds
