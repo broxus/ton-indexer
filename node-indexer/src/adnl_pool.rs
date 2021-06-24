@@ -25,7 +25,7 @@ impl bb8::ManageConnection for AdnlManageConnection {
         let client = AdnlTcpClient::connect(self.config.clone())
             .await
             .map_err(|e| {
-                log::error!("Connection error: {:?}", e);
+                log::error!("Failed getting new adnl connection: {:?}", e);
                 Error::msg(e.to_string())
             })?;
 
@@ -35,9 +35,17 @@ impl bb8::ManageConnection for AdnlManageConnection {
     }
 
     async fn is_valid(&self, conn: &mut PooledConnection<'_, Self>) -> Result<(), Self::Error> {
-        conn.ping(10)
+        let result = conn
+            .ping(10)
             .await
-            .map_err(|e| e.context("Connection is invalid"))
+            .map_err(|e| e.context("Connection is invalid"));
+        match result {
+            Ok(_) => Ok(()),
+            Err(e) => {
+                log::warn!("Adnl connection is invalid: {}", e);
+                Err(e)
+            }
+        }
     }
 
     fn has_broken(&self, conn: &mut Self::Connection) -> bool {

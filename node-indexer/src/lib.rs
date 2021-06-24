@@ -85,7 +85,7 @@ async fn acquire_connection(
     pool: &Pool<AdnlManageConnection>,
 ) -> QueryResult<PooledConnection<'_, AdnlManageConnection>> {
     pool.get().await.map_err(|e| {
-        log::error!("connection error: {:#?}", e);
+        log::error!("Failed getting connection from pool: {:#?}", e);
         QueryError::ConnectionError
     })
 }
@@ -197,7 +197,7 @@ impl NodeClient {
                     .send(current_block.clone())
                     .await
                     .expect("Channel is broken");
-                let query_count = (blocks_diff / 10).max(1).min((pool_size as i32) * 8);
+                let query_count = (blocks_diff / 10).max(1).min((pool_size as i32) * 4);
                 log::debug!("Query count: {}, diff: {}", query_count, blocks_diff);
                 let block = get_block_id(
                     &self.pool,
