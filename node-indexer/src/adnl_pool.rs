@@ -35,8 +35,9 @@ impl bb8::ManageConnection for AdnlManageConnection {
     }
 
     async fn is_valid(&self, conn: &mut PooledConnection<'_, Self>) -> Result<(), Self::Error> {
-        conn.ping(10).await?;
-        Ok(())
+        conn.ping(10)
+            .await
+            .map_err(|e| e.context("Connection is invalid"))
     }
 
     fn has_broken(&self, conn: &mut Self::Connection) -> bool {

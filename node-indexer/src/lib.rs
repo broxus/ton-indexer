@@ -198,7 +198,7 @@ impl NodeClient {
                     .await
                     .expect("Channel is broken");
                 let query_count = (blocks_diff / 10).max(1).min((pool_size as i32) * 8);
-                log::info!("Query count: {}, diff: {}", query_count, blocks_diff);
+                log::debug!("Query count: {}, diff: {}", query_count, blocks_diff);
                 let block = get_block_id(
                     &self.pool,
                     BlockId {
@@ -479,7 +479,7 @@ impl NodeClient {
                 match step_result {
                     Ok(a) => {
                         let IndexerStepResult { good, bad } = a;
-                        log::debug!("Good: {}, Bad: {}", good.len(), bad.len());
+                        log::info!("Good: {}, Bad: {}", good.len(), bad.len());
                         if let Err(e) = mc_blocks.send(block_id).await {
                             log::error!("Failed sending block id: {}", e);
                         }
@@ -524,7 +524,7 @@ impl NodeClient {
         extra
             .shards()
             .iterate_shards(|shard_id, shard| {
-                log::debug!("Shard id: {:?}, shard block: {}", shard_id, shard.seq_no);
+                log::trace!("Shard id: {:?}, shard block: {}", shard_id, shard.seq_no);
                 let idxr = self.clone();
                 let task = idxr.process_shard(shard_id, shard);
                 futs.push(task);
@@ -561,7 +561,7 @@ impl NodeClient {
             .or_insert(current_seqno)
             .value();
 
-        log::debug!(
+        log::trace!(
             "Processing blocks {} in shard {:016x}.",
             current_seqno - last_known_block,
             shard_id,

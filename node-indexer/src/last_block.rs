@@ -49,12 +49,12 @@ impl LastBlock {
             }
         };
 
-        log::debug!("Getting mc block");
+        log::trace!("Getting mc block");
         let id = query(connection, ton::rpc::lite_server::GetMasterchainInfo)
             .await
             .map(|result| result.only().last);
 
-        log::debug!("Got mc block");
+        log::trace!("Got mc block");
 
         let mut new_id = self.id.write();
         *new_id = Some((id.clone(), now));
