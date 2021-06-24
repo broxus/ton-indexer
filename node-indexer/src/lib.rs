@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::convert::TryInto;
 use std::net::{Ipv4Addr, SocketAddrV4};
 use std::sync::Arc;
@@ -51,6 +50,8 @@ pub fn default_mainnet_config() -> AdnlTcpClientConfig {
     AdnlTcpClientConfig {
         server_address: SocketAddrV4::new(Ipv4Addr::new(54, 158, 97, 195), 3031),
         server_key: ed25519_dalek::PublicKey::from_bytes(&key).unwrap(),
+        socket_read_timeout: Duration::from_secs(10),
+        socket_send_timeout: Duration::from_secs(10),
     }
 }
 
@@ -97,29 +98,33 @@ struct IndexerStepResult {
 async fn bad_block_resolver<S>(
     mut bad_block_queue: tokio::sync::mpsc::UnboundedReceiver<BlockId>,
     pool: Pool<AdnlManageConnection>,
-    mut sink: S,
+    sink: S,
 ) where
     S: Sink<ton_block::Block> + Clone + Send + Sync + Unpin + 'static,
     <S as futures::Sink<ton_block::Block>>::Error: std::error::Error,
 {
-    let mut bad = HashMap::new();
     while let Some(id) = bad_block_queue.recv().await {
-        match query_block_by_seqno(pool.clone(), id.clone()).await {
-            Ok(a) => {
-                if let Err(e) = sink.send(a).await {
-                    log::error!("Failed sending answer: {}", e);
+        tokio::spawn({
+            let pool = pool.clone();
+            let id = id.clone();
+            let mut tx = sink.clone();
+            async move {
+                let result = tryhard::retry_fn(|| query_block_by_seqno(pool.clone(), id.clone()))
+                    .retries(10)
+                    .exponential_backoff(Duration::from_secs(1))
+                    .await;
+                match result {
+                    Ok(a) => {
+                        if let Err(e) = tx.send(a).await {
+                            log::error!("Failed sending via channel: {}", e)
+                        }
+                    }
+                    Err(e) => {
+                        log::error!("Failed querying info about block: {}", e);
+                    }
                 }
-                bad.remove(&id);
             }
-            Err(e) => {
-                log::error!("Failed quering info about block: {}", e);
-                let entry = bad.entry(id.clone()).or_insert(5);
-                *entry -= 1;
-                if *entry == 0 {
-                    bad.remove(&id);
-                }
-            }
-        };
+        });
     }
 }
 
@@ -159,6 +164,7 @@ impl NodeClient {
             })
             .retries(100)
             .exponential_backoff(Duration::from_secs(1))
+            .max_delay(Duration::from_secs(600))
             .await
         }
         let top_block = tryhard::retry_fn(|| self.last_block.get_last_block(self.pool.clone()))
@@ -176,8 +182,9 @@ impl NodeClient {
         macro_rules! get_last_block {
             () => {
                 tryhard::retry_fn(|| self.last_block.get_last_block(self.pool.clone()))
-                    .retries(10)
+                    .retries(100)
                     .exponential_backoff(Duration::from_secs(1))
+                    .max_delay(Duration::from_secs(600))
                     .await
                     .expect("Fatal block producer error");
             };
@@ -472,7 +479,7 @@ impl NodeClient {
                 match step_result {
                     Ok(a) => {
                         let IndexerStepResult { good, bad } = a;
-
+                        log::debug!("Good: {}, Bad: {}", good.len(), bad.len());
                         if let Err(e) = mc_blocks.send(block_id).await {
                             log::error!("Failed sending block id: {}", e);
                         }
@@ -536,7 +543,6 @@ impl NodeClient {
             },
         );
 
-        log::info!("Good: {}", ok.len());
         Ok(IndexerStepResult { good: ok, bad })
     }
 
