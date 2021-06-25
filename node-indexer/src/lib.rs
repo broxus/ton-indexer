@@ -104,6 +104,7 @@ async fn bad_block_resolver<S>(
     <S as futures::Sink<ton_block::Block>>::Error: std::error::Error,
 {
     while let Some(id) = bad_block_queue.recv().await {
+        log::debug!("Bad block added to queue");
         tokio::spawn({
             let pool = pool.clone();
             let id = id.clone();
@@ -120,7 +121,7 @@ async fn bad_block_resolver<S>(
                         }
                     }
                     Err(e) => {
-                        log::error!("Failed querying info about block: {}", e);
+                        log::error!("Failed querying info about bad block: {}", e);
                     }
                 }
             }
@@ -248,12 +249,20 @@ impl NodeClient {
         &self,
         contract_address: MsgAddressInt,
     ) -> Result<Vec<RawTransaction>> {
-        let mut all_transactions = Vec::new();
+        let mut all_transactions = Vec::with_capacity(16);
         let mut tx_id = None;
         loop {
-            let mut res = self
+            let mut res = match self
                 .get_transactions(contract_address.clone(), tx_id, 16)
-                .await?;
+                .await
+            {
+                Ok(a) => a,
+                Err(e) => {
+                    log::error!("Failed getting transactions: {}", e);
+                    return Ok(all_transactions);
+                }
+            };
+
             if res.is_empty() {
                 log::debug!("Empty answer, no more transactions");
                 break;
@@ -349,19 +358,14 @@ impl NodeClient {
             address: MsgAddressInt,
             from: Option<TransactionId>,
             count: u8,
-        ) -> Result<Vec<u8>> {
+        ) -> Result<Option<Vec<u8>>> {
             let from = match from {
                 Some(id) => id,
                 None => match client.get_contract_state(address.clone()).await? {
                     RawContractState::Exists(contract) => {
                         contract.last_transaction_id.to_transaction_id()
                     }
-                    RawContractState::NotExists => {
-                        let transactions =
-                            ton_types::serialize_toc(&ton_types::Cell::default()).unwrap();
-
-                        return Ok(transactions);
-                    }
+                    RawContractState::NotExists => return Ok(None),
                 },
             };
 
@@ -381,9 +385,12 @@ impl NodeClient {
             )
             .await?;
 
-            Ok(response.transactions().0.clone())
+            Ok(Some(response.transactions().0.clone()))
         }
-        let data = get_transactions_inner(self, address, from, count).await?;
+        let data = match get_transactions_inner(self, address, from, count).await? {
+            None => return Ok(Vec::new()),
+            Some(a) => a,
+        };
         let transactions = match ton_types::deserialize_cells_tree(&mut std::io::Cursor::new(data))
         {
             Ok(a) => a,
@@ -394,7 +401,7 @@ impl NodeClient {
         };
 
         let mut result = Vec::with_capacity(transactions.len());
-        for item in transactions.into_iter().rev() {
+        for item in transactions {
             result.push(RawTransaction {
                 hash: item.repr_hash(),
                 data: ton_block::Transaction::construct_from_cell(item)
@@ -465,7 +472,7 @@ impl NodeClient {
                     }
                 };
 
-                log::debug!("Indexer step. Id: {}", block.seqno);
+                log::trace!("Indexer step. Id: {}", block.seqno);
                 let block_id = BlockId {
                     workchain: block.workchain,
                     shard: block.shard,
@@ -479,7 +486,7 @@ impl NodeClient {
                 match step_result {
                     Ok(a) => {
                         let IndexerStepResult { good, bad } = a;
-                        log::info!("Good: {}, Bad: {}", good.len(), bad.len());
+                        log::trace!("Good: {}, Bad: {}", good.len(), bad.len());
                         if let Err(e) = mc_blocks.send(block_id).await {
                             log::error!("Failed sending block id: {}", e);
                         }
