@@ -162,7 +162,7 @@ impl NodeClient {
                 let id = id.clone();
                 get_block_ext_id(pool.clone(), id).await
             })
-            .retries(100)
+            .retries(20)
             .exponential_backoff(Duration::from_secs(1))
             .max_delay(Duration::from_secs(600))
             .await
@@ -182,7 +182,7 @@ impl NodeClient {
         macro_rules! get_last_block {
             () => {
                 tryhard::retry_fn(|| self.last_block.get_last_block(self.pool.clone()))
-                    .retries(100)
+                    .retries(20)
                     .exponential_backoff(Duration::from_secs(1))
                     .max_delay(Duration::from_secs(600))
                     .await
