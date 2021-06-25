@@ -3,6 +3,7 @@ use bb8::PooledConnection;
 use std::sync::Arc;
 
 use std::sync::atomic::Ordering;
+use std::time::Duration;
 use tiny_adnl::{AdnlTcpClient, AdnlTcpClientConfig};
 
 pub struct AdnlManageConnection {
@@ -36,7 +37,7 @@ impl bb8::ManageConnection for AdnlManageConnection {
 
     async fn is_valid(&self, conn: &mut PooledConnection<'_, Self>) -> Result<(), Self::Error> {
         let result = conn
-            .ping(10)
+            .ping(Duration::from_secs(10))
             .await
             .map_err(|e| e.context("Connection is invalid"));
         match result {
