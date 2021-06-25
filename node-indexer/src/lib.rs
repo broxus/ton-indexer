@@ -300,7 +300,7 @@ impl NodeClient {
                     anyhow::bail!("InvalidAccountStateProof")
                 }
 
-                let merkle_proof = ton_block::MerkleProof::construct_from_cell(q_roots[0].clone())
+                let merkle_proof = ton_block::MerkleProof::construct_from_cell(q_roots[1].clone())
                     .map_err(|_| anyhow::anyhow!("InvalidAccountStateProof"))?;
                 let proof_root = merkle_proof.proof.virtualize(1);
 
