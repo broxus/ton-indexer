@@ -10,8 +10,13 @@ use ton_api::ton::rpc;
 use ton_api::ton::{self, TLObject};
 use ton_api::{BoxedDeserialize, BoxedSerialize, Deserializer};
 
-use crate::block::{convert_block_id_ext_api2blk, convert_block_id_ext_blk2api, BlockStuff};
+pub use self::full_node_overlay_client::*;
+pub use self::full_node_overlay_service::*;
 use crate::config::Config;
+use crate::utils::*;
+
+mod full_node_overlay_client;
+mod full_node_overlay_service;
 
 pub struct NodeNetwork {
     adnl: Arc<AdnlNode>,
@@ -27,10 +32,6 @@ pub struct NodeNetwork {
 impl NodeNetwork {
     pub const TAG_DHT_KEY: usize = 1;
     pub const TAG_OVERLAY_KEY: usize = 2;
-
-    const PERIOD_CHECK_OVERLAY_NODES: u64 = 1; // seconds
-    const PERIOD_STORE_IP_ADDRESS: u64 = 500; // seconds
-    const PERIOD_UPDATE_PEERS: u64 = 5; // seconds
 
     pub async fn new(mut config: Config) -> Result<Arc<Self>> {
         let masterchain_zero_state_id = config.zero_state;
@@ -62,10 +63,10 @@ impl NodeNetwork {
         let masterchain_overlay_short_id = masterchain_overlay_id.compute_short_id()?;
 
         let dht_key = adnl.key_by_tag(Self::TAG_DHT_KEY)?;
-        NodeNetwork::periodic_store_ip_addr(&dht, &dht_key, None);
+        start_broadcasting_our_ip(dht.clone(), dht_key);
 
         let overlay_key = adnl.key_by_tag(Self::TAG_OVERLAY_KEY)?;
-        NodeNetwork::periodic_store_ip_addr(&dht, &overlay_key, None);
+        start_broadcasting_our_ip(dht.clone(), overlay_key);
 
         let node_network = Arc::new(NodeNetwork {
             adnl,
@@ -138,7 +139,7 @@ impl NodeNetwork {
         self.overlay.add_public_overlay(&overlay_id)?;
         let node = self.overlay.get_signed_node(&overlay_id)?;
 
-        NodeNetwork::periodic_store_overlay_node(self.dht.clone(), overlay_full_id, node);
+        start_broadcasting_our_node(self.dht.clone(), overlay_full_id, node);
 
         let peers = self.update_overlay_peers(&overlay_id, &mut None).await?;
         if peers.is_empty() {
@@ -160,7 +161,12 @@ impl NodeNetwork {
 
         self.start_updating_peers(&overlay_client);
 
-        NodeNetwork::process_overlay_peers(&neighbours, &self.dht, &self.overlay, &overlay_id);
+        start_processing_peers(
+            neighbours.clone(),
+            self.dht.clone(),
+            self.overlay.clone(),
+            overlay_id,
+        );
 
         let result = self
             .overlays
@@ -169,6 +175,45 @@ impl NodeNetwork {
             .clone();
 
         Ok(result as Arc<dyn FullNodeOverlayClient>)
+    }
+
+    fn start_updating_peers(self: &Arc<Self>, overlay_client: &Arc<OverlayClient>) {
+        const PEER_UPDATE_INTERVAL: u64 = 5; // Seconds
+
+        let network = self.clone();
+        let overlay_client = overlay_client.clone();
+
+        tokio::spawn(async move {
+            let mut iter = None;
+            loop {
+                log::trace!("find overlay nodes by dht...");
+
+                if let Err(e) = network.update_peers(&overlay_client, &mut iter).await {
+                    log::warn!("Error find overlay nodes by dht: {}", e);
+                }
+
+                if overlay_client.neighbours().len() >= MAX_NEIGHBOURS {
+                    log::trace!("finish find overlay nodes.");
+                    return;
+                }
+
+                tokio::time::sleep(Duration::from_secs(PEER_UPDATE_INTERVAL)).await;
+            }
+        });
+    }
+
+    async fn update_peers(
+        &self,
+        overlay_client: &OverlayClient,
+        iter: &mut Option<ExternalDhtIter>,
+    ) -> Result<()> {
+        let mut peers = self
+            .update_overlay_peers(overlay_client.overlay_id(), iter)
+            .await?;
+        for peer_id in peers {
+            overlay_client.neighbours().add(peer_id);
+        }
+        Ok(())
     }
 
     async fn update_overlay_peers(
@@ -192,249 +237,100 @@ impl NodeNetwork {
         }
         Ok(result)
     }
+}
 
-    async fn update_peers(
-        &self,
-        overlay_client: &Arc<OverlayClient>,
-        iter: &mut Option<ExternalDhtIter>,
-    ) -> Result<()> {
-        let mut peers = self
-            .update_overlay_peers(overlay_client.overlay_id(), iter)
-            .await?;
-        for peer_id in peers {
-            overlay_client.neighbours().add(peer_id);
-        }
-        Ok(())
-    }
+fn start_broadcasting_our_ip(dht: Arc<DhtNode>, key: Arc<StoredAdnlNodeKey>) {
+    const IP_BROADCASTING_INTERVAL: u64 = 500; // Seconds
 
-    fn start_updating_peers(self: &Arc<Self>, overlay_client: &Arc<OverlayClient>) {
-        let network = self.clone();
-        let overlay_client = overlay_client.clone();
-
-        tokio::spawn(async move {
-            let mut iter = None;
-            loop {
-                log::trace!("find overlay nodes by dht...");
-                if let Err(e) = network.update_peers(&overlay_client, &mut iter).await {
-                    log::warn!("Error find overlay nodes by dht: {}", e);
-                }
-                if overlay_client.neighbours().len() >= MAX_NEIGHBOURS {
-                    log::trace!("finish find overlay nodes.");
-                    return;
-                }
-                tokio::time::sleep(Duration::from_secs(Self::PERIOD_UPDATE_PEERS)).await;
+    tokio::spawn(async move {
+        loop {
+            if let Err(e) = dht.store_ip_address(&key).await {
+                log::warn!("store ip address is ERROR: {}", e)
             }
-        });
-    }
 
-    async fn add_overlay_peers(
-        neighbours: &Arc<Neighbours>,
-        dht: &Arc<DhtNode>,
-        overlay: &Arc<OverlayNode>,
-        overlay_id: &OverlayIdShort,
-    ) -> Result<()> {
-        let peers = overlay
-            .wait_for_peers(&overlay_id)
-            .await
-            .map_err(|e| anyhow!("Failed to wait for peers: {}", e))?;
+            tokio::time::sleep(Duration::from_secs(IP_BROADCASTING_INTERVAL)).await;
+        }
+    });
+}
 
-        for peer in peers.iter() {
-            let peer_full_id = AdnlNodeIdFull::try_from(&peer.id)?;
-            let peer_id = peer_full_id.compute_short_id()?;
+fn start_broadcasting_our_node(
+    dht: Arc<DhtNode>,
+    overlay_full_id: OverlayIdFull,
+    overlay_node: ton::overlay::node::Node,
+) {
+    const NODE_BROADCASTING_INTERVAL: u64 = 500; // Seconds
 
-            if neighbours.contains_overlay_peer(&peer_id) {
+    tokio::spawn(async move {
+        loop {
+            let result = dht
+                .store_overlay_node(&overlay_full_id, &overlay_node)
+                .await;
+
+            log::info!("overlay_store status: {:?}", result);
+
+            tokio::time::sleep(Duration::from_secs(NODE_BROADCASTING_INTERVAL)).await;
+        }
+    });
+}
+
+fn start_processing_peers(
+    neighbours: Arc<Neighbours>,
+    dht: Arc<DhtNode>,
+    overlay: Arc<OverlayNode>,
+    overlay_id: OverlayIdShort,
+) {
+    const PEERS_PROCESSING_INTERVAL: u64 = 1; // Seconds
+
+    tokio::spawn(async move {
+        loop {
+            if let Err(e) = process_overlay_peers(&neighbours, &dht, &overlay, &overlay_id).await {
+                log::warn!("add_overlay_peers: {}", e);
+            };
+
+            tokio::time::sleep(Duration::from_secs(PEERS_PROCESSING_INTERVAL)).await;
+        }
+    });
+}
+
+async fn process_overlay_peers(
+    neighbours: &Neighbours,
+    dht: &Arc<DhtNode>,
+    overlay: &OverlayNode,
+    overlay_id: &OverlayIdShort,
+) -> Result<()> {
+    let peers = overlay.wait_for_peers(overlay_id).await?;
+
+    for peer in peers {
+        let peer_id = match AdnlNodeIdFull::try_from(&peer.id)
+            .and_then(|full_id| full_id.compute_short_id())
+        {
+            Ok(peer_id) if !neighbours.contains_overlay_peer(&peer_id) => peer_id,
+            Ok(_) => continue,
+            Err(e) => {
+                log::warn!("Invalid peer id: {}", e);
                 continue;
             }
-
-            let ip = dht.find_address(&peer_id).await?.0;
-
-            overlay.add_public_peer(overlay_id, ip, peer)?;
-            neighbours.add_overlay_peer(peer_id);
-
-            log::trace!(
-                "add_overlay_peers: add overlay peer {:?}, address: {}",
-                peer,
-                ip
-            );
-        }
-        Ok(())
-    }
-
-    fn periodic_store_ip_addr(
-        dht: &Arc<DhtNode>,
-        node_key: &Arc<StoredAdnlNodeKey>,
-        validator_keys: Option<Arc<DashMap<AdnlNodeIdShort, usize>>>,
-    ) {
-        let dht = dht.clone();
-        let node_key = node_key.clone();
-
-        tokio::spawn(async move {
-            loop {
-                if let Err(e) = dht.store_ip_address(&node_key).await {
-                    log::warn!("store ip address is ERROR: {}", e)
-                }
-
-                tokio::time::sleep(Duration::from_secs(Self::PERIOD_STORE_IP_ADDRESS)).await;
-
-                if let Some(actual_validator_adnl_keys) = &validator_keys {
-                    if !actual_validator_adnl_keys.contains_key(node_key.id()) {
-                        break;
-                    }
-                }
-            }
-        });
-    }
-
-    fn periodic_store_overlay_node(
-        dht: Arc<DhtNode>,
-        overlay_full_id: OverlayIdFull,
-        overlay_node: ton::overlay::node::Node,
-    ) {
-        tokio::spawn(async move {
-            let overlay_node = overlay_node;
-            loop {
-                let result = dht
-                    .store_overlay_node(&overlay_full_id, &overlay_node)
-                    .await;
-                log::info!("overlay_store status: {:?}", result);
-                tokio::time::sleep(Duration::from_secs(Self::PERIOD_STORE_IP_ADDRESS)).await;
-            }
-        });
-    }
-
-    fn process_overlay_peers(
-        neighbours: &Arc<Neighbours>,
-        dht: &Arc<DhtNode>,
-        overlay: &Arc<OverlayNode>,
-        overlay_id: &OverlayIdShort,
-    ) {
-        let neighbours = neighbours.clone();
-        let dht = dht.clone();
-        let overlay = overlay.clone();
-        let overlay_id = *overlay_id;
-
-        tokio::spawn(async move {
-            loop {
-                if let Err(e) =
-                    Self::add_overlay_peers(&neighbours, &dht, &overlay, &overlay_id).await
-                {
-                    log::warn!("add_overlay_peers: {}", e);
-                };
-                tokio::time::sleep(Duration::from_secs(Self::PERIOD_CHECK_OVERLAY_NODES)).await;
-            }
-        });
-    }
-}
-
-#[async_trait::async_trait]
-pub trait FullNodeOverlayClient: Send + Sync {
-    async fn download_zero_state(
-        &self,
-        id: &ton_block::BlockIdExt,
-    ) -> Result<Option<ton_block::BlockIdExt>>;
-
-    async fn download_next_block_full(
-        &self,
-        prev_id: &ton_block::BlockIdExt,
-    ) -> Result<Option<BlockStuff>>;
-
-    async fn download_next_key_blocks_ids(
-        &self,
-        block_id: &ton_block::BlockIdExt,
-        max_size: i32,
-    ) -> Result<Vec<ton_block::BlockIdExt>>;
-
-    async fn wait_broadcast(&self) -> Result<(ton::ton_node::Broadcast, AdnlNodeIdShort)>;
-}
-
-#[async_trait::async_trait]
-impl FullNodeOverlayClient for OverlayClient {
-    async fn download_zero_state(
-        &self,
-        id: &ton_block::BlockIdExt,
-    ) -> Result<Option<ton_block::BlockIdExt>> {
-        // Prepare
-        let (prepare, _good_peer): (ton::ton_node::PreparedState, _) = self
-            .send_adnl_query(
-                TLObject::new(rpc::ton_node::PrepareZeroState {
-                    block: convert_block_id_ext_blk2api(id),
-                }),
-                None,
-                Some(PREPARE_TIMEOUT),
-                None,
-            )
-            .await?;
-
-        log::info!("Got prepared state: {:?}", prepare);
-        Ok(Some(id.clone()))
-    }
-
-    async fn download_next_block_full(
-        &self,
-        prev_id: &ton_block::BlockIdExt,
-    ) -> Result<Option<BlockStuff>> {
-        const NO_NEIGHBOURS_DELAY: u64 = 1000; // Milliseconds
-
-        let query = &rpc::ton_node::DownloadNextBlockFull {
-            prev_block: convert_block_id_ext_blk2api(prev_id),
         };
 
-        let neighbour = if let Some(neighbour) = self.neighbours().choose_neighbour() {
-            neighbour
-        } else {
-            tokio::time::sleep(Duration::from_millis(NO_NEIGHBOURS_DELAY)).await;
-            return Err(anyhow!("neighbour is not found!"));
+        let ip = match dht.find_address(&peer_id).await {
+            Ok((ip, _)) => ip,
+            Err(e) => {
+                log::warn!("Failed to find peer address: {}", e);
+                continue;
+            }
         };
-        log::trace!("USE PEER {}, REQUEST {:?}", neighbour.peer_id(), query);
 
-        // Download
-        let data_full: ton::ton_node::DataFull = self.send_rldp_query(query, neighbour, 0).await?;
+        overlay.add_public_peer(overlay_id, ip, &peer)?;
+        neighbours.add_overlay_peer(peer_id);
 
-        // Parse
-        match data_full {
-            ton::ton_node::DataFull::TonNode_DataFullEmpty => return Ok(None),
-            ton::ton_node::DataFull::TonNode_DataFull(data_full) => {
-                let id = convert_block_id_ext_api2blk(&data_full.id)?;
-                let block = BlockStuff::deserialize_checked(id, data_full.block.to_vec())?;
-                Ok(Some(block))
-            }
-        }
+        log::trace!(
+            "add_overlay_peers: add overlay peer {:?}, address: {}",
+            peer,
+            ip
+        );
     }
 
-    async fn download_next_key_blocks_ids(
-        &self,
-        block_id: &ton_block::BlockIdExt,
-        max_size: i32,
-    ) -> Result<Vec<ton_block::BlockIdExt>> {
-        let query = TLObject::new(ton::rpc::ton_node::GetNextKeyBlockIds {
-            block: convert_block_id_ext_blk2api(block_id),
-            max_size,
-        });
-
-        self.send_adnl_query(query, None, None, None)
-            .await
-            .and_then(|(ids, _): (ton::ton_node::KeyBlocks, _)| {
-                ids.blocks()
-                    .iter()
-                    .map(convert_block_id_ext_api2blk)
-                    .collect()
-            })
-    }
-
-    async fn wait_broadcast(&self) -> Result<(ton::ton_node::Broadcast, AdnlNodeIdShort)> {
-        loop {
-            match self.overlay().wait_for_broadcast(self.overlay_id()).await {
-                Ok(info) => {
-                    let answer: ton::ton_node::Broadcast =
-                        Deserializer::new(&mut std::io::Cursor::new(info.data))
-                            .read_boxed()
-                            .map_err(|e| anyhow::Error::msg(e.to_string()))?;
-                    break Ok((answer, info.from));
-                }
-                Err(e) => log::error!("broadcast waiting error: {}", e),
-            }
-        }
-    }
+    Ok(())
 }
 
 const PREPARE_TIMEOUT: u64 = 6000; // Milliseconds

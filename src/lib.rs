@@ -1,8 +1,3 @@
-mod block;
-mod config;
-mod network;
-mod utils;
-
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -13,49 +8,18 @@ use ton_api::ton::{self, TLObject};
 use ton_api::IntoBoxed;
 
 pub use crate::config::Config;
-use crate::network::{FullNodeOverlayClient, NodeNetwork};
+use crate::network::*;
 
-struct FullNodeService;
-
-#[async_trait::async_trait]
-impl OverlaySubscriber for FullNodeService {
-    async fn try_consume_query(
-        &self,
-        _local_id: &AdnlNodeIdShort,
-        _peer_id: &AdnlNodeIdShort,
-        query: TLObject,
-    ) -> Result<QueryConsumingResult> {
-        log::info!("Got query: {:?}", query);
-
-        let query = match query.downcast::<ton::rpc::ton_node::GetCapabilities>() {
-            Ok(_) => {
-                log::warn!("Got capabilities query");
-
-                let answer = TLObject::new(
-                    ton::ton_node::capabilities::Capabilities {
-                        version: 2,
-                        capabilities: 1,
-                    }
-                    .into_boxed(),
-                );
-
-                return Ok(QueryConsumingResult::Consumed(Some(QueryAnswer::Object(
-                    answer,
-                ))));
-            }
-            Err(query) => query,
-        };
-
-        Ok(QueryConsumingResult::Consumed(None))
-    }
-}
+mod config;
+mod network;
+mod utils;
 
 pub async fn start(config: Config) -> Result<()> {
     let zero_state = config.zero_state.clone();
 
     let node_network = NodeNetwork::new(config).await?;
 
-    let service = Arc::new(FullNodeService);
+    let service = FullNodeOverlayService::new();
     node_network.add_masterchain_subscriber(service.clone());
 
     let overlay = node_network.start().await?;
@@ -87,46 +51,45 @@ pub async fn start(config: Config) -> Result<()> {
         root_hash: zero_state.root_hash.into(),
         file_hash: zero_state.file_hash.into(),
     };
-    //
+
+    loop {
+        log::info!("Fetching zerostate");
+        match overlay.download_zero_state(&block_id).await {
+            Ok(Some((data, _))) => {
+                log::warn!("{:#?}", data);
+                break Ok(());
+            }
+            Ok(None) => {
+                log::warn!("Zerostate not found");
+            }
+            Err(e) => {
+                log::error!("Failed to load key blocks: {}", e);
+            }
+        };
+
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
     // loop {
-    //     log::info!("Downloading block {}", block_id.seq_no + 1);
-    //     match overlay.download_next_block_full(&block_id).await {
-    //         Ok(Some(block)) => {
-    //             log::info!("Downloaded blocks: {:?}", block);
-    //             continue;
-    //         }
-    //         Ok(None) => {
-    //             log::info!("No blocks found");
+    //     log::info!("Fetching key block ids {}", block_id.seq_no);
+    //     match overlay.download_next_key_blocks_ids(&block_id, 5).await {
+    //         Ok(blocks) => {
+    //             log::info!("Got key block ids for:");
+    //             for block in blocks.iter() {
+    //                 log::warn!("--- keyblock: {}", block.seq_no);
+    //             }
+    //
+    //             if let Some(block) = blocks.last() {
+    //                 block_id = block.clone();
+    //             }
+    //
     //             continue;
     //         }
     //         Err(e) => {
-    //             log::error!("Failed to load block: {}", e);
+    //             log::error!("Failed to load key blocks: {}", e);
     //         }
     //     }
     //
     //     tokio::time::sleep(Duration::from_millis(10)).await;
     // }
-
-    loop {
-        log::info!("Fetching key block ids {}", block_id.seq_no);
-        match overlay.download_next_key_blocks_ids(&block_id, 5).await {
-            Ok(blocks) => {
-                log::info!("Got key block ids for:");
-                for block in blocks.iter() {
-                    log::warn!("--- keyblock: {}", block.seq_no);
-                }
-
-                if let Some(block) = blocks.last() {
-                    block_id = block.clone();
-                }
-
-                continue;
-            }
-            Err(e) => {
-                log::error!("Failed to load key blocks: {}", e);
-            }
-        }
-
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
 }

@@ -3,16 +3,11 @@ use std::io::Write;
 use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
-use ton_block::{BlkPrevInfo, Block, BlockIdExt, Deserializable, ShardDescr, ShardIdent};
-use ton_types::{types::UInt256, Cell};
+use ton_api::ton;
+use ton_block::Deserializable;
+use ton_types::{Cell, UInt256};
 
-use crate::utils::*;
-
-pub struct BlockPrevStuff {
-    pub mc_block_id: BlockIdExt,
-    pub prev: Vec<BlockIdExt>,
-    pub after_split: bool,
-}
+use super::NoFailure;
 
 /// It is a wrapper around various block's representations and properties.
 /// # Remark
@@ -20,14 +15,14 @@ pub struct BlockPrevStuff {
 /// to make deserialization and serialization functions symmetric.
 #[derive(Debug, Default, Clone, Eq, PartialEq)]
 pub struct BlockStuff {
-    id: BlockIdExt,
-    block: Block,
+    id: ton_block::BlockIdExt,
+    block: ton_block::Block,
     root: Cell,
     data: Arc<Vec<u8>>, // Arc is used to make cloning more lightweight
 }
 
 impl BlockStuff {
-    pub fn new(id: BlockIdExt, data: Vec<u8>) -> Result<Self> {
+    pub fn new(id: ton_block::BlockIdExt, data: Vec<u8>) -> Result<Self> {
         let file_hash = UInt256::calc_file_hash(&data);
         if file_hash != id.file_hash {
             return Err(anyhow!(
@@ -47,7 +42,7 @@ impl BlockStuff {
             ));
         }
 
-        let block = Block::construct_from(&mut root.clone().into()).convert()?;
+        let block = ton_block::Block::construct_from(&mut root.clone().into()).convert()?;
         Ok(Self {
             id,
             block,
@@ -56,7 +51,7 @@ impl BlockStuff {
         })
     }
 
-    pub fn deserialize_checked(id: BlockIdExt, data: Vec<u8>) -> Result<Self> {
+    pub fn deserialize_checked(id: ton_block::BlockIdExt, data: Vec<u8>) -> Result<Self> {
         let file_hash = UInt256::calc_file_hash(&data);
         if id.file_hash() != file_hash {
             Err(anyhow!("wrong file_hash for {}", id))
@@ -65,14 +60,14 @@ impl BlockStuff {
         }
     }
 
-    pub fn deserialize(id: BlockIdExt, data: Vec<u8>) -> Result<Self> {
+    pub fn deserialize(id: ton_block::BlockIdExt, data: Vec<u8>) -> Result<Self> {
         let root =
             ton_types::deserialize_tree_of_cells(&mut std::io::Cursor::new(&data)).convert()?;
         if id.root_hash != root.repr_hash() {
             return Err(anyhow!("wrong root hash for {}", id));
         }
 
-        let block = Block::construct_from(&mut root.clone().into()).convert()?;
+        let block = ton_block::Block::construct_from(&mut root.clone().into()).convert()?;
         Ok(Self {
             id,
             block,
@@ -81,11 +76,11 @@ impl BlockStuff {
         })
     }
 
-    pub fn block(&self) -> &Block {
+    pub fn block(&self) -> &ton_block::Block {
         &self.block
     }
 
-    pub fn id(&self) -> &BlockIdExt {
+    pub fn id(&self) -> &ton_block::BlockIdExt {
         &self.id
     }
 
@@ -101,16 +96,19 @@ impl BlockStuff {
         Ok(self.block.read_info().convert()?.gen_utime().0)
     }
 
-    pub fn construct_prev_id(&self) -> Result<(BlockIdExt, Option<BlockIdExt>)> {
+    pub fn construct_prev_id(
+        &self,
+    ) -> Result<(ton_block::BlockIdExt, Option<ton_block::BlockIdExt>)> {
         let header = self.block.read_info().convert()?;
         match header.read_prev_ref().convert()? {
-            BlkPrevInfo::Block { prev } => {
+            ton_block::BlkPrevInfo::Block { prev } => {
                 let shard_id = if header.after_split() {
                     header.shard().merge().convert()?
                 } else {
                     *header.shard()
                 };
-                let id = BlockIdExt {
+
+                let id = ton_block::BlockIdExt {
                     shard_id,
                     seq_no: prev.seq_no,
                     root_hash: prev.root_hash,
@@ -119,28 +117,31 @@ impl BlockStuff {
 
                 Ok((id, None))
             }
-            BlkPrevInfo::Blocks { prev1, prev2 } => {
+            ton_block::BlkPrevInfo::Blocks { prev1, prev2 } => {
                 let prev1 = prev1.read_struct().convert()?;
                 let prev2 = prev2.read_struct().convert()?;
                 let (shard1, shard2) = header.shard().split().convert()?;
-                let id1 = BlockIdExt {
+
+                let id1 = ton_block::BlockIdExt {
                     shard_id: shard1,
                     seq_no: prev1.seq_no,
                     root_hash: prev1.root_hash,
                     file_hash: prev1.file_hash,
                 };
-                let id2 = BlockIdExt {
+
+                let id2 = ton_block::BlockIdExt {
                     shard_id: shard2,
                     seq_no: prev2.seq_no,
                     root_hash: prev2.root_hash,
                     file_hash: prev2.file_hash,
                 };
+
                 Ok((id1, Some(id2)))
             }
         }
     }
 
-    pub fn construct_master_id(&self) -> Result<BlockIdExt> {
+    pub fn construct_master_id(&self) -> Result<ton_block::BlockIdExt> {
         let mc_id = self
             .block
             .read_info()
@@ -150,8 +151,8 @@ impl BlockStuff {
             .ok_or_else(|| anyhow!("Can't get master ref: given block is a master block"))?
             .master;
 
-        Ok(BlockIdExt {
-            shard_id: ShardIdent::masterchain(),
+        Ok(ton_block::BlockIdExt {
+            shard_id: ton_block::ShardIdent::masterchain(),
             seq_no: mc_id.seq_no,
             root_hash: mc_id.root_hash,
             file_hash: mc_id.file_hash,
@@ -163,7 +164,7 @@ impl BlockStuff {
         Ok(())
     }
 
-    pub fn shards_blocks(&self) -> Result<HashMap<ShardIdent, BlockIdExt>> {
+    pub fn shards_blocks(&self) -> Result<HashMap<ton_block::ShardIdent, ton_block::BlockIdExt>> {
         let mut shards = HashMap::new();
         self.block()
             .read_extra()
@@ -172,16 +173,18 @@ impl BlockStuff {
             .convert()?
             .ok_or_else(|| anyhow!("Given block is not a master block."))?
             .hashes()
-            .iterate_shards(|ident: ShardIdent, descr: ShardDescr| {
-                let last_shard_block = BlockIdExt {
-                    shard_id: ident,
-                    seq_no: descr.seq_no,
-                    root_hash: descr.root_hash,
-                    file_hash: descr.file_hash,
-                };
-                shards.insert(ident, last_shard_block);
-                Ok(true)
-            })
+            .iterate_shards(
+                |ident: ton_block::ShardIdent, descr: ton_block::ShardDescr| {
+                    let last_shard_block = ton_block::BlockIdExt {
+                        shard_id: ident,
+                        seq_no: descr.seq_no,
+                        root_hash: descr.root_hash,
+                        file_hash: descr.file_hash,
+                    };
+                    shards.insert(ident, last_shard_block);
+                    Ok(true)
+                },
+            )
             .convert()?;
 
         Ok(shards)
@@ -192,16 +195,16 @@ pub trait BlockIdExtExtension {
     fn is_masterchain(&self) -> bool;
 }
 
-impl BlockIdExtExtension for BlockIdExt {
+impl BlockIdExtExtension for ton_block::BlockIdExt {
     fn is_masterchain(&self) -> bool {
         self.shard().is_masterchain()
     }
 }
 
 pub fn convert_block_id_ext_api2blk(
-    id: &ton_api::ton::ton_node::blockidext::BlockIdExt,
-) -> Result<BlockIdExt> {
-    Ok(BlockIdExt::with_params(
+    id: &ton::ton_node::blockidext::BlockIdExt,
+) -> Result<ton_block::BlockIdExt> {
+    Ok(ton_block::BlockIdExt::with_params(
         ton_block::ShardIdent::with_tagged_prefix(id.workchain, id.shard as u64).convert()?,
         id.seqno as u32,
         UInt256::from(&id.root_hash.0),
@@ -211,35 +214,28 @@ pub fn convert_block_id_ext_api2blk(
 
 #[allow(dead_code)]
 pub fn convert_block_id_ext_blk2api(
-    id: &BlockIdExt,
-) -> ton_api::ton::ton_node::blockidext::BlockIdExt {
-    ton_api::ton::ton_node::blockidext::BlockIdExt {
+    id: &ton_block::BlockIdExt,
+) -> ton::ton_node::blockidext::BlockIdExt {
+    ton::ton_node::blockidext::BlockIdExt {
         workchain: id.shard_id.workchain_id(),
-        shard: id.shard_id.shard_prefix_with_tag() as i64, // FIXME: why signed int???
-        seqno: if id.seq_no <= i32::MAX as u32 {
-            id.seq_no as i32
-        } else {
-            panic!("too big block seq_no") // FIXME: what to do?
-        },
-        root_hash: ton_api::ton::int256(id.root_hash.as_slice().to_owned()),
-        file_hash: ton_api::ton::int256(id.file_hash.as_slice().to_owned()),
+        shard: id.shard_id.shard_prefix_with_tag() as i64,
+        seqno: id.seq_no as i32,
+        root_hash: ton::int256(id.root_hash.as_slice().to_owned()),
+        file_hash: ton::int256(id.file_hash.as_slice().to_owned()),
     }
 }
 
 #[allow(dead_code)]
 pub fn convert_block_id_ext_blk_vec(
-    vec: &[BlockIdExt],
-) -> Vec<ton_api::ton::ton_node::blockidext::BlockIdExt> {
-    vec.iter().fold(Vec::new(), |mut vec, item| {
-        vec.push(convert_block_id_ext_blk2api(item));
-        vec
-    })
+    vec: &[ton_block::BlockIdExt],
+) -> Vec<ton::ton_node::blockidext::BlockIdExt> {
+    vec.iter().map(convert_block_id_ext_blk2api).collect()
 }
 
 #[allow(dead_code)]
 pub fn compare_block_ids(
-    id: &BlockIdExt,
-    id_api: &ton_api::ton::ton_node::blockidext::BlockIdExt,
+    id: &ton_block::BlockIdExt,
+    id_api: &ton::ton_node::blockidext::BlockIdExt,
 ) -> bool {
     id.shard_id.shard_prefix_with_tag() == id_api.shard as u64
         && id.shard_id.workchain_id() == id_api.workchain
@@ -247,13 +243,19 @@ pub fn compare_block_ids(
         && id.file_hash.as_slice() == &id_api.file_hash.0
 }
 
+pub struct BlockPrevStuff {
+    pub mc_block_id: ton_block::BlockIdExt,
+    pub prev: Vec<ton_block::BlockIdExt>,
+    pub after_split: bool,
+}
+
 // unpack_block_prev_blk_try in t-node
 pub fn construct_and_check_prev_stuff(
     block_root: &Cell,
-    id: &BlockIdExt,
+    id: &ton_block::BlockIdExt,
     fetch_blkid: bool,
-) -> Result<(BlockIdExt, BlockPrevStuff)> {
-    let block = Block::construct_from(&mut block_root.into()).convert()?;
+) -> Result<(ton_block::BlockIdExt, BlockPrevStuff)> {
+    let block = ton_block::Block::construct_from(&mut block_root.into()).convert()?;
     let info = block.read_info().convert()?;
 
     if info.version() != 0 {
@@ -264,7 +266,7 @@ pub fn construct_and_check_prev_stuff(
     }
 
     let out_block_id = if fetch_blkid {
-        BlockIdExt {
+        ton_block::BlockIdExt {
             shard_id: *info.shard(),
             seq_no: info.seq_no(),
             root_hash: block_root.repr_hash(),
@@ -292,7 +294,7 @@ pub fn construct_and_check_prev_stuff(
                 id.root_hash().to_hex_string()
             ));
         }
-        BlockIdExt::default()
+        ton_block::BlockIdExt::default()
     };
 
     let master_ref = info.read_master_ref().convert()?;
@@ -307,8 +309,8 @@ pub fn construct_and_check_prev_stuff(
     let mut out_prev = Vec::new();
     let prev_seqno;
     match info.read_prev_ref().convert()? {
-        BlkPrevInfo::Block { prev } => {
-            out_prev.push(BlockIdExt {
+        ton_block::BlkPrevInfo::Block { prev } => {
+            out_prev.push(ton_block::BlockIdExt {
                 shard_id: if info.after_split() {
                     info.shard().merge().convert()?
                 } else {
@@ -320,7 +322,7 @@ pub fn construct_and_check_prev_stuff(
             });
             prev_seqno = prev.seq_no;
         }
-        BlkPrevInfo::Blocks { prev1, prev2 } => {
+        ton_block::BlkPrevInfo::Blocks { prev1, prev2 } => {
             if info.after_split() {
                 return Err(anyhow!(
                     "shardchains cannot be simultaneously split and merged at the same block"
@@ -334,13 +336,13 @@ pub fn construct_and_check_prev_stuff(
                 ));
             }
             let (shard1, shard2) = info.shard().split().convert()?;
-            out_prev.push(BlockIdExt {
+            out_prev.push(ton_block::BlockIdExt {
                 shard_id: shard1,
                 seq_no: prev1.seq_no,
                 root_hash: prev1.root_hash,
                 file_hash: prev1.file_hash,
             });
-            out_prev.push(BlockIdExt {
+            out_prev.push(ton_block::BlockIdExt {
                 shard_id: shard2,
                 seq_no: prev2.seq_no,
                 root_hash: prev2.root_hash,
@@ -361,8 +363,8 @@ pub fn construct_and_check_prev_stuff(
     } else {
         let master_ref = master_ref
             .ok_or_else(|| anyhow!("non masterchain block doesn't contain mc block ref"))?;
-        BlockIdExt {
-            shard_id: ShardIdent::masterchain(),
+        ton_block::BlockIdExt {
+            shard_id: ton_block::ShardIdent::masterchain(),
             seq_no: master_ref.master.seq_no,
             root_hash: master_ref.master.root_hash,
             file_hash: master_ref.master.file_hash,
