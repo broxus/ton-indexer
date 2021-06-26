@@ -1,23 +1,24 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use tiny_adnl::utils::*;
 use tiny_adnl::{OverlaySubscriber, QueryAnswer, QueryConsumingResult};
 use ton_api::ton::{self, TLObject};
 use ton_api::IntoBoxed;
 
-pub use crate::config::Config;
+pub use crate::config::*;
 use crate::network::*;
 
 mod config;
+mod engine;
 mod network;
 mod utils;
 
-pub async fn start(config: Config) -> Result<()> {
-    let zero_state = config.zero_state.clone();
+pub async fn start(node_config: NodeConfig, global_config: GlobalConfig) -> Result<()> {
+    let zero_state = global_config.zero_state.clone();
 
-    let node_network = NodeNetwork::new(config).await?;
+    let node_network = NodeNetwork::new(node_config, global_config).await?;
 
     let service = FullNodeOverlayService::new();
     node_network.add_masterchain_subscriber(service.clone());
@@ -41,20 +42,9 @@ pub async fn start(config: Config) -> Result<()> {
     //     }
     // }
 
-    let mut block_id = ton_block::BlockIdExt {
-        shard_id: ton_block::ShardIdent::with_tagged_prefix(
-            zero_state.workchain,
-            zero_state.shard as u64,
-        )
-        .unwrap(),
-        seq_no: zero_state.seqno as u32,
-        root_hash: zero_state.root_hash.into(),
-        file_hash: zero_state.file_hash.into(),
-    };
-
     loop {
         log::info!("Fetching zerostate");
-        match overlay.download_zero_state(&block_id).await {
+        match overlay.download_zero_state(&zero_state).await {
             Ok(Some((data, _))) => {
                 log::warn!("{:#?}", data);
                 break Ok(());
@@ -92,4 +82,29 @@ pub async fn start(config: Config) -> Result<()> {
     //
     //     tokio::time::sleep(Duration::from_millis(10)).await;
     // }
+}
+
+async fn start_cold(
+    client: &dyn FullNodeOverlayClient,
+    initial_block: &ton_block::BlockIdExt,
+) -> Result<()> {
+    log::info!("Starting from block: {}", initial_block);
+    if !initial_block.shard_id.is_masterchain() {
+        return Err(anyhow!("Initial block must be from masterchain"));
+    }
+
+    if initial_block.seq_no == 0 {
+        log::info!("Starting from zero state");
+    }
+
+    Ok(())
+}
+
+async fn download_zero_state(
+    client: &dyn FullNodeOverlayClient,
+    block_id: &ton_block::BlockIdExt,
+) -> Result<()> {
+    loop {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
 }

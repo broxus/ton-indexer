@@ -12,7 +12,7 @@ use ton_api::{BoxedDeserialize, BoxedSerialize, Deserializer};
 
 pub use self::full_node_overlay_client::*;
 pub use self::full_node_overlay_service::*;
-use crate::config::Config;
+use crate::config::*;
 use crate::utils::*;
 
 mod full_node_overlay_client;
@@ -33,32 +33,26 @@ impl NodeNetwork {
     pub const TAG_DHT_KEY: usize = 1;
     pub const TAG_OVERLAY_KEY: usize = 2;
 
-    pub async fn new(mut config: Config) -> Result<Arc<Self>> {
-        let masterchain_zero_state_id = config.zero_state;
+    pub async fn new(config: NodeConfig, global_config: GlobalConfig) -> Result<Arc<Self>> {
+        let masterchain_zero_state_id = global_config.zero_state;
 
-        let adnl = AdnlNode::with_config(config.adnl.take().unwrap().try_into()?);
+        let adnl = AdnlNode::with_config(config.try_into()?);
         let dht = DhtNode::with_adnl_node(adnl.clone(), Self::TAG_DHT_KEY)?;
 
         let overlay = OverlayNode::with_adnl_node_and_zero_state(
             adnl.clone(),
-            masterchain_zero_state_id.file_hash.as_slice().try_into()?,
+            masterchain_zero_state_id.file_hash.into(),
             Self::TAG_DHT_KEY,
         )?;
         let rldp = RldpNode::with_adnl_node(adnl.clone(), vec![overlay.clone()]);
 
-        for peer in config.global_config.get_dht_nodes_configs()? {
+        for peer in global_config.dht_nodes {
             dht.add_peer(peer)?;
         }
 
-        let masterchain_shard_id = ton_block::ShardIdent::with_tagged_prefix(
-            masterchain_zero_state_id.workchain,
-            masterchain_zero_state_id.shard as u64,
-        )
-        .map_err(|e| anyhow!("Failed to create masterchain shard id: {}", e))?;
-
         let masterchain_overlay_id = overlay.compute_overlay_id(
-            masterchain_shard_id.workchain_id(),
-            masterchain_shard_id.shard_prefix_with_tag() as i64,
+            masterchain_zero_state_id.shard().workchain_id(),
+            masterchain_zero_state_id.shard().shard_prefix_with_tag() as i64,
         )?;
         let masterchain_overlay_short_id = masterchain_overlay_id.compute_short_id()?;
 
