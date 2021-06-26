@@ -95,12 +95,25 @@ impl NodeNetwork {
         Ok(overlay)
     }
 
-    pub fn add_masterchain_subscriber(&self, consumer: Arc<dyn OverlaySubscriber>) {
-        self.overlay
-            .add_subscriber(self.masterchain_overlay_short_id, consumer);
+    pub fn add_subscriber(
+        &self,
+        overlay_id: OverlayIdShort,
+        subscriber: Arc<dyn OverlaySubscriber>,
+    ) {
+        self.overlay.add_subscriber(overlay_id, subscriber);
     }
 
-    async fn get_overlay(
+    pub fn compute_overlay_id(
+        &self,
+        workchain: i32,
+        shard: u64,
+    ) -> Result<(OverlayIdFull, OverlayIdShort)> {
+        let full_id = self.overlay.compute_overlay_id(workchain, shard as i64)?;
+        let short_id = full_id.compute_short_id()?;
+        Ok((full_id, short_id))
+    }
+
+    pub async fn get_overlay(
         self: &Arc<Self>,
         overlay_full_id: OverlayIdFull,
         overlay_id: OverlayIdShort,

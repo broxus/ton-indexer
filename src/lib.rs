@@ -8,80 +8,21 @@ use ton_api::ton::{self, TLObject};
 use ton_api::IntoBoxed;
 
 pub use crate::config::*;
+use crate::engine::*;
 use crate::network::*;
 
 mod config;
 mod engine;
 mod network;
+mod storage;
 mod utils;
 
 pub async fn start(node_config: NodeConfig, global_config: GlobalConfig) -> Result<()> {
-    let zero_state = global_config.zero_state.clone();
+    let engine = Engine::new(node_config, global_config).await?;
 
-    let node_network = NodeNetwork::new(node_config, global_config).await?;
+    start_full_node_service(engine)?;
 
-    let service = FullNodeOverlayService::new();
-    node_network.add_masterchain_subscriber(service.clone());
-
-    let overlay = node_network.start().await?;
-
-    loop {
-        match overlay.wait_broadcast().await {
-            Ok((broadcast, peer_id)) => {
-                //log::warn!("Broadcast {:?} from {}", broadcast, peer_id)
-                match broadcast {
-                    ton::ton_node::Broadcast::TonNode_BlockBroadcast(block) => {
-                        log::warn!("Got new block: {}", block.id.seqno);
-                    }
-                    _ => {}
-                }
-            }
-            Err(e) => {
-                log::error!("Failed to wait broadcast: {:?}", e);
-            }
-        }
-    }
-
-    // loop {
-    //     log::info!("Fetching zerostate");
-    //     match overlay.download_zero_state(&zero_state).await {
-    //         Ok(Some((data, _))) => {
-    //             log::warn!("{:#?}", data);
-    //             break Ok(());
-    //         }
-    //         Ok(None) => {
-    //             log::warn!("Zerostate not found");
-    //         }
-    //         Err(e) => {
-    //             log::error!("Failed to load key blocks: {}", e);
-    //         }
-    //     };
-    //
-    //     tokio::time::sleep(Duration::from_millis(10)).await;
-    // }
-
-    // loop {
-    //     log::info!("Fetching key block ids {}", block_id.seq_no);
-    //     match overlay.download_next_key_blocks_ids(&block_id, 5).await {
-    //         Ok(blocks) => {
-    //             log::info!("Got key block ids for:");
-    //             for block in blocks.iter() {
-    //                 log::warn!("--- keyblock: {}", block.seq_no);
-    //             }
-    //
-    //             if let Some(block) = blocks.last() {
-    //                 block_id = block.clone();
-    //             }
-    //
-    //             continue;
-    //         }
-    //         Err(e) => {
-    //             log::error!("Failed to load key blocks: {}", e);
-    //         }
-    //     }
-    //
-    //     tokio::time::sleep(Duration::from_millis(10)).await;
-    // }
+    Ok(())
 }
 
 async fn start_cold(
@@ -96,6 +37,22 @@ async fn start_cold(
     if initial_block.seq_no == 0 {
         log::info!("Starting from zero state");
     }
+
+    Ok(())
+}
+
+fn start_full_node_service(engine: Arc<Engine>) -> Result<()> {
+    let service = FullNodeOverlayService::new();
+
+    let network = engine.network();
+
+    let (_, masterchain_overlay_id) =
+        network.compute_overlay_id(ton_block::MASTERCHAIN_ID, ton_block::SHARD_FULL)?;
+    network.add_subscriber(masterchain_overlay_id, service.clone());
+
+    let (_, basechain_overlay_id) =
+        network.compute_overlay_id(ton_block::BASE_WORKCHAIN_ID, ton_block::SHARD_FULL)?;
+    network.add_subscriber(basechain_overlay_id, service.clone());
 
     Ok(())
 }

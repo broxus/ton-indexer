@@ -51,19 +51,19 @@ impl<'a, T> DownloadContext<'a, T> {
     }
 }
 
-#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+#[derive(Debug, Copy, Clone)]
 pub struct DownloaderTimeouts {
     /// Milliseconds
     pub initial: u64,
     /// Milliseconds
     pub max: u64,
 
-    pub multiplier: u64,
+    pub multiplier: f64,
 }
 
 impl DownloaderTimeouts {
     fn update(&mut self) -> u64 {
-        self.initial = std::cmp::min(self.max, self.initial * self.multiplier / 10);
+        self.initial = std::cmp::min(self.max, (self.initial as f64 * self.multiplier) as u64);
         self.initial
     }
 }
