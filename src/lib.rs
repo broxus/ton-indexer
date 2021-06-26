@@ -25,40 +25,40 @@ pub async fn start(node_config: NodeConfig, global_config: GlobalConfig) -> Resu
 
     let overlay = node_network.start().await?;
 
-    // loop {
-    //     match overlay.wait_broadcast().await {
-    //         Ok((broadcast, peer_id)) => {
-    //             //log::warn!("Broadcast {:?} from {}", broadcast, peer_id)
-    //             match broadcast {
-    //                 ton::ton_node::Broadcast::TonNode_BlockBroadcast(block) => {
-    //                     log::warn!("Got new block: {}", block.id.seqno);
-    //                 }
-    //                 _ => {}
-    //             }
-    //         }
-    //         Err(e) => {
-    //             log::error!("Failed to wait broadcast: {:?}", e);
-    //         }
-    //     }
-    // }
-
     loop {
-        log::info!("Fetching zerostate");
-        match overlay.download_zero_state(&zero_state).await {
-            Ok(Some((data, _))) => {
-                log::warn!("{:#?}", data);
-                break Ok(());
-            }
-            Ok(None) => {
-                log::warn!("Zerostate not found");
+        match overlay.wait_broadcast().await {
+            Ok((broadcast, peer_id)) => {
+                //log::warn!("Broadcast {:?} from {}", broadcast, peer_id)
+                match broadcast {
+                    ton::ton_node::Broadcast::TonNode_BlockBroadcast(block) => {
+                        log::warn!("Got new block: {}", block.id.seqno);
+                    }
+                    _ => {}
+                }
             }
             Err(e) => {
-                log::error!("Failed to load key blocks: {}", e);
+                log::error!("Failed to wait broadcast: {:?}", e);
             }
-        };
-
-        tokio::time::sleep(Duration::from_millis(10)).await;
+        }
     }
+
+    // loop {
+    //     log::info!("Fetching zerostate");
+    //     match overlay.download_zero_state(&zero_state).await {
+    //         Ok(Some((data, _))) => {
+    //             log::warn!("{:#?}", data);
+    //             break Ok(());
+    //         }
+    //         Ok(None) => {
+    //             log::warn!("Zerostate not found");
+    //         }
+    //         Err(e) => {
+    //             log::error!("Failed to load key blocks: {}", e);
+    //         }
+    //     };
+    //
+    //     tokio::time::sleep(Duration::from_millis(10)).await;
+    // }
 
     // loop {
     //     log::info!("Fetching key block ids {}", block_id.seq_no);

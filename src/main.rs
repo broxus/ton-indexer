@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{Clap, IntoApp};
 use serde::{Deserialize, Serialize};
 
@@ -11,7 +11,7 @@ pub struct Arguments {
     pub gen_config: Option<PathBuf>,
 
     /// Path to config
-    #[clap(short, long, conflicts_with = "gen-config")]
+    #[clap(short, long, conflicts_with = "gen-config", requires = "global-config")]
     pub config: Option<PathBuf>,
 
     /// Path to the global config with zerostate and static dht nodes
@@ -24,7 +24,9 @@ async fn main() -> Result<()> {
     let args: Arguments = Arguments::parse();
 
     match (args.gen_config, args.config, args.global_config) {
-        (Some(new_config_path), _, _) => generate_config(new_config_path).await?,
+        (Some(new_config_path), _, _) => generate_config(new_config_path)
+            .await
+            .context("Application startup")?,
         (_, Some(config), Some(global_config)) => {
             let config = read_config(config)?;
             let global_config = read_global_config(global_config)?;
@@ -51,10 +53,10 @@ struct Config {
 
 impl Config {
     async fn generate() -> Result<Self> {
-        Self {
+        Ok(Self {
             indexer: ton_indexer_lib::NodeConfig::generate().await?,
             logger_settings: default_logger_settings(),
-        }
+        })
     }
 }
 

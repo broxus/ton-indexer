@@ -52,4 +52,4 @@ indexer-lib = { path = "./indexer-lib" }
 serde_json = "1.0"
 
 [features]
-binary = ["clap", "log4rs", "serde_yaml", "tokio/rt-multi-thread", "tokio/macros"]
+binary = ["clap", "log4rs", "serde_json", "serde_yaml", "tokio/rt-multi-thread", "tokio/macros"]
