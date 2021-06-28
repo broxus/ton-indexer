@@ -46,6 +46,14 @@ impl BlockMeta {
         self.flags.fetch_or(seqno as u64, Ordering::Release) as u32
     }
 
+    pub fn gen_utime(&self) -> u32 {
+        self.gen_utime
+    }
+
+    pub fn gen_lt(&self) -> u64 {
+        self.gen_lt
+    }
+
     pub fn set_has_data(&self) -> bool {
         self.set_flag(BLOCK_META_FLAG_HAS_DATA)
     }
@@ -124,6 +132,10 @@ impl BlockMeta {
 
     pub fn is_applied(&self) -> bool {
         self.test_flag(BLOCK_META_FLAG_IS_APPLIED)
+    }
+
+    pub fn is_key_block(&self) -> bool {
+        self.test_flag(BLOCK_META_FLAG_IS_KEY_BLOCK)
     }
 
     fn test_flag(&self, flag: u64) -> bool {
