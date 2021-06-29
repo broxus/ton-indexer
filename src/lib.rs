@@ -20,23 +20,9 @@ mod utils;
 pub async fn start(node_config: NodeConfig, global_config: GlobalConfig) -> Result<()> {
     let engine = Engine::new(node_config, global_config).await?;
 
-    start_full_node_service(engine)?;
+    start_full_node_service(engine.clone())?;
 
-    Ok(())
-}
-
-async fn start_cold(
-    client: &dyn FullNodeOverlayClient,
-    initial_block: &ton_block::BlockIdExt,
-) -> Result<()> {
-    log::info!("Starting from block: {}", initial_block);
-    if !initial_block.shard_id.is_masterchain() {
-        return Err(anyhow!("Initial block must be from masterchain"));
-    }
-
-    if initial_block.seq_no == 0 {
-        log::info!("Starting from zero state");
-    }
+    let _block_id = boot(&engine).await?;
 
     Ok(())
 }
@@ -55,13 +41,4 @@ fn start_full_node_service(engine: Arc<Engine>) -> Result<()> {
     network.add_subscriber(basechain_overlay_id, service.clone());
 
     Ok(())
-}
-
-async fn download_zero_state(
-    client: &dyn FullNodeOverlayClient,
-    block_id: &ton_block::BlockIdExt,
-) -> Result<()> {
-    loop {
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
 }

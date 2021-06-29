@@ -9,7 +9,7 @@ use super::Engine;
 use crate::storage::*;
 use crate::utils::*;
 
-async fn boot(engine: &Arc<Engine>) -> Result<ton_block::BlockIdExt> {
+pub async fn boot(engine: &Arc<Engine>) -> Result<ton_block::BlockIdExt> {
     let mut last_mc_block_id = match LastMcBlockId::load_from_db(engine.db().as_ref()) {
         Ok(block_id) => {
             let last_mc_block_id = convert_block_id_ext_api2blk(&block_id.0)?;
@@ -46,11 +46,11 @@ async fn prepare_cold_boot_data(engine: &Arc<Engine>) -> Result<ColdBootData> {
         let handle = match engine.load_block_handle(block_id)? {
             Some(handle) => {
                 if handle.meta().has_proof_link() || handle.meta().has_proof() {
-                    let proof = match engine.load_block_proof(&handle, true) {
+                    let proof = match engine.load_block_proof(&handle, true).await {
                         Ok(proof) => proof,
                         Err(e) => {
                             log::warn!("Failed to load block proof as link: {}", e);
-                            engine.load_block_proof(&handle, false)?
+                            engine.load_block_proof(&handle, false).await?
                         }
                     };
 
@@ -72,7 +72,7 @@ async fn prepare_cold_boot_data(engine: &Arc<Engine>) -> Result<ColdBootData> {
             {
                 Ok(proof) => match proof.check_proof_link() {
                     Ok(_) => {
-                        let handle = engine.store_block_proof(&block_id, handle, &proof)?;
+                        let handle = engine.store_block_proof(&block_id, handle, &proof).await?;
                         break (handle, proof);
                     }
                     Err(e) => {
@@ -98,8 +98,6 @@ async fn get_key_blocks(
     engine: &Arc<Engine>,
     mut boot_data: ColdBootData,
 ) -> Result<Vec<Arc<BlockHandle>>> {
-    let download_new_key_blocks_until = now() as u32 + 600;
-
     let mut handle = boot_data.init_block_handle().clone();
     let mut key_blocks = vec![handle.clone()];
     loop {
@@ -159,7 +157,7 @@ async fn download_key_block_proof(
     boot_data: &ColdBootData,
 ) -> Result<(Arc<BlockHandle>, BlockProofStuff)> {
     if let Some(handle) = engine.load_block_handle(block_id)? {
-        if let Ok(proof) = engine.load_block_proof(&handle, false) {
+        if let Ok(proof) = engine.load_block_proof(&handle, false).await {
             return Ok((handle, proof));
         }
     }
@@ -177,7 +175,7 @@ async fn download_key_block_proof(
 
         match result {
             Ok(_) => {
-                let handle = engine.store_block_proof(block_id, None, &proof)?;
+                let handle = engine.store_block_proof(block_id, None, &proof).await?;
                 return Ok((handle, proof));
             }
             Err(e) => {

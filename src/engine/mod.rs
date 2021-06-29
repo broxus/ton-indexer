@@ -4,6 +4,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use tiny_adnl::utils::*;
 
+pub use self::boot::*;
 use self::db::*;
 use self::downloader::*;
 use self::node_state::*;
@@ -33,7 +34,7 @@ pub struct Engine {
 
 impl Engine {
     pub async fn new(config: NodeConfig, global_config: GlobalConfig) -> Result<Arc<Self>> {
-        let db = Arc::new(InMemoryDb::new());
+        let db = SledDb::new().await?;
 
         let zero_state_id = global_config.zero_state.clone();
 
@@ -243,21 +244,25 @@ impl Engine {
         Ok(())
     }
 
-    pub fn load_block_proof(
+    pub async fn load_block_proof(
         &self,
         handle: &Arc<BlockHandle>,
         is_link: bool,
     ) -> Result<BlockProofStuff> {
-        self.db.load_block_proof(handle, is_link)
+        self.db.load_block_proof(handle, is_link).await
     }
 
-    pub fn store_block_proof(
+    pub async fn store_block_proof(
         &self,
         block_ud: &ton_block::BlockIdExt,
         handle: Option<Arc<BlockHandle>>,
         proof: &BlockProofStuff,
     ) -> Result<Arc<BlockHandle>> {
-        Ok(self.db.store_block_proof(block_ud, handle, proof)?.handle)
+        Ok(self
+            .db
+            .store_block_proof(block_ud, handle, proof)
+            .await?
+            .handle)
     }
 
     pub async fn store_zerostate(
@@ -298,7 +303,7 @@ impl Engine {
 }
 
 impl<'a, T> DownloadContext<'a, T> {
-    fn load_full_block(
+    async fn load_full_block(
         &self,
         block_id: &ton_block::BlockIdExt,
     ) -> Result<Option<(BlockStuff, BlockProofStuff)>> {
@@ -307,8 +312,8 @@ impl<'a, T> DownloadContext<'a, T> {
                 let mut is_link = false;
                 if handle.meta().has_data() && handle.has_proof_or_link(&mut is_link) {
                     Some((
-                        self.db.load_block_data(&handle)?,
-                        self.db.load_block_proof(&handle, is_link)?,
+                        self.db.load_block_data(&handle).await?,
+                        self.db.load_block_proof(&handle, is_link).await?,
                     ))
                 } else {
                     None
@@ -329,7 +334,7 @@ impl Downloader for BlockDownloader {
         &self,
         context: &DownloadContext<'_, Self::Item>,
     ) -> Result<Option<Self::Item>> {
-        if let Some(full_block) = context.load_full_block(context.block_id)? {
+        if let Some(full_block) = context.load_full_block(context.block_id).await? {
             return Ok(Some(full_block));
         }
 
@@ -353,7 +358,7 @@ impl Downloader for BlockProofDownloader {
         if let Some(handle) = context.db.load_block_handle(context.block_id)? {
             let mut is_link = false;
             if handle.has_proof_or_link(&mut is_link) {
-                return Ok(Some(context.db.load_block_proof(&handle, is_link)?));
+                return Ok(Some(context.db.load_block_proof(&handle, is_link).await?));
             }
         }
 
@@ -380,7 +385,7 @@ impl Downloader for NextBlockDownloader {
                     .db
                     .load_block_connection(context.block_id, BlockConnection::Next1)?;
 
-                if let Some(full_block) = context.load_full_block(&next_block_id)? {
+                if let Some(full_block) = context.load_full_block(&next_block_id).await? {
                     return Ok(Some(full_block));
                 }
             }

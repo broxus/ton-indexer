@@ -1,6 +1,7 @@
 use std::io::Write;
 
 use anyhow::Result;
+use tokio::sync::RwLock;
 
 use super::block_meta::BlockMeta;
 use super::StoredValue;
@@ -8,6 +9,8 @@ use super::StoredValue;
 pub struct BlockHandle {
     id: ton_block::BlockIdExt,
     meta: BlockMeta,
+    block_file_lock: RwLock<()>,
+    proof_file_block: RwLock<()>,
 }
 
 impl BlockHandle {
@@ -16,7 +19,12 @@ impl BlockHandle {
     }
 
     pub fn with_values(id: ton_block::BlockIdExt, meta: BlockMeta) -> Self {
-        Self { id, meta }
+        Self {
+            id,
+            meta,
+            block_file_lock: Default::default(),
+            proof_file_block: Default::default(),
+        }
     }
 
     pub fn serialize<W: Write>(&self, writer: &mut W) -> Result<()> {
@@ -29,6 +37,14 @@ impl BlockHandle {
 
     pub fn meta(&self) -> &BlockMeta {
         &self.meta
+    }
+
+    pub fn block_file_lock(&self) -> &RwLock<()> {
+        &self.block_file_lock
+    }
+
+    pub fn proof_file_lock(&self) -> &RwLock<()> {
+        &self.proof_file_block
     }
 
     pub fn has_proof_or_link(&self, is_link: &mut bool) -> bool {
