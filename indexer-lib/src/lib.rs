@@ -10,9 +10,9 @@ use ton_types::SliceData;
 #[derive(Debug, Clone)]
 pub struct ParsedFunction {
     /// address of modified account
-    pub account_address: MsgAddressInt,
+    pub contract_address: MsgAddressInt,
     /// address of transaction creator
-    pub transaction_initializer_address: MsgAddressInt,
+    pub sender_address: MsgAddressInt,
     pub function_name: String,
     pub input: Option<Vec<ton_abi::Token>>,
     pub output: Option<Vec<ton_abi::Token>>,
@@ -33,9 +33,9 @@ pub fn extract_functions_from_block(
 #[derive(Debug, Clone)]
 pub struct ParsedEvent {
     /// event emitter address
-    pub account_address: MsgAddressInt,
+    pub contract_address: MsgAddressInt,
     /// address of transaction creator
-    pub transaction_initializer_address: MsgAddressInt,
+    pub sender_address: MsgAddressInt,
     pub function_name: String,
     pub input: Vec<ton_abi::Token>,
     pub msg_hash: [u8; 32],
@@ -172,8 +172,8 @@ pub fn extract_functions_from_transaction_messages(
             None => continue,
             Some(output) => {
                 result.push(ParsedFunction {
-                    account_address: input.account_address.clone(),
-                    transaction_initializer_address: input.tx_initializer.clone(),
+                    contract_address: input.account_address.clone(),
+                    sender_address: input.tx_initializer.clone(),
                     function_name: ton_abi_function.name.clone(),
                     input: None,
                     output: Some(output.tokens),
@@ -197,8 +197,8 @@ pub fn extract_functions_from_transaction_messages(
                 None => continue,
                 Some(output) => {
                     result.push(ParsedFunction {
-                        transaction_initializer_address: input.tx_initializer.clone(),
-                        account_address: input.account_address,
+                        contract_address: input.account_address,
+                        sender_address: input.tx_initializer.clone(),
                         function_name: ton_abi_function.name.clone(),
                         input: Some(output.tokens),
                         output: None,
@@ -233,8 +233,8 @@ pub fn extract_events_from_transaction_messages(
                 None => {}
                 Some(output) => {
                     result.push(ParsedEvent {
-                        account_address: address.clone(),
-                        transaction_initializer_address: input.tx_initializer.clone(),
+                        contract_address: address.clone(),
+                        sender_address: input.tx_initializer.clone(),
                         function_name: ton_abi_event.name.clone(),
                         input: output.tokens,
                         msg_hash,
