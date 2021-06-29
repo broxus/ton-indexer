@@ -7,7 +7,10 @@ use shared_deps::TrustMe;
 
 #[derive(Debug, Clone)]
 pub struct ParsedFunction {
-    pub address: MsgAddressInt,
+    /// address of modified account
+    pub account_address: MsgAddressInt,
+    /// address of transaction creator
+    pub transaction_initializer_address: Option<MsgAddressInt>,
     pub function_name: String,
     pub input: Option<Vec<ton_abi::Token>>,
     pub output: Option<Vec<ton_abi::Token>>,
@@ -27,7 +30,10 @@ pub fn extract_functions_from_block(
 
 #[derive(Debug, Clone)]
 pub struct ParsedEvent {
-    pub address: MsgAddressInt,
+    /// event emitter address
+    pub account_address: MsgAddressInt,
+    /// address of transaction creator
+    pub transaction_initializer_address: Option<MsgAddressInt>,
     pub function_name: String,
     pub input: Vec<ton_abi::Token>,
     pub msg_hash: [u8; 32],
@@ -45,13 +51,20 @@ pub fn extract_events_from_block(
     )
 }
 
+pub struct ExtractInput<'a, T> {
+    pub messages: TransactionMessages,
+    pub account_address: MsgAddressInt,
+    pub tx_initializer: Option<MsgAddressInt>,
+    pub what_to_extract: &'a [T],
+}
+
 fn extract_from_block<T, V, E>(
     ton_abi_events: &[T],
     block: &ton_block::Block,
     extract: E,
 ) -> Result<Option<Vec<V>>, anyhow::Error>
 where
-    E: Fn(TransactionMessages, MsgAddressInt, &[T]) -> Vec<V>,
+    E: Fn(ExtractInput<T>) -> Vec<V>,
 {
     use ton_types::HashmapType;
 
@@ -110,7 +123,19 @@ where
                 None => continue,
                 Some(a) => a,
             };
-            let mut extracted_values = extract(messages, address.clone(), ton_abi_events);
+            let tx_initializer = transaction
+                .in_msg
+                .map(|x| x.read_struct().ok())
+                .flatten()
+                .map(|x| x.src())
+                .flatten();
+            let input = ExtractInput {
+                messages,
+                account_address: address.clone(),
+                tx_initializer,
+                what_to_extract: ton_abi_events,
+            };
+            let mut extracted_values = extract(input);
             result.append(&mut extracted_values);
         }
     }
@@ -118,11 +143,11 @@ where
 }
 
 pub fn extract_functions_from_transaction_messages(
-    messages: TransactionMessages,
-    address: MsgAddressInt,
-    ton_abi_functions: &[ton_abi::Function],
+    input: ExtractInput<ton_abi::Function>,
 ) -> Vec<ParsedFunction> {
     let mut result = Vec::new();
+    let ton_abi_functions = input.what_to_extract;
+    let messages = input.messages;
     for ton_abi_function in ton_abi_functions {
         let abi_out_messages_tokens =
             match process_function_out_messages(&messages.out_messages, ton_abi_function) {
@@ -136,7 +161,8 @@ pub fn extract_functions_from_transaction_messages(
             None => continue,
             Some(output) => {
                 result.push(ParsedFunction {
-                    address: address.clone(),
+                    account_address: input.account_address.clone(),
+                    transaction_initializer_address: input.tx_initializer.clone(),
                     function_name: ton_abi_function.name.clone(),
                     input: None,
                     output: Some(output.tokens),
@@ -160,7 +186,8 @@ pub fn extract_functions_from_transaction_messages(
                 None => continue,
                 Some(output) => {
                     result.push(ParsedFunction {
-                        address,
+                        transaction_initializer_address: input.tx_initializer.clone(),
+                        account_address: input.account_address,
                         function_name: ton_abi_function.name.clone(),
                         input: Some(output.tokens),
                         output: None,
@@ -176,13 +203,13 @@ pub fn extract_functions_from_transaction_messages(
 
 //todo make it not O(n^2)?
 pub fn extract_events_from_transaction_messages(
-    messages: TransactionMessages,
-    address: MsgAddressInt,
-    ton_abi_events: &[ton_abi::Event],
+    input: ExtractInput<ton_abi::Event>,
 ) -> Vec<ParsedEvent> {
     let mut result = vec![];
+    let messages = input.messages;
+    let address = input.account_address;
     for message in messages.out_messages {
-        for ton_abi_event in ton_abi_events {
+        for ton_abi_event in input.what_to_extract {
             let message_tokens = match process_event_message(&message, ton_abi_event) {
                 Ok(a) => a,
                 Err(e) => {
@@ -195,7 +222,8 @@ pub fn extract_events_from_transaction_messages(
                 None => {}
                 Some(output) => {
                     result.push(ParsedEvent {
-                        address: address.clone(),
+                        account_address: address.clone(),
+                        transaction_initializer_address: input.tx_initializer.clone(),
                         function_name: ton_abi_event.name.clone(),
                         input: output.tokens,
                         msg_hash,
