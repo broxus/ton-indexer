@@ -4,7 +4,7 @@ use ton_block::{
     Transaction,
 };
 
-use shared_deps::TrustMe;
+use shared_deps::{NoFailure, TrustMe};
 use ton_types::SliceData;
 
 #[derive(Debug, Clone)]
@@ -12,7 +12,7 @@ pub struct ParsedFunction {
     /// address of modified account
     pub account_address: MsgAddressInt,
     /// address of transaction creator
-    pub transaction_initializer_address: Option<MsgAddressInt>,
+    pub transaction_initializer_address: MsgAddressInt,
     pub function_name: String,
     pub input: Option<Vec<ton_abi::Token>>,
     pub output: Option<Vec<ton_abi::Token>>,
@@ -35,7 +35,7 @@ pub struct ParsedEvent {
     /// event emitter address
     pub account_address: MsgAddressInt,
     /// address of transaction creator
-    pub transaction_initializer_address: Option<MsgAddressInt>,
+    pub transaction_initializer_address: MsgAddressInt,
     pub function_name: String,
     pub input: Vec<ton_abi::Token>,
     pub msg_hash: [u8; 32],
@@ -56,7 +56,7 @@ pub fn extract_events_from_block(
 pub struct ExtractInput<'a, T> {
     pub messages: TransactionMessages,
     pub account_address: MsgAddressInt,
-    pub tx_initializer: Option<MsgAddressInt>,
+    pub tx_initializer: MsgAddressInt,
     pub what_to_extract: &'a [T],
 }
 
@@ -120,10 +120,19 @@ where
                 None => continue,
                 Some(a) => a,
             };
+            let hash = transaction.hash().convert()?.to_string();
+            let tx_initializer = match get_transaction_initiator(transaction) {
+                None => {
+                    log::error!("We have matched ticktok. txid: {}", hash);
+                    continue;
+                }
+                Some(a) => a,
+            };
+
             let input = ExtractInput {
                 messages,
                 account_address: address.clone(),
-                tx_initializer: get_transaction_initiator(transaction),
+                tx_initializer,
                 what_to_extract: ton_abi_events,
             };
             let mut extracted_values = extract(input);
