@@ -43,12 +43,13 @@ pub trait Db: Send + Sync {
         BlockProofStuff::deserialize(handle.id().clone(), raw_proof, is_link)
     }
 
-    fn store_shard_state(&self, handle: &BlockHandle, state: &ShardStateStuff) -> Result<bool>;
+    fn store_shard_state(&self, handle: &Arc<BlockHandle>, state: &ShardStateStuff)
+        -> Result<bool>;
     fn load_shard_state(&self, block_id: &ton_block::BlockIdExt) -> Result<ShardStateStuff>;
 
     fn store_block_connection(
         &self,
-        handle: &BlockHandle,
+        handle: &Arc<BlockHandle>,
         direction: BlockConnection,
         connected_block_id: &ton_block::BlockIdExt,
     ) -> Result<()>;
@@ -77,8 +78,14 @@ pub enum BlockConnection {
 
 pub struct SledDb {
     block_handle_storage: BlockHandleStorage,
+    shard_state_storage: ShardStateStorage,
     node_state_storage: NodeStateStorage,
     archive_manager: ArchiveManager,
+
+    prev1_block_db: sled::Tree,
+    prev2_block_db: sled::Tree,
+    next1_block_db: sled::Tree,
+    next2_block_db: sled::Tree,
     db: sled::Db,
 }
 
@@ -88,8 +95,13 @@ impl SledDb {
 
         Ok(Arc::new(Self {
             block_handle_storage: BlockHandleStorage::with_db(db.open_tree("block_handles")?),
+            shard_state_storage: ShardStateStorage::default(),
             node_state_storage: NodeStateStorage::with_db(db.open_tree("node_state")?),
             archive_manager: ArchiveManager::with_root_dir("test").await?,
+            prev1_block_db: db.open_tree("prev1")?,
+            prev2_block_db: db.open_tree("prev2")?,
+            next1_block_db: db.open_tree("next1")?,
+            next2_block_db: db.open_tree("next2")?,
             db,
         }))
     }
@@ -248,21 +260,56 @@ impl Db for SledDb {
         self.archive_manager.get_file(handle, &archive_id).await
     }
 
-    fn store_shard_state(&self, handle: &BlockHandle, state: &ShardStateStuff) -> Result<bool> {
-        todo!()
+    fn store_shard_state(
+        &self,
+        handle: &Arc<BlockHandle>,
+        state: &ShardStateStuff,
+    ) -> Result<bool> {
+        if handle.id() != state.block_id() {
+            return Err(DbError::BlockHandleIdMismatch.into());
+        }
+
+        if !handle.meta().has_state() {
+            self.shard_state_storage
+                .store_state(state.block_id(), state.root_cell().clone())?;
+            if handle.meta().set_has_state() {
+                self.block_handle_storage.store_handle(handle)?;
+                return Ok(true);
+            }
+        }
+
+        Ok(false)
     }
 
     fn load_shard_state(&self, block_id: &ton_block::BlockIdExt) -> Result<ShardStateStuff> {
-        todo!()
+        ShardStateStuff::new(
+            block_id.clone(),
+            self.shard_state_storage.load_state(block_id)?,
+        )
     }
 
     fn store_block_connection(
         &self,
-        handle: &BlockHandle,
+        handle: &Arc<BlockHandle>,
         direction: BlockConnection,
         connected_block_id: &ton_block::BlockIdExt,
     ) -> Result<()> {
-        todo!()
+        let (db, exists) = match direction {
+            BlockConnection::Prev1 => (&self.prev1_block_db, handle.meta().has_prev1()),
+            BlockConnection::Prev2 => (&self.prev2_block_db, handle.meta().has_prev2()),
+            BlockConnection::Next1 => (&self.next1_block_db, handle.meta().has_next1()),
+            BlockConnection::Next2 => (&self.next2_block_db, handle.meta().has_next2()),
+        };
+
+        if !exists {
+            let value = bincode::serialize(&convert_block_id_ext_blk2api(connected_block_id))?;
+            db.insert(handle.id().root_hash.as_slice(), value)?;
+            if handle.meta().set_has_prev1() {
+                self.block_handle_storage.store_handle(handle)?;
+            }
+        }
+
+        Ok(())
     }
 
     fn load_block_connection(
@@ -270,7 +317,19 @@ impl Db for SledDb {
         block_id: &ton_block::BlockIdExt,
         direction: BlockConnection,
     ) -> Result<ton_block::BlockIdExt> {
-        todo!()
+        let db = match direction {
+            BlockConnection::Prev1 => &self.prev1_block_db,
+            BlockConnection::Prev2 => &self.prev2_block_db,
+            BlockConnection::Next1 => &self.next1_block_db,
+            BlockConnection::Next2 => &self.next2_block_db,
+        };
+
+        let value = match db.get(block_id.root_hash.as_slice())? {
+            Some(value) => bincode::deserialize::<ton::ton_node::blockidext::BlockIdExt>(&value)?,
+            None => return Err(DbError::NotFound.into()),
+        };
+
+        convert_block_id_ext_api2blk(&value)
     }
 
     fn store_node_state(&self, key: &'static str, value: Vec<u8>) -> Result<()> {
