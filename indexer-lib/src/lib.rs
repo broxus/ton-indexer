@@ -1,6 +1,7 @@
 use anyhow::Result;
 use ton_block::{
     AccountBlock, CurrencyCollection, Deserializable, GetRepresentationHash, MsgAddressInt,
+    Transaction,
 };
 
 use shared_deps::TrustMe;
@@ -123,16 +124,10 @@ where
                 None => continue,
                 Some(a) => a,
             };
-            let tx_initializer = transaction
-                .in_msg
-                .map(|x| x.read_struct().ok())
-                .flatten()
-                .map(|x| x.src())
-                .flatten();
             let input = ExtractInput {
                 messages,
                 account_address: address.clone(),
-                tx_initializer,
+                tx_initializer: get_transaction_initiator(transaction),
                 what_to_extract: ton_abi_events,
             };
             let mut extracted_values = extract(input);
@@ -234,6 +229,14 @@ pub fn extract_events_from_transaction_messages(
         }
     }
     result
+}
+
+pub fn get_transaction_initiator(tx: Transaction) -> Option<MsgAddressInt> {
+    tx.in_msg
+        .map(|x| x.read_struct().ok())
+        .flatten()
+        .map(|x| x.src())
+        .flatten()
 }
 
 #[derive(Debug, Clone)]
