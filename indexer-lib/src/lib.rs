@@ -5,6 +5,7 @@ use ton_block::{
 };
 
 use shared_deps::TrustMe;
+use ton_types::SliceData;
 
 #[derive(Debug, Clone)]
 pub struct ParsedFunction {
@@ -99,14 +100,10 @@ where
     let mut result = vec![];
     for account_block in account_blocks {
         let address = account_block.account_addr();
-        let address = match MsgAddressInt::with_standart(
-            None,
-            workchain_id,
-            address.get_bytestring(0).into(),
-        ) {
+        let address = match address_from_account_id(address, workchain_id) {
             Ok(a) => a,
             Err(e) => {
-                log::error!("Failed parsing address from account block: {}", e);
+                log::error!("Failed parsing address for account block: {}", e);
                 continue;
             }
         };
@@ -119,7 +116,6 @@ where
                 Ok(transaction) => transaction,
                 Err(_) => continue,
             };
-
             let messages = match parse_transaction_messages(&transaction)? {
                 None => continue,
                 Some(a) => a,
@@ -135,6 +131,17 @@ where
         }
     }
     Ok(Some(result))
+}
+
+pub fn address_from_account_id(address: SliceData, workchain_id: i8) -> Result<MsgAddressInt> {
+    let address =
+        match MsgAddressInt::with_standart(None, workchain_id, address.get_bytestring(0).into()) {
+            Ok(a) => a,
+            Err(e) => {
+                anyhow::bail!("Failed creating address from account id: {}", e);
+            }
+        };
+    Ok(address)
 }
 
 pub fn extract_functions_from_transaction_messages(
