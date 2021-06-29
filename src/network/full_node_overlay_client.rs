@@ -22,7 +22,7 @@ pub trait FullNodeOverlayClient: Send + Sync {
     async fn download_zero_state(
         &self,
         id: &ton_block::BlockIdExt,
-    ) -> Result<Option<(ShardStateStuff, Vec<u8>)>>;
+    ) -> Result<Option<Arc<ShardStateStuff>>>;
 
     async fn download_block_proof(
         &self,
@@ -91,7 +91,7 @@ impl FullNodeOverlayClient for OverlayClient {
     async fn download_zero_state(
         &self,
         id: &ton_block::BlockIdExt,
-    ) -> Result<Option<(ShardStateStuff, Vec<u8>)>> {
+    ) -> Result<Option<Arc<ShardStateStuff>>> {
         // Prepare
         let (prepare, neighbour): (ton::ton_node::PreparedState, _) = self
             .send_adnl_query(
@@ -117,10 +117,10 @@ impl FullNodeOverlayClient for OverlayClient {
                     )
                     .await?;
 
-                Ok(Some((
-                    ShardStateStuff::deserialize_zerostate(id.clone(), &state_bytes)?,
-                    state_bytes,
-                )))
+                Ok(Some(Arc::new(ShardStateStuff::deserialize_zerostate(
+                    id.clone(),
+                    &state_bytes,
+                )?)))
             }
             ton::ton_node::PreparedState::TonNode_NotFoundState => Ok(None),
         }
