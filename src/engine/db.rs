@@ -59,6 +59,22 @@ pub trait Db: Send + Sync {
         direction: BlockConnection,
     ) -> Result<ton_block::BlockIdExt>;
 
+    fn find_block_by_seq_no(
+        &self,
+        account_prefix: &ton_block::AccountIdPrefixFull,
+        seqno: u32,
+    ) -> Result<Arc<BlockHandle>>;
+    fn find_block_by_utime(
+        &self,
+        account_prefix: &ton_block::AccountIdPrefixFull,
+        utime: u32,
+    ) -> Result<Arc<BlockHandle>>;
+    fn find_block_by_lt(
+        &self,
+        account_prefix: &ton_block::AccountIdPrefixFull,
+        lt: u64,
+    ) -> Result<Arc<BlockHandle>>;
+
     fn store_node_state(&self, key: &'static str, value: Vec<u8>) -> Result<()>;
     fn load_node_state(&self, key: &'static str) -> Result<Vec<u8>>;
 }
@@ -81,6 +97,7 @@ pub struct SledDb {
     shard_state_storage: ShardStateStorage,
     node_state_storage: NodeStateStorage,
     archive_manager: ArchiveManager,
+    block_index_db: BlockIndexDb,
 
     prev1_block_db: sled::Tree,
     prev2_block_db: sled::Tree,
@@ -98,6 +115,10 @@ impl SledDb {
             shard_state_storage: ShardStateStorage::default(),
             node_state_storage: NodeStateStorage::with_db(db.open_tree("node_state")?),
             archive_manager: ArchiveManager::with_root_dir("test").await?,
+            block_index_db: BlockIndexDb::with_db(
+                db.open_tree("lt_desc_db")?,
+                db.open_tree("lt_db")?,
+            ),
             prev1_block_db: db.open_tree("prev1")?,
             prev2_block_db: db.open_tree("prev2")?,
             next1_block_db: db.open_tree("next1")?,
@@ -332,6 +353,46 @@ impl Db for SledDb {
         convert_block_id_ext_api2blk(&value)
     }
 
+    fn find_block_by_seq_no(
+        &self,
+        account_prefix: &ton_block::AccountIdPrefixFull,
+        seq_no: u32,
+    ) -> Result<Arc<BlockHandle>> {
+        let block_id = self
+            .block_index_db
+            .get_block_by_seq_no(account_prefix, seq_no)?;
+
+        self.block_handle_storage
+            .load_handle(&block_id)?
+            .ok_or_else(|| DbError::BlockHandleNotFound.into())
+    }
+
+    fn find_block_by_utime(
+        &self,
+        account_prefix: &ton_block::AccountIdPrefixFull,
+        utime: u32,
+    ) -> Result<Arc<BlockHandle>> {
+        let block_id = self
+            .block_index_db
+            .get_block_by_utime(account_prefix, utime)?;
+
+        self.block_handle_storage
+            .load_handle(&block_id)?
+            .ok_or_else(|| DbError::BlockHandleNotFound.into())
+    }
+
+    fn find_block_by_lt(
+        &self,
+        account_prefix: &ton_block::AccountIdPrefixFull,
+        lt: u64,
+    ) -> Result<Arc<BlockHandle>> {
+        let block_id = self.block_index_db.get_block_by_lt(account_prefix, lt)?;
+
+        self.block_handle_storage
+            .load_handle(&block_id)?
+            .ok_or_else(|| DbError::BlockHandleNotFound.into())
+    }
+
     fn store_node_state(&self, key: &'static str, value: Vec<u8>) -> Result<()> {
         self.node_state_storage.store(key, value)
     }
@@ -357,4 +418,6 @@ enum DbError {
     BlockDataNotFound,
     #[error("Block proof not found")]
     BlockProofNotFound,
+    #[error("Block handle not found")]
+    BlockHandleNotFound,
 }

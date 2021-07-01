@@ -114,6 +114,24 @@ impl BlockProofStuff {
         self.data
     }
 
+    pub fn get_cur_validators_set(
+        &self,
+    ) -> Result<(ton_block::ValidatorSet, ton_block::CatchainConfig)> {
+        let (virt_block, virt_block_info) = self.pre_check_block_proof()?;
+
+        if !virt_block_info.key_block() {
+            return Err(anyhow!(
+                "proof for key block {} contains a Merkle proof which declares non key block",
+                self.id
+            ));
+        }
+
+        let (validator_set, catchain_config) =
+            virt_block.read_cur_validator_set_and_cc_conf().convert()?;
+
+        Ok((validator_set, catchain_config))
+    }
+
     pub fn check_with_prev_key_block_proof(
         &self,
         prev_key_block_proof: &BlockProofStuff,

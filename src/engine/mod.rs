@@ -1,13 +1,19 @@
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::Result;
+use dashmap::DashMap;
+use futures::stream::FuturesUnordered;
+use futures::StreamExt;
 use tiny_adnl::utils::*;
+use ton_api::ton;
 
 pub use self::boot::*;
 use self::db::*;
 use self::downloader::*;
 use self::node_state::*;
+use self::shard_client::*;
 use crate::config::*;
 use crate::network::*;
 use crate::storage::*;
@@ -17,6 +23,7 @@ mod boot;
 mod db;
 mod downloader;
 mod node_state;
+mod shard_client;
 
 pub struct Engine {
     db: Arc<dyn Db>,
@@ -114,6 +121,36 @@ impl Engine {
         self.network.get_overlay(full_id, short_id).await
     }
 
+    pub async fn listen_broadcasts(
+        self: &Arc<Self>,
+        shard_ident: ton_block::ShardIdent,
+    ) -> Result<()> {
+        let overlay = self
+            .get_full_node_overlay(
+                shard_ident.workchain_id(),
+                shard_ident.shard_prefix_with_tag(),
+            )
+            .await?;
+
+        tokio::spawn(async move {
+            loop {
+                match overlay.wait_broadcast().await {
+                    Ok((ton::ton_node::Broadcast::TonNode_BlockBroadcast(block), peer_id)) => {
+                        log::info!("Got block broadcast from {}", peer_id);
+                    }
+                    Ok((broadcast, peer_id)) => {
+                        log::info!("Got unknown broadcast: {:?} from {}", broadcast, peer_id);
+                    }
+                    Err(e) => {
+                        log::error!("Failed to wait broadcast for shard {}: {}", shard_ident, e);
+                    }
+                }
+            }
+        });
+
+        Ok(())
+    }
+
     pub async fn download_zerostate(
         &self,
         block_id: &ton_block::BlockIdExt,
@@ -133,6 +170,121 @@ impl Engine {
         .await?
         .download()
         .await
+    }
+
+    pub async fn download_state(
+        &self,
+        block_id: &ton_block::BlockIdExt,
+        masterchain_block_id: &ton_block::BlockIdExt,
+    ) -> Result<Arc<ShardStateStuff>> {
+        let overlay = self
+            .get_full_node_overlay(
+                block_id.shard_id.workchain_id(),
+                block_id.shard_id.shard_prefix_with_tag(),
+            )
+            .await?;
+
+        let neighbour = loop {
+            match overlay
+                .check_persistent_state(block_id, masterchain_block_id)
+                .await
+            {
+                Ok(Some(peer)) => break peer,
+                Ok(None) => {
+                    log::trace!("Failed to download state: state not found");
+                }
+                Err(e) => {
+                    log::trace!("Failed to download state: {}", e);
+                }
+            };
+        };
+
+        let mut offset = 0;
+        let parts = Arc::new(DashMap::new());
+        let max_size = 1 << 20;
+        let total_size = Arc::new(AtomicUsize::new(usize::MAX));
+        let threads = 3;
+
+        let results = std::iter::repeat_with(|| {
+            let overlay = overlay.clone();
+            let parts = parts.clone();
+            let total_size = total_size.clone();
+            let neighbour = neighbour.clone();
+            let mut thread_offset = offset;
+            offset += max_size;
+
+            async move {
+                let mut peer_attempt = 0;
+                let mut part_attempt = 0;
+
+                loop {
+                    if thread_offset >= total_size.load(Ordering::Acquire) {
+                        return Result::<_, anyhow::Error>::Ok(());
+                    }
+
+                    match overlay
+                        .download_persistent_state_part(
+                            block_id,
+                            masterchain_block_id,
+                            thread_offset,
+                            max_size,
+                            neighbour.clone(),
+                            peer_attempt,
+                        )
+                        .await
+                    {
+                        Ok(part) => {
+                            part_attempt = 0;
+                            let part_len = part.len();
+                            parts.insert(thread_offset, part);
+
+                            if part_len < max_size {
+                                total_size.store(thread_offset + part_len, Ordering::Release);
+                                return Ok(());
+                            }
+
+                            thread_offset += max_size * threads;
+                        }
+                        Err(e) => {
+                            part_attempt += 1;
+                            peer_attempt += 1;
+
+                            log::error!("Failed to download persistent state part: {}", e);
+                            if part_attempt > 10 {
+                                return Err(EngineError::RanOutOfAttempts.into());
+                            }
+                            tokio::time::sleep(Duration::from_millis(100)).await;
+                        }
+                    }
+                }
+            }
+        })
+        .take(threads)
+        .collect::<FuturesUnordered<_>>()
+        .collect::<Vec<_>>()
+        .await;
+
+        results
+            .into_iter()
+            .find(|result| result.is_err())
+            .unwrap_or(Ok(()))?;
+
+        let total_size = total_size.load(Ordering::Acquire);
+        debug_assert!(total_size < usize::MAX);
+
+        let mut state = Vec::with_capacity(total_size);
+
+        let mut offset = 0;
+        while let Some(part) = parts.get(&offset) {
+            state.extend_from_slice(part.value());
+            offset += part.len();
+        }
+        debug_assert_eq!(total_size, state.len());
+
+        Ok(Arc::new(ShardStateStuff::deserialize(
+            block_id.clone(),
+            &state,
+        )?))
     }
 
     pub async fn download_next_masterchain_block(
@@ -215,6 +367,30 @@ impl Engine {
         self.db.load_block_handle(block_id)
     }
 
+    pub fn find_block_by_seq_no(
+        &self,
+        account_prefix: &ton_block::AccountIdPrefixFull,
+        seq_no: u32,
+    ) -> Result<Arc<BlockHandle>> {
+        self.db.find_block_by_seq_no(account_prefix, seq_no)
+    }
+
+    pub fn find_block_by_utime(
+        &self,
+        account_prefix: &ton_block::AccountIdPrefixFull,
+        utime: u32,
+    ) -> Result<Arc<BlockHandle>> {
+        self.db.find_block_by_utime(account_prefix, utime)
+    }
+
+    pub fn find_block_by_lt(
+        &self,
+        account_prefix: &ton_block::AccountIdPrefixFull,
+        lt: u64,
+    ) -> Result<Arc<BlockHandle>> {
+        self.db.find_block_by_lt(account_prefix, lt)
+    }
+
     pub fn load_state(&self, block_id: &ton_block::BlockIdExt) -> Result<Arc<ShardStateStuff>> {
         if let Some(state) = self.shard_states_cache.get(block_id) {
             Ok(state)
@@ -242,6 +418,21 @@ impl Engine {
             .await?;
 
         Ok(())
+    }
+
+    pub async fn load_block_data(&self, handle: &Arc<BlockHandle>) -> Result<BlockStuff> {
+        self.db.load_block_data(handle.as_ref()).await
+    }
+
+    pub async fn store_block_data(&self, block: &BlockStuff) -> Result<StoreBlockResult> {
+        let store_block_result = self.db.store_block_data(block).await?;
+        if store_block_result.handle.id().shard().is_masterchain() {
+            if store_block_result.handle.meta().is_key_block() {
+                self.update_last_known_key_block_seqno(store_block_result.handle.id().seq_no);
+            }
+            self.update_last_known_mc_block_seqno(store_block_result.handle.id().seq_no);
+        }
+        Ok(store_block_result)
     }
 
     pub async fn load_block_proof(
@@ -416,4 +607,6 @@ impl Downloader for ZeroStateDownloader {
 enum EngineError {
     #[error("Downloading next block is only allowed for masterchain")]
     NonMasterchainNextBlock,
+    #[error("Ran out of attempts")]
+    RanOutOfAttempts,
 }
