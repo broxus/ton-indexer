@@ -3,14 +3,14 @@ use std::str::FromStr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
+use anyhow::Result;
 use chrono::TimeZone;
 use futures::StreamExt;
-use ton_abi::Event;
-use ton_block::{MsgAddress, MsgAddressInt};
-
-use indexer_lib::{extract_events_from_block, extract_functions_from_block};
+use indexer_lib::ExtractInput;
 use node_indexer::{Config, NodeClient};
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeSet, BinaryHeap, HashMap, HashSet};
+use ton_abi::Event;
+use ton_block::{MsgAddress, MsgAddressInt, ShardIdent};
 
 const ROOT_ABI: &str = r#"{
 	"ABI version": 2,
@@ -834,25 +834,27 @@ fn main() {
     env_logger::init();
     log::info!("Started");
     rt.block_on(async move {
-        let (tx, rx) = futures::channel::mpsc::unbounded();
-        let (tx_block, rx_block) = futures::channel::mpsc::unbounded();
+        // let (tx, rx) = futures::channel::mpsc::unbounded();
+        // let (tx_block, mut rx_block) = futures::channel::mpsc::unbounded();
         let mut config = Config::default();
         config.adnl.server_address = "44.192.25.57:3031".parse().unwrap();
+        config.pool_size = 40;
         let node = Arc::new(NodeClient::new(config).await.unwrap());
         log::info!("here");
 
-        node.spawn_indexer(
-            // Some(BlockId {
-            //     workchain: -1,
-            //     shard: u64::from_str_radix("8000000000000000", 16).unwrap() as i64,
-            //     seqno: 9149427,
-            // }),
-            None, tx, tx_block,
-        )
-        .await
-        .unwrap();
+        // node.spawn_indexer(
+        //     Some(ton_api::ton::ton_node::blockid::BlockId {
+        //         workchain: -1,
+        //         shard: u64::from_str_radix("8000000000000000", 16).unwrap() as i64,
+        //         seqno: 9501034,
+        //     }),
+        //     tx,
+        //     tx_block,
+        // )
+        // .await
+        // .unwrap();
+        let abi = prep_event();
 
-        let mut asdds = BTreeSet::new();
         let all = node
             .get_all_transactions(
                 MsgAddressInt::from_str(
@@ -862,69 +864,123 @@ fn main() {
             )
             .await
             .unwrap();
-        all.iter().for_each(|x| {
-            println!("{}", x.data.lt);
-            asdds.insert(x.hash);
-        });
-        println!("Len: {}, Normal: {}", all.len(), asdds.len());
-        return;
-
-        let contract = ton_abi::Contract::load(std::io::Cursor::new(ROOT_ABI)).unwrap();
-        let fun = contract.function("getExpectedPairAddress").unwrap();
-        let input = ton_abi::TokenValue::Address(
-            MsgAddress::from_str(
-                "0:943bad2e74894aa28ae8ddbe673be09a0f3818fd170d12b4ea8ef1ea8051e940",
-            )
-            .unwrap(),
-        );
-        let left = ton_abi::Token::new("left_root", input.clone());
-        let right = ton_abi::Token::new("right_root", input);
-        let id = ton_abi::Token::new(
-            "_answer_id",
-            ton_abi::TokenValue::Uint(ton_abi::Uint::new(1337, 32)),
-        );
-        let res = node
-            .run_local(
-                MsgAddressInt::from_str(
-                    "0:943bad2e74894aa28ae8ddbe673be09a0f3818fd170d12b4ea8ef1ea8051e940",
-                )
-                .unwrap(),
-                fun,
-                &[id, left, right],
-            )
-            .await;
-        dbg!(res);
-        return;
-        let mut rx = rx.enumerate();
-        let evs = prep_event();
-        let mut file = std::fs::OpenOptions::new()
-            .create(true)
-            .write(true)
-            .open("res.txt")
-            .unwrap();
-        while let Some((n, a)) = rx.next().await {
-            // let block = a.clone();
-            // let extra :BlockExtra= block.extra
-            //     .read_struct().unwrap();
-            //
-            let res = extract_events_from_block(&evs, &a).unwrap();
-            if let Some(a) = res {
-                if !a.is_empty() {
-                    log::info!(
-                        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA: {:?}",
-                        a
-                    );
-                    file.write_all(format!("{:?}", a).as_ref()).unwrap();
-                    // return;
+        dbg!("meme");
+        let parsed: Result<Vec<_>> = all
+            .into_iter()
+            .map(|x| {
+                {
+                    ExtractInput {
+                        transaction: &x.data,
+                        what_to_extract: &abi,
+                    }
                 }
-            };
-            let now = a.info.read_struct().unwrap().gen_utime().0;
-            let time = chrono::Utc.timestamp(now as i64, 0);
-            let diff = chrono::Utc::now() - time;
-            // println!("{}", diff);
-            if diff.num_seconds() < 40 {
-                println!("Synced");
-            }
-        }
+                .process()
+            })
+            .collect();
+        dbg!(parsed
+            .unwrap()
+            .into_iter()
+            .for_each(|x| println!("{:?}", x.output)));
+        return;
+        //
+        // // let contract = ton_abi::Contract::load(std::io::Cursor::new(ROOT_ABI)).unwrap();
+        // // let fun = contract.function("getExpectedPairAddress").unwrap();
+        // // let input = ton_abi::TokenValue::Address(
+        // //     MsgAddress::from_str(
+        // //         "0:943bad2e74894aa28ae8ddbe673be09a0f3818fd170d12b4ea8ef1ea8051e940",
+        // //     )
+        // //     .unwrap(),
+        // // );
+        // // let left = ton_abi::Token::new("left_root", input.clone());
+        // // let right = ton_abi::Token::new("right_root", input);
+        // // let id = ton_abi::Token::new(
+        // //     "_answer_id",
+        // //     ton_abi::TokenValue::Uint(ton_abi::Uint::new(1337, 32)),
+        // // );
+        // // let res = node
+        // //     .run_local(
+        // //         MsgAddressInt::from_str(
+        // //             "0:943bad2e74894aa28ae8ddbe673be09a0f3818fd170d12b4ea8ef1ea8051e940",
+        // //         )
+        // //         .unwrap(),
+        // //         fun,
+        // //         &[id, left, right],
+        // //     )
+        // //     .await;
+        // // dbg!(res);
+        // // return;
+        // let mut rx = rx.enumerate();
+        // let evs = prep_event();
+        // // let mut seqnos = BinaryHeap::new();
+        // //
+        // // for a in 0..10 {
+        // //     let seqno = rx_block.next().await.unwrap();
+        // //     log::error!("{}", a);
+        // //     seqnos.push(seqno.seqno);
+        // // }
+        // // let seqnos = seqnos.into_sorted_vec();
+        // // let mut block_seqnos = BinaryHeap::new();
+        // let mut seqnos = HashMap::new();
+        // while let Some((n, a)) = rx.next().await {
+        //     // let block = a.clone();
+        //     // let extra :BlockExtra= block.extra
+        //     //     .read_struct().unwrap();
+        //     //
+        //     let shard = a
+        //         .info
+        //         .read_struct()
+        //         .unwrap()
+        //         .shard()
+        //         .shard_prefix_with_tag();
+        //
+        //     let seqnno = a.info.read_struct().unwrap().seq_no();
+        //     let mut entry = seqnos.entry(shard).or_insert_with(Vec::new);
+        //     entry.push(seqnno);
+        //     let res = extract_events_from_block(&evs, &a).unwrap();
+        //     // if let Some(a) = res {
+        //     //     if !a.is_empty() {
+        //     //         log::info!(
+        //     //             "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA: {:?}",
+        //     //             a
+        //     //         );
+        //     //         file.write_all(format!("{:?}", a).as_ref()).unwrap();
+        //     //         // return;
+        //     //     }
+        //     // };
+        //     let now = a.info.read_struct().unwrap().gen_utime().0;
+        //     let time = chrono::Utc.timestamp(now as i64, 0);
+        //     let diff = chrono::Utc::now() - time;
+        //     // println!("{}", diff);
+        //     if diff.num_seconds() < 40 {
+        //         println!("Synced");
+        //     };
+        //     if n == 1000 {
+        //         break;
+        //     }
+        // }
+        //
+        // // let mut pre = &block_seqnos[0];
+        // // for a in &block_seqnos {
+        // //     if (pre - a) > 1 {
+        // //         dbg!(block_seqnos)
+        // //     }
+        // // }
+        // for (k, mut v) in seqnos {
+        //     v.sort_unstable();
+        //
+        //     let start = v.first().unwrap();
+        //     let end = v.last().unwrap();
+        //     let gen = (*start..end + 1);
+        //     let mut flag = false;
+        //     for (seq, expected) in v.clone().iter().zip(gen) {
+        //         if *seq != expected {
+        //             flag = true;
+        //         }
+        //     }
+        //     if flag {
+        //         println!("{:016x}", k);
+        //         dbg!(v);
+        //     }
+        // }
     })
 }

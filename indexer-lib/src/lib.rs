@@ -10,7 +10,7 @@ mod extension;
 #[derive(Debug, Clone)]
 pub struct ParsedOutput<T: Clone + Debug> {
     pub transaction: Transaction,
-    pub output: Option<Vec<T>>,
+    pub output: Vec<T>,
 }
 
 pub struct ExtractInput<'a, W> {
@@ -38,7 +38,7 @@ where
         }
         Ok(ParsedOutput {
             transaction: self.transaction.clone(),
-            output: Some(output),
+            output: output,
         })
     }
 }
