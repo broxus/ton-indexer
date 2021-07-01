@@ -2,9 +2,15 @@ use std::fmt::Debug;
 
 pub use crate::extension::TransactionExt;
 use anyhow::Result;
+use shared_deps::TrustMe;
+use std::convert::TryInto;
 use ton_abi::Event;
-use ton_block::{AccountBlock, CurrencyCollection, Deserializable, MsgAddressInt, Transaction};
+use ton_block::{
+    AccountBlock, CurrencyCollection, Deserializable, GetRepresentationHash, MsgAddressInt,
+    Transaction,
+};
 use ton_types::SliceData;
+
 mod extension;
 
 #[derive(Debug, Clone)]
@@ -67,6 +73,11 @@ impl Extractable for Event {
                     result.push(ParsedEvent {
                         function_name: self.name.clone(),
                         input: output.tokens,
+                        message_hash: message
+                            .msg
+                            .hash()
+                            .map(|x| *x.as_slice())
+                            .expect("If message is parsed, than hash is ok"),
                     });
                 }
             }
@@ -135,6 +146,7 @@ pub struct ParsedFunction {
 pub struct ParsedEvent {
     pub function_name: String,
     pub input: Vec<ton_abi::Token>,
+    pub message_hash: [u8; 32],
 }
 
 /// # Returns
