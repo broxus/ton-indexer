@@ -270,7 +270,7 @@ fn process_event_message(
     }
     let body = msg.body().ok_or(AbiError::InvalidOutputMessage)?;
     if abi_function
-        .is_my_message(body.clone(), false)
+        .is_my_message(body.clone(), msg.is_internal())
         .map_err(|e| AbiError::DecodingError(e.to_string()))?
     {
         let tokens = abi_function
