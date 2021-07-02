@@ -1,15 +1,14 @@
 use std::fmt::Debug;
 
-pub use crate::extension::TransactionExt;
 use anyhow::Result;
-use shared_deps::TrustMe;
-use std::convert::TryInto;
 use ton_abi::Event;
 use ton_block::{
     AccountBlock, CurrencyCollection, Deserializable, GetRepresentationHash, MsgAddressInt,
     Transaction,
 };
 use ton_types::SliceData;
+
+pub use crate::extension::TransactionExt;
 
 mod extension;
 
@@ -44,7 +43,7 @@ where
         }
         Ok(ParsedOutput {
             transaction: self.transaction.clone(),
-            output: output,
+            output,
         })
     }
 }
@@ -90,48 +89,18 @@ impl Extractable for ton_abi::Function {
     type Output = ParsedFunction;
 
     fn extract(&self, messages: &TransactionMessages) -> Result<Vec<Self::Output>> {
-        let mut result = Vec::new();
+        let input = if let Some(message) = &messages.in_message {
+            process_function_in_message(&message, &self)?
+        } else {
+            anyhow::bail!("No in messages")
+        };
+        let abi_out_messages_tokens = process_function_out_messages(&messages.out_messages, &self)?;
 
-        let abi_out_messages_tokens =
-            match process_function_out_messages(&messages.out_messages, &self) {
-                Ok(a) => a,
-                Err(e) => {
-                    log::error!("Failed processing out messages: {:?}", e);
-                    None
-                }
-            };
-        match abi_out_messages_tokens {
-            None => (),
-            Some(output) => {
-                result.push(ParsedFunction {
-                    function_name: self.name.clone(),
-                    input: None,
-                    output: Some(output.tokens),
-                });
-            }
-        }
-
-        if let Some(message) = &messages.in_message {
-            let abi_in_message_tokens = match process_function_in_message(&message, &self) {
-                Ok(a) => a,
-                Err(e) => {
-                    log::error!("Failed processing out messages: {:?}", e);
-                    None
-                }
-            };
-            match abi_in_message_tokens {
-                None => (),
-                Some(output) => {
-                    result.push(ParsedFunction {
-                        function_name: self.name.clone(),
-                        input: Some(output.tokens),
-                        output: None,
-                    });
-                }
-            }
-        }
-
-        Ok(result)
+        Ok(vec![ParsedFunction {
+            function_name: self.name.clone(),
+            input,
+            output: abi_out_messages_tokens,
+        }])
     }
 }
 
@@ -235,29 +204,22 @@ struct ProcessFunctionOutput {
 fn process_function_out_messages(
     messages: &[MessageData],
     abi_function: &ton_abi::Function,
-) -> Result<Option<ProcessFunctionOutput>, AbiError> {
+) -> Result<Option<Vec<ton_abi::Token>>, AbiError> {
     let mut output = None;
-
     for msg in messages {
-        let MessageData { time, msg } = msg;
-        if !matches!(msg.header(), ton_block::CommonMsgInfo::ExtOutMsgInfo(_)) {
-            continue;
-        }
-
+        let MessageData { msg, .. } = msg;
+        let is_internal = msg.is_internal();
         let body = msg.body().ok_or(AbiError::InvalidOutputMessage)?;
 
         if abi_function
-            .is_my_output_message(body.clone(), false)
+            .is_my_output_message(body.clone(), is_internal)
             .map_err(|e| AbiError::DecodingError(e.to_string()))?
         {
             let tokens = abi_function
-                .decode_output(body, false)
+                .decode_output(body, is_internal)
                 .map_err(|e| AbiError::DecodingError(e.to_string()))?;
 
-            output = Some(ProcessFunctionOutput {
-                tokens,
-                time: *time,
-            });
+            output = Some(tokens);
             break;
         }
     }
@@ -272,27 +234,23 @@ fn process_function_out_messages(
 fn process_function_in_message(
     msg: &MessageData,
     abi_function: &ton_abi::Function,
-) -> Result<Option<ProcessFunctionOutput>, AbiError> {
+) -> Result<Option<Vec<ton_abi::Token>>, AbiError> {
     let mut input = None;
-    let MessageData { time, msg } = msg;
-    if !matches!(msg.header(), ton_block::CommonMsgInfo::ExtInMsgInfo(_)) {
-        return Ok(None);
-    }
+    let MessageData { msg, .. } = msg;
 
+    let is_internal = msg.is_internal();
+    log::info!("{}", is_internal);
+    dbg!(is_internal);
     let body = msg.body().ok_or(AbiError::InvalidOutputMessage)?;
-
     if abi_function
-        .is_my_input_message(body.clone(), false)
+        .is_my_input_message(body.clone(), is_internal)
         .map_err(|e| AbiError::DecodingError(e.to_string()))?
     {
         let tokens = abi_function
-            .decode_input(body, false)
+            .decode_input(body, is_internal)
             .map_err(|e| AbiError::DecodingError(e.to_string()))?;
 
-        input = Some(ProcessFunctionOutput {
-            tokens,
-            time: *time,
-        });
+        input = Some(tokens);
     }
 
     match input {
@@ -375,6 +333,7 @@ pub struct MessageData {
     pub msg: ton_block::Message,
 }
 
+#[derive(Debug)]
 pub struct TransactionMessages {
     pub in_message: Option<MessageData>,
     pub out_messages: Vec<MessageData>,
