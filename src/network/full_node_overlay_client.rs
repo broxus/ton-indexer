@@ -19,6 +19,16 @@ pub trait FullNodeOverlayClient: Send + Sync {
         masterchain_block_id: &ton_block::BlockIdExt,
     ) -> Result<Option<Arc<Neighbour>>>;
 
+    async fn download_persistent_state_part(
+        &self,
+        block_id: &ton_block::BlockIdExt,
+        masterchain_block_id: &ton_block::BlockIdExt,
+        offset: usize,
+        mas_size: usize,
+        neighbour: Arc<Neighbour>,
+        attempt: u32,
+    ) -> Result<Vec<u8>>;
+
     async fn download_zero_state(
         &self,
         id: &ton_block::BlockIdExt,
@@ -86,6 +96,28 @@ impl FullNodeOverlayClient for OverlayClient {
             ton::ton_node::PreparedState::TonNode_PreparedState => Ok(Some(neighbour)),
             ton::ton_node::PreparedState::TonNode_NotFoundState => Ok(None),
         }
+    }
+
+    async fn download_persistent_state_part(
+        &self,
+        block_id: &ton_block::BlockIdExt,
+        masterchain_block_id: &ton_block::BlockIdExt,
+        offset: usize,
+        mas_size: usize,
+        neighbour: Arc<Neighbour>,
+        attempt: u32,
+    ) -> Result<Vec<u8>> {
+        self.send_rldp_query_raw(
+            neighbour,
+            &ton::rpc::ton_node::DownloadPersistentStateSlice {
+                block: convert_block_id_ext_blk2api(block_id),
+                masterchain_block: convert_block_id_ext_blk2api(masterchain_block_id),
+                offset: offset as i64,
+                max_size: mas_size as i64,
+            },
+            attempt,
+        )
+        .await
     }
 
     async fn download_zero_state(

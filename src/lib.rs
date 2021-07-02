@@ -22,7 +22,7 @@ pub async fn start(node_config: NodeConfig, global_config: GlobalConfig) -> Resu
 
     start_full_node_service(engine.clone())?;
 
-    let _block_id = boot(&engine).await?;
+    let last_masterchain_block_id = boot(&engine).await?;
 
     Ok(())
 }

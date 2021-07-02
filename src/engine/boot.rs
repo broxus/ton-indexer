@@ -21,16 +21,49 @@ pub async fn boot(engine: &Arc<Engine>) -> Result<ton_block::BlockIdExt> {
         }
     };
 
-    todo!()
+    Ok(last_mc_block_id)
 }
 
 async fn cold_boot(engine: &Arc<Engine>) -> Result<ton_block::BlockIdExt> {
     let boot_data = prepare_cold_boot_data(engine).await?;
-    let key_blocks = get_key_blocks(engine, boot_data).await?;
+    let zero_state = match &boot_data {
+        ColdBootData::ZeroState { state, .. } => Some(state.clone()),
+        ColdBootData::KeyBlock { .. } => None,
+    };
 
-    log::warn!("loaded: {}", key_blocks.len());
+    let last_block_handle = get_key_blocks(engine, boot_data).await?;
 
-    todo!()
+    let block_id = last_block_handle.id();
+    match zero_state {
+        Some(zero_state) => {
+            download_base_wc_zero_state(engine, &zero_state).await?;
+        }
+        None => download_start_blocks_and_states(engine, block_id).await?,
+    }
+
+    Ok(block_id.clone())
+}
+
+async fn warm_boot(
+    engine: &Arc<Engine>,
+    mut last_mc_block_id: ton_block::BlockIdExt,
+) -> Result<ton_block::BlockIdExt> {
+    let handle = engine
+        .load_block_handle(&last_mc_block_id)?
+        .ok_or_else(|| BootError::FailedToLoadInitialBlock)?;
+
+    let state = engine.load_state(&last_mc_block_id)?;
+    if last_mc_block_id.seq_no != 0 && !handle.meta().is_key_block() {
+        last_mc_block_id = state
+            .shard_state_extra()?
+            .last_key_block
+            .clone()
+            .ok_or_else(|| BootError::MasterchainStateNotFound)?
+            .master_block_id()
+            .1
+    }
+
+    Ok(last_mc_block_id)
 }
 
 async fn prepare_cold_boot_data(engine: &Arc<Engine>) -> Result<ColdBootData> {
@@ -97,9 +130,9 @@ async fn prepare_cold_boot_data(engine: &Arc<Engine>) -> Result<ColdBootData> {
 async fn get_key_blocks(
     engine: &Arc<Engine>,
     mut boot_data: ColdBootData,
-) -> Result<Vec<Arc<BlockHandle>>> {
+) -> Result<Arc<BlockHandle>> {
     let mut handle = boot_data.init_block_handle().clone();
-    let mut key_blocks = vec![handle.clone()];
+
     loop {
         log::info!("Downloading next key blocks for: {}", handle.id());
 
@@ -127,7 +160,6 @@ async fn get_key_blocks(
                 }
 
                 handle = next_handle;
-                key_blocks.push(handle.clone());
                 boot_data = ColdBootData::KeyBlock {
                     handle: handle.clone(),
                     proof,
@@ -135,18 +167,16 @@ async fn get_key_blocks(
             }
         }
 
-        if let Some(last_handle) = key_blocks.last() {
-            let last_utime = last_handle.meta().gen_utime() as i32;
-            log::info!(
-                "Last known block: {}, utime: {}, now: {}",
-                handle.id(),
-                last_utime,
-                now()
-            );
+        let last_utime = handle.meta().gen_utime() as i32;
+        log::info!(
+            "Last known block: {}, utime: {}, now: {}",
+            handle.id(),
+            last_utime,
+            now()
+        );
 
-            if now() - last_utime < 2 * 86400 {
-                return Ok(key_blocks);
-            }
+        if now() - last_utime < 2 * 86400 {
+            return Ok(handle);
         }
     }
 }
@@ -206,15 +236,36 @@ impl ColdBootData {
     }
 }
 
-async fn warm_boot(
+async fn download_base_wc_zero_state(
     engine: &Arc<Engine>,
-    mut last_mc_block_id: ton_block::BlockIdExt,
-) -> Result<ton_block::BlockIdExt> {
-    todo!()
+    zero_state: &ShardStateStuff,
+) -> Result<()> {
+    let workchains = zero_state.config_params()?.workchains().convert()?;
+    let base_workchain = workchains
+        .get(&0)
+        .convert()?
+        .ok_or_else(|| BootError::BaseWorkchainInfoNotFound)?;
+
+    download_zero_state(
+        engine,
+        &ton_block::BlockIdExt {
+            shard_id: ton_block::ShardIdent::with_tagged_prefix(
+                ton_block::BASE_WORKCHAIN_ID,
+                ton_block::SHARD_FULL,
+            )
+            .convert()?,
+            seq_no: 0,
+            root_hash: base_workchain.zerostate_root_hash,
+            file_hash: base_workchain.zerostate_file_hash,
+        },
+    )
+    .await?;
+
+    Ok(())
 }
 
 async fn download_zero_state(
-    engine: &Engine,
+    engine: &Arc<Engine>,
     block_id: &ton_block::BlockIdExt,
 ) -> Result<(Arc<BlockHandle>, Arc<ShardStateStuff>)> {
     if let Some(handle) = engine.load_block_handle(block_id)? {
@@ -238,6 +289,68 @@ async fn download_zero_state(
     }
 }
 
+async fn download_start_blocks_and_states(
+    engine: &Arc<Engine>,
+    masterchain_block_id: &ton_block::BlockIdExt,
+) -> Result<()> {
+    let (_, init_mc_block) =
+        download_block_and_state(engine, masterchain_block_id, masterchain_block_id).await?;
+
+    for (_, block_id) in init_mc_block.shards_blocks()? {
+        if block_id.seq_no == 0 {
+            download_zero_state(engine, &block_id).await?;
+        } else {
+            download_block_and_state(engine, &block_id, masterchain_block_id).await?;
+        };
+    }
+
+    Ok(())
+}
+
+async fn download_block_and_state(
+    engine: &Arc<Engine>,
+    block_id: &ton_block::BlockIdExt,
+    masterchain_block_id: &ton_block::BlockIdExt,
+) -> Result<(Arc<BlockHandle>, BlockStuff)> {
+    let handle = engine
+        .load_block_handle(block_id)?
+        .filter(|handle| handle.meta().has_data());
+
+    let (block, handle) = match handle {
+        Some(handle) => (engine.load_block_data(&handle).await?, handle),
+        None => {
+            let (block, proof) = engine.download_block(block_id, None, None).await?;
+            let mut handle = engine.store_block_data(&block).await?.handle;
+            if !handle.meta().has_proof() {
+                handle = engine
+                    .store_block_proof(block_id, Some(handle), &proof)
+                    .await?;
+            }
+            (block, handle)
+        }
+    };
+
+    if !handle.meta().has_state() {
+        let state_update = block.block().read_state_update().convert()?;
+        log::info!("Download state: {}", handle.id());
+
+        let shard_state = engine
+            .download_state(handle.id(), masterchain_block_id)
+            .await?;
+        let state_hash = shard_state.root_cell().repr_hash();
+        if state_update.new_hash != state_hash {
+            return Err(BootError::ShardStateHashMismatch.into());
+        }
+        engine.store_state(&handle, &shard_state).await?;
+
+        log::info!("Received shard state for: {}", shard_state.block_id());
+
+        // TODO: process received state here
+    }
+
+    Ok((handle, block))
+}
+
 fn is_persistent_state(block_utime: u32, prev_utime: u32) -> bool {
     block_utime >> 17 != prev_utime >> 17
 }
@@ -246,4 +359,12 @@ fn is_persistent_state(block_utime: u32, prev_utime: u32) -> bool {
 enum BootError {
     #[error("Starting from non-key block")]
     StartingFromNonKeyBlock,
+    #[error("Failed to load initial block handle")]
+    FailedToLoadInitialBlock,
+    #[error("Masterchain state not found")]
+    MasterchainStateNotFound,
+    #[error("Base workchain info not found")]
+    BaseWorkchainInfoNotFound,
+    #[error("Downloaded shard state hash mismatch")]
+    ShardStateHashMismatch,
 }
