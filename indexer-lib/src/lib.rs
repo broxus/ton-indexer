@@ -239,8 +239,6 @@ fn process_function_in_message(
     let MessageData { msg, .. } = msg;
 
     let is_internal = msg.is_internal();
-    log::info!("{}", is_internal);
-    dbg!(is_internal);
     let body = msg.body().ok_or(AbiError::InvalidOutputMessage)?;
     if abi_function
         .is_my_input_message(body.clone(), is_internal)
