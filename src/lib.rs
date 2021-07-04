@@ -10,6 +10,7 @@ use ton_api::IntoBoxed;
 pub use crate::config::*;
 use crate::engine::*;
 use crate::network::*;
+use crate::utils::NoFailure;
 
 mod config;
 mod engine;
@@ -23,6 +24,21 @@ pub async fn start(node_config: NodeConfig, global_config: GlobalConfig) -> Resu
     start_full_node_service(engine.clone())?;
 
     let last_masterchain_block_id = boot(&engine).await?;
+
+    log::info!("Initialized (last block: {})", last_masterchain_block_id);
+
+    engine
+        .listen_broadcasts(ton_block::ShardIdent::masterchain())
+        .await?;
+    engine
+        .listen_broadcasts(
+            ton_block::ShardIdent::with_tagged_prefix(
+                ton_block::BASE_WORKCHAIN_ID,
+                ton_block::SHARD_FULL,
+            )
+            .convert()?,
+        )
+        .await?;
 
     Ok(())
 }

@@ -131,12 +131,25 @@ impl Engine {
                 shard_ident.shard_prefix_with_tag(),
             )
             .await?;
+        let engine = self.clone();
 
         tokio::spawn(async move {
             loop {
                 match overlay.wait_broadcast().await {
                     Ok((ton::ton_node::Broadcast::TonNode_BlockBroadcast(block), peer_id)) => {
                         log::info!("Got block broadcast from {}", peer_id);
+
+                        let engine = engine.clone();
+                        tokio::spawn(async move {
+                            match process_block_broadcast(&engine, *block).await {
+                                Ok(_) => {
+                                    log::info!("Processed block broadcast");
+                                }
+                                Err(e) => {
+                                    log::error!("Failed to process block broadcast: {}", e);
+                                }
+                            }
+                        });
                     }
                     Ok((broadcast, peer_id)) => {
                         log::info!("Got unknown broadcast: {:?} from {}", broadcast, peer_id);

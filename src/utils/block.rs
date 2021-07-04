@@ -9,16 +9,12 @@ use ton_types::{Cell, UInt256};
 
 use super::NoFailure;
 
-/// It is a wrapper around various block's representations and properties.
-/// # Remark
-/// Because of no deterministic of a bag of cells's serialization need to store `data`
-/// to make deserialization and serialization functions symmetric.
 #[derive(Debug, Default, Clone, Eq, PartialEq)]
 pub struct BlockStuff {
     id: ton_block::BlockIdExt,
     block: ton_block::Block,
     root: Cell,
-    data: Arc<Vec<u8>>, // Arc is used to make cloning more lightweight
+    data: Arc<Vec<u8>>,
 }
 
 impl BlockStuff {
