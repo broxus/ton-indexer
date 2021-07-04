@@ -1,6 +1,6 @@
 use std::fmt::Debug;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use ton_abi::Event;
 use ton_block::{
     AccountBlock, CurrencyCollection, Deserializable, GetRepresentationHash, MsgAddressInt,
@@ -26,9 +26,12 @@ pub struct ExtractInput<'a, W> {
 impl<W> ExtractInput<'_, W>
 where
     W: Extractable,
+    W: ShouldParseFurther,
 {
     pub fn process(&self) -> Result<ParsedOutput<<W as Extractable>::Output>> {
-        let messages = self.messages()?;
+        let messages = self
+            .messages()
+            .context("Failed getting messages from transaction")?;
         let mut output = Vec::new();
 
         for parser in self.what_to_extract {
@@ -40,11 +43,32 @@ where
                 }
             };
             output.append(&mut res);
+            if !<W as ShouldParseFurther>::should_continue() {
+                break;
+            }
         }
         Ok(ParsedOutput {
             transaction: self.transaction.clone(),
             output,
         })
+    }
+}
+
+pub trait ShouldParseFurther {
+    /// Returns true, if parsed transaction can store only one element.
+    /// E.G. 1 function call per transaction, but n events.
+    fn should_continue() -> bool;
+}
+
+impl ShouldParseFurther for ton_abi::Function {
+    fn should_continue() -> bool {
+        false
+    }
+}
+
+impl ShouldParseFurther for ton_abi::Event {
+    fn should_continue() -> bool {
+        true
     }
 }
 
@@ -126,6 +150,7 @@ pub fn extract_from_block<W, O>(
 ) -> Result<Option<Vec<ParsedOutput<O>>>>
 where
     W: Extractable + Extractable<Output = O>,
+    W: ShouldParseFurther,
     O: Clone + Debug,
 {
     use ton_types::HashmapType;
