@@ -1,0 +1,26 @@
+[package]
+name = "node-indexer-test"
+version = "0.1.0"
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+anyhow ="1.0.41"
+node-indexer = { path = "../node-indexer" }
+log4rs = "1.0.0"
+tokio = { version = '1', features = ['full'] }
+futures = "0.3.15"
+ton_abi = { git = "https://github.com/tonlabs/ton-labs-abi.git" }
+ton_block = { git = "https://github.com/tonlabs/ton-labs-block.git" }
+ton_types = { git = "https://github.com/tonlabs/ton-labs-types.git" }
+nekoton = { git = "https://github.com/broxus/nekoton.git", default-features = false }
+chrono = "0.4.19"
+log = "0.4.14"
+indexer-lib ={path ="../indexer-lib"}
+
+[dependencies.ton_api]
+git = "https://github.com/broxus/ton-labs-tl.git"
+branch = "original"
+package = "ton_api"
+features = ["lite_api", "ton_api"]

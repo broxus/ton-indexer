@@ -17,32 +17,26 @@ generic-array = "0.14"
 anyhow = "1.0"
 async-trait = "0.1.50"
 rand = "0.7"
-config = "0.11"
 sha2 = "0.8"
 serde = { version = "1.0", features = ["derive"] }
-serde_yaml = { version = "0.8" }
 serde_json = "1.0"
 tokio = { version = "1", features = ["full"] }
-env_logger = "0.8.3"
 curve25519-dalek = "3.1"
 ed25519-dalek = "1.0"
 log = "0.4.14"
 tryhard = "0.4.0"
-tokio-stream = "0.1.6"
 tokio-io-timeout = "1.1"
 either = "1.6.1"
 chrono = "0.4.19"
 hex = "0.4.3"
 x25519-dalek = "1"
 
-log4rs = "1.0.0"
 
 ton_abi = { git = "https://github.com/tonlabs/ton-labs-abi.git" }
 ton_block = { git = "https://github.com/tonlabs/ton-labs-block.git" }
 ton_types = { git = "https://github.com/tonlabs/ton-labs-types.git" }
 nekoton = { git = "https://github.com/broxus/nekoton.git", default-features = false }
 
-indexer-lib = { path = "../indexer-lib" }
 shared-deps = { path = "../shared-deps" }
 
 [dependencies.ton_api]

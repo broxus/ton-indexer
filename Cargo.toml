@@ -18,7 +18,7 @@ name = "block_parse"
 harness = false
 
 [workspace]
-members = ["indexer-lib", "node-indexer"]
+members = ["indexer-lib", "node-indexer", "node-indexer-test"]
 
 [dependencies]
 async-trait = "0.1"
