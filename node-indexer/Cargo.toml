@@ -6,7 +6,8 @@ edition = "2018"
 
 [dependencies]
 #tiny-adnl = { git = "https://github.com/broxus/tiny-adnl.git" }
-tiny-adnl = { path = "../../tiny-adnl/", features=[] }
+tiny-adnl = { git = "https://github.com/0xdeafbeef/tiny-adnl.git" }
+#tiny-adnl = { path = "../../tiny-adnl/", features=[] }
 parking_lot = "0.11.1"
 futures = "0.3.15"
 bytes = "1.0"
