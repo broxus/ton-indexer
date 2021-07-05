@@ -7,6 +7,11 @@ use anyhow::Result;
 use chrono::TimeZone;
 use futures::StreamExt;
 use indexer_lib::ExtractInput;
+use log::LevelFilter;
+use log4rs::append::console::ConsoleAppender;
+use log4rs::append::file::FileAppender;
+use log4rs::config::{Appender, Logger, Root};
+use log4rs::encode::pattern::PatternEncoder;
 use node_indexer::{Config, NodeClient};
 use std::collections::{BTreeSet, BinaryHeap, HashMap, HashSet};
 use ton_abi::Event;
@@ -821,6 +826,28 @@ fn prep_event() -> [Event; 4] {
 }
 
 fn main() {
+    let stdout = ConsoleAppender::builder().build();
+
+    let trace = FileAppender::builder()
+        .encoder(Box::new(PatternEncoder::new("{d} - {m}{n}")))
+        .build("trace.log")
+        .unwrap();
+
+    let config = log4rs::Config::builder()
+        .appender(Appender::builder().build("stdout", Box::new(stdout)))
+        .appender(Appender::builder().build("trace", Box::new(trace)))
+        .logger(Logger::builder().build("app::backend::db", LevelFilter::Info))
+        .logger(
+            Logger::builder()
+                .appender("trace")
+                .additive(false)
+                .build("tiny_adnl", LevelFilter::Trace),
+        )
+        .build(Root::builder().appender("stdout").build(LevelFilter::Info))
+        .unwrap();
+
+    let handle = log4rs::init_config(config).unwrap();
+
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .thread_name_fn(|| {
@@ -831,134 +858,61 @@ fn main() {
         .build()
         .unwrap();
 
-    env_logger::init();
     log::info!("Started");
     rt.block_on(async move {
-        // let (tx, rx) = futures::channel::mpsc::unbounded();
-        // let (tx_block, mut rx_block) = futures::channel::mpsc::unbounded();
         let mut config = Config::default();
-        config.adnl.server_address = "44.192.25.57:3031".parse().unwrap();
-        config.pool_size = 40;
+        // config.pool_size = 4;
         let node = Arc::new(NodeClient::new(config).await.unwrap());
         log::info!("here");
 
-        // node.spawn_indexer(
-        //     Some(ton_api::ton::ton_node::blockid::BlockId {
-        //         workchain: -1,
-        //         shard: u64::from_str_radix("8000000000000000", 16).unwrap() as i64,
-        //         seqno: 9501034,
-        //     }),
-        //     tx,
-        //     tx_block,
-        // )
-        // .await
-        // .unwrap();
+        let (tx, mut rx) = futures::channel::mpsc::unbounded();
+        let (tx_block, mut rx_block) = futures::channel::mpsc::unbounded();
+        node.spawn_indexer(
+            Some(ton_api::ton::ton_node::blockid::BlockId {
+                workchain: -1,
+                shard: u64::from_str_radix("8000000000000000", 16).unwrap() as i64,
+                seqno: 9501034,
+            }),
+            tx,
+            tx_block,
+        )
+        .await
+        .unwrap();
         let abi = prep_event();
+        //
+        // let all = node
+        //     .get_all_transactions(
+        //         MsgAddressInt::from_str(
+        //             "0:943bad2e74894aa28ae8ddbe673be09a0f3818fd170d12b4ea8ef1ea8051e940",
+        //         )
+        //         .unwrap(),
+        //     )
+        //     .await
+        //     .unwrap();
+        // let parsed: Result<Vec<_>> = all
+        //     .into_iter()
+        //     .map(|x| {
+        //         {
+        //             ExtractInput {
+        //                 transaction: &x.data,
+        //                 what_to_extract: &abi,
+        //             }
+        //         }
+        //         .process()
+        //     })
+        //     .collect();
+        // dbg!(parsed
+        //     .unwrap()
+        //     .into_iter()
+        //     .for_each(|x| println!("{:?}", x.output)));
 
-        let all = node
-            .get_all_transactions(
-                MsgAddressInt::from_str(
-                    "0:943bad2e74894aa28ae8ddbe673be09a0f3818fd170d12b4ea8ef1ea8051e940",
-                )
-                .unwrap(),
-            )
-            .await
-            .unwrap();
-        dbg!("meme");
-        let parsed: Result<Vec<_>> = all
-            .into_iter()
-            .map(|x| {
-                {
-                    ExtractInput {
-                        transaction: &x.data,
-                        what_to_extract: &abi,
-                    }
-                }
-                .process()
-            })
-            .collect();
-        dbg!(parsed
-            .unwrap()
-            .into_iter()
-            .for_each(|x| println!("{:?}", x.output)));
-        return;
-        //
-        // // let contract = ton_abi::Contract::load(std::io::Cursor::new(ROOT_ABI)).unwrap();
-        // // let fun = contract.function("getExpectedPairAddress").unwrap();
-        // // let input = ton_abi::TokenValue::Address(
-        // //     MsgAddress::from_str(
-        // //         "0:943bad2e74894aa28ae8ddbe673be09a0f3818fd170d12b4ea8ef1ea8051e940",
-        // //     )
-        // //     .unwrap(),
-        // // );
-        // // let left = ton_abi::Token::new("left_root", input.clone());
-        // // let right = ton_abi::Token::new("right_root", input);
-        // // let id = ton_abi::Token::new(
-        // //     "_answer_id",
-        // //     ton_abi::TokenValue::Uint(ton_abi::Uint::new(1337, 32)),
-        // // );
-        // // let res = node
-        // //     .run_local(
-        // //         MsgAddressInt::from_str(
-        // //             "0:943bad2e74894aa28ae8ddbe673be09a0f3818fd170d12b4ea8ef1ea8051e940",
-        // //         )
-        // //         .unwrap(),
-        // //         fun,
-        // //         &[id, left, right],
-        // //     )
-        // //     .await;
-        // // dbg!(res);
-        // // return;
-        // let mut rx = rx.enumerate();
-        // let evs = prep_event();
-        // // let mut seqnos = BinaryHeap::new();
-        // //
-        // // for a in 0..10 {
-        // //     let seqno = rx_block.next().await.unwrap();
-        // //     log::error!("{}", a);
-        // //     seqnos.push(seqno.seqno);
-        // // }
-        // // let seqnos = seqnos.into_sorted_vec();
-        // // let mut block_seqnos = BinaryHeap::new();
-        // let mut seqnos = HashMap::new();
-        // while let Some((n, a)) = rx.next().await {
-        //     // let block = a.clone();
-        //     // let extra :BlockExtra= block.extra
-        //     //     .read_struct().unwrap();
-        //     //
-        //     let shard = a
-        //         .info
-        //         .read_struct()
-        //         .unwrap()
-        //         .shard()
-        //         .shard_prefix_with_tag();
-        //
-        //     let seqnno = a.info.read_struct().unwrap().seq_no();
-        //     let mut entry = seqnos.entry(shard).or_insert_with(Vec::new);
-        //     entry.push(seqnno);
-        //     let res = extract_events_from_block(&evs, &a).unwrap();
-        //     // if let Some(a) = res {
-        //     //     if !a.is_empty() {
-        //     //         log::info!(
-        //     //             "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA: {:?}",
-        //     //             a
-        //     //         );
-        //     //         file.write_all(format!("{:?}", a).as_ref()).unwrap();
-        //     //         // return;
-        //     //     }
-        //     // };
-        //     let now = a.info.read_struct().unwrap().gen_utime().0;
-        //     let time = chrono::Utc.timestamp(now as i64, 0);
-        //     let diff = chrono::Utc::now() - time;
-        //     // println!("{}", diff);
-        //     if diff.num_seconds() < 40 {
-        //         println!("Synced");
-        //     };
-        //     if n == 1000 {
-        //         break;
-        //     }
-        // }
-        //
+        let mut rx = rx.enumerate();
+        while let Some((a, _)) = rx.next().await {
+            if a == 500000 {
+                break;
+            }
+        }
+
         // // let mut pre = &block_seqnos[0];
         // // for a in &block_seqnos {
         // //     if (pre - a) > 1 {
