@@ -646,7 +646,7 @@ where
         .await
         .map_err(|_| QueryError::ConnectionError)?;
     let spent = std::time::Instant::now() - start;
-    log::info!("query: {}", spent.as_micros());
+    log::trace!("query: {}", spent.as_micros());
     match response.downcast::<T::Reply>() {
         Ok(reply) => Ok(reply),
         Err(error) => match error.downcast::<ton::lite_server::Error>() {
