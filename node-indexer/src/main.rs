@@ -841,7 +841,7 @@ fn main() {
             Logger::builder()
                 .appender("trace")
                 .additive(false)
-                .build("tiny_adnl", LevelFilter::Trace),
+                .build("node_indexer", LevelFilter::Trace),
         )
         .build(Root::builder().appender("stdout").build(LevelFilter::Info))
         .unwrap();

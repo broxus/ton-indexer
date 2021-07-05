@@ -606,7 +606,7 @@ pub async fn query_block(
     let now = std::time::Instant::now();
     let block = query(connection, ton::rpc::lite_server::GetBlock { id }).await?;
     let spent = std::time::Instant::now() - now;
-    log::trace!("Spent in query_block: {:#?}", spent);
+    log::trace!("Spent in query_block: {:#?}", spent.as_millis());
     let block = ton_block::Block::construct_from_bytes(&block.only().data.0)
         .map_err(|_| QueryError::InvalidBlock)?;
 
@@ -637,13 +637,16 @@ where
     let query_bytes = query
         .boxed_serialized_bytes()
         .map_err(|_| QueryError::FailedToSerialize)?;
-    let response = acquire_connection(&connection)
-        .await?
+    let con = acquire_connection(&connection).await?;
+    let start = std::time::Instant::now();
+    let response = con
         .query(&ton::TLObject::new(ton::rpc::lite_server::Query {
             data: query_bytes.into(),
         }))
         .await
         .map_err(|_| QueryError::ConnectionError)?;
+    let spent = std::time::Instant::now() - start;
+    log::info!("query: {}", spent.as_micros());
     match response.downcast::<T::Reply>() {
         Ok(reply) => Ok(reply),
         Err(error) => match error.downcast::<ton::lite_server::Error>() {
