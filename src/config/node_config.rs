@@ -1,5 +1,6 @@
 use std::convert::TryFrom;
 use std::net::{IpAddr, SocketAddrV4};
+use std::path::PathBuf;
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -10,6 +11,8 @@ use crate::utils::*;
 pub struct NodeConfig {
     ip_address: SocketAddrV4,
     keys: Vec<AdnlNodeKey>,
+    sled_db_path: PathBuf,
+    file_db_path: PathBuf,
 }
 
 impl NodeConfig {
@@ -29,7 +32,17 @@ impl NodeConfig {
         Ok(Self {
             ip_address,
             keys: Vec::new(),
+            sled_db_path: PathBuf::new().join("db/sled"),
+            file_db_path: PathBuf::new().join("db/file"),
         })
+    }
+
+    pub fn sled_db_path(&self) -> &PathBuf {
+        &self.sled_db_path
+    }
+
+    pub fn file_db_path(&self) -> &PathBuf {
+        &self.file_db_path
     }
 }
 
