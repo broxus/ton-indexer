@@ -9,12 +9,14 @@ use ton_block::{
 use ton_types::SliceData;
 
 pub use crate::extension::TransactionExt;
+use nekoton::core::models::TransactionError;
+use std::convert::TryFrom;
 
 mod extension;
 
 #[derive(Debug, Clone)]
 pub struct ParsedOutput<T: Clone + Debug> {
-    pub transaction: Transaction,
+    pub transaction: nekoton::core::models::Transaction,
     pub output: Vec<T>,
 }
 
@@ -184,9 +186,18 @@ where
         for item in account_block.transactions().iter() {
             let transaction = match item.and_then(|(_, value)| {
                 let cell = value.into_cell().reference(0)?;
+                let hash = cell.hash(0);
                 ton_block::Transaction::construct_from_cell(cell)
             }) {
-                Ok(transaction) => transaction,
+                Ok(transaction) => {
+                    match nekoton::core::models::Transaction::try_from((hash, transaction)) {
+                        Ok(a) => a,
+                        Err(e) => {
+                            log::error!("Failed creating transaction from cell: {}", e);
+                            continue;
+                        }
+                    }
+                }
                 Err(e) => {
                     log::error!("Failed creating transaction from cell: {}", e);
                     continue;

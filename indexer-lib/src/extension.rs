@@ -11,7 +11,6 @@ pub trait TransactionExt {
     fn time(&self) -> u32;
     fn contract_address(&self) -> Result<MsgAddressInt>;
     fn sender_address(&self) -> Result<Option<MsgAddressInt>>;
-    fn tx_hash(&self) -> [u8; 32];
     fn messages(&self) -> Result<TransactionMessages>;
 }
 
@@ -26,10 +25,6 @@ impl TransactionExt for Transaction {
 
     fn sender_address(&self) -> Result<Option<MsgAddressInt>> {
         (&self).sender_address()
-    }
-
-    fn tx_hash(&self) -> [u8; 32] {
-        (&self).tx_hash()
     }
 
     fn messages(&self) -> Result<TransactionMessages> {
@@ -66,10 +61,6 @@ impl TransactionExt for &Transaction {
         Ok(addr)
     }
 
-    fn tx_hash(&self) -> [u8; 32] {
-        self.description_cell().hash(0).try_into().trust_me()
-    }
-
     fn messages(&self) -> Result<TransactionMessages> {
         Ok(crate::parse_transaction_messages(&self)?)
     }
@@ -96,10 +87,6 @@ where
         self.transaction.sender_address()
     }
 
-    fn tx_hash(&self) -> [u8; 32] {
-        self.transaction.tx_hash()
-    }
-
     fn messages(&self) -> Result<TransactionMessages> {
         self.transaction.messages()
     }
@@ -119,10 +106,6 @@ where
 
     fn sender_address(&self) -> Result<Option<MsgAddressInt>> {
         self.transaction.sender_address()
-    }
-
-    fn tx_hash(&self) -> [u8; 32] {
-        self.transaction.tx_hash()
     }
 
     fn messages(&self) -> Result<TransactionMessages> {
