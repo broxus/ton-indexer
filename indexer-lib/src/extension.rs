@@ -1,5 +1,6 @@
 use anyhow::Result;
-use ton_block::{MsgAddressInt, Transaction};
+use ton_block::{MsgAddressInt, Serializable, Transaction};
+use ton_types::UInt256;
 
 use shared_deps::{NoFailure, TrustMe};
 
@@ -10,6 +11,7 @@ pub trait TransactionExt {
     fn contract_address(&self) -> Result<MsgAddressInt>;
     fn sender_address(&self) -> Result<Option<MsgAddressInt>>;
     fn messages(&self) -> Result<TransactionMessages>;
+    fn tx_hash(&self) -> Result<UInt256>;
 }
 
 impl TransactionExt for Transaction {
@@ -27,6 +29,10 @@ impl TransactionExt for Transaction {
 
     fn messages(&self) -> Result<TransactionMessages> {
         (&self).messages()
+    }
+
+    fn tx_hash(&self) -> Result<UInt256> {
+        (&self).tx_hash()
     }
 }
 
@@ -62,6 +68,10 @@ impl TransactionExt for &Transaction {
     fn messages(&self) -> Result<TransactionMessages> {
         Ok(crate::parse_transaction_messages(&self)?)
     }
+
+    fn tx_hash(&self) -> Result<UInt256> {
+        Ok(self.serialize().convert()?.hash(0))
+    }
 }
 #[derive(thiserror::Error, Debug, Clone)]
 enum TransactionExtError {
@@ -88,6 +98,10 @@ where
     fn messages(&self) -> Result<TransactionMessages> {
         self.transaction.messages()
     }
+
+    fn tx_hash(&self) -> Result<UInt256> {
+        Ok(self.hash)
+    }
 }
 
 impl<T> TransactionExt for &ExtractInput<'_, T>
@@ -108,5 +122,9 @@ where
 
     fn messages(&self) -> Result<TransactionMessages> {
         self.transaction.messages()
+    }
+
+    fn tx_hash(&self) -> Result<UInt256> {
+        Ok(self.hash)
     }
 }
