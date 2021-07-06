@@ -1,5 +1,3 @@
-use std::convert::TryInto;
-
 use anyhow::Result;
 use ton_block::{MsgAddressInt, Transaction};
 

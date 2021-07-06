@@ -6,22 +6,23 @@ use ton_block::{
     AccountBlock, CurrencyCollection, Deserializable, GetRepresentationHash, MsgAddressInt,
     Transaction,
 };
-use ton_types::SliceData;
+use ton_types::{SliceData, UInt256};
 
 pub use crate::extension::TransactionExt;
-use nekoton::core::models::TransactionError;
-use std::convert::TryFrom;
+use shared_deps::NoFailure;
 
 mod extension;
 
 #[derive(Debug, Clone)]
 pub struct ParsedOutput<T: Clone + Debug> {
-    pub transaction: nekoton::core::models::Transaction,
+    pub transaction: Transaction,
+    pub hash: UInt256,
     pub output: Vec<T>,
 }
 
 pub struct ExtractInput<'a, W> {
     pub transaction: &'a Transaction,
+    pub hash: UInt256,
     pub what_to_extract: &'a [W],
 }
 
@@ -51,6 +52,7 @@ where
         }
         Ok(ParsedOutput {
             transaction: self.transaction.clone(),
+            hash: self.hash,
             output,
         })
     }
@@ -184,20 +186,18 @@ where
     let mut result = vec![];
     for account_block in account_blocks {
         for item in account_block.transactions().iter() {
-            let transaction = match item.and_then(|(_, value)| {
-                let cell = value.into_cell().reference(0)?;
-                let hash = cell.hash(0);
-                ton_block::Transaction::construct_from_cell(cell)
-            }) {
-                Ok(transaction) => {
-                    match nekoton::core::models::Transaction::try_from((hash, transaction)) {
-                        Ok(a) => a,
-                        Err(e) => {
-                            log::error!("Failed creating transaction from cell: {}", e);
-                            continue;
-                        }
-                    }
-                }
+            let (_, data) = item
+                .convert()
+                .context("Failed getting tx data from account block:")?;
+
+            let cell = data
+                .into_cell()
+                .reference(0)
+                .convert()
+                .context("Failed packing tx data into cell")?;
+            let hash = cell.hash(0);
+            let transaction = match ton_block::Transaction::construct_from_cell(cell) {
+                Ok(transaction) => transaction,
                 Err(e) => {
                     log::error!("Failed creating transaction from cell: {}", e);
                     continue;
@@ -205,6 +205,7 @@ where
             };
             let input = ExtractInput {
                 transaction: &transaction,
+                hash,
                 what_to_extract,
             };
             let extracted_values = match input.process() {
@@ -385,8 +386,9 @@ pub enum AbiError {
 
 #[cfg(test)]
 mod test {
-    use crate::extract_from_block;
     use ton_block::{Block, Deserializable};
+
+    use crate::extract_from_block;
 
     const abi: &str = r#"{
 	"ABI version": 2,
