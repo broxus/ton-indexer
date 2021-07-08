@@ -153,7 +153,7 @@ pub struct ParsedEvent {
 pub fn extract_from_block<W, O>(
     block: &ton_block::Block,
     what_to_extract: &[W],
-) -> Result<Option<Vec<ParsedOutput<O>>>>
+) -> Result<Vec<ParsedOutput<O>>>
 where
     W: Extractable + Extractable<Output = O>,
     W: ShouldParseFurther,
@@ -221,7 +221,7 @@ where
             result.push(extracted_values);
         }
     }
-    Ok(result.is_empty().then(|| result))
+    Ok(result)
 }
 
 pub fn address_from_account_id(address: SliceData, workchain_id: i8) -> Result<MsgAddressInt> {
@@ -1008,4 +1008,6 @@ mod test {
         let res = super::extract_from_block(&block, &evs).unwrap().unwrap();
         dbg!(res);
     }
+
+    fn send_tokens() {}
 }
