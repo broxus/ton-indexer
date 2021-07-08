@@ -16,3 +16,6 @@ anyhow = "1.0.40"
 thiserror = "1.0.25"
 shared-deps = { path = "../shared-deps" }
 serde = { version = "1.0.126", features = ["derive"] }
+
+[dev-dependencies]
+env_logger = "0.8.4"
