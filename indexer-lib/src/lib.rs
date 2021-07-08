@@ -160,6 +160,7 @@ where
     O: Clone + Debug,
 {
     use ton_types::HashmapType;
+    let mut result = vec![];
 
     // parsing account blocks from generic blocks according to `HashMapAugType::dump`
     let account_blocks = match block
@@ -182,10 +183,9 @@ where
             account_blocks
         }) {
         Ok(account_blocks) => account_blocks,
-        _ => return Ok(None), // no account blocks found
+        _ => return Ok(result), // no account blocks found
     };
 
-    let mut result = vec![];
     for account_block in account_blocks {
         for item in account_block.transactions().iter() {
             let (_, data) = item
@@ -389,9 +389,9 @@ pub enum AbiError {
 
 #[cfg(test)]
 mod test {
-    use ton_block::{Block, Deserializable};
+    use ton_block::{Block, Deserializable, Transaction};
 
-    use crate::extract_from_block;
+    use crate::{extract_from_block, ExtractInput};
 
     const abi: &str = r#"{
 	"ABI version": 2,
@@ -527,7 +527,8 @@ mod test {
             .clone()];
 
         let block = Block::construct_from_base64(block_boc).unwrap();
-        let res = extract_from_block(&block, &fns).unwrap().unwrap();
+        let res = extract_from_block(&block, &fns).unwrap();
+        assert_eq!(res.is_empty(), false);
     }
 
     const DEX_ABI: &str = r#"
@@ -985,6 +986,214 @@ mod test {
 }
     "#;
 
+    const TOKEN_WALLET: &str = r#"{
+	"ABI version": 2,
+	"header": ["pubkey", "time", "expire"],
+	"functions": [
+		{
+			"name": "constructor",
+			"inputs": [
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "getVersion",
+			"inputs": [
+				{"name":"_answer_id","type":"uint32"}
+			],
+			"outputs": [
+				{"name":"value0","type":"uint32"}
+			]
+		},
+		{
+			"name": "balance",
+			"inputs": [
+				{"name":"_answer_id","type":"uint32"}
+			],
+			"outputs": [
+				{"name":"value0","type":"uint128"}
+			]
+		},
+		{
+			"name": "getDetails",
+			"inputs": [
+				{"name":"_answer_id","type":"uint32"}
+			],
+			"outputs": [
+				{"components":[{"name":"root_address","type":"address"},{"name":"wallet_public_key","type":"uint256"},{"name":"owner_address","type":"address"},{"name":"balance","type":"uint128"},{"name":"receive_callback","type":"address"},{"name":"bounced_callback","type":"address"},{"name":"allow_non_notifiable","type":"bool"}],"name":"value0","type":"tuple"}
+			]
+		},
+		{
+			"name": "getWalletCode",
+			"inputs": [
+				{"name":"_answer_id","type":"uint32"}
+			],
+			"outputs": [
+				{"name":"value0","type":"cell"}
+			]
+		},
+		{
+			"name": "accept",
+			"inputs": [
+				{"name":"tokens","type":"uint128"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "allowance",
+			"inputs": [
+				{"name":"_answer_id","type":"uint32"}
+			],
+			"outputs": [
+				{"components":[{"name":"remaining_tokens","type":"uint128"},{"name":"spender","type":"address"}],"name":"value0","type":"tuple"}
+			]
+		},
+		{
+			"name": "approve",
+			"inputs": [
+				{"name":"spender","type":"address"},
+				{"name":"remaining_tokens","type":"uint128"},
+				{"name":"tokens","type":"uint128"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "disapprove",
+			"inputs": [
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "transferToRecipient",
+			"inputs": [
+				{"name":"recipient_public_key","type":"uint256"},
+				{"name":"recipient_address","type":"address"},
+				{"name":"tokens","type":"uint128"},
+				{"name":"deploy_grams","type":"uint128"},
+				{"name":"transfer_grams","type":"uint128"},
+				{"name":"send_gas_to","type":"address"},
+				{"name":"notify_receiver","type":"bool"},
+				{"name":"payload","type":"cell"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "transfer",
+			"inputs": [
+				{"name":"to","type":"address"},
+				{"name":"tokens","type":"uint128"},
+				{"name":"grams","type":"uint128"},
+				{"name":"send_gas_to","type":"address"},
+				{"name":"notify_receiver","type":"bool"},
+				{"name":"payload","type":"cell"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "transferFrom",
+			"inputs": [
+				{"name":"from","type":"address"},
+				{"name":"to","type":"address"},
+				{"name":"tokens","type":"uint128"},
+				{"name":"grams","type":"uint128"},
+				{"name":"send_gas_to","type":"address"},
+				{"name":"notify_receiver","type":"bool"},
+				{"name":"payload","type":"cell"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "internalTransfer",
+			"inputs": [
+				{"name":"tokens","type":"uint128"},
+				{"name":"sender_public_key","type":"uint256"},
+				{"name":"sender_address","type":"address"},
+				{"name":"send_gas_to","type":"address"},
+				{"name":"notify_receiver","type":"bool"},
+				{"name":"payload","type":"cell"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "internalTransferFrom",
+			"inputs": [
+				{"name":"to","type":"address"},
+				{"name":"tokens","type":"uint128"},
+				{"name":"send_gas_to","type":"address"},
+				{"name":"notify_receiver","type":"bool"},
+				{"name":"payload","type":"cell"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "burnByOwner",
+			"inputs": [
+				{"name":"tokens","type":"uint128"},
+				{"name":"grams","type":"uint128"},
+				{"name":"send_gas_to","type":"address"},
+				{"name":"callback_address","type":"address"},
+				{"name":"callback_payload","type":"cell"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "burnByRoot",
+			"inputs": [
+				{"name":"tokens","type":"uint128"},
+				{"name":"send_gas_to","type":"address"},
+				{"name":"callback_address","type":"address"},
+				{"name":"callback_payload","type":"cell"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "setReceiveCallback",
+			"inputs": [
+				{"name":"receive_callback_","type":"address"},
+				{"name":"allow_non_notifiable_","type":"bool"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "setBouncedCallback",
+			"inputs": [
+				{"name":"bounced_callback_","type":"address"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "destroy",
+			"inputs": [
+				{"name":"gas_dest","type":"address"}
+			],
+			"outputs": [
+			]
+		}
+	],
+	"data": [
+		{"key":1,"name":"root_address","type":"address"},
+		{"key":2,"name":"code","type":"cell"},
+		{"key":3,"name":"wallet_public_key","type":"uint256"},
+		{"key":4,"name":"owner_address","type":"address"}
+	],
+	"events": [
+	]
+}
+"#;
+
     #[test]
     fn parse_event() {
         let contract = ton_abi::Contract::load(std::io::Cursor::new(DEX_ABI)).unwrap();
@@ -1005,9 +1214,36 @@ mod test {
         ];
         dbg!(&evs);
         let block = Block::construct_from_base64("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").unwrap();
-        let res = super::extract_from_block(&block, &evs).unwrap().unwrap();
+        let res = super::extract_from_block(&block, &evs).unwrap();
         dbg!(res);
     }
 
-    fn send_tokens() {}
+    #[test]
+    fn send_tokens() {
+        env_logger::init();
+        let fun = ton_abi::contract::Contract::load(std::io::Cursor::new(TOKEN_WALLET))
+            .unwrap()
+            .function("internalTransfer")
+            .unwrap()
+            .clone();
+        let first = "te6ccgECDAEAAt8AA7V44lhmAlE+maVfor4IVhRpx85Rp9WiWXdVjnfvK8k4e0AAAOZ3SuS4Hak6pNieaM6Jn2bm7LwzWOlb7Ck0rkRQTBq92uQNUUFAAADjFmcwPBYN4kkQADRst/joBQQBAhEMlwZGGW16hEADAgBvyZHvzEwv1JgAAAAAAAIAAAAAAAMYlpU9E5/7imPO4q+z8D3wDxoe/G0/My6HCJEcUpkUYEDQOgQAnUF2QxOIAAAAAAAAAAAQgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACAAgnJsUgdGxb2jK0X6l33yhz7QQVy74EtmiVfeL43ARYE95wL7jb7IN6PgOlb++8gfxUsHt3+p4opjdAZB499CZXNeAgHgCAYBAd8HAbFIARxLDMBKJ9M0q/RXwQrCjTj5yjT6tEsu6rHO/eV5Jw9pAAavpgWZH1Qn1mh6txQBkw4H2FjPRFoAuAzChi8Bk1Iu0mvjaAAGL9TkAAAczulclwTBvEkiwAoB34gBHEsMwEon0zSr9FfBCsKNOPnKNPq0Sy7qsc795XknD2gG6PbjFVUe/4uvRLzAAE7IX4Gm18d4UaYUyIKzVM98Od5GJaP+3rnlVIiBKBENh1jFYP5QU52pHVUqPk7svNEgel1JbFMG8SZYAAACqBwJAWhCAA1fTAsyPqhPrND1bigDJhwPsLGeiLQBcBmFDF4DJqRdpNfG0AAAAAAAAAAAAAAAAAABCgHNS/Fg4oARIgCuVw5VHvYy7kvUwzFB9Kyw1uiK30F/WjAkupR3eUAAAAAAAAAAAAAAAAEb0EAAAAAAAAAAAAAAAAAAAAAAEAI4lhmAlE+maVfor4IVhRpx85Rp9WiWXdVjnfvK8k4e0wsAUgEABHznIa2vBgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAX+U";
+        let second = "te6ccgECBgEAAUkAA7F44lhmAlE+maVfor4IVhRpx85Rp9WiWXdVjnfvK8k4e0AAAOZ3XQNkGW0uVq16mYIjEsrRC3rxPuyZ4Qke1H4GszaBV8/7h83gAADmd0rkuBYN4kvAABQgSAMCAQATBECIQomgGHoSAgCCcgL7jb7IN6PgOlb++8gfxUsHt3+p4opjdAZB499CZXNe+t58uXD3Ntn7CWNbf4dvcWu23hMzyIkHMXrCpphhq2UBAaAEAatoAHEXjGrEtHjehJySZEeacena6tQtVn6O/EURyWW9igFfACOJYZgJRPpmlX6K+CFYUacfOUafVoll3VY537yvJOHtBCgGIC+mAAAczurKzQbBvElewAUAeQTjQVAABHznIa2vBkAAAAAAAAAAAAAAAAI3oIAAAAAAAAAAAAAAAAAAAbPwAAAAAAAAAAAAAAAAAABgX2A=";
+        let third = "te6ccgECBwEAAZIAA7V44lhmAlE+maVfor4IVhRpx85Rp9WiWXdVjnfvK8k4e0AAAOZ3ZozMF3zEyX71wYKHsD+vSDSZRUUnpD36CHkMIgLUYaZ1JTXAAADmd10DZBYN4k0gABRh6EgoBQQBAhcEQEkdfJo4mGHoSBEDAgBbwAAAAAAAAAAAAAAAAS1FLaRJ5QuM990nhh8UYSKv4bVGu4tw/IIW8MYUE5+OBACcJ8w9CQAAAAAAAAAAAAMAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAIJy+t58uXD3Ntn7CWNbf4dvcWu23hMzyIkHMXrCpphhq2X1FTZM4d/ZMdq3zGTauVL5JLFVtp2ONcBXaiDZSLU46wEBoAYAsWgAiltiovO1ieVKzFGqYEZvA6/js513RP7jjW93WXTmTOkAI4lhmAlE+maVfor4IVhRpx85Rp9WiWXdVjnfvK8k4e0R18mjiAYUWGAAABzO7Bp+hMG8SYxA";
+        let fourth = "te6ccgECBwEAAZIAA7V44lhmAlE+maVfor4IVhRpx85Rp9WiWXdVjnfvK8k4e0AAAOZ3bEWkG/qzF8NFzTjCgrvXuMhMmkD7/crdlgNStwJ0YddKIXkwAADmd2aMzBYN4k3wABRh6EgoBQQBAhcEQEkGT0CZ2GHoSBEDAgBbwAAAAAAAAAAAAAAAAS1FLaRJ5QuM990nhh8UYSKv4bVGu4tw/IIW8MYUE5+OBACcJ8wZ2BAAAAAAAAAAAAMAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAIJy9RU2TOHf2THat8xk2rlS+SSxVbadjjXAV2og2Ui1OOsgb26o3vc8kjbZ6+aMG0xvpBegAvxGxmFwQ2i203TW9QEBoAYAsWgA6PmsUpkWrIXgfigKLvLTfV+x3/uDMHxIW3RQuwC393MAI4lhmAlE+maVfor4IVhRpx85Rp9WiWXdVjnfvK8k4e0QZPQJnAYUWGAAABzO7NGZhMG8SahA";
+        let fifth = "te6ccgECDQEAAuoAA7V44lhmAlE+maVfor4IVhRpx85Rp9WiWXdVjnfvK8k4e0AAAOoRwaKQGbRwxLw5ChxPzMuxAB+hhulYRAzEkmnQ7eHKostLD89gAADmd2xFpBYOcFXAADRtHksIBQQBAhEMmIrGGW16hEADAgBvyZMgfEwzARQAAAAAAAIAAAAAAANNe/0akoZUHgcKFa2T7wCb2YMcbKokbtJeu7txwv9QWkEQO8QAnUF2QxOIAAAAAAAAAAAQgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACAAgnIgb26o3vc8kjbZ6+aMG0xvpBegAvxGxmFwQ2i203TW9dVu3HgXS1H8fS+UDCNo1hNaVP3M0pToNbQckzplCR6XAgHgCAYBAd8HAbFIARxLDMBKJ9M0q/RXwQrCjTj5yjT6tEsu6rHO/eV5Jw9pAAavpgWZH1Qn1mh6txQBkw4H2FjPRFoAuAzChi8Bk1Iu0Hc1lAAGMwFmAAAdQjg0UgTBzgq4wAoB34gBHEsMwEon0zSr9FfBCsKNOPnKNPq0Sy7qsc795XknD2gEgtKCgiObc0VX7acQKHzWEKabMEnUJ6800KrzilUMFLhmiG7JjxKZJZl28nag/I8Jqx55baq9l66SRLmMHvXwKl1JbFMHOCyYAAACsBwJAWhCAA1fTAsyPqhPrND1bigDJhwPsLGeiLQBcBmFDF4DJqRdoO5rKAAAAAAAAAAAAAAAAAABCgHrPxDRqwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAgBHEsMwEon0zSr9FfBCsKNOPnKNPq0Sy7qsc795XknD2gAAAAAAAAAAAAAAAB3NZQAAAAAAAAAAAAAAAAAC+vCAAAAAAAAAAAAAAAAAAAAAAEAsBQ4ARxLDMBKJ9M0q/RXwQrCjTj5yjT6tEsu6rHO/eV5Jw9ogMAAA=";
+        let txs: Vec<_> = [first, second, third, fourth, fifth]
+            .iter()
+            .map(|x| Transaction::construct_from_base64(x).unwrap())
+            .collect();
+        for tx in &txs {
+            let out = ExtractInput {
+                transaction: tx,
+                hash: Default::default(),
+                what_to_extract: &[fun.clone()],
+            }
+            .process()
+            .unwrap();
+            dbg!(out);
+        }
+    }
 }
