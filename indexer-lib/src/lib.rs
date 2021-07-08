@@ -49,9 +49,9 @@ where
             };
 
             output.append(&mut res);
-            // if !<W as ShouldParseFurther>::should_continue() {
-            //     break;
-            // }
+            if !<W as ShouldParseFurther>::should_continue() {
+                break;
+            }
         }
         Ok((!output.is_empty()).then(|| ParsedOutput {
             transaction: self.transaction.clone(),
