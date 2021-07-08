@@ -1,5 +1,7 @@
 /.idea
 /target
+/db
 config.yaml
+ton-global.config.json
 
 Cargo.lock

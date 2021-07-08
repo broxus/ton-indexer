@@ -26,20 +26,11 @@ pub async fn boot(engine: &Arc<Engine>) -> Result<ton_block::BlockIdExt> {
 
 async fn cold_boot(engine: &Arc<Engine>) -> Result<ton_block::BlockIdExt> {
     let boot_data = prepare_cold_boot_data(engine).await?;
-    let zero_state = match &boot_data {
-        ColdBootData::ZeroState { state, .. } => Some(state.clone()),
-        ColdBootData::KeyBlock { .. } => None,
-    };
+    let key_blocks = get_key_blocks(engine, boot_data).await?;
+    let last_key_block = choose_key_block(key_blocks)?;
 
-    let last_block_handle = get_key_blocks(engine, boot_data).await?;
-
-    let block_id = last_block_handle.id();
-    match zero_state {
-        Some(zero_state) => {
-            download_base_wc_zero_state(engine, &zero_state).await?;
-        }
-        None => download_start_blocks_and_states(engine, block_id).await?,
-    }
+    let block_id = last_key_block.id();
+    download_start_blocks_and_states(engine, block_id).await?;
 
     Ok(block_id.clone())
 }
@@ -130,8 +121,10 @@ async fn prepare_cold_boot_data(engine: &Arc<Engine>) -> Result<ColdBootData> {
 async fn get_key_blocks(
     engine: &Arc<Engine>,
     mut boot_data: ColdBootData,
-) -> Result<Arc<BlockHandle>> {
+) -> Result<Vec<Arc<BlockHandle>>> {
     let mut handle = boot_data.init_block_handle().clone();
+
+    let mut result = vec![handle.clone()];
 
     loop {
         log::info!("Downloading next key blocks for: {}", handle.id());
@@ -160,6 +153,7 @@ async fn get_key_blocks(
                 }
 
                 handle = next_handle;
+                result.push(handle.clone());
                 boot_data = ColdBootData::KeyBlock {
                     handle: handle.clone(),
                     proof,
@@ -176,9 +170,36 @@ async fn get_key_blocks(
         );
 
         if now() - last_utime < 2 * 86400 {
-            return Ok(handle);
+            return Ok(result);
         }
     }
+}
+
+fn choose_key_block(mut key_blocks: Vec<Arc<BlockHandle>>) -> Result<Arc<BlockHandle>> {
+    while let Some(handle) = key_blocks.pop() {
+        let handle_utime = handle.meta().gen_utime();
+        let prev_utime = match key_blocks.last() {
+            Some(prev_block) => prev_block.meta().gen_utime(),
+            None => 0,
+        };
+
+        let is_persistent = prev_utime == 0 || is_persistent_state(handle_utime, prev_utime);
+        log::info!(
+            "Key block candidate: seqno={}, persistent={}",
+            handle.id().seq_no,
+            is_persistent
+        );
+
+        if !is_persistent {
+            log::info!("Ignoring too new persistent state");
+            continue;
+        }
+
+        log::info!("Best key block handle is {}", handle.id());
+        return Ok(handle);
+    }
+
+    Err(BootError::PersistentShardStateNotFound.into())
 }
 
 async fn download_key_block_proof(
@@ -332,7 +353,11 @@ async fn download_block_and_state(
 
     if !handle.meta().has_state() {
         let state_update = block.block().read_state_update().convert()?;
-        log::info!("Download state: {}", handle.id());
+        log::info!(
+            "Download state: {} for {}",
+            handle.id(),
+            masterchain_block_id
+        );
 
         let shard_state = engine
             .download_state(handle.id(), masterchain_block_id)
@@ -367,4 +392,6 @@ enum BootError {
     BaseWorkchainInfoNotFound,
     #[error("Downloaded shard state hash mismatch")]
     ShardStateHashMismatch,
+    #[error("Persistent shard state not found")]
+    PersistentShardStateNotFound,
 }

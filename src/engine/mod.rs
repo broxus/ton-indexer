@@ -41,7 +41,7 @@ pub struct Engine {
 
 impl Engine {
     pub async fn new(config: NodeConfig, global_config: GlobalConfig) -> Result<Arc<Self>> {
-        let db = SledDb::new().await?;
+        let db = SledDb::new(config.sled_db_path(), config.file_db_path()).await?;
 
         let zero_state_id = global_config.zero_state.clone();
 

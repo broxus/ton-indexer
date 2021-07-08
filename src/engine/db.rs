@@ -1,3 +1,4 @@
+use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -107,14 +108,18 @@ pub struct SledDb {
 }
 
 impl SledDb {
-    pub async fn new() -> Result<Arc<Self>> {
-        let db = sled::Config::new().temporary(true).open()?;
+    pub async fn new<PS, PF>(sled_db_path: PS, file_db_path: PF) -> Result<Arc<Self>>
+    where
+        PS: AsRef<Path>,
+        PF: AsRef<Path>,
+    {
+        let db = sled::open(sled_db_path)?;
 
         Ok(Arc::new(Self {
             block_handle_storage: BlockHandleStorage::with_db(db.open_tree("block_handles")?),
             shard_state_storage: ShardStateStorage::default(),
             node_state_storage: NodeStateStorage::with_db(db.open_tree("node_state")?),
-            archive_manager: ArchiveManager::with_root_dir("test").await?,
+            archive_manager: ArchiveManager::with_root_dir(file_db_path).await?,
             block_index_db: BlockIndexDb::with_db(
                 db.open_tree("lt_desc_db")?,
                 db.open_tree("lt_db")?,
