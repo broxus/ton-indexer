@@ -31,7 +31,7 @@ where
     W: Extractable,
     W: ShouldParseFurther,
 {
-    pub fn process(&self) -> Result<ParsedOutput<<W as Extractable>::Output>> {
+    pub fn process(&self) -> Result<Option<ParsedOutput<<W as Extractable>::Output>>> {
         let messages = self
             .messages()
             .context("Failed getting messages from transaction")?;
@@ -39,22 +39,24 @@ where
 
         for parser in self.what_to_extract {
             let mut res = match parser.extract(&messages) {
-                Ok(a) => a,
+                Ok(Some(a)) => a,
+                Ok(None) => continue,
                 Err(e) => {
                     log::error!("Failed parsing messages: {}", e);
                     continue;
                 }
             };
+
             output.append(&mut res);
             if !<W as ShouldParseFurther>::should_continue() {
                 break;
             }
         }
-        Ok(ParsedOutput {
+        Ok(output.is_empty().then(|| ParsedOutput {
             transaction: self.transaction.clone(),
             hash: self.hash,
             output,
-        })
+        }))
     }
 }
 
@@ -78,13 +80,13 @@ impl ShouldParseFurther for ton_abi::Event {
 
 pub trait Extractable {
     type Output: Clone + Debug;
-    fn extract(&self, messages: &TransactionMessages) -> Result<Vec<Self::Output>>;
+    fn extract(&self, messages: &TransactionMessages) -> Result<Option<Vec<Self::Output>>>;
 }
 
 impl Extractable for Event {
     type Output = ParsedEvent;
 
-    fn extract(&self, messages: &TransactionMessages) -> Result<Vec<Self::Output>> {
+    fn extract(&self, messages: &TransactionMessages) -> Result<Option<Vec<Self::Output>>> {
         let mut result = vec![];
         for message in &messages.out_messages {
             let message_tokens = match process_event_message(&message, &self) {
@@ -109,26 +111,26 @@ impl Extractable for Event {
                 }
             }
         }
-        Ok(result)
+        Ok(result.is_empty().then(|| result))
     }
 }
 
 impl Extractable for ton_abi::Function {
     type Output = ParsedFunction;
 
-    fn extract(&self, messages: &TransactionMessages) -> Result<Vec<Self::Output>> {
+    fn extract(&self, messages: &TransactionMessages) -> Result<Option<Vec<Self::Output>>> {
         let input = if let Some(message) = &messages.in_message {
             process_function_in_message(&message, &self)?
         } else {
-            anyhow::bail!("No in messages")
+            return Ok(None);
         };
         let abi_out_messages_tokens = process_function_out_messages(&messages.out_messages, &self)?;
 
-        Ok(vec![ParsedFunction {
+        Ok(Some(vec![ParsedFunction {
             function_name: self.name.clone(),
             input,
             output: abi_out_messages_tokens,
-        }])
+        }]))
     }
 }
 
@@ -209,7 +211,8 @@ where
                 what_to_extract,
             };
             let extracted_values = match input.process() {
-                Ok(a) => a,
+                Ok(Some(a)) => a,
+                Ok(None) => continue,
                 Err(e) => {
                     log::error!("Failed parsing transaction: {}", e);
                     continue;
@@ -218,7 +221,7 @@ where
             result.push(extracted_values);
         }
     }
-    Ok(Some(result))
+    Ok(result.is_empty().then(|| result))
 }
 
 pub fn address_from_account_id(address: SliceData, workchain_id: i8) -> Result<MsgAddressInt> {

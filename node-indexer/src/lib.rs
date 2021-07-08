@@ -7,7 +7,6 @@ use anyhow::Result;
 use bb8::{Pool, PooledConnection};
 use either::Either;
 use futures::{Sink, SinkExt, StreamExt};
-use nekoton::core::models::TransactionId;
 use nekoton::transport::models::{ExistingContract, RawContractState, RawTransaction};
 use tiny_adnl::AdnlTcpClientConfig;
 use ton::ton_node::blockid::BlockId;
@@ -19,6 +18,7 @@ use shared_deps::TrustMe;
 use crate::adnl_pool::AdnlManageConnection;
 use crate::errors::{QueryError, QueryResult};
 use crate::last_block::LastBlock;
+use nekoton::core::models::TransactionId;
 
 mod adnl_pool;
 mod errors;
@@ -152,7 +152,7 @@ impl NodeClient {
         self: Arc<Self>,
         start_block: Option<BlockId>,
         new_mc_blocks_queue: tokio::sync::mpsc::Sender<ton::ton_node::blockidext::BlockIdExt>,
-        pool_size: u32,
+        pool_size: i32,
     ) -> Result<()> {
         async fn get_block_id(
             pool: &Pool<AdnlManageConnection>,
@@ -198,7 +198,7 @@ impl NodeClient {
                     .send(current_block.clone())
                     .await
                     .expect("Channel is broken");
-                let query_count = (blocks_diff / 10).max(1).min((pool_size as i32) * 4);
+                let query_count = std::cmp::min(pool_size * 4, blocks_diff);
                 log::debug!("Query count: {}, diff: {}", query_count, blocks_diff);
                 let block = get_block_id(
                     &self.pool,
@@ -460,7 +460,7 @@ impl NodeClient {
         tokio::spawn(self.clone().blocks_producer(
             seqno,
             masterchain_blocks_tx,
-            self.config.pool_size,
+            self.config.pool_size as i32,
         ));
         tokio::spawn(async move {
             while let Some(block) = masterchain_blocks_rx.recv().await {
