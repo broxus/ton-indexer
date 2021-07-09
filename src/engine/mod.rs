@@ -215,83 +215,61 @@ impl Engine {
 
         let mut offset = 0;
         let parts = Arc::new(DashMap::new());
-        let max_size = 1 << 18;
-        let total_size = Arc::new(AtomicUsize::new(usize::MAX));
-        let threads = 3;
+        let max_size = 1 << 20;
+        let mut total_size = usize::MAX;
+        let mut peer_attempt = 0;
+        let mut part_attempt = 0;
 
-        let results = std::iter::repeat_with(|| {
-            let overlay = overlay.clone();
-            let parts = parts.clone();
-            let total_size = total_size.clone();
-            let neighbour = neighbour.clone();
-            let mut thread_offset = offset;
-            offset += max_size;
+        while offset < total_size {
+            loop {
+                log::info!("-------------------------- Downloading part: {}", offset);
 
-            async move {
-                let mut peer_attempt = 0;
-                let mut part_attempt = 0;
+                if offset >= total_size {
+                    log::info!("-------- Downloaded part: {}", offset);
+                    break;
+                }
 
-                loop {
-                    log::info!(
-                        "-------------------------- Downloading part: {}",
-                        thread_offset
-                    );
+                match overlay
+                    .download_persistent_state_part(
+                        block_id,
+                        masterchain_block_id,
+                        offset,
+                        max_size,
+                        neighbour.clone(),
+                        peer_attempt,
+                    )
+                    .await
+                {
+                    Ok(part) => {
+                        part_attempt = 0;
+                        let part_len = part.len();
+                        parts.insert(offset, part);
 
-                    if thread_offset >= total_size.load(Ordering::Acquire) {
-                        log::info!("-------- Downloaded part: {}", thread_offset);
-                        return Result::<_, anyhow::Error>::Ok(());
+                        if part_len < max_size {
+                            log::info!("AAAAAAAAAAAAAAAAAAAAAAA 1");
+                            total_size = offset + part_len;
+                            break;
+                        }
+
+                        offset += max_size;
                     }
+                    Err(e) => {
+                        part_attempt += 1;
+                        peer_attempt += 1;
 
-                    match overlay
-                        .download_persistent_state_part(
-                            block_id,
-                            masterchain_block_id,
-                            thread_offset,
-                            max_size,
-                            neighbour.clone(),
-                            peer_attempt,
-                        )
-                        .await
-                    {
-                        Ok(part) => {
-                            part_attempt = 0;
-                            let part_len = part.len();
-                            parts.insert(thread_offset, part);
-
-                            if part_len < max_size {
-                                total_size.store(thread_offset + part_len, Ordering::Release);
-                                return Ok(());
-                            }
-
-                            thread_offset += max_size * threads;
+                        log::error!("Failed to download persistent state part: {}", e);
+                        if part_attempt > 10 {
+                            log::info!("AAAAAAAAAAAAAAAAAAAAAAA 2");
+                            return Err(EngineError::RanOutOfAttempts.into());
                         }
-                        Err(e) => {
-                            part_attempt += 1;
-                            peer_attempt += 1;
-
-                            log::error!("Failed to download persistent state part: {}", e);
-                            if part_attempt > 10 {
-                                return Err(EngineError::RanOutOfAttempts.into());
-                            }
-                            tokio::time::sleep(Duration::from_millis(100)).await;
-                        }
+                        tokio::time::sleep(Duration::from_millis(100)).await;
                     }
                 }
             }
-        })
-        .take(threads)
-        .collect::<FuturesUnordered<_>>()
-        .collect::<Vec<_>>()
-        .await;
+        }
 
-        log::info!("DOWNLOAD RESULTS: {:?}", results);
+        log::info!("DOWNLOAD RESULTS: {:?}", total_size);
 
-        results
-            .into_iter()
-            .find(|result| result.is_err())
-            .unwrap_or(Ok(()))?;
-
-        let total_size = total_size.load(Ordering::Acquire);
         debug_assert!(total_size < usize::MAX);
 
         let mut state = Vec::with_capacity(total_size);
