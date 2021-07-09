@@ -22,7 +22,7 @@ impl OverlaySubscriber for FullNodeOverlayService {
         _peer_id: &AdnlNodeIdShort,
         query: TLObject,
     ) -> Result<QueryConsumingResult> {
-        log::info!("Got query: {:?}", query);
+        //log::info!("Got query: {:?}", query);
 
         let query = match query.downcast::<ton::rpc::ton_node::GetNextBlockDescription>() {
             Ok(_) => return answer(ton::ton_node::BlockDescription::TonNode_BlockDescriptionEmpty),
@@ -83,7 +83,7 @@ impl OverlaySubscriber for FullNodeOverlayService {
             .downcast::<ton::rpc::ton_node::GetCapabilities>()
             .is_ok()
         {
-            log::warn!("Got capabilities query");
+            //log::warn!("Got capabilities query");
             return answer_boxed(ton::ton_node::capabilities::Capabilities {
                 version: 2,
                 capabilities: 1,

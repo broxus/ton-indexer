@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
-use dashmap::DashMap;
+use dashmap::{DashMap, DashSet};
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
 use tiny_adnl::utils::*;
@@ -189,6 +189,7 @@ impl Engine {
         &self,
         block_id: &ton_block::BlockIdExt,
         masterchain_block_id: &ton_block::BlockIdExt,
+        active_peers: &Arc<DashSet<AdnlNodeIdShort>>,
     ) -> Result<Arc<ShardStateStuff>> {
         let overlay = self
             .get_full_node_overlay(
@@ -199,7 +200,7 @@ impl Engine {
 
         let neighbour = loop {
             match overlay
-                .check_persistent_state(block_id, masterchain_block_id)
+                .check_persistent_state(block_id, masterchain_block_id, active_peers)
                 .await
             {
                 Ok(Some(peer)) => break peer,
@@ -214,7 +215,7 @@ impl Engine {
 
         let mut offset = 0;
         let parts = Arc::new(DashMap::new());
-        let max_size = 1 << 20;
+        let max_size = 1 << 18;
         let total_size = Arc::new(AtomicUsize::new(usize::MAX));
         let threads = 3;
 
@@ -231,7 +232,13 @@ impl Engine {
                 let mut part_attempt = 0;
 
                 loop {
+                    log::info!(
+                        "-------------------------- Downloading part: {}",
+                        thread_offset
+                    );
+
                     if thread_offset >= total_size.load(Ordering::Acquire) {
+                        log::info!("-------- Downloaded part: {}", thread_offset);
                         return Result::<_, anyhow::Error>::Ok(());
                     }
 
@@ -276,6 +283,8 @@ impl Engine {
         .collect::<FuturesUnordered<_>>()
         .collect::<Vec<_>>()
         .await;
+
+        log::info!("DOWNLOAD RESULTS: {:?}", results);
 
         results
             .into_iter()

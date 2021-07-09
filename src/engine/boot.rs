@@ -2,6 +2,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
+use dashmap::DashSet;
 use tiny_adnl::utils::*;
 
 use super::node_state::*;
@@ -162,14 +163,18 @@ async fn get_key_blocks(
         }
 
         let last_utime = handle.meta().gen_utime() as i32;
+        let current_utime = now();
+
         log::info!(
             "Last known block: {}, utime: {}, now: {}",
             handle.id(),
             last_utime,
-            now()
+            current_utime
         );
 
-        if now() - last_utime < 2 * 86400 {
+        if last_utime + SYNC_BLOCKS_BEFORE > current_utime
+            || last_utime + 2 * KEY_BLOCK_UTIME_STEP > current_utime
+        {
             return Ok(result);
         }
     }
@@ -190,8 +195,15 @@ fn choose_key_block(mut key_blocks: Vec<Arc<BlockHandle>>) -> Result<Arc<BlockHa
             is_persistent
         );
 
-        if !is_persistent {
-            log::info!("Ignoring too new persistent state");
+        if !is_persistent || handle_utime as i32 + SYNC_BLOCKS_BEFORE > now() {
+            log::info!("Ignoring state: too new");
+            continue;
+        }
+
+        let ttl = persistent_state_ttl(handle_utime);
+        let time_to_download = 3600;
+        if ttl < now() as u32 + time_to_download {
+            log::info!("Ignoring state: expiring shortly: expire_at={}", ttl);
             continue;
         }
 
@@ -267,6 +279,11 @@ async fn download_base_wc_zero_state(
         .convert()?
         .ok_or_else(|| BootError::BaseWorkchainInfoNotFound)?;
 
+    log::info!(
+        "Base workchain zerostate: {}",
+        base_workchain.zerostate_root_hash.to_hex_string()
+    );
+
     download_zero_state(
         engine,
         &ton_block::BlockIdExt {
@@ -314,14 +331,24 @@ async fn download_start_blocks_and_states(
     engine: &Arc<Engine>,
     masterchain_block_id: &ton_block::BlockIdExt,
 ) -> Result<()> {
-    let (_, init_mc_block) =
-        download_block_and_state(engine, masterchain_block_id, masterchain_block_id).await?;
+    let active_peers = Arc::new(DashSet::new());
+
+    let (_, init_mc_block) = download_block_and_state(
+        engine,
+        masterchain_block_id,
+        masterchain_block_id,
+        &active_peers,
+    )
+    .await?;
+
+    log::info!("Downloaded init mc block state: {}", init_mc_block.id());
 
     for (_, block_id) in init_mc_block.shards_blocks()? {
         if block_id.seq_no == 0 {
             download_zero_state(engine, &block_id).await?;
         } else {
-            download_block_and_state(engine, &block_id, masterchain_block_id).await?;
+            download_block_and_state(engine, &block_id, masterchain_block_id, &active_peers)
+                .await?;
         };
     }
 
@@ -332,15 +359,20 @@ async fn download_block_and_state(
     engine: &Arc<Engine>,
     block_id: &ton_block::BlockIdExt,
     masterchain_block_id: &ton_block::BlockIdExt,
+    active_peers: &Arc<DashSet<AdnlNodeIdShort>>,
 ) -> Result<(Arc<BlockHandle>, BlockStuff)> {
     let handle = engine
         .load_block_handle(block_id)?
         .filter(|handle| handle.meta().has_data());
 
+    log::info!("Downloading block state for {}", block_id);
+
     let (block, handle) = match handle {
         Some(handle) => (engine.load_block_data(&handle).await?, handle),
         None => {
             let (block, proof) = engine.download_block(block_id, None, None).await?;
+            log::info!("Downloaded block {}", block_id);
+
             let mut handle = engine.store_block_data(&block).await?.handle;
             if !handle.meta().has_proof() {
                 handle = engine
@@ -360,7 +392,7 @@ async fn download_block_and_state(
         );
 
         let shard_state = engine
-            .download_state(handle.id(), masterchain_block_id)
+            .download_state(handle.id(), masterchain_block_id, active_peers)
             .await?;
         let state_hash = shard_state.root_cell().repr_hash();
         if state_update.new_hash != state_hash {
@@ -377,8 +409,17 @@ async fn download_block_and_state(
 }
 
 fn is_persistent_state(block_utime: u32, prev_utime: u32) -> bool {
-    block_utime >> 17 != prev_utime >> 17
+    block_utime / (1 << 17) != prev_utime / (1 << 17)
 }
+
+fn persistent_state_ttl(utime: u32) -> u32 {
+    let x = utime / (1 << 17);
+    let b = x.trailing_zeros();
+    utime + ((1 << 18) << b)
+}
+
+const SYNC_BLOCKS_BEFORE: i32 = 300;
+const KEY_BLOCK_UTIME_STEP: i32 = 86400;
 
 #[derive(thiserror::Error, Debug)]
 enum BootError {

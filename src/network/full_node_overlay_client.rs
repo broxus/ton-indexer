@@ -2,6 +2,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{anyhow, Result};
+use dashmap::DashSet;
 use tiny_adnl::utils::*;
 use tiny_adnl::{Neighbour, OverlayClient};
 use ton_api::ton::{self, TLObject};
@@ -17,6 +18,7 @@ pub trait FullNodeOverlayClient: Send + Sync {
         &self,
         block_id: &ton_block::BlockIdExt,
         masterchain_block_id: &ton_block::BlockIdExt,
+        active_peers: &Arc<DashSet<AdnlNodeIdShort>>,
     ) -> Result<Option<Arc<Neighbour>>>;
 
     async fn download_persistent_state_part(
@@ -79,6 +81,7 @@ impl FullNodeOverlayClient for OverlayClient {
         &self,
         block_id: &ton_block::BlockIdExt,
         masterchain_block_id: &ton_block::BlockIdExt,
+        active_peers: &Arc<DashSet<AdnlNodeIdShort>>,
     ) -> Result<Option<Arc<Neighbour>>> {
         let (prepare, neighbour): (ton::ton_node::PreparedState, _) = self
             .send_adnl_query(
@@ -88,13 +91,18 @@ impl FullNodeOverlayClient for OverlayClient {
                 }),
                 None,
                 Some(TIMEOUT_PREPARE),
-                None,
+                Some(active_peers),
             )
             .await?;
 
+        log::info!("Prepared state: {:?} from {}", prepare, neighbour.peer_id());
+
         match prepare {
             ton::ton_node::PreparedState::TonNode_PreparedState => Ok(Some(neighbour)),
-            ton::ton_node::PreparedState::TonNode_NotFoundState => Ok(None),
+            ton::ton_node::PreparedState::TonNode_NotFoundState => {
+                active_peers.remove(neighbour.peer_id());
+                Ok(None)
+            }
         }
     }
 
@@ -274,6 +282,8 @@ impl FullNodeOverlayClient for OverlayClient {
                 None,
             )
             .await?;
+
+        log::info!("Got prepare result: {:?} for {}", prepare, block_id,);
 
         // Download
         match prepare {
