@@ -7,15 +7,16 @@ use anyhow::Result;
 use chrono::TimeZone;
 use futures::StreamExt;
 use indexer_lib::ExtractInput;
-use log::LevelFilter;
-use log4rs::append::console::ConsoleAppender;
-use log4rs::append::file::FileAppender;
-use log4rs::config::{Appender, Logger, Root};
-use log4rs::encode::pattern::PatternEncoder;
 use node_indexer::{Config, NodeClient};
 use std::collections::{BTreeSet, BinaryHeap, HashMap, HashSet};
 use ton_abi::Event;
-use ton_block::{MsgAddress, MsgAddressInt, ShardIdent};
+use ton_block::{MsgAddress, MsgAddressInt, Serializable, ShardIdent};
+use ton_types::serialize_toc;
+
+use std::alloc::System;
+
+#[global_allocator]
+static GLOBAL: System = System;
 
 const ROOT_ABI: &str = r#"{
 	"ABI version": 2,
@@ -826,28 +827,7 @@ fn prep_event() -> [Event; 4] {
 }
 
 fn main() {
-    let stdout = ConsoleAppender::builder().build();
-
-    let trace = FileAppender::builder()
-        .encoder(Box::new(PatternEncoder::new("{d} - {m}{n}")))
-        .build("trace.log")
-        .unwrap();
-
-    let config = log4rs::Config::builder()
-        .appender(Appender::builder().build("stdout", Box::new(stdout)))
-        .appender(Appender::builder().build("trace", Box::new(trace)))
-        .logger(Logger::builder().build("app::backend::db", LevelFilter::Info))
-        .logger(
-            Logger::builder()
-                .appender("trace")
-                .additive(false)
-                .build("node_indexer", LevelFilter::Trace),
-        )
-        .build(Root::builder().appender("stdout").build(LevelFilter::Info))
-        .unwrap();
-
-    let handle = log4rs::init_config(config).unwrap();
-
+    env_logger::init();
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .thread_name_fn(|| {
@@ -861,7 +841,7 @@ fn main() {
     log::info!("Started");
     rt.block_on(async move {
         let mut config = Config::default();
-        // config.pool_size = 4;
+        config.pool_size = 300;
         let node = Arc::new(NodeClient::new(config).await.unwrap());
         log::info!("here");
 
@@ -871,15 +851,15 @@ fn main() {
             Some(ton_api::ton::ton_node::blockid::BlockId {
                 workchain: -1,
                 shard: u64::from_str_radix("8000000000000000", 16).unwrap() as i64,
-                seqno: 9501034,
+                seqno: 2202177,
             }),
             tx,
             tx_block,
         )
         .await
         .unwrap();
-        let abi = prep_event();
-        //
+        // let abi = prep_event();
+        // //
         // let all = node
         //     .get_all_transactions(
         //         MsgAddressInt::from_str(
@@ -889,6 +869,19 @@ fn main() {
         //     )
         //     .await
         //     .unwrap();
+        //
+        // for tx in all {
+        //     let name = tx.hash.as_slice();
+        //     let name = "data/".to_string() + &hex::encode(name);
+        //     let mut file = std::fs::OpenOptions::new()
+        //         .create(true)
+        //         .write(true)
+        //         .open(&name)
+        //         .unwrap();
+        //     file.write_all(&serialize_toc(&tx.data.serialize().unwrap()).unwrap())
+        //         .unwrap()
+        // }
+        // return;
         // let parsed: Result<Vec<_>> = all
         //     .into_iter()
         //     .map(|x| {
@@ -907,11 +900,10 @@ fn main() {
         //     .for_each(|x| println!("{:?}", x.output)));
 
         let mut rx = rx.enumerate();
-        while let Some((a, _)) = rx.next().await {
-            if a == 500000 {
-                break;
-            }
+        while let Some((a, b)) = rx.next().await {
+            drop(b)
         }
+        print!("pizda");
 
         // // let mut pre = &block_seqnos[0];
         // // for a in &block_seqnos {
