@@ -12,7 +12,7 @@ node-indexer = { path = "../node-indexer" }
 env_logger = "0.8.4"
 tokio = { version = '1', features = ['full'] }
 futures = "0.3.15"
-ton_abi = { git = "https://github.com/broxus/ton-labs-abi" }
+ton_abi = { git = "https://github.com/tonlabs/ton-labs-abi" }
 ton_block = { git = "https://github.com/tonlabs/ton-labs-block.git" }
 ton_types = { git = "https://github.com/tonlabs/ton-labs-types.git" }
 nekoton = { git = "https://github.com/broxus/nekoton.git", default-features = false }
