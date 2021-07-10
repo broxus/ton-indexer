@@ -220,14 +220,9 @@ impl Engine {
         let mut peer_attempt = 0;
         let mut part_attempt = 0;
 
-        while offset < total_size {
+        'outer: while offset < total_size {
             loop {
                 log::info!("-------------------------- Downloading part: {}", offset);
-
-                if offset >= total_size {
-                    log::info!("-------- Downloaded part: {}", offset);
-                    break;
-                }
 
                 match overlay
                     .download_persistent_state_part(
@@ -246,9 +241,8 @@ impl Engine {
                         parts.insert(offset, part);
 
                         if part_len < max_size {
-                            log::info!("AAAAAAAAAAAAAAAAAAAAAAA 1");
                             total_size = offset + part_len;
-                            break;
+                            break 'outer;
                         }
 
                         offset += max_size;
@@ -259,7 +253,6 @@ impl Engine {
 
                         log::error!("Failed to download persistent state part: {}", e);
                         if part_attempt > 10 {
-                            log::info!("AAAAAAAAAAAAAAAAAAAAAAA 2");
                             return Err(EngineError::RanOutOfAttempts.into());
                         }
                         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -268,7 +261,7 @@ impl Engine {
             }
         }
 
-        log::info!("DOWNLOAD RESULTS: {:?}", total_size);
+        log::info!("DOWNLOADED: {} bytes", total_size);
 
         debug_assert!(total_size < usize::MAX);
 
