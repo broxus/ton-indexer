@@ -7,6 +7,7 @@ use anyhow::Result;
 use bb8::{Pool, PooledConnection};
 use either::Either;
 use futures::{Sink, SinkExt, StreamExt};
+use nekoton::core::models::TransactionId;
 use nekoton::transport::models::{ExistingContract, RawContractState, RawTransaction};
 use tiny_adnl::AdnlTcpClientConfig;
 use ton::ton_node::blockid::BlockId;
@@ -18,7 +19,6 @@ use shared_deps::TrustMe;
 use crate::adnl_pool::AdnlManageConnection;
 use crate::errors::{QueryError, QueryResult};
 use crate::last_block::LastBlock;
-use nekoton::core::models::TransactionId;
 
 mod adnl_pool;
 mod errors;
@@ -490,14 +490,14 @@ impl NodeClient {
                         if let Err(e) = mc_blocks.send(block_id).await {
                             log::error!("Failed sending block id: {}", e);
                         }
-                        for block in good {
-                            if let Err(e) = sink.send(block).await {
-                                log::error!("{:?}", e);
-                            }
-                        }
                         for bad_block in bad {
                             if let Err(e) = bad_blocks_tx.send(bad_block) {
                                 log::error!("Bad blocks channel has broken: {:?}", e);
+                            }
+                        }
+                        for block in good {
+                            if let Err(e) = sink.send(block).await {
+                                log::error!("{:?}", e);
                             }
                         }
                     }
