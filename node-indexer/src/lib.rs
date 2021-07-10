@@ -486,7 +486,7 @@ impl NodeClient {
                 match step_result {
                     Ok(a) => {
                         let IndexerStepResult { good, bad } = a;
-                        log::info!("Good: {}, Bad: {}", good.len(), bad.len());
+                        log::trace!("Good: {}, Bad: {}", good.len(), bad.len());
                         if let Err(e) = mc_blocks.send(block_id).await {
                             log::error!("Failed sending block id: {}", e);
                         }

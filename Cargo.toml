@@ -57,5 +57,5 @@ serde_json = "1.0"
 [features]
 binary = ["clap", "log4rs", "serde_json", "serde_yaml", "tokio/rt-multi-thread", "tokio/macros"]
 
-[profile.release]
-debug = 1
+#[profile.release]
+#debug = 1
