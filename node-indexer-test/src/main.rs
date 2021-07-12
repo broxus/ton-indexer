@@ -1,19 +1,20 @@
+use std::alloc::System;
+use std::collections::{BTreeSet, BinaryHeap, HashMap, HashSet};
 use std::io::Write;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::Result;
 use chrono::TimeZone;
 use futures::StreamExt;
-use indexer_lib::ExtractInput;
-use node_indexer::{Config, NodeClient};
-use std::collections::{BTreeSet, BinaryHeap, HashMap, HashSet};
 use ton_abi::Event;
 use ton_block::{MsgAddress, MsgAddressInt, Serializable, ShardIdent};
 use ton_types::serialize_toc;
 
-use std::alloc::System;
+use indexer_lib::ExtractInput;
+use node_indexer::{Config, NodeClient};
 
 #[global_allocator]
 static GLOBAL: System = System;
@@ -830,6 +831,7 @@ fn main() {
     env_logger::init();
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
+        .worker_threads(2)
         .thread_name_fn(|| {
             static ATOMIC_ID: AtomicUsize = AtomicUsize::new(0);
             let id = ATOMIC_ID.fetch_add(1, Ordering::SeqCst);
@@ -841,17 +843,19 @@ fn main() {
     log::info!("Started");
     rt.block_on(async move {
         let mut config = Config::default();
-        config.pool_size = 300;
+        let pool_size = 2;
+        config.pool_size = pool_size;
+
         let node = Arc::new(NodeClient::new(config).await.unwrap());
         log::info!("here");
 
-        let (tx, mut rx) = futures::channel::mpsc::unbounded();
+        let (tx, mut rx) = futures::channel::mpsc::channel((pool_size * 4 * 16 * 4) as usize);
         let (tx_block, mut rx_block) = futures::channel::mpsc::unbounded();
         node.spawn_indexer(
             Some(ton_api::ton::ton_node::blockid::BlockId {
                 workchain: -1,
                 shard: u64::from_str_radix("8000000000000000", 16).unwrap() as i64,
-                seqno: 2202177,
+                seqno: 8202177,
             }),
             tx,
             tx_block,
@@ -898,35 +902,56 @@ fn main() {
         //     .unwrap()
         //     .into_iter()
         //     .for_each(|x| println!("{:?}", x.output)));
-
+        tokio::spawn(async move {
+            while let Some(a) = rx_block.next().await {
+                drop(a);
+            }
+        });
+        let evs = prep_event();
         let mut rx = rx.enumerate();
-        while let Some((a, b)) = rx.next().await {
-            drop(b)
-        }
-        print!("pizda");
+        // tokio::time::sleep(Duration::from_secs(30)).await;
+        // println!("Long sleep");
 
-        // // let mut pre = &block_seqnos[0];
-        // // for a in &block_seqnos {
-        // //     if (pre - a) > 1 {
-        // //         dbg!(block_seqnos)
-        // //     }
-        // // }
-        // for (k, mut v) in seqnos {
-        //     v.sort_unstable();
-        //
-        //     let start = v.first().unwrap();
-        //     let end = v.last().unwrap();
-        //     let gen = (*start..end + 1);
-        //     let mut flag = false;
-        //     for (seq, expected) in v.clone().iter().zip(gen) {
-        //         if *seq != expected {
-        //             flag = true;
-        //         }
-        //     }
-        //     if flag {
-        //         println!("{:016x}", k);
-        //         dbg!(v);
+        let mut seqnos = HashMap::new();
+
+        while let Some((a, b)) = rx.next().await {
+            let res = indexer_lib::extract_from_block(&b, &evs).unwrap().len();
+            if res != 0 {
+                println!("{}", res);
+            }
+            let info = b.info.read_struct().unwrap();
+            seqnos
+                .entry(info.shard().clone())
+                .or_insert(Vec::new())
+                .push(info.seq_no());
+            if a > 100000 {
+                break;
+            }
+            println!("{}", a);
+        }
+
+        // let mut pre = &block_seqnos[0];
+        // for a in &block_seqnos {
+        //     if (pre - a) > 1 {
+        //         dbg!(block_seqnos)
         //     }
         // }
+        for (k, mut v) in seqnos {
+            v.sort_unstable();
+
+            let start = v.first().unwrap();
+            let end = v.last().unwrap();
+            let gen = (*start..=*end);
+            let mut flag = false;
+            for (seq, expected) in v.clone().iter().zip(gen) {
+                if *seq != expected {
+                    flag = true;
+                }
+            }
+            if flag {
+                println!("{:?}", k);
+                dbg!(v);
+            }
+        }
     })
 }

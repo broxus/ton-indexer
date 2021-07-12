@@ -3,18 +3,19 @@ use std::net::{Ipv4Addr, SocketAddrV4};
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use bb8::{Pool, PooledConnection};
-use either::Either;
-use futures::{Sink, SinkExt, StreamExt};
+use futures::{Sink, SinkExt};
 use nekoton::core::models::TransactionId;
 use nekoton::transport::models::{ExistingContract, RawContractState, RawTransaction};
 use tiny_adnl::AdnlTcpClientConfig;
+use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::Barrier;
 use ton::ton_node::blockid::BlockId;
 use ton_api::ton;
-use ton_block::{Block, Deserializable, HashmapAugType, MsgAddressInt, ShardDescr, ShardIdent};
+use ton_block::{Deserializable, HashmapAugType, MsgAddressInt, ShardDescr, ShardIdent};
 
-use shared_deps::TrustMe;
+use shared_deps::{NoFailure, TrustMe};
 
 use crate::adnl_pool::AdnlManageConnection;
 use crate::errors::{QueryError, QueryResult};
@@ -54,8 +55,8 @@ pub fn default_mainnet_config() -> AdnlTcpClientConfig {
         socket_send_timeout: Duration::from_secs(10),
     }
 }
-
-type ShardBlocks = Arc<dashmap::DashMap<i64, i32>>;
+/// Maps shard id to seqno
+type ShardBlocks = Arc<dashmap::DashMap<ShardIdent, i32>>;
 
 pub struct NodeClient {
     pool: Pool<AdnlManageConnection>,
@@ -88,11 +89,6 @@ async fn acquire_connection(
         log::error!("Failed getting connection from pool: {:#?}", e);
         QueryError::ConnectionError
     })
-}
-
-struct IndexerStepResult {
-    good: Vec<Block>,
-    bad: Vec<BlockId>,
 }
 
 async fn bad_block_resolver<S>(
@@ -194,10 +190,10 @@ impl NodeClient {
         loop {
             let blocks_diff = top_block.seqno - current_block.seqno;
             if blocks_diff != 0 {
-                new_mc_blocks_queue
-                    .send(current_block.clone())
-                    .await
-                    .expect("Channel is broken");
+                if let Err(e) = new_mc_blocks_queue.send(current_block.clone()).await {
+                    log::error!("Failed sending mc block: {}", e);
+                    return Ok(());
+                }
                 let query_count = std::cmp::min(pool_size * 4, blocks_diff);
                 log::debug!("Query count: {}, diff: {}", query_count, blocks_diff);
                 let block = get_block_id(
@@ -242,6 +238,201 @@ impl NodeClient {
                 new_mc_blocks_queue.send(current_block.clone()).await?;
             }
         }
+    }
+
+    pub async fn spawn_indexer<S, McBlocks>(
+        self: &Arc<Self>,
+        seqno: Option<BlockId>,
+        sink: S,
+        mut mc_blocks: McBlocks,
+    ) -> QueryResult<()>
+    where
+        S: Sink<ton_block::Block> + Clone + Send + Sync + Unpin + 'static,
+        <S as futures::Sink<ton_block::Block>>::Error: std::error::Error,
+        McBlocks: Sink<BlockId> + Clone + Send + Sync + Unpin + 'static,
+        <McBlocks as futures::Sink<BlockId>>::Error: std::error::Error,
+    {
+        let (bad_blocks_tx, bad_blocks_rx) = tokio::sync::mpsc::unbounded_channel();
+        let indexer = Arc::downgrade(self);
+
+        tokio::spawn(bad_block_resolver(
+            bad_blocks_rx,
+            self.pool.clone(),
+            sink.clone(),
+        ));
+
+        let (masterchain_blocks_tx, mut masterchain_blocks_rx) = tokio::sync::mpsc::channel(2);
+
+        tokio::spawn(self.clone().blocks_producer(
+            seqno,
+            masterchain_blocks_tx,
+            self.config.pool_size as i32,
+        ));
+        tokio::spawn(async move {
+            while let Some(block) = masterchain_blocks_rx.recv().await {
+                let indexer = match indexer.upgrade() {
+                    Some(indexer) => indexer,
+                    None => {
+                        log::error!("Indexer refs are empty. Quiting");
+                        return;
+                    }
+                };
+                let blockid = BlockId {
+                    workchain: block.workchain,
+                    shard: block.shard,
+                    seqno: block.seqno,
+                };
+                log::trace!("Indexer step. Id: {}", block.seqno);
+                tryhard::retry_fn(|| async {
+                    indexer
+                        .indexer_step(block.clone(), sink.clone(), bad_blocks_tx.clone())
+                        .await
+                })
+                .retries(10)
+                .exponential_backoff(Duration::from_secs(2))
+                .await
+                .expect("fatal indexer error");
+                mc_blocks.send(blockid).await.expect("mc blocks broken");
+            }
+        });
+
+        Ok(())
+    }
+
+    async fn indexer_step<S>(
+        self: &Arc<Self>,
+        mc_block: ton::ton_node::blockidext::BlockIdExt,
+        sink: S,
+        bad_blocks_tx: UnboundedSender<BlockId>,
+    ) -> Result<()>
+    where
+        S: Sink<ton_block::Block> + Clone + Send + Sync + Unpin + 'static,
+        <S as futures::Sink<ton_block::Block>>::Error: std::error::Error,
+    {
+        let block = query_block(self.pool.clone(), mc_block)
+            .await
+            .context("Failed getting block id")?;
+        let extra = block
+            .extra
+            .read_struct()
+            .and_then(|extra| extra.read_custom())
+            .map_err(|e| anyhow::anyhow!("Failed to parse block info: {:?}", e))?;
+
+        let extra = match extra {
+            Some(extra) => extra,
+            None => anyhow::bail!("No extra in block"),
+        };
+
+        let mut num_of_shards = 1; // for barrier
+        extra
+            .shards()
+            .iterate_shards(|_, _| {
+                num_of_shards += 1;
+                Ok(true)
+            })
+            .convert()
+            .context("Failed iterating shards")?;
+
+        log::trace!("Num of shards: {}", num_of_shards);
+        let num_of_tasks = Arc::new(Barrier::new(num_of_shards));
+        extra
+            .shards()
+            .iterate_shards(|shard_id, shard| {
+                log::trace!("Shard id: {:?}, shard block: {}", shard_id, shard.seq_no);
+                let idxr = self.clone();
+                let task = idxr.process_shard(
+                    shard_id,
+                    shard,
+                    sink.clone(),
+                    num_of_tasks.clone(),
+                    bad_blocks_tx.clone(),
+                );
+                tokio::spawn(task);
+                Ok(true)
+            })
+            .map_err(|e| anyhow::anyhow!("Failed to iterate shards: {:?}", e))?;
+
+        // Each shard manges it processed blocks.
+        // We wait for download of all shard blocks and than we believe, that shard layer is processed.
+        log::trace!("Start waiting for shards");
+        num_of_tasks.wait().await;
+        log::trace!("Finished waiting for shards");
+        Ok(())
+    }
+
+    async fn process_shard<S>(
+        self: Arc<Self>,
+        shard_id: ShardIdent,
+        shard: ShardDescr,
+        sink: S,
+        barrier: Arc<Barrier>,
+        bad_blocks_tx: UnboundedSender<BlockId>,
+    ) where
+        S: Sink<ton_block::Block> + Clone + Send + Sync + Unpin + 'static,
+        <S as futures::Sink<ton_block::Block>>::Error: std::error::Error,
+    {
+        let workchain = shard_id.workchain_id();
+        let shard_id_numeric = shard_id.shard_prefix_with_tag() as i64;
+        let current_seqno = shard.seq_no as i32;
+
+        let last_known_block = *self
+            .shard_cache
+            .entry(shard_id)
+            .or_insert(current_seqno)
+            .value();
+        log::trace!(
+            "{:016x} Last known block {}. Current {}",
+            shard_id_numeric,
+            last_known_block,
+            current_seqno
+        );
+        let processed_num = (current_seqno - last_known_block) as usize;
+
+        log::trace!(
+            "Processing blocks {} in shard {:016x}.",
+            processed_num,
+            shard_id_numeric,
+        );
+
+        // +1 because of waiting in final barrier
+        log::trace!("{:016x} size: {}", shard_id_numeric, processed_num + 1);
+        let num_of_tasks = Arc::new(tokio::sync::Barrier::new(processed_num + 1));
+
+        for seq_no in last_known_block..current_seqno {
+            log::trace!("{:016x} Spawning", shard_id_numeric);
+            let pool = self.pool.clone();
+            let num_of_tasks = num_of_tasks.clone();
+            let mut sink = sink.clone();
+            let bad_blocks_tx = bad_blocks_tx.clone();
+            let task = async move {
+                let id = BlockId {
+                    workchain,
+                    shard: shard_id_numeric,
+                    seqno: seq_no,
+                };
+                log::trace!("{:016x} {} Start", shard_id_numeric, seq_no);
+                let block = query_block_by_seqno(pool, id.clone()).await;
+                match block {
+                    Ok(a) => sink.send(a).await.expect("Blocks channel is broken"),
+                    Err(e) => {
+                        log::error!("Query error: {:?}", e);
+                        bad_blocks_tx
+                            .send(id)
+                            .expect("Bad blocks resolver is broken");
+                    }
+                }
+                log::trace!("{:016x} {} Done", shard_id_numeric, seq_no);
+                num_of_tasks.wait().await;
+            };
+            tokio::spawn(task);
+        }
+        log::trace!("{:016x} Start waiting for tasks", shard_id_numeric);
+        //  Waiting local spawned tasks
+        num_of_tasks.wait().await;
+        log::trace!("{:016x} Finish waiting for tasks", shard_id_numeric);
+        self.shard_cache.insert(shard_id, current_seqno);
+        // Notifying that we have processed all blocks.
+        barrier.wait().await;
     }
 
     /// Return all transactions  for `contract_address`. Latest transaction first
@@ -426,179 +617,14 @@ impl NodeClient {
             }
             RawContractState::Exists(a) => a,
         };
-        function.run_local(
+        function.clone().run_local(
             state.account,
             state.timings,
             &state.last_transaction_id,
             input,
         )
     }
-
-    pub async fn spawn_indexer<S, McBlocks>(
-        self: &Arc<Self>,
-        seqno: Option<BlockId>,
-        mut sink: S,
-        mut mc_blocks: McBlocks,
-    ) -> QueryResult<()>
-    where
-        S: Sink<ton_block::Block> + Clone + Send + Sync + Unpin + 'static,
-        <S as futures::Sink<ton_block::Block>>::Error: std::error::Error,
-        McBlocks: Sink<BlockId> + Clone + Send + Sync + Unpin + 'static,
-        <McBlocks as futures::Sink<BlockId>>::Error: std::error::Error,
-    {
-        let (bad_blocks_tx, bad_blocks_rx) = tokio::sync::mpsc::unbounded_channel();
-        let indexer = Arc::downgrade(self);
-
-        tokio::spawn(bad_block_resolver(
-            bad_blocks_rx,
-            self.pool.clone(),
-            sink.clone(),
-        ));
-
-        let (masterchain_blocks_tx, mut masterchain_blocks_rx) = tokio::sync::mpsc::channel(2);
-
-        tokio::spawn(self.clone().blocks_producer(
-            seqno,
-            masterchain_blocks_tx,
-            self.config.pool_size as i32,
-        ));
-        tokio::spawn(async move {
-            while let Some(block) = masterchain_blocks_rx.recv().await {
-                let indexer = match indexer.upgrade() {
-                    Some(indexer) => indexer,
-                    None => {
-                        log::error!("Indexer refs are empty. Quiting");
-                        return;
-                    }
-                };
-
-                log::trace!("Indexer step. Id: {}", block.seqno);
-                let block_id = BlockId {
-                    workchain: block.workchain,
-                    shard: block.shard,
-                    seqno: block.seqno,
-                };
-                let step_result =
-                    tryhard::retry_fn(|| async { indexer.indexer_step(block.clone()).await })
-                        .retries(10)
-                        .exponential_backoff(Duration::from_secs(1))
-                        .await;
-                match step_result {
-                    Ok(a) => {
-                        let IndexerStepResult { good, bad } = a;
-                        log::trace!("Good: {}, Bad: {}", good.len(), bad.len());
-                        if let Err(e) = mc_blocks.send(block_id).await {
-                            log::error!("Failed sending block id: {}", e);
-                        }
-                        for bad_block in bad {
-                            if let Err(e) = bad_blocks_tx.send(bad_block) {
-                                log::error!("Bad blocks channel has broken: {:?}", e);
-                            }
-                        }
-                        for block in good {
-                            if let Err(e) = sink.send(block).await {
-                                log::error!("{:?}", e);
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        log::error!("Fatal indexer step error: {}", e)
-                    }
-                }
-            }
-        });
-
-        Ok(())
-    }
-
-    async fn indexer_step(
-        self: &Arc<Self>,
-        mc_block: ton::ton_node::blockidext::BlockIdExt,
-    ) -> Result<IndexerStepResult> {
-        let futs = futures::stream::FuturesUnordered::new();
-        let block = query_block(self.pool.clone(), mc_block).await?;
-        let extra = block
-            .extra
-            .read_struct()
-            .and_then(|extra| extra.read_custom())
-            .map_err(|e| anyhow::anyhow!("Failed to parse block info: {:?}", e))?;
-
-        let extra = match extra {
-            Some(extra) => extra,
-            None => anyhow::bail!("No extra in block"),
-        };
-
-        extra
-            .shards()
-            .iterate_shards(|shard_id, shard| {
-                log::trace!("Shard id: {:?}, shard block: {}", shard_id, shard.seq_no);
-                let idxr = self.clone();
-                let task = idxr.process_shard(shard_id, shard);
-                futs.push(task);
-                Ok(true)
-            })
-            .map_err(|e| anyhow::anyhow!("Failed to iterate shards: {:?}", e))?;
-
-        let (ok, bad) = futs.collect::<Vec<_>>().await.into_iter().flatten().fold(
-            (Vec::new(), Vec::new()),
-            |(mut ok, mut bad), x| {
-                match x {
-                    Either::Left(a) => ok.push(a),
-                    Either::Right(a) => bad.push(a),
-                };
-                (ok, bad)
-            },
-        );
-
-        Ok(IndexerStepResult { good: ok, bad })
-    }
-
-    async fn process_shard(
-        self: Arc<Self>,
-        shard_id: ShardIdent,
-        shard: ShardDescr,
-    ) -> Vec<Either<Block, BlockId>> {
-        let workchain = shard_id.workchain_id();
-        let shard_id = shard_id.shard_prefix_with_tag() as i64;
-        let current_seqno = shard.seq_no as i32;
-
-        let last_known_block = *self
-            .shard_cache
-            .entry(shard_id)
-            .or_insert(current_seqno)
-            .value();
-
-        log::trace!(
-            "Processing blocks {} in shard {:016x}.",
-            current_seqno - last_known_block,
-            shard_id,
-        );
-        let futs = futures::stream::FuturesUnordered::new();
-        for seq_no in last_known_block..(current_seqno) {
-            let pool = self.pool.clone();
-            let task = async move {
-                let id = BlockId {
-                    workchain,
-                    shard: shard_id,
-                    seqno: seq_no,
-                };
-                let block = query_block_by_seqno(pool, id.clone()).await;
-                match block {
-                    Ok(a) => either::Left(a),
-                    Err(e) => {
-                        log::error!("Query error: {:?}", e);
-                        either::Right(id)
-                    }
-                }
-            };
-            futs.push(task);
-        }
-        let res = futs.collect().await;
-        self.shard_cache.insert(shard_id, current_seqno);
-        res
-    }
 }
-
 pub async fn query_block(
     connection: Pool<AdnlManageConnection>,
     id: ton::ton_node::blockidext::BlockIdExt,
