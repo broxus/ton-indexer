@@ -237,8 +237,8 @@ impl NodeNetwork {
 
         let mut result = Vec::new();
         for (ip, node) in nodes.into_iter() {
-            log::trace!("Node: {:?}, address: {}", node, ip);
             if let Some(peer) = self.overlay.add_public_peer(overlay_id, ip, &node)? {
+                log::trace!("Node id: {}, address: {}", peer, ip);
                 result.push(peer);
             }
         }
