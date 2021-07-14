@@ -5,7 +5,7 @@ use std::sync::Arc;
 use parking_lot::RwLock;
 use ton_types::{ByteOrderRead, CellImpl};
 
-use super::dynamic_boc_db::DynamicBocDb;
+use super::shard_state_storage::DynamicBocDb;
 use crate::utils::*;
 
 pub struct StorageCell {

@@ -281,27 +281,6 @@ struct LtDesc {
     last_utime: u32,
 }
 
-impl StoredValue for ton_block::ShardIdent {
-    fn size_hint(&self) -> Option<usize> {
-        Some(4 + 8)
-    }
-
-    fn serialize<W: Write>(&self, writer: &mut W) -> Result<()> {
-        writer.write_all(&self.workchain_id().to_le_bytes())?;
-        writer.write_all(&self.shard_prefix_with_tag().to_le_bytes())?;
-        Ok(())
-    }
-
-    fn deserialize<R: Read>(reader: &mut R) -> Result<Self>
-    where
-        Self: Sized,
-    {
-        let workchain_id = reader.read_le_u32()? as i32;
-        let shard_prefix_tagged = reader.read_le_u64()?;
-        Self::with_tagged_prefix(workchain_id, shard_prefix_tagged).convert()
-    }
-}
-
 #[derive(thiserror::Error, Debug)]
 enum BlockIndexDbError {
     #[error("Ascending order required")]
