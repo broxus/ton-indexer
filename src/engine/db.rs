@@ -117,7 +117,10 @@ impl SledDb {
 
         Ok(Arc::new(Self {
             block_handle_storage: BlockHandleStorage::with_db(db.open_tree("block_handles")?),
-            shard_state_storage: ShardStateStorage::default(),
+            shard_state_storage: ShardStateStorage::with_db(
+                db.open_tree("shard_state_db")?,
+                db.open_tree("cell_db")?,
+            ),
             node_state_storage: NodeStateStorage::with_db(db.open_tree("node_state")?),
             archive_manager: ArchiveManager::with_root_dir(file_db_path).await?,
             block_index_db: BlockIndexDb::with_db(

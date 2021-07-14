@@ -16,9 +16,11 @@ mod block_handle;
 mod block_handle_storage;
 mod block_index_db;
 mod block_meta;
+mod dynamic_boc_db;
 mod node_state_storage;
 mod package_entry_id;
 mod shard_state_storage;
+mod storage_cell;
 
 pub trait StoredValue {
     fn size_hint(&self) -> Option<usize> {
