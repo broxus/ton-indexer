@@ -214,7 +214,7 @@ impl Engine {
         };
 
         let mut offset = 0;
-        let parts = Arc::new(DashMap::new());
+        let mut state = Vec::new();
         let max_size = 1 << 20;
         let mut total_size = usize::MAX;
         let mut peer_attempt = 0;
@@ -237,9 +237,9 @@ impl Engine {
                 {
                     Ok(part) => {
                         part_attempt = 0;
-                        let part_len = part.len();
-                        parts.insert(offset, part);
+                        state.extend_from_slice(&part);
 
+                        let part_len = part.len();
                         if part_len < max_size {
                             total_size = offset + part_len;
                             break 'outer;
@@ -264,15 +264,6 @@ impl Engine {
         log::info!("DOWNLOADED: {} bytes", total_size);
 
         debug_assert!(total_size < usize::MAX);
-
-        let mut state = Vec::with_capacity(total_size);
-
-        let mut offset = 0;
-        while let Some(part) = parts.get(&offset) {
-            state.extend_from_slice(part.value());
-            offset += part.len();
-        }
-        debug_assert_eq!(total_size, state.len());
 
         Ok(Arc::new(ShardStateStuff::deserialize(
             block_id.clone(),
