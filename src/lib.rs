@@ -40,7 +40,7 @@ pub async fn start(node_config: NodeConfig, global_config: GlobalConfig) -> Resu
         )
         .await?;
 
-    Ok(())
+    futures::future::pending().await
 }
 
 fn start_full_node_service(engine: Arc<Engine>) -> Result<()> {
