@@ -166,7 +166,7 @@ impl BlockProofStuff {
         Ok(())
     }
 
-    fn pre_check_block_proof(&self) -> Result<(ton_block::Block, ton_block::BlockInfo)> {
+    pub fn pre_check_block_proof(&self) -> Result<(ton_block::Block, ton_block::BlockInfo)> {
         if !self.id.is_masterchain() && self.proof.signatures.is_some() {
             return Err(anyhow!(
                 "proof for non-master block {} can't contain signatures",
@@ -454,7 +454,7 @@ impl BlockProofStuff {
     }
 }
 
-fn check_with_prev_key_block_proof(
+pub fn check_with_prev_key_block_proof(
     proof: &BlockProofStuff,
     prev_key_block_proof: &BlockProofStuff,
     virt_block: &ton_block::Block,

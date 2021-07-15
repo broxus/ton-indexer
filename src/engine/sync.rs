@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -6,6 +7,8 @@ use tiny_adnl::utils::*;
 use ton_types::ByteOrderRead;
 
 use super::Engine;
+use crate::storage::*;
+use crate::utils::*;
 
 pub async fn sync(engine: &Arc<Engine>) -> Result<()> {
     const MAX_CONCURRENCY: usize = 8;
@@ -160,17 +163,6 @@ pub async fn sync(engine: &Arc<Engine>) -> Result<()> {
     Ok(())
 }
 
-async fn apply(
-    engine: &Arc<Engine>,
-    last_mc_block_id: &ton_block::BlockIdExt,
-    mc_seq_no: u32,
-    data: Vec<u8>,
-) -> Result<()> {
-    log::info!("Reading archive for block {}", mc_seq_no);
-
-    Ok(())
-}
-
 async fn start_downloads(
     engine: &Arc<Engine>,
     queue: &mut Vec<(u32, ArchiveStatus)>,
@@ -302,6 +294,190 @@ enum ArchiveStatus {
     Downloaded(Vec<u8>),
 }
 
+async fn apply(
+    engine: &Arc<Engine>,
+    last_mc_block_id: &ton_block::BlockIdExt,
+    mc_seq_no: u32,
+    data: Vec<u8>,
+) -> Result<()> {
+    log::info!("sync: Parsing archive for block {}", mc_seq_no);
+    let maps = parse_archive(data)?;
+    log::info!(
+        "sync: Parsed {} masterchain blocks, {} blocks total",
+        maps.mc_block_ids.len(),
+        maps.blocks.len()
+    );
+    import_package(engine, maps, last_mc_block_id).await?;
+    log::info!("sync: Imported archive package for block {}", mc_seq_no);
+    Ok(())
+}
+
+async fn import_package(
+    engine: &Arc<Engine>,
+    maps: BlockMaps,
+    mut last_mc_block_id: &ton_block::BlockIdExt,
+) -> Result<()> {
+    if maps.mc_block_ids.is_empty() {
+        return Err(SyncError::EmptyArchivePackage.into());
+    }
+
+    for id in maps.mc_block_ids.values() {
+        if id.seq_no <= last_mc_block_id.seq_no {
+            if last_mc_block_id != id {
+                return Err(SyncError::MasterchainBlockIdMismatch.into());
+            }
+            continue;
+        }
+
+        if id.seq_no != last_mc_block_id.seq_no + 1 {
+            return Err(SyncError::BlocksSkippedInArchive.into());
+        }
+
+        last_mc_block_id = id;
+        if let Some(handle) = engine.load_block_handle(last_mc_block_id)? {
+            if handle.meta().is_applied() {
+                continue;
+            }
+        }
+
+        let entry = maps.blocks.get(last_mc_block_id).unwrap();
+        let handle = save_block(engine, last_mc_block_id, entry).await?;
+
+        // TODO: apply
+        engine.db.index_handle(&handle)?;
+
+        engine
+            .store_last_applied_mc_block_id(last_mc_block_id)
+            .await?;
+    }
+
+    log::info!("Last applied masterchain block id: {}", last_mc_block_id);
+    Ok(())
+}
+
+async fn save_block(
+    engine: &Arc<Engine>,
+    block_id: &ton_block::BlockIdExt,
+    entry: &BlocksEntry,
+) -> Result<(Arc<BlockHandle>)> {
+    let block = match &entry.block {
+        Some(block) => block,
+        None => return Err(SyncError::BlockNotFound.into()),
+    };
+    let block_proof = match &entry.proof {
+        Some(proof) => proof,
+        None => return Err(SyncError::BlockProofNotFound.into()),
+    };
+
+    if block_proof.is_link() {
+        block_proof.check_proof_link()?;
+    } else {
+        let now = std::time::Instant::now();
+        log::info!("Checking proof for block: {}", block_id);
+
+        let (virt_block, virt_block_info) = block_proof.pre_check_block_proof()?;
+        let prev_key_block_seqno = virt_block_info.prev_key_block_seqno();
+
+        log::info!("Prev key block seqno: {}", prev_key_block_seqno);
+
+        let masterchain_prefix = ton_block::AccountIdPrefixFull::any_masterchain();
+        let handle = engine
+            .db
+            .find_block_by_seq_no(&masterchain_prefix, prev_key_block_seqno)?;
+        let prev_key_block_proof = engine.load_block_proof(&handle, false).await?;
+
+        check_with_prev_key_block_proof(
+            &block_proof,
+            &prev_key_block_proof,
+            &virt_block,
+            &virt_block_info,
+        )?;
+
+        log::info!(
+            "Checked proof for block: {}. TIME = {} ms",
+            block_id,
+            now.elapsed().as_millis()
+        );
+    }
+
+    let handle = engine.store_block_data(block).await?.handle;
+    let handle = engine
+        .store_block_proof(block_id, Some(handle), block_proof)
+        .await?;
+    Ok(handle)
+}
+
+fn parse_archive(data: Vec<u8>) -> Result<BlockMaps> {
+    let mut reader = ArchivePackageViewReader::new(&data)?;
+
+    let mut maps = BlockMaps::default();
+
+    while let Some(entry) = reader.read_next()? {
+        log::info!(
+            "sync: Processing archive package entry: {} ({} bytes)",
+            entry.name,
+            entry.data.len()
+        );
+
+        match PackageEntryId::from_filename(entry.name)? {
+            PackageEntryId::Block(id) => {
+                maps.blocks
+                    .entry(id.clone())
+                    .or_insert_with(BlocksEntry::default)
+                    .block = Some(BlockStuff::deserialize_checked(
+                    id.clone(),
+                    entry.data.to_vec(),
+                )?);
+                if id.is_masterchain() {
+                    maps.mc_block_ids.insert(id.seq_no, id);
+                }
+            }
+            PackageEntryId::Proof(id) => {
+                if !id.is_masterchain() {
+                    continue;
+                }
+                maps.blocks
+                    .entry(id.clone())
+                    .or_insert_with(BlocksEntry::default)
+                    .proof = Some(BlockProofStuff::deserialize(
+                    id.clone(),
+                    entry.data.to_vec(),
+                    false,
+                )?);
+                maps.mc_block_ids.insert(id.seq_no, id);
+            }
+            PackageEntryId::ProofLink(id) => {
+                if !id.is_masterchain() {
+                    continue;
+                }
+                maps.blocks
+                    .entry(id.clone())
+                    .or_insert_with(BlocksEntry::default)
+                    .proof = Some(BlockProofStuff::deserialize(
+                    id.clone(),
+                    entry.data.to_vec(),
+                    true,
+                )?);
+                maps.mc_block_ids.insert(id.seq_no, id);
+            }
+        }
+    }
+
+    Ok(maps)
+}
+
+#[derive(Default)]
+struct BlockMaps {
+    mc_block_ids: BTreeMap<u32, ton_block::BlockIdExt>,
+    blocks: BTreeMap<ton_block::BlockIdExt, BlocksEntry>,
+}
+
+#[derive(Default)]
+struct BlocksEntry {
+    block: Option<BlockStuff>,
+    proof: Option<BlockProofStuff>,
+}
+
 type ActivePeers = DashSet<AdnlNodeIdShort>;
 type ArchiveResponse = (u32, Result<Option<Vec<u8>>>);
 
@@ -311,4 +487,14 @@ const BLOCKS_IN_ARCHIVE: u32 = 100;
 enum SyncError {
     #[error("Broken queue")]
     BrokenQueue,
+    #[error("Empty archive package")]
+    EmptyArchivePackage,
+    #[error("Masterchain block id mismatch")]
+    MasterchainBlockIdMismatch,
+    #[error("Some blocks are missing in archive")]
+    BlocksSkippedInArchive,
+    #[error("Block not found in archive")]
+    BlockNotFound,
+    #[error("Block proof not found in archive")]
+    BlockProofNotFound,
 }

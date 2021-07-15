@@ -338,6 +338,8 @@ async fn download_zero_state(
         match engine.download_zerostate(block_id, None).await {
             Ok(state) => {
                 let handle = engine.store_zerostate(block_id, &state).await?;
+                // TODO: apply
+                engine.db.index_handle(&handle)?;
                 return Ok((handle, state));
             }
             Err(e) => {
@@ -426,6 +428,9 @@ async fn download_block_and_state(
 
         // TODO: process received state here
     }
+
+    // TODO: apply
+    engine.db.index_handle(&handle)?;
 
     Ok((handle, block))
 }

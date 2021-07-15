@@ -78,6 +78,8 @@ pub trait Db: Send + Sync {
 
     fn store_node_state(&self, key: &'static str, value: Vec<u8>) -> Result<()>;
     fn load_node_state(&self, key: &'static str) -> Result<Vec<u8>>;
+
+    fn index_handle(&self, handle: &Arc<BlockHandle>) -> Result<()>;
 }
 
 pub struct StoreBlockResult {
@@ -407,6 +409,10 @@ impl Db for SledDb {
 
     fn load_node_state(&self, key: &'static str) -> Result<Vec<u8>> {
         self.node_state_storage.load(key)
+    }
+
+    fn index_handle(&self, handle: &Arc<BlockHandle>) -> Result<()> {
+        self.block_index_db.add_handle(handle)
     }
 }
 

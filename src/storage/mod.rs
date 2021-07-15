@@ -4,6 +4,7 @@ use anyhow::Result;
 use ton_types::ByteOrderRead;
 
 pub use self::archive_manager::*;
+pub use self::archive_package::*;
 pub use self::block_handle::*;
 pub use self::block_handle_storage::*;
 pub use self::block_index_db::*;

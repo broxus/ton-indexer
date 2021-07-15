@@ -90,6 +90,9 @@ impl BlockIndexDb {
             let lt_desc = match self.lt_desc_db.read().try_load_lt_desc(&lt_desc_key)? {
                 Some(lt_desc) => lt_desc,
                 None if found => break,
+                None if shard.workchain_id() == ton_block::MASTERCHAIN_ID => {
+                    return Err(BlockIndexDbError::BlockNotFound.into())
+                }
                 None => continue,
             };
 

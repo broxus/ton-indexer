@@ -135,9 +135,9 @@ fn parse_block_id(filename: &str) -> Result<ton_block::BlockIdExt> {
     })
 }
 
-const PACKAGE_ENTRY_BLOCK: &str = "block";
-const PACKAGE_ENTRY_PROOF: &str = "proof";
-const PACKAGE_ENTRY_PROOF_LINK: &str = "prooflink";
+const PACKAGE_ENTRY_BLOCK: &str = "block_";
+const PACKAGE_ENTRY_PROOF: &str = "proof_";
+const PACKAGE_ENTRY_PROOF_LINK: &str = "prooflink_";
 
 #[derive(thiserror::Error, Debug)]
 enum PackageEntryIdError {
