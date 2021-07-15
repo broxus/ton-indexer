@@ -14,6 +14,7 @@ use self::db::*;
 use self::downloader::*;
 use self::node_state::*;
 use self::shard_client::*;
+pub use self::sync::*;
 use crate::config::*;
 use crate::network::*;
 use crate::storage::*;
@@ -24,6 +25,7 @@ mod db;
 mod downloader;
 mod node_state;
 mod shard_client;
+mod sync;
 
 pub struct Engine {
     db: Arc<dyn Db>,
@@ -344,6 +346,17 @@ impl Engine {
         mc_overlay.download_next_key_blocks_ids(block_id, 5).await
     }
 
+    pub async fn download_archive(
+        &self,
+        mc_block_seq_no: u32,
+        active_peers: &Arc<DashSet<AdnlNodeIdShort>>,
+    ) -> Result<Option<Vec<u8>>> {
+        let mc_overlay = self.get_masterchain_overlay().await?;
+        mc_overlay
+            .download_archive(mc_block_seq_no, active_peers)
+            .await
+    }
+
     pub fn load_block_handle(
         &self,
         block_id: &ton_block::BlockIdExt,
@@ -450,6 +463,52 @@ impl Engine {
                 .create_or_load_block_handle(block_id, None, Some(state.state().gen_time()))?;
         self.store_state(&handle, state).await?;
         Ok(handle)
+    }
+
+    pub async fn check_sync(&self) -> Result<bool> {
+        let shards_client_mc_block_id = self.load_shards_client_mc_block_id().await?;
+        let last_applied_mc_block_id = self.load_last_applied_mc_block_id().await?;
+        if shards_client_mc_block_id.seq_no + 16 < last_applied_mc_block_id.seq_no {
+            return Ok(false);
+        }
+
+        let last_mc_block_handle = self
+            .load_block_handle(&last_applied_mc_block_id)?
+            .ok_or_else(|| {
+                log::info!("Handle not found");
+                EngineError::FailedToLoadLastMasterchainBlockHandle
+            })?;
+
+        if last_mc_block_handle.meta().gen_utime() + 600 > now() as u32 {
+            return Ok(true);
+        }
+
+        let last_key_block_seqno = self.last_known_key_block_seqno.load(Ordering::Acquire);
+        if last_key_block_seqno > last_applied_mc_block_id.seq_no {
+            return Ok(false);
+        }
+
+        Ok(false)
+    }
+
+    async fn load_last_applied_mc_block_id(&self) -> Result<ton_block::BlockIdExt> {
+        convert_block_id_ext_api2blk(&LastMcBlockId::load_from_db(self.db.as_ref())?.0)
+    }
+
+    async fn store_last_applied_mc_block_id(&self, block_id: &ton_block::BlockIdExt) -> Result<()> {
+        LastMcBlockId(convert_block_id_ext_blk2api(block_id)).store_into_db(self.db.as_ref())
+    }
+
+    async fn load_shards_client_mc_block_id(&self) -> Result<ton_block::BlockIdExt> {
+        convert_block_id_ext_api2blk(&ShardsClientMcBlockId::load_from_db(self.db.as_ref())?.0)
+    }
+
+    async fn store_shards_client_mc_block_id(
+        &self,
+        block_id: &ton_block::BlockIdExt,
+    ) -> Result<()> {
+        ShardsClientMcBlockId(convert_block_id_ext_blk2api(block_id))
+            .store_into_db(self.db.as_ref())
     }
 
     async fn create_download_context<'a, T>(
@@ -593,4 +652,6 @@ enum EngineError {
     NonMasterchainNextBlock,
     #[error("Ran out of attempts")]
     RanOutOfAttempts,
+    #[error("Failed to load handle for last masterchain block")]
+    FailedToLoadLastMasterchainBlockHandle,
 }

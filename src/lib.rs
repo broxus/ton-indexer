@@ -23,9 +23,22 @@ pub async fn start(node_config: NodeConfig, global_config: GlobalConfig) -> Resu
 
     start_full_node_service(engine.clone())?;
 
-    let last_masterchain_block_id = boot(&engine).await?;
+    let BootData {
+        last_mc_block_id,
+        shards_client_mc_block_id,
+    } = boot(&engine).await?;
 
-    log::info!("Initialized (last block: {})", last_masterchain_block_id);
+    log::info!(
+        "Initialized (last block: {}, shards client block id: {})",
+        last_mc_block_id,
+        shards_client_mc_block_id
+    );
+
+    if !engine.check_sync().await? {
+        sync(&engine).await?;
+    }
+
+    log::info!("Synced!");
 
     engine
         .listen_broadcasts(ton_block::ShardIdent::masterchain())

@@ -10,7 +10,12 @@ use super::Engine;
 use crate::storage::*;
 use crate::utils::*;
 
-pub async fn boot(engine: &Arc<Engine>) -> Result<ton_block::BlockIdExt> {
+pub struct BootData {
+    pub last_mc_block_id: ton_block::BlockIdExt,
+    pub shards_client_mc_block_id: ton_block::BlockIdExt,
+}
+
+pub async fn boot(engine: &Arc<Engine>) -> Result<BootData> {
     let mut last_mc_block_id = match LastMcBlockId::load_from_db(engine.db().as_ref()) {
         Ok(block_id) => {
             let last_mc_block_id = convert_block_id_ext_api2blk(&block_id.0)?;
@@ -18,11 +23,29 @@ pub async fn boot(engine: &Arc<Engine>) -> Result<ton_block::BlockIdExt> {
         }
         Err(e) => {
             log::warn!("Failed to load last masterchain block id: {}", e);
-            cold_boot(engine).await?
+            let last_mc_block_id = cold_boot(engine).await?;
+            engine
+                .store_last_applied_mc_block_id(&last_mc_block_id)
+                .await?;
+            last_mc_block_id
         }
     };
 
-    Ok(last_mc_block_id)
+    let mut shards_client_mc_block_id =
+        match ShardsClientMcBlockId::load_from_db(engine.db().as_ref()) {
+            Ok(block_id) => convert_block_id_ext_api2blk(&block_id.0)?,
+            Err(_) => {
+                engine
+                    .store_shards_client_mc_block_id(&last_mc_block_id)
+                    .await?;
+                last_mc_block_id.clone()
+            }
+        };
+
+    Ok(BootData {
+        last_mc_block_id,
+        shards_client_mc_block_id,
+    })
 }
 
 async fn cold_boot(engine: &Arc<Engine>) -> Result<ton_block::BlockIdExt> {

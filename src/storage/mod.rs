@@ -14,6 +14,7 @@ pub use self::shard_state_storage::*;
 use crate::utils::*;
 
 mod archive_manager;
+mod archive_package;
 mod block_handle;
 mod block_handle_storage;
 mod block_index_db;

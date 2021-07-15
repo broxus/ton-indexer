@@ -59,7 +59,11 @@ pub trait FullNodeOverlayClient: Send + Sync {
         max_size: i32,
     ) -> Result<Vec<ton_block::BlockIdExt>>;
 
-    async fn download_archive(&self, masterchain_seqno: u32) -> Result<Option<Vec<u8>>>;
+    async fn download_archive(
+        &self,
+        masterchain_seqno: u32,
+        active_peers: &Arc<DashSet<AdnlNodeIdShort>>,
+    ) -> Result<Option<Vec<u8>>>;
 
     async fn wait_broadcast(&self) -> Result<(ton::ton_node::Broadcast, AdnlNodeIdShort)>;
 }
@@ -377,7 +381,11 @@ impl FullNodeOverlayClient for OverlayClient {
             })
     }
 
-    async fn download_archive(&self, masterchain_seqno: u32) -> Result<Option<Vec<u8>>> {
+    async fn download_archive(
+        &self,
+        masterchain_seqno: u32,
+        active_peers: &Arc<DashSet<AdnlNodeIdShort>>,
+    ) -> Result<Option<Vec<u8>>> {
         const CHUNK_SIZE: i32 = 1 << 21; // 2 MB
 
         // Prepare
@@ -395,7 +403,10 @@ impl FullNodeOverlayClient for OverlayClient {
         // Download
         let info = match archive_info {
             ton::ton_node::ArchiveInfo::TonNode_ArchiveInfo(info) => info,
-            ton::ton_node::ArchiveInfo::TonNode_ArchiveNotFound => return Ok(None),
+            ton::ton_node::ArchiveInfo::TonNode_ArchiveNotFound => {
+                active_peers.remove(neighbour.peer_id());
+                return Ok(None);
+            }
         };
 
         let mut result = Vec::new();
@@ -420,6 +431,7 @@ impl FullNodeOverlayClient for OverlayClient {
                     result.append(&mut chunk);
 
                     if chunk_len < CHUNK_SIZE {
+                        active_peers.remove(neighbour.peer_id());
                         return Ok(Some(result));
                     }
 
@@ -438,6 +450,7 @@ impl FullNodeOverlayClient for OverlayClient {
                     );
 
                     if part_attempt > 10 {
+                        active_peers.remove(neighbour.peer_id());
                         return Err(anyhow!(
                             "Failed to download archive after {} attempts: {}",
                             part_attempt,

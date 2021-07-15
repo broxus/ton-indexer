@@ -1,6 +1,8 @@
 use std::io::Write;
+use std::sync::{Arc, Weak};
 
 use anyhow::Result;
+use dashmap::DashMap;
 use tokio::sync::RwLock;
 
 use super::block_meta::BlockMeta;
@@ -11,19 +13,28 @@ pub struct BlockHandle {
     meta: BlockMeta,
     block_file_lock: RwLock<()>,
     proof_file_block: RwLock<()>,
+    cache: Arc<DashMap<ton_block::BlockIdExt, Weak<BlockHandle>>>,
 }
 
 impl BlockHandle {
-    pub fn new(id: ton_block::BlockIdExt) -> Self {
-        Self::with_values(id, BlockMeta::default())
+    pub fn new(
+        id: ton_block::BlockIdExt,
+        cache: Arc<DashMap<ton_block::BlockIdExt, Weak<BlockHandle>>>,
+    ) -> Self {
+        Self::with_values(id, BlockMeta::default(), cache)
     }
 
-    pub fn with_values(id: ton_block::BlockIdExt, meta: BlockMeta) -> Self {
+    pub fn with_values(
+        id: ton_block::BlockIdExt,
+        meta: BlockMeta,
+        cache: Arc<DashMap<ton_block::BlockIdExt, Weak<BlockHandle>>>,
+    ) -> Self {
         Self {
             id,
             meta,
             block_file_lock: Default::default(),
             proof_file_block: Default::default(),
+            cache,
         }
     }
 
@@ -70,6 +81,13 @@ impl BlockHandle {
             prev_seqno if prev_seqno == masterchain_ref_seqno => Ok(false),
             _ => Err(BlockHandleError::RefSeqnoAlreadySet.into()),
         }
+    }
+}
+
+impl Drop for BlockHandle {
+    fn drop(&mut self) {
+        self.cache
+            .remove_if(&self.id, |_, weak| weak.strong_count() == 0);
     }
 }
 

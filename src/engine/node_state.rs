@@ -32,3 +32,4 @@ macro_rules! define_node_state {
 
 define_node_state!(LastMcBlockId, ton::ton_node::blockidext::BlockIdExt);
 define_node_state!(InitMcBlockId, ton::ton_node::blockidext::BlockIdExt);
+define_node_state!(ShardsClientMcBlockId, ton::ton_node::blockidext::BlockIdExt);

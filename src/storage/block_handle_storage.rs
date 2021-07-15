@@ -57,7 +57,7 @@ impl BlockHandleStorage {
 
         let handle = match self.cache.entry(block_id.clone()) {
             Entry::Vacant(entry) => {
-                let handle = Arc::new(BlockHandle::with_values(block_id, meta));
+                let handle = Arc::new(BlockHandle::with_values(block_id, meta, self.cache.clone()));
                 entry.insert(Arc::downgrade(&handle));
                 handle
             }
