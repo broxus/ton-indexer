@@ -123,12 +123,12 @@ impl BlockIndexDb {
                 match compare_lt_entry(&entry) {
                     std::cmp::Ordering::Equal => return Ok(block_id),
                     std::cmp::Ordering::Less => {
-                        first_block_id = Some(block_id);
-                        first_index = index;
-                    }
-                    std::cmp::Ordering::Greater => {
                         last_block_id = Some(block_id);
                         last_index = index;
+                    }
+                    std::cmp::Ordering::Greater => {
+                        first_block_id = Some(block_id);
+                        first_index = index;
                     }
                 }
             }
