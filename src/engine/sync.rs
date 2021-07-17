@@ -413,11 +413,11 @@ fn parse_archive(data: Vec<u8>) -> Result<BlockMaps> {
     let mut maps = BlockMaps::default();
 
     while let Some(entry) = reader.read_next()? {
-        log::info!(
-            "sync: Processing archive package entry: {} ({} bytes)",
-            entry.name,
-            entry.data.len()
-        );
+        // log::info!(
+        //     "sync: Processing archive package entry: {} ({} bytes)",
+        //     entry.name,
+        //     entry.data.len()
+        // );
 
         match PackageEntryId::from_filename(entry.name)? {
             PackageEntryId::Block(id) => {

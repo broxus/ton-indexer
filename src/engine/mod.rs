@@ -39,6 +39,8 @@ pub struct Engine {
     shard_states_cache: ShardStateCache,
 
     shard_states_operations: OperationsPool<ton_block::BlockIdExt, Arc<ShardStateStuff>>,
+    block_applying_operations: OperationsPool<ton_block::BlockIdExt, ()>,
+    next_block_applying_operations: OperationsPool<ton_block::BlockIdExt, ton_block::BlockIdExt>,
 }
 
 impl Engine {
@@ -66,6 +68,8 @@ impl Engine {
             last_known_key_block_seqno: AtomicU32::new(0),
             shard_states_cache: ShardStateCache::new(120),
             shard_states_operations: OperationsPool::new("shard_states_operations"),
+            block_applying_operations: OperationsPool::new("block_applying_operations"),
+            next_block_applying_operations: OperationsPool::new("next_block_applying_operations"),
         });
 
         engine
@@ -491,6 +495,15 @@ impl Engine {
         Ok(false)
     }
 
+    pub async fn set_applied(&self, handle: &Arc<BlockHandle>, mc_seq_no: u32) -> Result<bool> {
+        if handle.meta().is_applied() {
+            return Ok(false);
+        }
+        self.db.assign_mc_ref_seq_no(handle, mc_seq_no)?;
+        self.db.index_handle(handle)?;
+        self.db.store_block_applied(handle)
+    }
+
     async fn load_last_applied_mc_block_id(&self) -> Result<ton_block::BlockIdExt> {
         convert_block_id_ext_api2blk(&LastMcBlockId::load_from_db(self.db.as_ref())?.0)
     }
@@ -509,6 +522,62 @@ impl Engine {
     ) -> Result<()> {
         ShardsClientMcBlockId(convert_block_id_ext_blk2api(block_id))
             .store_into_db(self.db.as_ref())
+    }
+
+    async fn apply_block_ext(
+        &self,
+        handle: &Arc<BlockHandle>,
+        block: &BlockStuff,
+        mc_seq_no: u32,
+        pre_apply: bool,
+    ) -> Result<()> {
+        while !((pre_apply && handle.meta().has_data()) || handle.meta().is_applied()) {
+            self.block_applying_operations
+                .do_or_wait(
+                    handle.id(),
+                    None,
+                    self.apply_block_worker(handle, block, mc_seq_no, pre_apply),
+                )
+                .await?;
+        }
+        Ok(())
+    }
+
+    async fn apply_block_worker(
+        &self,
+        handle: &Arc<BlockHandle>,
+        block: &BlockStuff,
+        mc_seq_no: u32,
+        pre_apply: bool,
+    ) -> Result<()> {
+        if pre_apply && handle.meta().has_data() || handle.meta().is_applied() {
+            return Ok(());
+        }
+
+        // TODO: apply
+
+        if !pre_apply {
+            if block.id().is_masterchain() {
+                self.store_last_applied_mc_block_id(block.id()).await?;
+                // TODO: update shard blocks
+
+                self.set_applied(handle, mc_seq_no).await?;
+
+                let (prev1_id, prev2_id) = block.construct_prev_id()?;
+                if prev2_id.is_some() {
+                    return Err(EngineError::InvalidMasterchainBlockSequence.into());
+                }
+
+                let id = handle.id().clone();
+                self.next_block_applying_operations
+                    .do_or_wait(&prev1_id, None, async move { Ok(id) })
+                    .await?;
+            } else {
+                self.set_applied(handle, mc_seq_no).await?;
+            }
+        }
+
+        Ok(())
     }
 
     async fn create_download_context<'a, T>(
@@ -654,4 +723,6 @@ enum EngineError {
     RanOutOfAttempts,
     #[error("Failed to load handle for last masterchain block")]
     FailedToLoadLastMasterchainBlockHandle,
+    #[error("Invalid masterchain block sequence")]
+    InvalidMasterchainBlockSequence,
 }
