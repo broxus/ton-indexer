@@ -343,9 +343,6 @@ async fn import_package(
         let entry = maps.blocks.get(last_mc_block_id).unwrap();
         let handle = save_block(engine, last_mc_block_id, entry).await?;
 
-        // TODO: apply
-        engine.db.index_handle(&handle)?;
-
         engine
             .store_last_applied_mc_block_id(last_mc_block_id)
             .await?;
@@ -369,36 +366,7 @@ async fn save_block(
         None => return Err(SyncError::BlockProofNotFound.into()),
     };
 
-    if block_proof.is_link() {
-        block_proof.check_proof_link()?;
-    } else {
-        let now = std::time::Instant::now();
-        log::info!("Checking proof for block: {}", block_id);
-
-        let (virt_block, virt_block_info) = block_proof.pre_check_block_proof()?;
-        let prev_key_block_seqno = virt_block_info.prev_key_block_seqno();
-
-        log::info!("Prev key block seqno: {}", prev_key_block_seqno);
-
-        let masterchain_prefix = ton_block::AccountIdPrefixFull::any_masterchain();
-        let handle = engine
-            .db
-            .find_block_by_seq_no(&masterchain_prefix, prev_key_block_seqno)?;
-        let prev_key_block_proof = engine.load_block_proof(&handle, false).await?;
-
-        check_with_prev_key_block_proof(
-            &block_proof,
-            &prev_key_block_proof,
-            &virt_block,
-            &virt_block_info,
-        )?;
-
-        log::info!(
-            "Checked proof for block: {}. TIME = {} ms",
-            block_id,
-            now.elapsed().as_millis()
-        );
-    }
+    engine.check_block_proof(block_proof).await?;
 
     let handle = engine.store_block_data(block).await?.handle;
     let handle = engine

@@ -20,6 +20,7 @@ use crate::network::*;
 use crate::storage::*;
 use crate::utils::*;
 
+mod apply_block;
 mod boot;
 mod db;
 mod downloader;
@@ -41,6 +42,7 @@ pub struct Engine {
     shard_states_operations: OperationsPool<ton_block::BlockIdExt, Arc<ShardStateStuff>>,
     block_applying_operations: OperationsPool<ton_block::BlockIdExt, ()>,
     next_block_applying_operations: OperationsPool<ton_block::BlockIdExt, ton_block::BlockIdExt>,
+    download_block_operations: OperationsPool<ton_block::BlockIdExt, (BlockStuff, BlockProofStuff)>,
 }
 
 impl Engine {
@@ -70,6 +72,7 @@ impl Engine {
             shard_states_operations: OperationsPool::new("shard_states_operations"),
             block_applying_operations: OperationsPool::new("block_applying_operations"),
             next_block_applying_operations: OperationsPool::new("next_block_applying_operations"),
+            download_block_operations: OperationsPool::new("download_block_operations"),
         });
 
         engine
@@ -392,6 +395,48 @@ impl Engine {
         self.db.find_block_by_lt(account_prefix, lt)
     }
 
+    pub async fn wait_state(
+        self: &Arc<Self>,
+        block_id: &ton_block::BlockIdExt,
+        timeout_ms: Option<u64>,
+        allow_block_downloading: bool,
+    ) -> Result<Arc<ShardStateStuff>> {
+        loop {
+            let has_state = || {
+                Ok(self
+                    .load_block_handle(block_id)?
+                    .map(|handle| handle.meta().has_state())
+                    .unwrap_or_default())
+            };
+
+            if has_state()? {
+                break self.load_state(block_id);
+            }
+
+            if allow_block_downloading {
+                let engine = self.clone();
+                let block_id = block_id.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = engine.download_and_apply_block(&block_id, 0, true, 0).await {
+                        log::error!(
+                            "Error while pre-apply block {} (while waiting state): {}",
+                            block_id,
+                            e
+                        );
+                    }
+                });
+            }
+
+            if let Some(shard_state) = self
+                .shard_states_operations
+                .wait(block_id, timeout_ms, &has_state)
+                .await?
+            {
+                break Ok(shard_state);
+            }
+        }
+    }
+
     pub fn load_state(&self, block_id: &ton_block::BlockIdExt) -> Result<Arc<ShardStateStuff>> {
         if let Some(state) = self.shard_states_cache.get(block_id) {
             Ok(state)
@@ -524,59 +569,190 @@ impl Engine {
             .store_into_db(self.db.as_ref())
     }
 
-    async fn apply_block_ext(
-        &self,
+    async fn apply_block(
+        self: Arc<Self>,
         handle: &Arc<BlockHandle>,
         block: &BlockStuff,
         mc_seq_no: u32,
         pre_apply: bool,
+    ) -> Result<()> {
+        self.apply_block_ext(handle, block, mc_seq_no, pre_apply, 0)
+            .await
+    }
+
+    async fn apply_block_ext(
+        self: &Arc<Self>,
+        handle: &Arc<BlockHandle>,
+        block: &BlockStuff,
+        mc_seq_no: u32,
+        pre_apply: bool,
+        recursion_depth: u32,
     ) -> Result<()> {
         while !((pre_apply && handle.meta().has_data()) || handle.meta().is_applied()) {
             self.block_applying_operations
                 .do_or_wait(
                     handle.id(),
                     None,
-                    self.apply_block_worker(handle, block, mc_seq_no, pre_apply),
+                    self.clone().apply_block_worker(
+                        handle,
+                        block,
+                        mc_seq_no,
+                        pre_apply,
+                        recursion_depth,
+                    ),
                 )
                 .await?;
         }
         Ok(())
     }
 
-    async fn apply_block_worker(
-        &self,
-        handle: &Arc<BlockHandle>,
-        block: &BlockStuff,
+    fn apply_block_worker<'a>(
+        self: Arc<Self>,
+        handle: &'a Arc<BlockHandle>,
+        block: &'a BlockStuff,
         mc_seq_no: u32,
         pre_apply: bool,
+        recursion_depth: u32,
+    ) -> futures::future::BoxFuture<'a, Result<()>> {
+        use futures::FutureExt;
+
+        async move {
+            if pre_apply && handle.meta().has_data() || handle.meta().is_applied() {
+                return Ok(());
+            }
+
+            apply_block::apply_block(&self, handle, block, mc_seq_no, pre_apply, recursion_depth)
+                .await?;
+
+            if !pre_apply {
+                if block.id().is_masterchain() {
+                    self.store_last_applied_mc_block_id(block.id()).await?;
+                    // TODO: update shard blocks
+
+                    self.set_applied(handle, mc_seq_no).await?;
+
+                    let (prev1_id, prev2_id) = block.construct_prev_id()?;
+                    if prev2_id.is_some() {
+                        return Err(EngineError::InvalidMasterchainBlockSequence.into());
+                    }
+
+                    let id = handle.id().clone();
+                    self.next_block_applying_operations
+                        .do_or_wait(&prev1_id, None, async move { Ok(id) })
+                        .await?;
+                } else {
+                    self.set_applied(handle, mc_seq_no).await?;
+                }
+            }
+
+            Ok(())
+        }
+        .boxed()
+    }
+
+    async fn download_and_apply_block(
+        self: &Arc<Self>,
+        block_id: &ton_block::BlockIdExt,
+        mc_seq_no: u32,
+        pre_apply: bool,
+        recursion_depth: u32,
     ) -> Result<()> {
-        if pre_apply && handle.meta().has_data() || handle.meta().is_applied() {
-            return Ok(());
+        if recursion_depth > apply_block::MAX_RECURSION_DEPTH {
+            return Err(EngineError::TooDeepRecursion.into());
         }
 
-        // TODO: apply
-
-        if !pre_apply {
-            if block.id().is_masterchain() {
-                self.store_last_applied_mc_block_id(block.id()).await?;
-                // TODO: update shard blocks
-
-                self.set_applied(handle, mc_seq_no).await?;
-
-                let (prev1_id, prev2_id) = block.construct_prev_id()?;
-                if prev2_id.is_some() {
-                    return Err(EngineError::InvalidMasterchainBlockSequence.into());
+        loop {
+            if let Some(handle) = self.load_block_handle(block_id)? {
+                if handle.meta().is_applied() || pre_apply && handle.meta().has_state() {
+                    return Ok(());
                 }
 
-                let id = handle.id().clone();
-                self.next_block_applying_operations
-                    .do_or_wait(&prev1_id, None, async move { Ok(id) })
-                    .await?;
+                if handle.meta().has_data() {
+                    while !(pre_apply && handle.meta().has_state() || handle.meta().is_applied()) {
+                        self.block_applying_operations
+                            .do_or_wait(handle.id(), None, async {
+                                let block = self.load_block_data(&handle).await?;
+                                self.clone()
+                                    .apply_block_worker(
+                                        &handle,
+                                        &block,
+                                        mc_seq_no,
+                                        pre_apply,
+                                        recursion_depth,
+                                    )
+                                    .await?;
+                                Ok(())
+                            })
+                            .await?;
+                    }
+                    return Ok(());
+                }
+            }
+
+            log::info!("Start downloading block {} for apply", block_id);
+
+            let (max_attempts, timeouts) = if pre_apply {
+                (
+                    Some(10),
+                    Some(DownloaderTimeouts {
+                        initial: 50,
+                        max: 500,
+                        multiplier: 1.5,
+                    }),
+                )
             } else {
-                self.set_applied(handle, mc_seq_no).await?;
+                (None, None)
+            };
+
+            if let Some((block, block_proof)) = self
+                .download_block_operations
+                .do_or_wait(
+                    block_id,
+                    None,
+                    self.download_block(block_id, max_attempts, timeouts),
+                )
+                .await?
+            {
+                if self.load_block_handle(block_id)?.is_some() {
+                    continue;
+                }
+
+                self.check_block_proof(&block_proof).await?;
+                let handle = self.store_block_data(&block).await?.handle;
+                let handle = self
+                    .store_block_proof(block_id, Some(handle), &block_proof)
+                    .await?;
+
+                log::info!("Downloaded block {} for apply", block_id);
+
+                self.clone()
+                    .apply_block(&handle, &block, mc_seq_no, pre_apply)
+                    .await?;
+                return Ok(());
             }
         }
+    }
 
+    async fn check_block_proof(&self, block_proof: &BlockProofStuff) -> Result<()> {
+        if block_proof.is_link() {
+            block_proof.check_proof_link()?;
+        } else {
+            let (virt_block, virt_block_info) = block_proof.pre_check_block_proof()?;
+            let prev_key_block_seqno = virt_block_info.prev_key_block_seqno();
+
+            let masterchain_prefix = ton_block::AccountIdPrefixFull::any_masterchain();
+            let handle = self
+                .db
+                .find_block_by_seq_no(&masterchain_prefix, prev_key_block_seqno)?;
+            let prev_key_block_proof = self.load_block_proof(&handle, false).await?;
+
+            check_with_prev_key_block_proof(
+                &block_proof,
+                &prev_key_block_proof,
+                &virt_block,
+                &virt_block_info,
+            )?;
+        }
         Ok(())
     }
 
@@ -725,4 +901,6 @@ enum EngineError {
     FailedToLoadLastMasterchainBlockHandle,
     #[error("Invalid masterchain block sequence")]
     InvalidMasterchainBlockSequence,
+    #[error("Too deep recusion")]
+    TooDeepRecursion,
 }
