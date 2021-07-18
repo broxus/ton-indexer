@@ -73,7 +73,7 @@ impl ShouldParseFurther for ton_abi::Function {
     }
 }
 
-impl<Fun> ShouldParseFurther for FunctionWithBounceHandler<'_, Fun>
+impl<Fun> ShouldParseFurther for FunctionWithBounceHandler<Fun>
 where
     Fun: Fn(ton_types::SliceData) -> Result<Vec<ton_abi::Token>>,
 {
@@ -174,12 +174,24 @@ pub struct ParsedEvent {
     pub message_hash: [u8; 32],
 }
 
-pub struct FunctionWithBounceHandler<'a, Fun>
+pub struct FunctionWithBounceHandler<Fun>
 where
     Fun: Fn(ton_types::SliceData) -> Result<Vec<ton_abi::Token>>,
 {
-    pub function: &'a Function,
-    pub handler: Option<&'a Fun>,
+    pub function: Function,
+    pub handler: Option<Fun>,
+}
+
+impl<Fun> From<Function> for FunctionWithBounceHandler<Fun>
+where
+    Fun: Fn(ton_types::SliceData) -> Result<Vec<ton_abi::Token>>,
+{
+    fn from(f: Function) -> Self {
+        FunctionWithBounceHandler {
+            function: f,
+            handler: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -190,7 +202,7 @@ pub struct ParsedFunctionWithBounce {
     pub output: Option<Vec<ton_abi::Token>>,
 }
 
-impl<Fun> Extractable for FunctionWithBounceHandler<'_, Fun>
+impl<Fun> Extractable for FunctionWithBounceHandler<Fun>
 where
     Fun: Fn(ton_types::SliceData) -> Result<Vec<ton_abi::Token>>,
 {
@@ -209,7 +221,7 @@ where
             let bounced = header.bounced;
             (
                 bounced,
-                process_function_in_message(&message, &self.function, self.handler)
+                process_function_in_message(&message, &self.function, self.handler.as_ref())
                     .context("Failed processing function in message")?,
             )
         } else {
@@ -217,7 +229,7 @@ where
         };
 
         let output = if self.function.has_output() {
-            process_function_out_messages(&messages.out_messages, self.function)
+            process_function_out_messages(&messages.out_messages, &self.function)
                 .context("Failed processing function out messages")?
         } else {
             None
@@ -1279,7 +1291,7 @@ mod test {
             .clone();
         // internalTransfer - 416421634 416421634
         let fun = FunctionWithBounceHandler {
-            function: &fun,
+            function: fun,
             handler: Some(&bounce_handler),
         };
         let input = ExtractInput {
