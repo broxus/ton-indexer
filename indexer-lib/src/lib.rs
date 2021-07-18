@@ -182,22 +182,38 @@ where
     handler: Option<&'a Fun>,
 }
 
+#[derive(Debug, Clone)]
+pub struct ParsedFunctionWithBounce {
+    pub bounced: bool,
+    pub function_name: String,
+    pub input: Option<Vec<ton_abi::Token>>,
+    pub output: Option<Vec<ton_abi::Token>>,
+}
+
 impl<Fun> Extractable for FunctionWithBounceHandler<'_, Fun>
 where
     Fun: Fn(ton_types::SliceData) -> Result<Vec<ton_abi::Token>>,
 {
-    type Output = ParsedFunction;
+    type Output = ParsedFunctionWithBounce;
 
     fn extract(&self, messages: &TransactionMessages) -> Result<Option<Vec<Self::Output>>> {
-        let input = if self.function.has_input() {
+        let (bounced, input) = if self.function.has_input() {
             let message = match &messages.in_message {
                 None => return Ok(None),
                 Some(a) => a,
             };
-            process_function_in_message(&message, &self.function, self.handler)
-                .context("Failed processing function in message")?
+            let header = match message.msg.int_header().context("No header") {
+                Ok(a) => a,
+                Err(e) => return Err(AbiError::DecodingError(e.to_string()).into()),
+            };
+            let bounced = header.bounced;
+            (
+                bounced,
+                process_function_in_message(&message, &self.function, self.handler)
+                    .context("Failed processing function in message")?,
+            )
         } else {
-            None
+            (false, None)
         };
 
         let output = if self.function.has_output() {
@@ -211,7 +227,8 @@ where
             (None, None) => return Ok(None),
             _ => (),
         }
-        Ok(Some(vec![ParsedFunction {
+        Ok(Some(vec![ParsedFunctionWithBounce {
+            bounced,
             function_name: self.function.name.clone(),
             input,
             output,
@@ -1271,6 +1288,6 @@ mod test {
             what_to_extract: &[fun],
         };
         let res = input.process().unwrap().unwrap();
-        dbg!(res);
+        assert!(res.output[0].bounced);
     }
 }
