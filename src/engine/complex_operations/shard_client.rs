@@ -3,7 +3,7 @@ use std::sync::Arc;
 use anyhow::{anyhow, Result};
 use ton_api::ton;
 
-use super::Engine;
+use crate::engine::Engine;
 use crate::utils::*;
 
 pub async fn process_block_broadcast(

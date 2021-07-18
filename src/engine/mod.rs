@@ -5,28 +5,24 @@ use std::time::Duration;
 use anyhow::Result;
 use dashmap::{DashMap, DashSet};
 use futures::stream::FuturesUnordered;
-use futures::StreamExt;
+use futures::{FutureExt, StreamExt};
 use tiny_adnl::utils::*;
 use ton_api::ton;
 
-pub use self::boot::*;
-use self::db::*;
-use self::downloader::*;
-use self::node_state::*;
-use self::shard_client::*;
-pub use self::sync::*;
 use crate::config::*;
 use crate::network::*;
 use crate::storage::*;
 use crate::utils::*;
 
-mod apply_block;
-mod boot;
+use self::complex_operations::*;
+use self::db::*;
+use self::downloader::*;
+use self::node_state::*;
+
+pub mod complex_operations;
 mod db;
 mod downloader;
 mod node_state;
-mod shard_client;
-mod sync;
 
 pub struct Engine {
     db: Arc<dyn Db>,
@@ -194,92 +190,6 @@ impl Engine {
         .await
     }
 
-    pub async fn download_state(
-        &self,
-        block_id: &ton_block::BlockIdExt,
-        masterchain_block_id: &ton_block::BlockIdExt,
-        active_peers: &Arc<DashSet<AdnlNodeIdShort>>,
-    ) -> Result<Arc<ShardStateStuff>> {
-        let overlay = self
-            .get_full_node_overlay(
-                block_id.shard_id.workchain_id(),
-                block_id.shard_id.shard_prefix_with_tag(),
-            )
-            .await?;
-
-        let neighbour = loop {
-            match overlay
-                .check_persistent_state(block_id, masterchain_block_id, active_peers)
-                .await
-            {
-                Ok(Some(peer)) => break peer,
-                Ok(None) => {
-                    log::trace!("Failed to download state: state not found");
-                }
-                Err(e) => {
-                    log::trace!("Failed to download state: {}", e);
-                }
-            };
-        };
-
-        let mut offset = 0;
-        let mut state = Vec::new();
-        let max_size = 1 << 20;
-        let mut total_size = usize::MAX;
-        let mut peer_attempt = 0;
-        let mut part_attempt = 0;
-
-        'outer: while offset < total_size {
-            loop {
-                log::info!("-------------------------- Downloading part: {}", offset);
-
-                match overlay
-                    .download_persistent_state_part(
-                        block_id,
-                        masterchain_block_id,
-                        offset,
-                        max_size,
-                        neighbour.clone(),
-                        peer_attempt,
-                    )
-                    .await
-                {
-                    Ok(part) => {
-                        part_attempt = 0;
-                        state.extend_from_slice(&part);
-
-                        let part_len = part.len();
-                        if part_len < max_size {
-                            total_size = offset + part_len;
-                            break 'outer;
-                        }
-
-                        offset += max_size;
-                    }
-                    Err(e) => {
-                        part_attempt += 1;
-                        peer_attempt += 1;
-
-                        log::error!("Failed to download persistent state part: {}", e);
-                        if part_attempt > 10 {
-                            return Err(EngineError::RanOutOfAttempts.into());
-                        }
-                        tokio::time::sleep(Duration::from_millis(100)).await;
-                    }
-                }
-            }
-        }
-
-        log::info!("DOWNLOADED: {} bytes", total_size);
-
-        debug_assert!(total_size < usize::MAX);
-
-        Ok(Arc::new(ShardStateStuff::deserialize(
-            block_id.clone(),
-            &state,
-        )?))
-    }
-
     pub async fn download_next_masterchain_block(
         &self,
         prev_block_id: &ton_block::BlockIdExt,
@@ -309,18 +219,30 @@ impl Engine {
         &self,
         block_id: &ton_block::BlockIdExt,
         max_attempts: Option<u32>,
-        timeouts: Option<DownloaderTimeouts>,
     ) -> Result<(BlockStuff, BlockProofStuff)> {
-        self.create_download_context(
-            "download_block",
-            Arc::new(BlockDownloader),
-            block_id,
-            max_attempts,
-            timeouts,
-        )
-        .await?
-        .download()
-        .await
+        loop {
+            if let Some(handle) = self.load_block_handle(block_id)? {
+                if handle.meta().has_data() {
+                    return Ok((
+                        self.load_block_data(&handle).await?,
+                        self.load_block_proof(&handle, !block_id.shard().is_masterchain())
+                            .await?,
+                    ));
+                }
+            }
+
+            if let Some(data) = self
+                .download_block_operations
+                .do_or_wait(
+                    block_id,
+                    None,
+                    self.download_block_worker(block_id, max_attempts, None),
+                )
+                .await?
+            {
+                return Ok(data);
+            }
+        }
     }
 
     pub async fn download_block_proof(
@@ -517,7 +439,9 @@ impl Engine {
     pub async fn check_sync(&self) -> Result<bool> {
         let shards_client_mc_block_id = self.load_shards_client_mc_block_id().await?;
         let last_applied_mc_block_id = self.load_last_applied_mc_block_id().await?;
-        if shards_client_mc_block_id.seq_no + 16 < last_applied_mc_block_id.seq_no {
+        if shards_client_mc_block_id.seq_no + MAX_BLOCK_APPLIER_DEPTH
+            < last_applied_mc_block_id.seq_no
+        {
             return Ok(false);
         }
 
@@ -569,95 +493,14 @@ impl Engine {
             .store_into_db(self.db.as_ref())
     }
 
-    async fn apply_block(
-        self: Arc<Self>,
-        handle: &Arc<BlockHandle>,
-        block: &BlockStuff,
-        mc_seq_no: u32,
-        pre_apply: bool,
-    ) -> Result<()> {
-        self.apply_block_ext(handle, block, mc_seq_no, pre_apply, 0)
-            .await
-    }
-
-    async fn apply_block_ext(
-        self: &Arc<Self>,
-        handle: &Arc<BlockHandle>,
-        block: &BlockStuff,
-        mc_seq_no: u32,
-        pre_apply: bool,
-        recursion_depth: u32,
-    ) -> Result<()> {
-        while !((pre_apply && handle.meta().has_data()) || handle.meta().is_applied()) {
-            self.block_applying_operations
-                .do_or_wait(
-                    handle.id(),
-                    None,
-                    self.clone().apply_block_worker(
-                        handle,
-                        block,
-                        mc_seq_no,
-                        pre_apply,
-                        recursion_depth,
-                    ),
-                )
-                .await?;
-        }
-        Ok(())
-    }
-
-    fn apply_block_worker<'a>(
-        self: Arc<Self>,
-        handle: &'a Arc<BlockHandle>,
-        block: &'a BlockStuff,
-        mc_seq_no: u32,
-        pre_apply: bool,
-        recursion_depth: u32,
-    ) -> futures::future::BoxFuture<'a, Result<()>> {
-        use futures::FutureExt;
-
-        async move {
-            if pre_apply && handle.meta().has_data() || handle.meta().is_applied() {
-                return Ok(());
-            }
-
-            apply_block::apply_block(&self, handle, block, mc_seq_no, pre_apply, recursion_depth)
-                .await?;
-
-            if !pre_apply {
-                if block.id().is_masterchain() {
-                    self.store_last_applied_mc_block_id(block.id()).await?;
-                    // TODO: update shard blocks
-
-                    self.set_applied(handle, mc_seq_no).await?;
-
-                    let (prev1_id, prev2_id) = block.construct_prev_id()?;
-                    if prev2_id.is_some() {
-                        return Err(EngineError::InvalidMasterchainBlockSequence.into());
-                    }
-
-                    let id = handle.id().clone();
-                    self.next_block_applying_operations
-                        .do_or_wait(&prev1_id, None, async move { Ok(id) })
-                        .await?;
-                } else {
-                    self.set_applied(handle, mc_seq_no).await?;
-                }
-            }
-
-            Ok(())
-        }
-        .boxed()
-    }
-
     async fn download_and_apply_block(
         self: &Arc<Self>,
         block_id: &ton_block::BlockIdExt,
         mc_seq_no: u32,
         pre_apply: bool,
-        recursion_depth: u32,
+        depth: u32,
     ) -> Result<()> {
-        if recursion_depth > apply_block::MAX_RECURSION_DEPTH {
+        if depth > MAX_BLOCK_APPLIER_DEPTH {
             return Err(EngineError::TooDeepRecursion.into());
         }
 
@@ -669,20 +512,14 @@ impl Engine {
 
                 if handle.meta().has_data() {
                     while !(pre_apply && handle.meta().has_state() || handle.meta().is_applied()) {
+                        let operation = async {
+                            let block = self.load_block_data(&handle).await?;
+                            apply_block(self, &handle, &block, mc_seq_no, pre_apply, depth).await?;
+                            Ok(())
+                        };
+
                         self.block_applying_operations
-                            .do_or_wait(handle.id(), None, async {
-                                let block = self.load_block_data(&handle).await?;
-                                self.clone()
-                                    .apply_block_worker(
-                                        &handle,
-                                        &block,
-                                        mc_seq_no,
-                                        pre_apply,
-                                        recursion_depth,
-                                    )
-                                    .await?;
-                                Ok(())
-                            })
+                            .do_or_wait(handle.id(), None, operation)
                             .await?;
                     }
                     return Ok(());
@@ -709,7 +546,7 @@ impl Engine {
                 .do_or_wait(
                     block_id,
                     None,
-                    self.download_block(block_id, max_attempts, timeouts),
+                    self.download_block_worker(block_id, max_attempts, timeouts),
                 )
                 .await?
             {
@@ -725,12 +562,31 @@ impl Engine {
 
                 log::info!("Downloaded block {} for apply", block_id);
 
-                self.clone()
-                    .apply_block(&handle, &block, mc_seq_no, pre_apply)
+                self.apply_block_ext(&handle, &block, mc_seq_no, pre_apply, 0)
                     .await?;
                 return Ok(());
             }
         }
+    }
+
+    async fn apply_block_ext(
+        self: &Arc<Self>,
+        handle: &Arc<BlockHandle>,
+        block: &BlockStuff,
+        mc_seq_no: u32,
+        pre_apply: bool,
+        depth: u32,
+    ) -> Result<()> {
+        while !((pre_apply && handle.meta().has_data()) || handle.meta().is_applied()) {
+            self.block_applying_operations
+                .do_or_wait(
+                    handle.id(),
+                    None,
+                    apply_block(self, handle, block, mc_seq_no, pre_apply, depth),
+                )
+                .await?;
+        }
+        Ok(())
     }
 
     async fn check_block_proof(&self, block_proof: &BlockProofStuff) -> Result<()> {
@@ -754,6 +610,24 @@ impl Engine {
             )?;
         }
         Ok(())
+    }
+
+    async fn download_block_worker(
+        &self,
+        block_id: &ton_block::BlockIdExt,
+        max_attempts: Option<u32>,
+        timeouts: Option<DownloaderTimeouts>,
+    ) -> Result<(BlockStuff, BlockProofStuff)> {
+        self.create_download_context(
+            "download_block",
+            Arc::new(BlockDownloader),
+            block_id,
+            max_attempts,
+            timeouts,
+        )
+        .await?
+        .download()
+        .await
     }
 
     async fn create_download_context<'a, T>(
@@ -781,126 +655,12 @@ impl Engine {
     }
 }
 
-impl<'a, T> DownloadContext<'a, T> {
-    async fn load_full_block(
-        &self,
-        block_id: &ton_block::BlockIdExt,
-    ) -> Result<Option<(BlockStuff, BlockProofStuff)>> {
-        Ok(match self.db.load_block_handle(block_id)? {
-            Some(handle) => {
-                let mut is_link = false;
-                if handle.meta().has_data() && handle.has_proof_or_link(&mut is_link) {
-                    Some((
-                        self.db.load_block_data(&handle).await?,
-                        self.db.load_block_proof(&handle, is_link).await?,
-                    ))
-                } else {
-                    None
-                }
-            }
-            None => None,
-        })
-    }
-}
-
-struct BlockDownloader;
-
-#[async_trait::async_trait]
-impl Downloader for BlockDownloader {
-    type Item = (BlockStuff, BlockProofStuff);
-
-    async fn try_download(
-        &self,
-        context: &DownloadContext<'_, Self::Item>,
-    ) -> Result<Option<Self::Item>> {
-        if let Some(full_block) = context.load_full_block(context.block_id).await? {
-            return Ok(Some(full_block));
-        }
-
-        context.client.download_block_full(context.block_id).await
-    }
-}
-
-struct BlockProofDownloader {
-    is_link: bool,
-    is_key_block: bool,
-}
-
-#[async_trait::async_trait]
-impl Downloader for BlockProofDownloader {
-    type Item = BlockProofStuff;
-
-    async fn try_download(
-        &self,
-        context: &DownloadContext<'_, Self::Item>,
-    ) -> Result<Option<Self::Item>> {
-        if let Some(handle) = context.db.load_block_handle(context.block_id)? {
-            let mut is_link = false;
-            if handle.has_proof_or_link(&mut is_link) {
-                return Ok(Some(context.db.load_block_proof(&handle, is_link).await?));
-            }
-        }
-
-        context
-            .client
-            .download_block_proof(context.block_id, self.is_link, self.is_key_block)
-            .await
-    }
-}
-
-struct NextBlockDownloader;
-
-#[async_trait::async_trait]
-impl Downloader for NextBlockDownloader {
-    type Item = (BlockStuff, BlockProofStuff);
-
-    async fn try_download(
-        &self,
-        context: &DownloadContext<'_, Self::Item>,
-    ) -> Result<Option<Self::Item>> {
-        if let Some(prev_handle) = context.db.load_block_handle(context.block_id)? {
-            if prev_handle.meta().has_next1() {
-                let next_block_id = context
-                    .db
-                    .load_block_connection(context.block_id, BlockConnection::Next1)?;
-
-                if let Some(full_block) = context.load_full_block(&next_block_id).await? {
-                    return Ok(Some(full_block));
-                }
-            }
-        }
-
-        context
-            .client
-            .download_next_block_full(context.block_id)
-            .await
-    }
-}
-
-struct ZeroStateDownloader;
-
-#[async_trait::async_trait]
-impl Downloader for ZeroStateDownloader {
-    type Item = Arc<ShardStateStuff>;
-
-    async fn try_download(
-        &self,
-        context: &DownloadContext<'_, Self::Item>,
-    ) -> Result<Option<Self::Item>> {
-        context.client.download_zero_state(context.block_id).await
-    }
-}
-
 #[derive(thiserror::Error, Debug)]
 enum EngineError {
     #[error("Downloading next block is only allowed for masterchain")]
     NonMasterchainNextBlock,
-    #[error("Ran out of attempts")]
-    RanOutOfAttempts,
     #[error("Failed to load handle for last masterchain block")]
     FailedToLoadLastMasterchainBlockHandle,
-    #[error("Invalid masterchain block sequence")]
-    InvalidMasterchainBlockSequence,
     #[error("Too deep recusion")]
     TooDeepRecursion,
 }

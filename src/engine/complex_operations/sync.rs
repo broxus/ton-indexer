@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -6,7 +7,7 @@ use dashmap::DashSet;
 use tiny_adnl::utils::*;
 use ton_types::ByteOrderRead;
 
-use super::Engine;
+use crate::engine::Engine;
 use crate::storage::*;
 use crate::utils::*;
 
@@ -21,12 +22,18 @@ pub async fn sync(engine: &Arc<Engine>) -> Result<()> {
     let mut concurrency = 1;
 
     'outer: while !engine.check_sync().await? {
-        let last_mc_block_id = match (
-            engine.load_last_applied_mc_block_id().await?,
-            engine.load_shards_client_mc_block_id().await?,
-        ) {
-            (mc_block_id, sc_block_id) if mc_block_id.seq_no > sc_block_id.seq_no => sc_block_id,
-            (mc_block_id, _) => mc_block_id,
+        let last_mc_block_id = {
+            let mc_block_id = engine.load_last_applied_mc_block_id().await?;
+            let sc_block_id = engine.load_shards_client_mc_block_id().await?;
+            log::info!("sync: Last applied block id: {}", mc_block_id);
+            log::info!("sync: Last shards client block id: {}", sc_block_id);
+
+            match (mc_block_id, sc_block_id) {
+                (mc_block_id, sc_block_id) if mc_block_id.seq_no > sc_block_id.seq_no => {
+                    sc_block_id
+                }
+                (mc_block_id, _) => mc_block_id,
+            }
         };
 
         log::info!(
@@ -90,7 +97,6 @@ pub async fn sync(engine: &Arc<Engine>) -> Result<()> {
                     let queue_index = match queue.iter().position(|(queue_seq_no, status)| matches!(status, ArchiveStatus::Downloading if *queue_seq_no == seq_no)) {
                         Some(index) => index,
                         None => {
-                            log::error!("AAAAA");
                             return Err(SyncError::BrokenQueue.into())
                         }
                     };
@@ -152,10 +158,7 @@ pub async fn sync(engine: &Arc<Engine>) -> Result<()> {
                     );
                     start_download(engine, &active_peers, &mut response_collector, seq_no);
                 }
-                e => {
-                    log::error!("EEEE: {:?}", e);
-                    return Err(SyncError::BrokenQueue.into());
-                }
+                _ => return Err(SyncError::BrokenQueue.into()),
             }
         }
     }
@@ -173,7 +176,7 @@ async fn start_downloads(
 ) -> Result<()> {
     retry_downloading_not_found_archives(engine, queue, active_peers, response_collector).await?;
 
-    while response_collector.count() < concurrency {
+    while response_collector.count_pending() < concurrency {
         if queue.len() > concurrency {
             break;
         }
@@ -314,17 +317,30 @@ async fn apply(
 
 async fn import_package(
     engine: &Arc<Engine>,
-    maps: BlockMaps,
-    mut last_mc_block_id: &ton_block::BlockIdExt,
+    maps: Arc<BlockMaps>,
+    last_mc_block_id: &ton_block::BlockIdExt,
 ) -> Result<()> {
     if maps.mc_block_ids.is_empty() {
         return Err(SyncError::EmptyArchivePackage.into());
     }
 
+    import_mc_blocks(engine, maps.clone(), last_mc_block_id).await?;
+    import_shard_blocks(engine, maps).await?;
+
+    Ok(())
+}
+
+async fn import_mc_blocks(
+    engine: &Arc<Engine>,
+    maps: Arc<BlockMaps>,
+    mut last_mc_block_id: &ton_block::BlockIdExt,
+) -> Result<()> {
     for id in maps.mc_block_ids.values() {
         if id.seq_no <= last_mc_block_id.seq_no {
-            if last_mc_block_id != id {
-                return Err(SyncError::MasterchainBlockIdMismatch.into());
+            if id.seq_no == last_mc_block_id.seq_no {
+                if last_mc_block_id != id {
+                    return Err(SyncError::MasterchainBlockIdMismatch.into());
+                }
             }
             continue;
         }
@@ -341,10 +357,12 @@ async fn import_package(
         }
 
         let entry = maps.blocks.get(last_mc_block_id).unwrap();
-        let handle = save_block(engine, last_mc_block_id, entry).await?;
+
+        let (block, block_proof) = entry.get_data()?;
+        let handle = save_block(engine, last_mc_block_id, block, block_proof).await?;
 
         engine
-            .store_last_applied_mc_block_id(last_mc_block_id)
+            .apply_block_ext(&handle, block, last_mc_block_id.seq_no, false, 0)
             .await?;
     }
 
@@ -352,20 +370,87 @@ async fn import_package(
     Ok(())
 }
 
+async fn import_shard_blocks(engine: &Arc<Engine>, maps: Arc<BlockMaps>) -> Result<()> {
+    for (id, entry) in &maps.blocks {
+        if !id.shard_id.is_masterchain() {
+            let (block, block_proof) = entry.get_data()?;
+            save_block(engine, id, block, block_proof).await?;
+        }
+    }
+
+    let mut last_applied_mc_block_id = engine.load_shards_client_mc_block_id().await?;
+    for (_, mc_block_id) in &maps.mc_block_ids {
+        let mc_seq_no = mc_block_id.seq_no;
+        if mc_seq_no <= last_applied_mc_block_id.seq_no {
+            continue;
+        }
+
+        let masterchain_handle = engine
+            .load_block_handle(mc_block_id)?
+            .ok_or_else(|| SyncError::MasterchainBlockNotFound)?;
+        let masterchain_block = engine.load_block_data(&masterchain_handle).await?;
+        let shard_blocks = masterchain_block.shards_blocks()?;
+
+        let mut tasks = Vec::with_capacity(shard_blocks.len());
+        for (_, id) in shard_blocks {
+            let engine = engine.clone();
+            let mc_block_id = mc_block_id.clone();
+            let maps = maps.clone();
+            tasks.push(tokio::spawn(async move {
+                let handle = engine
+                    .load_block_handle(&id)?
+                    .ok_or_else(|| SyncError::ShardchainBlockHandleNotFound)?;
+                if handle.meta().is_applied() {
+                    return Ok(());
+                }
+
+                if id.seq_no == 0 {
+                    super::boot::download_zero_state(&engine, &id).await?;
+                    return Ok(());
+                }
+
+                let block = match maps.blocks.get(&id) {
+                    Some(entry) => match &entry.block {
+                        Some(block) => Some(Cow::Borrowed(block)),
+                        None => engine.load_block_data(&handle).await.ok().map(Cow::Owned),
+                    },
+                    None => engine.load_block_data(&handle).await.ok().map(Cow::Owned),
+                };
+
+                match block {
+                    Some(block) => {
+                        engine
+                            .apply_block_ext(&handle, block.as_ref(), mc_seq_no, false, 0)
+                            .await
+                    }
+                    None => {
+                        engine
+                            .download_and_apply_block(handle.id(), mc_seq_no, false, 0)
+                            .await
+                    }
+                }
+            }));
+        }
+
+        futures::future::try_join_all(tasks)
+            .await?
+            .into_iter()
+            .find(|item| item.is_err())
+            .unwrap_or(Ok(()))?;
+
+        engine.store_shards_client_mc_block_id(mc_block_id).await?;
+        last_applied_mc_block_id = mc_block_id.clone();
+    }
+
+    Ok(())
+}
+
 async fn save_block(
     engine: &Arc<Engine>,
     block_id: &ton_block::BlockIdExt,
-    entry: &BlocksEntry,
+    block: &BlockStuff,
+    block_proof: &BlockProofStuff,
 ) -> Result<(Arc<BlockHandle>)> {
-    let block = match &entry.block {
-        Some(block) => block,
-        None => return Err(SyncError::BlockNotFound.into()),
-    };
-    let block_proof = match &entry.proof {
-        Some(proof) => proof,
-        None => return Err(SyncError::BlockProofNotFound.into()),
-    };
-
     engine.check_block_proof(block_proof).await?;
 
     let handle = engine.store_block_data(block).await?.handle;
@@ -375,18 +460,12 @@ async fn save_block(
     Ok(handle)
 }
 
-fn parse_archive(data: Vec<u8>) -> Result<BlockMaps> {
+fn parse_archive(data: Vec<u8>) -> Result<Arc<BlockMaps>> {
     let mut reader = ArchivePackageViewReader::new(&data)?;
 
     let mut maps = BlockMaps::default();
 
     while let Some(entry) = reader.read_next()? {
-        // log::info!(
-        //     "sync: Processing archive package entry: {} ({} bytes)",
-        //     entry.name,
-        //     entry.data.len()
-        // );
-
         match PackageEntryId::from_filename(entry.name)? {
             PackageEntryId::Block(id) => {
                 maps.blocks
@@ -415,7 +494,7 @@ fn parse_archive(data: Vec<u8>) -> Result<BlockMaps> {
                 maps.mc_block_ids.insert(id.seq_no, id);
             }
             PackageEntryId::ProofLink(id) => {
-                if !id.is_masterchain() {
+                if id.is_masterchain() {
                     continue;
                 }
                 maps.blocks
@@ -426,12 +505,11 @@ fn parse_archive(data: Vec<u8>) -> Result<BlockMaps> {
                     entry.data.to_vec(),
                     true,
                 )?);
-                maps.mc_block_ids.insert(id.seq_no, id);
             }
         }
     }
 
-    Ok(maps)
+    Ok(Arc::new(maps))
 }
 
 #[derive(Default)]
@@ -444,6 +522,20 @@ struct BlockMaps {
 struct BlocksEntry {
     block: Option<BlockStuff>,
     proof: Option<BlockProofStuff>,
+}
+
+impl BlocksEntry {
+    fn get_data(&self) -> Result<(&BlockStuff, &BlockProofStuff)> {
+        let block = match &self.block {
+            Some(block) => block,
+            None => return Err(SyncError::BlockNotFound.into()),
+        };
+        let block_proof = match &self.proof {
+            Some(proof) => proof,
+            None => return Err(SyncError::BlockProofNotFound.into()),
+        };
+        Ok((block, block_proof))
+    }
 }
 
 type ActivePeers = DashSet<AdnlNodeIdShort>;
@@ -465,4 +557,8 @@ enum SyncError {
     BlockNotFound,
     #[error("Block proof not found in archive")]
     BlockProofNotFound,
+    #[error("Masterchain block not found")]
+    MasterchainBlockNotFound,
+    #[error("Shardchain block handle not found")]
+    ShardchainBlockHandleNotFound,
 }

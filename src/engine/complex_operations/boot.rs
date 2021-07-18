@@ -5,8 +5,9 @@ use anyhow::Result;
 use dashmap::DashSet;
 use tiny_adnl::utils::*;
 
-use super::node_state::*;
-use super::Engine;
+use super::download_state::*;
+use crate::engine::node_state::*;
+use crate::engine::Engine;
 use crate::storage::*;
 use crate::utils::*;
 
@@ -324,7 +325,7 @@ async fn download_base_wc_zero_state(
     Ok(())
 }
 
-async fn download_zero_state(
+pub async fn download_zero_state(
     engine: &Arc<Engine>,
     block_id: &ton_block::BlockIdExt,
 ) -> Result<(Arc<BlockHandle>, Arc<ShardStateStuff>)> {
@@ -338,8 +339,8 @@ async fn download_zero_state(
         match engine.download_zerostate(block_id, None).await {
             Ok(state) => {
                 let handle = engine.store_zerostate(block_id, &state).await?;
-                // TODO: apply
-                engine.db.index_handle(&handle)?;
+                engine.set_applied(&handle, 0).await?;
+                // TODO: process state
                 return Ok((handle, state));
             }
             Err(e) => {
@@ -394,7 +395,7 @@ async fn download_block_and_state(
     let (block, handle) = match handle {
         Some(handle) => (engine.load_block_data(&handle).await?, handle),
         None => {
-            let (block, proof) = engine.download_block(block_id, None, None).await?;
+            let (block, proof) = engine.download_block(block_id, None).await?;
             log::info!("Downloaded block {}", block_id);
 
             let mut handle = engine.store_block_data(&block).await?.handle;
@@ -415,9 +416,8 @@ async fn download_block_and_state(
             masterchain_block_id
         );
 
-        let shard_state = engine
-            .download_state(handle.id(), masterchain_block_id, active_peers)
-            .await?;
+        let shard_state =
+            download_state(engine, handle.id(), masterchain_block_id, active_peers).await?;
         let state_hash = shard_state.root_cell().repr_hash();
         if state_update.new_hash != state_hash {
             return Err(BootError::ShardStateHashMismatch.into());
@@ -429,9 +429,9 @@ async fn download_block_and_state(
         // TODO: process received state here
     }
 
-    // TODO: apply
-    engine.db.index_handle(&handle)?;
-
+    engine
+        .set_applied(&handle, masterchain_block_id.seq_no)
+        .await?;
     Ok((handle, block))
 }
 

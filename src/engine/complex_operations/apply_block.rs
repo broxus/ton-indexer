@@ -1,58 +1,73 @@
 use std::sync::Arc;
 
 use anyhow::Result;
+use futures::future::{BoxFuture, FutureExt};
 
-use super::Engine;
 use crate::engine::db::BlockConnection;
+use crate::engine::Engine;
 use crate::storage::*;
 use crate::utils::*;
 
-pub const MAX_RECURSION_DEPTH: u32 = 16;
+pub const MAX_BLOCK_APPLIER_DEPTH: u32 = 16;
 
-pub async fn apply_block(
-    engine: &Arc<Engine>,
-    handle: &Arc<BlockHandle>,
-    block: &BlockStuff,
+pub fn apply_block<'a>(
+    engine: &'a Arc<Engine>,
+    handle: &'a Arc<BlockHandle>,
+    block: &'a BlockStuff,
     mc_seq_no: u32,
     pre_apply: bool,
-    recursion_depth: u32,
-) -> Result<()> {
-    if handle.id() != block.id() {
-        return Err(ApplyBlockError::BlockIdMismatch.into());
+    depth: u32,
+) -> BoxFuture<'a, Result<()>> {
+    async move {
+        if pre_apply && handle.meta().has_data() || handle.meta().is_applied() {
+            return Ok(());
+        }
+
+        if handle.id() != block.id() {
+            return Err(ApplyBlockError::BlockIdMismatch.into());
+        }
+
+        let (prev1_id, prev2_id) = block.construct_prev_id()?;
+        ensure_prev_blocks_downloaded(engine, &prev1_id, &prev2_id, mc_seq_no, pre_apply, depth)
+            .await?;
+
+        let _shard_state = if handle.meta().has_state() {
+            engine.load_state(handle.id())?
+        } else {
+            compute_and_store_shard_state(engine, handle, block, &prev1_id, &prev2_id).await?
+        };
+
+        if !pre_apply {
+            update_block_connections(engine, handle, &prev1_id, &prev2_id)?;
+
+            if block.id().is_masterchain() {
+                engine.store_last_applied_mc_block_id(block.id()).await?;
+                // TODO: update shard blocks
+
+                engine.set_applied(handle, mc_seq_no).await?;
+
+                let id = handle.id().clone();
+                engine
+                    .next_block_applying_operations
+                    .do_or_wait(&prev1_id, None, async move { Ok(id) })
+                    .await?;
+            } else {
+                engine.set_applied(handle, mc_seq_no).await?;
+            }
+        }
+
+        Ok(())
     }
-
-    let (prev1_id, prev2_id) = block.construct_prev_id()?;
-    check_prev_blocks(
-        engine,
-        &prev1_id,
-        &prev2_id,
-        mc_seq_no,
-        pre_apply,
-        recursion_depth,
-    )
-    .await?;
-
-    let _shard_state = if handle.meta().has_state() {
-        engine.load_state(handle.id())?
-    } else {
-        compute_shard_state(engine, handle, block, &prev1_id, &prev2_id).await?
-    };
-
-    if !pre_apply {
-        update_block_connections(engine, handle, &prev1_id, &prev2_id)?;
-        // TODO: process
-    }
-
-    Ok(())
+    .boxed()
 }
 
-async fn check_prev_blocks(
+async fn ensure_prev_blocks_downloaded(
     engine: &Arc<Engine>,
     prev1_id: &ton_block::BlockIdExt,
     prev2_id: &Option<ton_block::BlockIdExt>,
     mc_seq_no: u32,
     pre_apply: bool,
-    recursion_depth: u32,
+    depth: u32,
 ) -> Result<()> {
     match prev2_id {
         Some(prev2_id) => {
@@ -61,13 +76,13 @@ async fn check_prev_blocks(
                 prev1_id,
                 mc_seq_no,
                 pre_apply,
-                recursion_depth + 1,
+                depth + 1,
             ));
             futures.push(engine.download_and_apply_block(
                 prev2_id,
                 mc_seq_no,
                 pre_apply,
-                recursion_depth + 1,
+                depth + 1,
             ));
 
             futures::future::join_all(futures)
@@ -78,7 +93,7 @@ async fn check_prev_blocks(
         }
         None => {
             engine
-                .download_and_apply_block(prev1_id, mc_seq_no, pre_apply, recursion_depth + 1)
+                .download_and_apply_block(prev1_id, mc_seq_no, pre_apply, depth + 1)
                 .await?;
         }
     }
@@ -124,7 +139,7 @@ fn update_block_connections(
     Ok(())
 }
 
-async fn compute_shard_state(
+async fn compute_and_store_shard_state(
     engine: &Arc<Engine>,
     handle: &Arc<BlockHandle>,
     block: &BlockStuff,
@@ -133,6 +148,10 @@ async fn compute_shard_state(
 ) -> Result<Arc<ShardStateStuff>> {
     let prev_shard_state_root = match prev2_id {
         Some(prev2_id) => {
+            if prev1_id.shard().is_masterchain() {
+                return Err(ApplyBlockError::InvalidMasterchainBlockSequence.into());
+            }
+
             let left = engine
                 .wait_state(prev1_id, None, true)
                 .await?
@@ -175,4 +194,6 @@ enum ApplyBlockError {
     Prev1BlockHandleNotFound,
     #[error("Prev2 block handle not found")]
     Prev2BlockHandleNotFound,
+    #[error("Invalid masterchain block sequence")]
+    InvalidMasterchainBlockSequence,
 }

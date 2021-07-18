@@ -5,6 +5,117 @@ use anyhow::Result;
 
 use super::db::*;
 use crate::network::*;
+use crate::utils::*;
+
+impl<'a, T> DownloadContext<'a, T> {
+    async fn load_full_block(
+        &self,
+        block_id: &ton_block::BlockIdExt,
+    ) -> Result<Option<(BlockStuff, BlockProofStuff)>> {
+        Ok(match self.db.load_block_handle(block_id)? {
+            Some(handle) => {
+                let mut is_link = false;
+                if handle.meta().has_data() && handle.has_proof_or_link(&mut is_link) {
+                    Some((
+                        self.db.load_block_data(&handle).await?,
+                        self.db.load_block_proof(&handle, is_link).await?,
+                    ))
+                } else {
+                    None
+                }
+            }
+            None => None,
+        })
+    }
+}
+
+pub struct BlockDownloader;
+
+#[async_trait::async_trait]
+impl Downloader for BlockDownloader {
+    type Item = (BlockStuff, BlockProofStuff);
+
+    async fn try_download(
+        &self,
+        context: &DownloadContext<'_, Self::Item>,
+    ) -> Result<Option<Self::Item>> {
+        if let Some(full_block) = context.load_full_block(context.block_id).await? {
+            return Ok(Some(full_block));
+        }
+
+        context.client.download_block_full(context.block_id).await
+    }
+}
+
+pub struct BlockProofDownloader {
+    pub is_link: bool,
+    pub is_key_block: bool,
+}
+
+#[async_trait::async_trait]
+impl Downloader for BlockProofDownloader {
+    type Item = BlockProofStuff;
+
+    async fn try_download(
+        &self,
+        context: &DownloadContext<'_, Self::Item>,
+    ) -> Result<Option<Self::Item>> {
+        if let Some(handle) = context.db.load_block_handle(context.block_id)? {
+            let mut is_link = false;
+            if handle.has_proof_or_link(&mut is_link) {
+                return Ok(Some(context.db.load_block_proof(&handle, is_link).await?));
+            }
+        }
+
+        context
+            .client
+            .download_block_proof(context.block_id, self.is_link, self.is_key_block)
+            .await
+    }
+}
+
+pub struct NextBlockDownloader;
+
+#[async_trait::async_trait]
+impl Downloader for NextBlockDownloader {
+    type Item = (BlockStuff, BlockProofStuff);
+
+    async fn try_download(
+        &self,
+        context: &DownloadContext<'_, Self::Item>,
+    ) -> Result<Option<Self::Item>> {
+        if let Some(prev_handle) = context.db.load_block_handle(context.block_id)? {
+            if prev_handle.meta().has_next1() {
+                let next_block_id = context
+                    .db
+                    .load_block_connection(context.block_id, BlockConnection::Next1)?;
+
+                if let Some(full_block) = context.load_full_block(&next_block_id).await? {
+                    return Ok(Some(full_block));
+                }
+            }
+        }
+
+        context
+            .client
+            .download_next_block_full(context.block_id)
+            .await
+    }
+}
+
+pub struct ZeroStateDownloader;
+
+#[async_trait::async_trait]
+impl Downloader for ZeroStateDownloader {
+    type Item = Arc<ShardStateStuff>;
+
+    async fn try_download(
+        &self,
+        context: &DownloadContext<'_, Self::Item>,
+    ) -> Result<Option<Self::Item>> {
+        context.client.download_zero_state(context.block_id).await
+    }
+}
 
 #[async_trait::async_trait]
 pub trait Downloader: Send + Sync {

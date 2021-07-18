@@ -8,6 +8,7 @@ use ton_api::ton::{self, TLObject};
 use ton_api::IntoBoxed;
 
 pub use crate::config::*;
+use crate::engine::complex_operations::*;
 use crate::engine::*;
 use crate::network::*;
 use crate::utils::NoFailure;
