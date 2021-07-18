@@ -100,7 +100,6 @@ async fn bad_block_resolver<S>(
     <S as futures::Sink<ton_block::Block>>::Error: std::error::Error,
 {
     while let Some(id) = bad_block_queue.recv().await {
-        log::debug!("Bad block added to queue");
         tokio::spawn({
             let pool = pool.clone();
             let id = id.clone();
@@ -415,7 +414,6 @@ impl NodeClient {
                 match block {
                     Ok(a) => sink.send(a).await.expect("Blocks channel is broken"),
                     Err(e) => {
-                        log::error!("Query error: {:?}", e);
                         bad_blocks_tx
                             .send(id)
                             .expect("Bad blocks resolver is broken");

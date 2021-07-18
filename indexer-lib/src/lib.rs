@@ -174,12 +174,12 @@ pub struct ParsedEvent {
     pub message_hash: [u8; 32],
 }
 
-struct FunctionWithBounceHandler<'a, Fun>
+pub struct FunctionWithBounceHandler<'a, Fun>
 where
     Fun: Fn(ton_types::SliceData) -> Result<Vec<ton_abi::Token>>,
 {
-    function: &'a Function,
-    handler: Option<&'a Fun>,
+    pub function: &'a Function,
+    pub handler: Option<&'a Fun>,
 }
 
 #[derive(Debug, Clone)]
