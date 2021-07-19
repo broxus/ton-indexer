@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use clap::{Clap, IntoApp};
@@ -32,7 +33,13 @@ async fn main() -> Result<()> {
             let global_config = read_global_config(global_config)?;
             init_logger(&config.logger_settings)?;
 
-            if let Err(e) = ton_indexer_lib::start(config.indexer, global_config).await {
+            if let Err(e) = ton_indexer_lib::start(
+                config.indexer,
+                global_config,
+                vec![Arc::new(LoggerSubscriber)],
+            )
+            .await
+            {
                 eprintln!("{:?}", e);
                 std::process::exit(1);
             }
@@ -41,6 +48,29 @@ async fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+struct LoggerSubscriber;
+
+#[async_trait::async_trait]
+impl ton_indexer_lib::BlockSubscriber for LoggerSubscriber {
+    async fn process_block(
+        &self,
+        block: &ton_indexer_lib::utils::BlockStuff,
+        block_proof: Option<&ton_indexer_lib::utils::BlockProofStuff>,
+        shard_state: &ton_indexer_lib::utils::ShardStateStuff,
+    ) -> Result<()> {
+        log::info!("FOUND BLOCK {}", block.id());
+        Ok(())
+    }
+
+    async fn process_shard_state(
+        &self,
+        shard_state: &ton_indexer_lib::utils::ShardStateStuff,
+    ) -> Result<()> {
+        log::info!("FOUND SHARD STATE {}", shard_state.block_id());
+        Ok(())
+    }
 }
 
 #[derive(Serialize, Deserialize)]

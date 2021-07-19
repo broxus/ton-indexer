@@ -4,18 +4,22 @@ use anyhow::Result;
 
 pub use crate::config::*;
 use crate::engine::complex_operations::*;
-use crate::engine::*;
+pub use crate::engine::{BlockSubscriber, Engine};
 use crate::network::*;
-use crate::utils::NoFailure;
+use crate::utils::*;
 
 mod config;
 mod engine;
 mod network;
 mod storage;
-mod utils;
+pub mod utils;
 
-pub async fn start(node_config: NodeConfig, global_config: GlobalConfig) -> Result<()> {
-    let engine = Engine::new(node_config, global_config, Vec::new()).await?;
+pub async fn start(
+    node_config: NodeConfig,
+    global_config: GlobalConfig,
+    subscribers: Vec<Arc<dyn BlockSubscriber>>,
+) -> Result<()> {
+    let engine = Engine::new(node_config, global_config, subscribers).await?;
 
     start_full_node_service(engine.clone())?;
 
