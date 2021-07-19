@@ -1,7 +1,7 @@
-use std::io::{Cursor, Write};
+use std::io::Cursor;
 
 use anyhow::{anyhow, Result};
-use ton_block::{Deserializable, HashmapAugType, Serializable};
+use ton_block::{Deserializable, Serializable};
 use ton_types::{Cell, UInt256};
 
 use super::NoFailure;
@@ -29,24 +29,12 @@ impl ShardStateStuff {
             return Err(anyhow!("State's seqno is not equal to given one"));
         }
 
-        let mut stuff = Self::default();
-        stuff.block_id = block_id;
-        stuff.shard_state_extra = shard_state.read_custom().convert()?;
-        stuff.shard_state = shard_state;
-        stuff.root = root;
-        Ok(stuff)
-    }
-
-    pub fn with_state(
-        block_id: ton_block::BlockIdExt,
-        shard_state: ton_block::ShardStateUnsplit,
-    ) -> Result<Self> {
-        let mut stuff = Self::default();
-        stuff.block_id = block_id;
-        stuff.root = shard_state.serialize().convert()?;
-        stuff.shard_state = shard_state;
-        stuff.shard_state_extra = stuff.shard_state.read_custom().convert()?;
-        Ok(stuff)
+        Ok(Self {
+            block_id,
+            shard_state_extra: shard_state.read_custom().convert()?,
+            shard_state,
+            root,
+        })
     }
 
     pub fn construct_split_root(left: Cell, right: Cell) -> Result<Cell> {
@@ -66,7 +54,7 @@ impl ShardStateStuff {
         }
 
         let root = ton_types::deserialize_tree_of_cells(&mut Cursor::new(bytes)).convert()?;
-        if &root.repr_hash() != id.root_hash() {
+        if root.repr_hash() != id.root_hash() {
             return Err(anyhow!("Wrong zero state's {} root hash", id));
         }
 
@@ -95,6 +83,7 @@ impl ShardStateStuff {
         })
     }
 
+    #[allow(unused)]
     pub fn shards(&self) -> Result<&ton_block::ShardHashes> {
         Ok(self.shard_state_extra()?.shards())
     }
@@ -103,6 +92,7 @@ impl ShardStateStuff {
         &self.root
     }
 
+    #[allow(unused)]
     pub fn shard(&self) -> &ton_block::ShardIdent {
         &self.block_id.shard()
     }
@@ -111,31 +101,7 @@ impl ShardStateStuff {
         &self.block_id
     }
 
-    pub fn write_to<T: Write>(&self, dst: &mut T) -> Result<()> {
-        ton_types::serialize_tree_of_cells(&self.root, dst).convert()?;
-        Ok(())
-    }
-
-    pub fn serialize(&self) -> Result<Vec<u8>> {
-        let mut bytes = Cursor::new(Vec::<u8>::new());
-        self.write_to(&mut bytes)?;
-        Ok(bytes.into_inner())
-    }
-
     pub fn config_params(&self) -> Result<&ton_block::ConfigParams> {
         Ok(&self.shard_state_extra()?.config)
-    }
-
-    pub fn has_prev_block(&self, block_id: &ton_block::BlockIdExt) -> Result<bool> {
-        Ok(self
-            .shard_state_extra()?
-            .prev_blocks
-            .get(&block_id.seq_no())
-            .convert()?
-            .map(|id| {
-                &id.blk_ref().root_hash == block_id.root_hash()
-                    && &id.blk_ref().file_hash == block_id.file_hash()
-            })
-            .unwrap_or_default())
     }
 }

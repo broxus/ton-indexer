@@ -2,7 +2,6 @@ use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::Result;
-use dashmap::DashMap;
 use ton_api::ton;
 
 use crate::storage::*;
@@ -109,7 +108,7 @@ pub struct SledDb {
     prev2_block_db: sled::Tree,
     next1_block_db: sled::Tree,
     next2_block_db: sled::Tree,
-    db: sled::Db,
+    _db: sled::Db,
 }
 
 impl SledDb {
@@ -136,7 +135,7 @@ impl SledDb {
             prev2_block_db: db.open_tree("prev2")?,
             next1_block_db: db.open_tree("next1")?,
             next2_block_db: db.open_tree("next2")?,
-            db,
+            _db: db,
         }))
     }
 }
@@ -338,7 +337,13 @@ impl Db for SledDb {
         if !exists {
             let value = bincode::serialize(&convert_block_id_ext_blk2api(connected_block_id))?;
             db.insert(handle.id().root_hash.as_slice(), value)?;
-            if handle.meta().set_has_prev1() {
+
+            if match direction {
+                BlockConnection::Prev1 => handle.meta().set_has_prev1(),
+                BlockConnection::Prev2 => handle.meta().set_has_prev2(),
+                BlockConnection::Next1 => handle.meta().set_has_next1(),
+                BlockConnection::Next2 => handle.meta().set_has_next2(),
+            } {
                 self.block_handle_storage.store_handle(handle)?;
             }
         }

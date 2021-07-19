@@ -1,11 +1,8 @@
-use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
 
 use anyhow::Result;
-use dashmap::{DashMap, DashSet};
-use futures::stream::FuturesUnordered;
-use futures::{FutureExt, StreamExt};
+use dashmap::DashSet;
 use tiny_adnl::utils::*;
 use ton_api::ton;
 
@@ -28,7 +25,6 @@ pub struct Engine {
     db: Arc<dyn Db>,
     network: Arc<NodeNetwork>,
 
-    zero_state_id: ton_block::BlockIdExt,
     init_mc_block_id: ton_block::BlockIdExt,
     last_known_mc_block_seqno: AtomicU32,
     last_known_key_block_seqno: AtomicU32,
@@ -60,7 +56,6 @@ impl Engine {
         let engine = Arc::new(Self {
             db,
             network,
-            zero_state_id,
             init_mc_block_id,
             last_known_mc_block_seqno: AtomicU32::new(0),
             last_known_key_block_seqno: AtomicU32::new(0),
@@ -84,10 +79,6 @@ impl Engine {
 
     pub fn network(&self) -> &Arc<NodeNetwork> {
         &self.network
-    }
-
-    pub fn zero_state_id(&self) -> &ton_block::BlockIdExt {
-        &self.zero_state_id
     }
 
     pub fn init_mc_block_id(&self) -> &ton_block::BlockIdExt {
@@ -141,7 +132,7 @@ impl Engine {
         tokio::spawn(async move {
             loop {
                 match overlay.wait_broadcast().await {
-                    Ok((ton::ton_node::Broadcast::TonNode_BlockBroadcast(block), peer_id)) => {
+                    Ok((ton::ton_node::Broadcast::TonNode_BlockBroadcast(block), _)) => {
                         let engine = engine.clone();
                         tokio::spawn(async move {
                             if let Err(e) = process_block_broadcast(&engine, *block).await {
@@ -214,11 +205,11 @@ impl Engine {
         loop {
             if let Some(handle) = self.load_block_handle(block_id)? {
                 if handle.meta().has_data() {
-                    return Ok((
-                        self.load_block_data(&handle).await?,
-                        self.load_block_proof(&handle, !block_id.shard().is_masterchain())
-                            .await?,
-                    ));
+                    let block = self.load_block_data(&handle).await?;
+                    let block_proof = self
+                        .load_block_proof(&handle, !block_id.shard().is_masterchain())
+                        .await?;
+                    return Ok((block, block_proof));
                 }
             }
 
@@ -292,6 +283,7 @@ impl Engine {
         self.db.find_block_by_seq_no(account_prefix, seq_no)
     }
 
+    #[allow(unused)]
     pub fn find_block_by_utime(
         &self,
         account_prefix: &ton_block::AccountIdPrefixFull,
@@ -300,6 +292,7 @@ impl Engine {
         self.db.find_block_by_utime(account_prefix, utime)
     }
 
+    #[allow(unused)]
     pub fn find_block_by_lt(
         &self,
         account_prefix: &ton_block::AccountIdPrefixFull,

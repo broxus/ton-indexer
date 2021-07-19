@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::io::{Read, Write};
 use std::sync::{Arc, Weak};
 
 use anyhow::Result;
@@ -62,8 +61,6 @@ impl DynamicBocDb {
     }
 
     pub fn store_dynamic_boc(&self, root: ton_types::Cell) -> Result<usize> {
-        use sled::Transactional;
-
         let mut transaction = HashMap::new();
 
         let written_count = self.prepare_tree_of_cells(root, &mut transaction)?;
@@ -127,10 +124,6 @@ pub struct CellDb {
 }
 
 impl CellDb {
-    pub fn with_db(db: sled::Tree) -> Self {
-        Self { db }
-    }
-
     pub fn contains(&self, hash: &ton_types::UInt256) -> Result<bool> {
         let has_key = self.db.contains_key(hash.as_ref())?;
         Ok(has_key)

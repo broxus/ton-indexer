@@ -4,7 +4,7 @@ use anyhow::Result;
 use tiny_adnl::utils::*;
 use tiny_adnl::{OverlaySubscriber, QueryAnswer, QueryConsumingResult};
 use ton_api::ton::{self, TLObject};
-use ton_api::{AnyBoxedSerialize, BoxedSerialize, IntoBoxed};
+use ton_api::{AnyBoxedSerialize, IntoBoxed};
 
 pub struct FullNodeOverlayService;
 

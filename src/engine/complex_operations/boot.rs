@@ -17,7 +17,7 @@ pub struct BootData {
 }
 
 pub async fn boot(engine: &Arc<Engine>) -> Result<BootData> {
-    let mut last_mc_block_id = match LastMcBlockId::load_from_db(engine.db().as_ref()) {
+    let last_mc_block_id = match LastMcBlockId::load_from_db(engine.db().as_ref()) {
         Ok(block_id) => {
             let last_mc_block_id = convert_block_id_ext_api2blk(&block_id.0)?;
             warm_boot(engine, last_mc_block_id).await?
@@ -32,16 +32,16 @@ pub async fn boot(engine: &Arc<Engine>) -> Result<BootData> {
         }
     };
 
-    let mut shards_client_mc_block_id =
-        match ShardsClientMcBlockId::load_from_db(engine.db().as_ref()) {
-            Ok(block_id) => convert_block_id_ext_api2blk(&block_id.0)?,
-            Err(_) => {
-                engine
-                    .store_shards_client_mc_block_id(&last_mc_block_id)
-                    .await?;
-                last_mc_block_id.clone()
-            }
-        };
+    let shards_client_mc_block_id = match ShardsClientMcBlockId::load_from_db(engine.db().as_ref())
+    {
+        Ok(block_id) => convert_block_id_ext_api2blk(&block_id.0)?,
+        Err(_) => {
+            engine
+                .store_shards_client_mc_block_id(&last_mc_block_id)
+                .await?;
+            last_mc_block_id.clone()
+        }
+    };
 
     Ok(BootData {
         last_mc_block_id,
@@ -66,7 +66,7 @@ async fn warm_boot(
 ) -> Result<ton_block::BlockIdExt> {
     let handle = engine
         .load_block_handle(&last_mc_block_id)?
-        .ok_or_else(|| BootError::FailedToLoadInitialBlock)?;
+        .ok_or(BootError::FailedToLoadInitialBlock)?;
 
     let state = engine.load_state(&last_mc_block_id)?;
     if last_mc_block_id.seq_no != 0 && !handle.meta().is_key_block() {
@@ -74,7 +74,7 @@ async fn warm_boot(
             .shard_state_extra()?
             .last_key_block
             .clone()
-            .ok_or_else(|| BootError::MasterchainStateNotFound)?
+            .ok_or(BootError::MasterchainStateNotFound)?
             .master_block_id()
             .1
     }
@@ -107,7 +107,10 @@ async fn prepare_cold_boot_data(engine: &Arc<Engine>) -> Result<ColdBootData> {
                         return Err(BootError::StartingFromNonKeyBlock.into());
                     }
 
-                    return Ok(ColdBootData::KeyBlock { handle, proof });
+                    return Ok(ColdBootData::KeyBlock {
+                        handle,
+                        proof: Box::new(proof),
+                    });
                 }
                 Some(handle)
             }
@@ -139,7 +142,10 @@ async fn prepare_cold_boot_data(engine: &Arc<Engine>) -> Result<ColdBootData> {
             return Err(BootError::StartingFromNonKeyBlock.into());
         }
 
-        Ok(ColdBootData::KeyBlock { handle, proof })
+        Ok(ColdBootData::KeyBlock {
+            handle,
+            proof: Box::new(proof),
+        })
     }
 }
 
@@ -181,7 +187,7 @@ async fn get_key_blocks(
                 result.push(handle.clone());
                 boot_data = ColdBootData::KeyBlock {
                     handle: handle.clone(),
-                    proof,
+                    proof: Box::new(proof),
                 };
             }
         }
@@ -279,7 +285,7 @@ enum ColdBootData {
     },
     KeyBlock {
         handle: Arc<BlockHandle>,
-        proof: BlockProofStuff,
+        proof: Box<BlockProofStuff>,
     },
 }
 
@@ -292,6 +298,7 @@ impl ColdBootData {
     }
 }
 
+#[allow(unused)]
 async fn download_base_wc_zero_state(
     engine: &Arc<Engine>,
     zero_state: &ShardStateStuff,
@@ -300,7 +307,7 @@ async fn download_base_wc_zero_state(
     let base_workchain = workchains
         .get(&0)
         .convert()?
-        .ok_or_else(|| BootError::BaseWorkchainInfoNotFound)?;
+        .ok_or(BootError::BaseWorkchainInfoNotFound)?;
 
     log::info!(
         "Base workchain zerostate: {}",

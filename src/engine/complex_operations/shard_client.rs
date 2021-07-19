@@ -32,7 +32,7 @@ pub async fn walk_shard_blocks(
 
     let mut handle = engine
         .load_block_handle(&mc_block_id)?
-        .ok_or_else(|| ShardClientError::ShardchainBlockHandleNotFound)?;
+        .ok_or(ShardClientError::ShardchainBlockHandleNotFound)?;
 
     loop {
         log::info!("walk_shard_blocks: {}", mc_block_id);
@@ -108,7 +108,7 @@ async fn load_shard_blocks(
 ) -> Result<()> {
     let mc_seq_no = masterchain_block.id().seq_no;
     let mut tasks = Vec::new();
-    for (shard_ident, shard_block_id) in masterchain_block.shards_blocks()? {
+    for (_, shard_block_id) in masterchain_block.shards_blocks()? {
         if let Some(handle) = engine.load_block_handle(&shard_block_id)? {
             if handle.meta().is_applied() {
                 continue;
@@ -117,7 +117,6 @@ async fn load_shard_blocks(
 
         let engine = engine.clone();
         tasks.push(tokio::spawn(async move {
-            let mut attempt = 0;
             while let Err(e) = engine
                 .download_and_apply_block(&shard_block_id, mc_seq_no, false, 0)
                 .await
@@ -165,7 +164,7 @@ pub async fn process_block_broadcast(
         return Ok(());
     }
 
-    let mut key_block_proof = None;
+    let key_block_proof;
 
     let (validator_set, catchain_config) = {
         let masterchain_prefix = ton_block::AccountIdPrefixFull::any_masterchain();
@@ -207,7 +206,7 @@ pub async fn process_block_broadcast(
             .read_info()
             .and_then(|info| info.read_master_ref())
             .convert()?
-            .ok_or_else(|| ShardClientError::InvalidBlockExtra)?;
+            .ok_or(ShardClientError::InvalidBlockExtra)?;
 
         let shards_client_mc_block_id = engine.load_shards_client_mc_block_id().await?;
         if shards_client_mc_block_id.seq_no + 8 >= master_ref.master.seq_no {

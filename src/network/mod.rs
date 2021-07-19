@@ -1,19 +1,16 @@
 use std::convert::{TryFrom, TryInto};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use anyhow::{anyhow, Result};
-use dashmap::{DashMap, DashSet};
+use anyhow::Result;
+use dashmap::DashMap;
 use tiny_adnl::utils::*;
 use tiny_adnl::*;
-use ton_api::ton::rpc;
-use ton_api::ton::{self, TLObject};
-use ton_api::{BoxedDeserialize, BoxedSerialize, Deserializer};
+use ton_api::ton;
 
 pub use self::full_node_overlay_client::*;
 pub use self::full_node_overlay_service::*;
 use crate::config::*;
-use crate::utils::*;
 
 mod full_node_overlay_client;
 mod full_node_overlay_service;
@@ -169,7 +166,7 @@ impl NodeNetwork {
         self.start_updating_peers(&overlay_client);
 
         start_processing_peers(
-            neighbours.clone(),
+            neighbours,
             self.dht.clone(),
             self.overlay.clone(),
             overlay_id,
@@ -214,7 +211,7 @@ impl NodeNetwork {
         overlay_client: &OverlayClient,
         iter: &mut Option<ExternalDhtIter>,
     ) -> Result<()> {
-        let mut peers = self
+        let peers = self
             .update_overlay_peers(overlay_client.overlay_id(), iter)
             .await?;
         for peer_id in peers {
@@ -339,5 +336,3 @@ async fn process_overlay_peers(
 
     Ok(())
 }
-
-const PREPARE_TIMEOUT: u64 = 6000; // Milliseconds

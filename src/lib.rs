@@ -1,11 +1,6 @@
 use std::sync::Arc;
-use std::time::Duration;
 
-use anyhow::{anyhow, Result};
-use tiny_adnl::utils::*;
-use tiny_adnl::{OverlaySubscriber, QueryAnswer, QueryConsumingResult};
-use ton_api::ton::{self, TLObject};
-use ton_api::IntoBoxed;
+use anyhow::Result;
 
 pub use crate::config::*;
 use crate::engine::complex_operations::*;
@@ -89,7 +84,7 @@ fn start_full_node_service(engine: Arc<Engine>) -> Result<()> {
 
     let (_, basechain_overlay_id) =
         network.compute_overlay_id(ton_block::BASE_WORKCHAIN_ID, ton_block::SHARD_FULL)?;
-    network.add_subscriber(basechain_overlay_id, service.clone());
+    network.add_subscriber(basechain_overlay_id, service);
 
     Ok(())
 }

@@ -71,19 +71,10 @@ async fn ensure_prev_blocks_downloaded(
 ) -> Result<()> {
     match prev2_id {
         Some(prev2_id) => {
-            let mut futures = Vec::with_capacity(2);
-            futures.push(engine.download_and_apply_block(
-                prev1_id,
-                mc_seq_no,
-                pre_apply,
-                depth + 1,
-            ));
-            futures.push(engine.download_and_apply_block(
-                prev2_id,
-                mc_seq_no,
-                pre_apply,
-                depth + 1,
-            ));
+            let futures = vec![
+                engine.download_and_apply_block(prev1_id, mc_seq_no, pre_apply, depth + 1),
+                engine.download_and_apply_block(prev2_id, mc_seq_no, pre_apply, depth + 1),
+            ];
 
             futures::future::join_all(futures)
                 .await
@@ -110,13 +101,13 @@ fn update_block_connections(
 
     let prev1_handle = engine
         .load_block_handle(&prev1_id)?
-        .ok_or_else(|| ApplyBlockError::Prev1BlockHandleNotFound)?;
+        .ok_or(ApplyBlockError::Prev1BlockHandleNotFound)?;
 
     match prev2_id {
         Some(prev2_id) => {
             let prev2_handle = engine
                 .load_block_handle(&prev2_id)?
-                .ok_or_else(|| ApplyBlockError::Prev2BlockHandleNotFound)?;
+                .ok_or(ApplyBlockError::Prev2BlockHandleNotFound)?;
 
             db.store_block_connection(&prev1_handle, BlockConnection::Next1, handle.id())?;
             db.store_block_connection(&prev2_handle, BlockConnection::Next1, handle.id())?;

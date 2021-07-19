@@ -5,7 +5,6 @@ use std::sync::Arc;
 use anyhow::Result;
 use dashmap::DashSet;
 use tiny_adnl::utils::*;
-use ton_types::ByteOrderRead;
 
 use crate::engine::Engine;
 use crate::storage::*;
@@ -119,7 +118,7 @@ pub async fn sync(engine: &Arc<Engine>) -> Result<()> {
 
                     if seq_no <= last_mc_block_id.seq_no + 1 {
                         match apply(engine, &last_mc_block_id, seq_no, data).await {
-                            Ok(ok) => {
+                            Ok(_) => {
                                 queue.remove(queue_index);
                                 concurrency = MAX_CONCURRENCY;
                                 break;
@@ -359,10 +358,8 @@ async fn import_mc_blocks(
 ) -> Result<()> {
     for id in maps.mc_block_ids.values() {
         if id.seq_no <= last_mc_block_id.seq_no {
-            if id.seq_no == last_mc_block_id.seq_no {
-                if last_mc_block_id != id {
-                    return Err(SyncError::MasterchainBlockIdMismatch.into());
-                }
+            if id.seq_no == last_mc_block_id.seq_no && last_mc_block_id != id {
+                return Err(SyncError::MasterchainBlockIdMismatch.into());
             }
             continue;
         }
@@ -401,7 +398,7 @@ async fn import_shard_blocks(engine: &Arc<Engine>, maps: Arc<BlockMaps>) -> Resu
     }
 
     let mut last_applied_mc_block_id = engine.load_shards_client_mc_block_id().await?;
-    for (_, mc_block_id) in &maps.mc_block_ids {
+    for mc_block_id in maps.mc_block_ids.values() {
         let mc_seq_no = mc_block_id.seq_no;
         if mc_seq_no <= last_applied_mc_block_id.seq_no {
             continue;
@@ -409,7 +406,7 @@ async fn import_shard_blocks(engine: &Arc<Engine>, maps: Arc<BlockMaps>) -> Resu
 
         let masterchain_handle = engine
             .load_block_handle(mc_block_id)?
-            .ok_or_else(|| SyncError::MasterchainBlockNotFound)?;
+            .ok_or(SyncError::MasterchainBlockNotFound)?;
         let masterchain_block = engine.load_block_data(&masterchain_handle).await?;
         let shard_blocks = masterchain_block.shards_blocks()?;
 
@@ -420,7 +417,7 @@ async fn import_shard_blocks(engine: &Arc<Engine>, maps: Arc<BlockMaps>) -> Resu
             tasks.push(tokio::spawn(async move {
                 let handle = engine
                     .load_block_handle(&id)?
-                    .ok_or_else(|| SyncError::ShardchainBlockHandleNotFound)?;
+                    .ok_or(SyncError::ShardchainBlockHandleNotFound)?;
                 if handle.meta().is_applied() {
                     return Ok(());
                 }
@@ -471,7 +468,7 @@ async fn save_block(
     block_id: &ton_block::BlockIdExt,
     block: &BlockStuff,
     block_proof: &BlockProofStuff,
-) -> Result<(Arc<BlockHandle>)> {
+) -> Result<Arc<BlockHandle>> {
     engine.check_block_proof(block_proof).await?;
 
     let handle = engine.store_block_data(block).await?.handle;

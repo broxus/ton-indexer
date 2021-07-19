@@ -86,10 +86,12 @@ impl BlockMeta {
         self.test_flag(BLOCK_META_FLAG_HAS_STATE)
     }
 
+    #[allow(unused)]
     pub fn set_has_persistent_state(&self) -> bool {
         self.set_flag(BLOCK_META_FLAG_HAS_PERSISTENT_STATE)
     }
 
+    #[allow(unused)]
     pub fn has_persistent_state(&self) -> bool {
         self.test_flag(BLOCK_META_FLAG_HAS_PERSISTENT_STATE)
     }
@@ -153,7 +155,7 @@ impl StoredValue for BlockMeta {
     }
 
     fn serialize<W: Write>(&self, writer: &mut W) -> Result<()> {
-        const FLAGS_MASK: u64 = 0x0000FFFF_FFFFFFFF;
+        const FLAGS_MASK: u64 = 0x0000_ffff_ffff_ffff;
         let flags = self.flags.load(Ordering::Acquire) & FLAGS_MASK;
 
         writer.write_all(&flags.to_le_bytes())?;
@@ -192,7 +194,6 @@ const BLOCK_META_FLAG_HAS_PREV_2: u64 = 1 << (32 + 9);
 const BLOCK_META_FLAG_IS_APPLIED: u64 = 1 << (32 + 10);
 const BLOCK_META_FLAG_IS_KEY_BLOCK: u64 = 1 << (32 + 11);
 // skip flag 12 (?)
-const BLOCK_META_FLAG_MOVED_TO_ARCHIVE: u64 = 1 << (32 + 13);
-const BLOCK_META_FLAG_INDEXED: u64 = 1 << (32 + 14);
+// const BLOCK_META_FLAG_MOVED_TO_ARCHIVE: u64 = 1 << (32 + 13);
+// const BLOCK_META_FLAG_INDEXED: u64 = 1 << (32 + 14);
 // skip flag 15 (?)
-const BLOCK_META_FLAG_ARCHIVING: u64 = 1 << (32 + 16);

@@ -1,6 +1,5 @@
 use anyhow::{anyhow, Result};
-use ton_api::ton;
-use ton_block::{Deserializable, Serializable};
+use ton_block::Deserializable;
 use ton_types::{Cell, HashmapType};
 
 use super::{BlockIdExtExtension, NoFailure, ShardStateStuff};
@@ -45,30 +44,11 @@ impl BlockProofStuff {
         })
     }
 
-    pub fn new(proof: ton_block::BlockProof, is_link: bool) -> Result<Self> {
-        let id = proof.proof_for.clone();
-        if !id.is_masterchain() && !is_link {
-            return Err(anyhow!("proof for non-masterchain block {}", id));
-        }
-
-        let cell = proof.write_to_new_cell().convert()?.into();
-        let mut data = Vec::new();
-        ton_types::serialize_tree_of_cells(&cell, &mut data).convert()?;
-
-        Ok(Self {
-            root: proof.write_to_new_cell().convert()?.into(),
-            proof,
-            is_link,
-            id,
-            data,
-        })
-    }
-
     pub fn virtualize_block_root(&self) -> Result<Cell> {
         let merkle_proof =
             ton_block::MerkleProof::construct_from(&mut self.proof.root.clone().into())
                 .convert()?;
-        let block_virt_root = merkle_proof.proof.clone().virtualize(1);
+        let block_virt_root = merkle_proof.proof.virtualize(1);
 
         if *self.proof.proof_for.root_hash() != block_virt_root.repr_hash() {
             return Err(anyhow!(
@@ -98,20 +78,8 @@ impl BlockProofStuff {
         &self.id
     }
 
-    pub fn proof(&self) -> &ton_block::BlockProof {
-        &self.proof
-    }
-
-    pub fn proof_root(&self) -> &Cell {
-        &self.proof.root
-    }
-
     pub fn data(&self) -> &[u8] {
         &self.data
-    }
-
-    pub fn into_data(self) -> Vec<u8> {
-        self.data
     }
 
     pub fn get_cur_validators_set(

@@ -126,7 +126,7 @@ impl TryFrom<ValidatorJson> for ton_block::BlockIdExt {
 }
 
 fn require_type(ty: String, required: &'static str) -> Result<(), GlobalConfigError> {
-    if &ty == required {
+    if ty == required {
         Ok(())
     } else {
         Err(GlobalConfigError::InvalidType(ty, required))
@@ -137,8 +137,6 @@ fn require_type(ty: String, required: &'static str) -> Result<(), GlobalConfigEr
 enum GlobalConfigError {
     #[error("Invalid type {}, expected {}", .0, .1)]
     InvalidType(String, &'static str),
-    #[error("Static DHT node address not found")]
-    AddressNotFound,
 }
 
 #[derive(Deserialize)]
@@ -153,8 +151,6 @@ struct GlobalConfigJson {
 struct DhtJson {
     #[serde(rename = "@type")]
     ty: String,
-    k: i32,
-    a: i32,
     static_nodes: StaticNodesJson,
 }
 

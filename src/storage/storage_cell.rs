@@ -50,6 +50,7 @@ impl StorageCell {
         })
     }
 
+    #[allow(unused)]
     pub fn deserialize_references(data: &[u8]) -> anyhow::Result<Vec<StorageCellReference>> {
         let mut reader = std::io::Cursor::new(data);
 
@@ -69,14 +70,14 @@ impl StorageCell {
 
         let mut data = Vec::new();
         cell.cell_data().serialize(&mut data).convert()?;
-        data.write(&[references_count])?;
+        data.write_all(&[references_count])?;
 
         for i in 0..references_count {
-            data.write(cell.reference(i as usize).convert()?.repr_hash().as_slice())?;
+            data.write_all(cell.reference(i as usize).convert()?.repr_hash().as_slice())?;
         }
 
-        data.write(&cell.tree_bits_count().to_be_bytes())?;
-        data.write(&cell.tree_cell_count().to_be_bytes())?;
+        data.write_all(&cell.tree_bits_count().to_be_bytes())?;
+        data.write_all(&cell.tree_cell_count().to_be_bytes())?;
 
         Ok(data)
     }

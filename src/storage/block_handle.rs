@@ -1,4 +1,3 @@
-use std::io::Write;
 use std::sync::{Arc, Weak};
 
 use anyhow::Result;
@@ -6,7 +5,6 @@ use dashmap::DashMap;
 use tokio::sync::RwLock;
 
 use super::block_meta::BlockMeta;
-use super::StoredValue;
 
 pub struct BlockHandle {
     id: ton_block::BlockIdExt,
@@ -17,13 +15,6 @@ pub struct BlockHandle {
 }
 
 impl BlockHandle {
-    pub fn new(
-        id: ton_block::BlockIdExt,
-        cache: Arc<DashMap<ton_block::BlockIdExt, Weak<BlockHandle>>>,
-    ) -> Self {
-        Self::with_values(id, BlockMeta::default(), cache)
-    }
-
     pub fn with_values(
         id: ton_block::BlockIdExt,
         meta: BlockMeta,
@@ -36,10 +27,6 @@ impl BlockHandle {
             proof_file_block: Default::default(),
             cache,
         }
-    }
-
-    pub fn serialize<W: Write>(&self, writer: &mut W) -> Result<()> {
-        self.meta.serialize(writer)
     }
 
     pub fn id(&self) -> &ton_block::BlockIdExt {
@@ -67,6 +54,7 @@ impl BlockHandle {
         }
     }
 
+    #[allow(unused)]
     pub fn masterchain_ref_seqno(&self) -> u32 {
         if self.id.shard().is_masterchain() {
             self.id.seq_no()

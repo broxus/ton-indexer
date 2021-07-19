@@ -16,10 +16,9 @@ impl<'a, T> DownloadContext<'a, T> {
             Some(handle) => {
                 let mut is_link = false;
                 if handle.meta().has_data() && handle.has_proof_or_link(&mut is_link) {
-                    Some((
-                        self.db.load_block_data(&handle).await?,
-                        self.db.load_block_proof(&handle, is_link).await?,
-                    ))
+                    let block = self.db.load_block_data(&handle).await?;
+                    let block_proof = self.db.load_block_proof(&handle, is_link).await?;
+                    Some((block, block_proof))
                 } else {
                     None
                 }
