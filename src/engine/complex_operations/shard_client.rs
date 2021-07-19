@@ -13,6 +13,7 @@ pub async fn walk_masterchain_blocks(
     mut mc_block_id: ton_block::BlockIdExt,
 ) -> Result<()> {
     loop {
+        log::info!("walk_masterchain_blocks: {}", mc_block_id);
         mc_block_id = match load_next_masterchain_block(engine, &mc_block_id).await {
             Ok(id) => id,
             Err(e) => {
