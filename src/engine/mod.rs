@@ -317,6 +317,60 @@ impl Engine {
         self.db.find_block_by_lt(account_prefix, lt)
     }
 
+    pub async fn wait_next_applied_mc_block(
+        &self,
+        prev_handle: &Arc<BlockHandle>,
+        timeout_ms: Option<u64>,
+    ) -> Result<(Arc<BlockHandle>, BlockStuff)> {
+        if !prev_handle.id().shard().is_masterchain() {
+            return Err(EngineError::NonMasterchainNextBlock.into());
+        }
+
+        loop {
+            if prev_handle.meta().has_next1() {
+                let next1_id = self
+                    .db
+                    .load_block_connection(prev_handle.id(), BlockConnection::Next1)?;
+                return self.wait_applied_block(&next1_id, timeout_ms).await;
+            } else if let Some(next1_id) = self
+                .next_block_applying_operations
+                .wait(prev_handle.id(), timeout_ms, || {
+                    Ok(prev_handle.meta().has_next1())
+                })
+                .await?
+            {
+                if let Some(handle) = self.load_block_handle(&next1_id)? {
+                    let block = self.load_block_data(&handle).await?;
+                    return Ok((handle, block));
+                }
+            }
+        }
+    }
+
+    pub async fn wait_applied_block(
+        &self,
+        block_id: &ton_block::BlockIdExt,
+        timeout_ms: Option<u64>,
+    ) -> Result<(Arc<BlockHandle>, BlockStuff)> {
+        loop {
+            if let Some(handle) = self.load_block_handle(block_id)? {
+                if handle.meta().is_applied() {
+                    let block = self.load_block_data(&handle).await?;
+                    return Ok((handle, block));
+                }
+            }
+
+            self.block_applying_operations
+                .wait(block_id, timeout_ms, || {
+                    Ok(self
+                        .load_block_handle(block_id)?
+                        .map(|handle| handle.meta().is_applied())
+                        .unwrap_or_default())
+                })
+                .await?;
+        }
+    }
+
     pub async fn wait_state(
         self: &Arc<Self>,
         block_id: &ton_block::BlockIdExt,
@@ -332,7 +386,7 @@ impl Engine {
             };
 
             if has_state()? {
-                break self.load_state(block_id);
+                return self.load_state(block_id);
             }
 
             if allow_block_downloading {
@@ -354,7 +408,7 @@ impl Engine {
                 .wait(block_id, timeout_ms, &has_state)
                 .await?
             {
-                break Ok(shard_state);
+                return Ok(shard_state);
             }
         }
     }

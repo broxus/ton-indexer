@@ -1,10 +1,144 @@
 use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use ton_api::ton;
 
+use crate::engine::db::BlockConnection;
 use crate::engine::Engine;
 use crate::utils::*;
+
+pub async fn walk_masterchain_blocks(
+    engine: &Arc<Engine>,
+    mut mc_block_id: ton_block::BlockIdExt,
+) -> Result<()> {
+    loop {
+        mc_block_id = match load_next_masterchain_block(engine, &mc_block_id).await {
+            Ok(id) => id,
+            Err(e) => {
+                log::error!("Failed to load next masterchain block for: {:?}", e);
+                continue;
+            }
+        }
+    }
+}
+
+pub async fn walk_shard_blocks(
+    engine: &Arc<Engine>,
+    mc_block_id: ton_block::BlockIdExt,
+) -> Result<()> {
+    let semaphore = Arc::new(Semaphore::new(1));
+
+    let mut handle = engine
+        .load_block_handle(&mc_block_id)?
+        .ok_or_else(|| ShardClientError::ShardchainBlockHandleNotFound)?;
+
+    loop {
+        log::info!("walk_shard_blocks: {}", mc_block_id);
+        let (next_handle, next_block) = engine.wait_next_applied_mc_block(&handle, None).await?;
+        handle = next_handle;
+
+        tokio::spawn({
+            let engine = engine.clone();
+            let permit = semaphore.clone().acquire_owned().await?;
+            async move {
+                if let Err(e) = load_shard_blocks(&engine, permit, next_block).await {
+                    log::error!("Failed to load shard blocks: {:?}", e);
+                }
+            }
+        });
+    }
+}
+
+async fn load_next_masterchain_block(
+    engine: &Arc<Engine>,
+    mc_block_id: &ton_block::BlockIdExt,
+) -> Result<ton_block::BlockIdExt> {
+    if let Some(handle) = engine.load_block_handle(mc_block_id)? {
+        if handle.meta().has_next1() {
+            let next1_id = engine
+                .db
+                .load_block_connection(mc_block_id, BlockConnection::Next1)?;
+            engine
+                .download_and_apply_block(&next1_id, next1_id.seq_no, false, 0)
+                .await?;
+            return Ok(next1_id);
+        }
+    } else {
+        return Err(ShardClientError::MasterchainBlockNotFound.into());
+    }
+
+    let (block, block_proof) = engine
+        .download_next_masterchain_block(mc_block_id, None)
+        .await?;
+    if block.id().seq_no != mc_block_id.seq_no + 1 {
+        return Err(ShardClientError::BlockIdMismatch.into());
+    }
+
+    let prev_state = engine.wait_state(mc_block_id, None, true).await?;
+    block_proof.check_with_master_state(&prev_state)?;
+
+    let mut next_handle = match engine.load_block_handle(block.id())? {
+        Some(next_handle) => {
+            if !next_handle.meta().has_data() {
+                return Err(ShardClientError::InvalidBlockHandle.into());
+            }
+            next_handle
+        }
+        None => engine.store_block_data(&block).await?.handle,
+    };
+
+    if !next_handle.meta().has_proof() {
+        next_handle = engine
+            .store_block_proof(block.id(), Some(next_handle), &block_proof)
+            .await?;
+    }
+
+    engine
+        .apply_block_ext(&next_handle, &block, next_handle.id().seq_no, false, 0)
+        .await?;
+    Ok(block.id().clone())
+}
+
+async fn load_shard_blocks(
+    engine: &Arc<Engine>,
+    permit: OwnedSemaphorePermit,
+    masterchain_block: BlockStuff,
+) -> Result<()> {
+    let mc_seq_no = masterchain_block.id().seq_no;
+    let mut tasks = Vec::new();
+    for (shard_ident, shard_block_id) in masterchain_block.shards_blocks()? {
+        if let Some(handle) = engine.load_block_handle(&shard_block_id)? {
+            if handle.meta().is_applied() {
+                continue;
+            }
+        }
+
+        let engine = engine.clone();
+        tasks.push(tokio::spawn(async move {
+            let mut attempt = 0;
+            while let Err(e) = engine
+                .download_and_apply_block(&shard_block_id, mc_seq_no, false, 0)
+                .await
+            {
+                log::error!("Failed to apply shard block: {}: {:?}", shard_block_id, e);
+            }
+        }));
+    }
+
+    futures::future::join_all(tasks)
+        .await
+        .into_iter()
+        .find(|item| item.is_err())
+        .unwrap_or(Ok(()))?;
+
+    engine
+        .store_shards_client_mc_block_id(masterchain_block.id())
+        .await?;
+
+    std::mem::drop(permit);
+    Ok(())
+}
 
 pub async fn process_block_broadcast(
     engine: &Arc<Engine>,
@@ -25,6 +159,10 @@ pub async fn process_block_broadcast(
     let block_info = proof.virtualize_block()?.0.read_info().convert()?;
 
     let prev_key_block_seqno = block_info.prev_key_block_seqno();
+    let last_applied_mc_block_id = engine.load_last_applied_mc_block_id().await?;
+    if prev_key_block_seqno > last_applied_mc_block_id.seq_no {
+        return Ok(());
+    }
 
     let mut key_block_proof = None;
 
@@ -56,7 +194,27 @@ pub async fn process_block_broadcast(
             .await?;
     }
 
-    // TODO: apply
+    if block.id().shard_id.is_masterchain() {
+        if block.id().seq_no == last_applied_mc_block_id.seq_no + 1 {
+            engine
+                .apply_block_ext(&handle, &block, block.id().seq_no, false, 0)
+                .await?;
+        }
+    } else {
+        let master_ref = block
+            .block()
+            .read_info()
+            .and_then(|info| info.read_master_ref())
+            .convert()?
+            .ok_or_else(|| ShardClientError::InvalidBlockExtra)?;
+
+        let shards_client_mc_block_id = engine.load_shards_client_mc_block_id().await?;
+        if shards_client_mc_block_id.seq_no + 8 >= master_ref.master.seq_no {
+            engine
+                .apply_block_ext(&handle, &block, shards_client_mc_block_id.seq_no, false, 0)
+                .await?;
+        }
+    }
 
     Ok(())
 }
@@ -111,4 +269,18 @@ fn validate_broadcast(
     }
 
     Ok(())
+}
+
+#[derive(thiserror::Error, Debug)]
+enum ShardClientError {
+    #[error("Masterchain block not found")]
+    MasterchainBlockNotFound,
+    #[error("Shardchain block handle not found")]
+    ShardchainBlockHandleNotFound,
+    #[error("Block id mismatch")]
+    BlockIdMismatch,
+    #[error("Invalid block handle")]
+    InvalidBlockHandle,
+    #[error("Invalid block extra")]
+    InvalidBlockExtra,
 }

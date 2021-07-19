@@ -394,7 +394,6 @@ async fn import_shard_blocks(engine: &Arc<Engine>, maps: Arc<BlockMaps>) -> Resu
         let mut tasks = Vec::with_capacity(shard_blocks.len());
         for (_, id) in shard_blocks {
             let engine = engine.clone();
-            let mc_block_id = mc_block_id.clone();
             let maps = maps.clone();
             tasks.push(tokio::spawn(async move {
                 let handle = engine

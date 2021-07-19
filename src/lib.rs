@@ -35,12 +35,6 @@ pub async fn start(node_config: NodeConfig, global_config: GlobalConfig) -> Resu
         shards_client_mc_block_id
     );
 
-    if !engine.check_sync().await? {
-        sync(&engine).await?;
-    }
-
-    log::info!("Synced!");
-
     engine
         .listen_broadcasts(ton_block::ShardIdent::masterchain())
         .await?;
@@ -53,6 +47,33 @@ pub async fn start(node_config: NodeConfig, global_config: GlobalConfig) -> Resu
             .convert()?,
         )
         .await?;
+
+    if !engine.check_sync().await? {
+        sync(&engine).await?;
+    }
+
+    log::info!("Synced!");
+
+    tokio::spawn({
+        let engine = engine.clone();
+        async move {
+            if let Err(e) = walk_masterchain_blocks(&engine, last_mc_block_id).await {
+                log::error!(
+                    "FATAL ERROR while walking though masterchain blocks: {:?}",
+                    e
+                );
+            }
+        }
+    });
+
+    tokio::spawn({
+        let engine = engine.clone();
+        async move {
+            if let Err(e) = walk_shard_blocks(&engine, shards_client_mc_block_id).await {
+                log::error!("FATAL ERROR while walking though shard blocks: {:?}", e);
+            }
+        }
+    });
 
     futures::future::pending().await
 }
