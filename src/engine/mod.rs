@@ -21,8 +21,21 @@ mod db;
 mod downloader;
 mod node_state;
 
+#[async_trait::async_trait]
+pub trait BlockSubscriber: Send + Sync {
+    async fn process_block(
+        &self,
+        block: &BlockStuff,
+        block_proof: Option<&BlockProofStuff>,
+        shard_state: &ShardStateStuff,
+    ) -> Result<()>;
+
+    async fn process_shard_state(&self, shard_state: &ShardStateStuff) -> Result<()>;
+}
+
 pub struct Engine {
     db: Arc<dyn Db>,
+    subscribers: Vec<Arc<dyn BlockSubscriber>>,
     network: Arc<NodeNetwork>,
 
     init_mc_block_id: ton_block::BlockIdExt,
@@ -38,7 +51,11 @@ pub struct Engine {
 }
 
 impl Engine {
-    pub async fn new(config: NodeConfig, global_config: GlobalConfig) -> Result<Arc<Self>> {
+    pub async fn new(
+        config: NodeConfig,
+        global_config: GlobalConfig,
+        subscribers: Vec<Arc<dyn BlockSubscriber>>,
+    ) -> Result<Arc<Self>> {
         let db = SledDb::new(config.sled_db_path(), config.file_db_path()).await?;
 
         let zero_state_id = global_config.zero_state.clone();
@@ -55,6 +72,7 @@ impl Engine {
 
         let engine = Arc::new(Self {
             db,
+            subscribers,
             network,
             init_mc_block_id,
             last_known_mc_block_seqno: AtomicU32::new(0),
@@ -623,6 +641,39 @@ impl Engine {
                     apply_block(self, handle, block, mc_seq_no, pre_apply, depth),
                 )
                 .await?;
+        }
+        Ok(())
+    }
+
+    async fn notify_subscribers_with_block(
+        &self,
+        handle: &Arc<BlockHandle>,
+        block: &BlockStuff,
+        shard_state: &ShardStateStuff,
+    ) -> Result<()> {
+        if self.subscribers.is_empty() {
+            return Ok(());
+        }
+
+        if handle.id().shard().is_masterchain() {
+            let block_proof = self.load_block_proof(handle, false).await?;
+            for subscriber in &self.subscribers {
+                subscriber
+                    .process_block(block, Some(&block_proof), shard_state)
+                    .await?;
+            }
+        } else {
+            for subscriber in &self.subscribers {
+                subscriber.process_block(block, None, shard_state).await?;
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn notify_subscribers_with_state(&self, shard_state: &ShardStateStuff) -> Result<()> {
+        for subscriber in &self.subscribers {
+            subscriber.process_shard_state(shard_state).await?;
         }
         Ok(())
     }

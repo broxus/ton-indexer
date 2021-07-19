@@ -347,7 +347,7 @@ pub async fn download_zero_state(
             Ok(state) => {
                 let handle = engine.store_zerostate(block_id, &state).await?;
                 engine.set_applied(&handle, 0).await?;
-                // TODO: process state
+                engine.notify_subscribers_with_state(&state).await?;
                 return Ok((handle, state));
             }
             Err(e) => {
@@ -429,11 +429,10 @@ async fn download_block_and_state(
         if state_update.new_hash != state_hash {
             return Err(BootError::ShardStateHashMismatch.into());
         }
-        engine.store_state(&handle, &shard_state).await?;
 
         log::info!("Received shard state for: {}", shard_state.block_id());
-
-        // TODO: process received state here
+        engine.store_state(&handle, &shard_state).await?;
+        engine.notify_subscribers_with_state(&shard_state).await?;
     }
 
     engine

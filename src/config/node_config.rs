@@ -9,10 +9,10 @@ use crate::utils::*;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NodeConfig {
-    ip_address: SocketAddrV4,
-    keys: Vec<AdnlNodeKey>,
-    sled_db_path: PathBuf,
-    file_db_path: PathBuf,
+    pub ip_address: SocketAddrV4,
+    pub keys: Vec<AdnlNodeKey>,
+    pub sled_db_path: PathBuf,
+    pub file_db_path: PathBuf,
 }
 
 impl NodeConfig {
@@ -62,7 +62,7 @@ impl TryFrom<NodeConfig> for tiny_adnl::AdnlNodeConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct AdnlNodeKey {
+pub struct AdnlNodeKey {
     tag: usize,
     #[serde(with = "serde_hex_array")]
     key: [u8; 32],

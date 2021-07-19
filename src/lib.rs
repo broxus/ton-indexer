@@ -15,7 +15,7 @@ mod storage;
 mod utils;
 
 pub async fn start(node_config: NodeConfig, global_config: GlobalConfig) -> Result<()> {
-    let engine = Engine::new(node_config, global_config).await?;
+    let engine = Engine::new(node_config, global_config, Vec::new()).await?;
 
     start_full_node_service(engine.clone())?;
 

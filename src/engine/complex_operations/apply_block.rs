@@ -31,7 +31,7 @@ pub fn apply_block<'a>(
         ensure_prev_blocks_downloaded(engine, &prev1_id, &prev2_id, mc_seq_no, pre_apply, depth)
             .await?;
 
-        let _shard_state = if handle.meta().has_state() {
+        let shard_state = if handle.meta().has_state() {
             engine.load_state(handle.id())?
         } else {
             compute_and_store_shard_state(engine, handle, block, &prev1_id, &prev2_id).await?
@@ -39,6 +39,9 @@ pub fn apply_block<'a>(
 
         if !pre_apply {
             update_block_connections(engine, handle, &prev1_id, &prev2_id)?;
+            engine
+                .notify_subscribers_with_block(handle, block, &shard_state)
+                .await?;
 
             if block.id().is_masterchain() {
                 engine.store_last_applied_mc_block_id(block.id()).await?;
