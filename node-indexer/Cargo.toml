@@ -31,7 +31,7 @@ hex = "0.4.3"
 x25519-dalek = "1"
 
 
-ton_abi = { git = "https://github.com/tonlabs/ton-labs-abi" }
+ton_abi = { git = "https://github.com/tonlabs/ton-labs-abi", rev = "a2b2a9dc2e8c30a070e9af79cf0c24a55bdd5a87" }
 ton_block = { git = "https://github.com/tonlabs/ton-labs-block.git" }
 ton_types = { git = "https://github.com/tonlabs/ton-labs-types.git" }
 nekoton = { git = "https://github.com/broxus/nekoton.git", default-features = false }
