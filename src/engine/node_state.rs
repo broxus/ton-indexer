@@ -6,12 +6,12 @@ use super::db::*;
 pub trait NodeState: serde::Serialize + serde::de::DeserializeOwned {
     fn get_key() -> &'static str;
 
-    fn load_from_db(db: &dyn Db) -> Result<Self> {
+    fn load_from_db(db: &Db) -> Result<Self> {
         let value = db.load_node_state(Self::get_key())?;
         Ok(bincode::deserialize::<Self>(&value)?)
     }
 
-    fn store_into_db(&self, db: &dyn Db) -> Result<()> {
+    fn store_into_db(&self, db: &Db) -> Result<()> {
         let value = bincode::serialize(self)?;
         db.store_node_state(Self::get_key(), value)
     }

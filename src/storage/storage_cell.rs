@@ -9,7 +9,7 @@ use super::shard_state_storage::DynamicBocDb;
 use crate::utils::*;
 
 pub struct StorageCell {
-    boc_db: Arc<DynamicBocDb>,
+    boc_db: DynamicBocDb,
     cell_data: ton_types::CellData,
     references: RwLock<Vec<StorageCellReference>>,
     tree_bits_count: Arc<AtomicU64>,
@@ -21,7 +21,7 @@ impl StorageCell {
         self.hash(ton_types::MAX_LEVEL as usize)
     }
 
-    pub fn deserialize(boc_db: Arc<DynamicBocDb>, data: &[u8]) -> anyhow::Result<Self> {
+    pub fn deserialize(boc_db: DynamicBocDb, data: &[u8]) -> anyhow::Result<Self> {
         let mut reader = std::io::Cursor::new(data);
 
         let cell_data = ton_types::CellData::deserialize(&mut reader).convert()?;

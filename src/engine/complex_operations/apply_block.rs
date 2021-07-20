@@ -32,7 +32,7 @@ pub fn apply_block<'a>(
             .await?;
 
         let shard_state = if handle.meta().has_state() {
-            engine.load_state(handle.id())?
+            engine.load_state(handle.id()).await?
         } else {
             compute_and_store_shard_state(engine, handle, block, &prev1_id, &prev2_id).await?
         };

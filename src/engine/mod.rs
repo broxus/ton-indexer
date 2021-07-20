@@ -34,7 +34,7 @@ pub trait BlockSubscriber: Send + Sync {
 }
 
 pub struct Engine {
-    db: Arc<dyn Db>,
+    db: Arc<Db>,
     subscribers: Vec<Arc<dyn BlockSubscriber>>,
     network: Arc<NodeNetwork>,
 
@@ -56,7 +56,7 @@ impl Engine {
         global_config: GlobalConfig,
         subscribers: Vec<Arc<dyn BlockSubscriber>>,
     ) -> Result<Arc<Self>> {
-        let db = SledDb::new(config.sled_db_path(), config.file_db_path()).await?;
+        let db = Db::new(config.sled_db_path(), config.file_db_path()).await?;
 
         let zero_state_id = global_config.zero_state.clone();
 
@@ -91,7 +91,7 @@ impl Engine {
         Ok(engine)
     }
 
-    pub fn db(&self) -> &Arc<dyn Db> {
+    pub fn db(&self) -> &Arc<Db> {
         &self.db
     }
 
@@ -388,7 +388,7 @@ impl Engine {
             };
 
             if has_state()? {
-                return self.load_state(block_id);
+                return self.load_state(block_id).await;
             }
 
             if allow_block_downloading {
@@ -415,11 +415,14 @@ impl Engine {
         }
     }
 
-    pub fn load_state(&self, block_id: &ton_block::BlockIdExt) -> Result<Arc<ShardStateStuff>> {
+    pub async fn load_state(
+        &self,
+        block_id: &ton_block::BlockIdExt,
+    ) -> Result<Arc<ShardStateStuff>> {
         if let Some(state) = self.shard_states_cache.get(block_id) {
             Ok(state)
         } else {
-            let state = Arc::new(self.db.load_shard_state(block_id)?);
+            let state = Arc::new(self.db.load_shard_state(block_id).await?);
             self.shard_states_cache
                 .set(block_id, |_| Some(state.clone()));
             Ok(state)
@@ -435,7 +438,7 @@ impl Engine {
             existing.is_none().then(|| state.clone())
         });
 
-        self.db.store_shard_state(handle, state.as_ref())?;
+        self.db.store_shard_state(handle, state.as_ref()).await?;
 
         self.shard_states_operations
             .do_or_wait(state.block_id(), None, futures::future::ok(state.clone()))

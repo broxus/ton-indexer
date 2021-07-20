@@ -68,7 +68,7 @@ async fn warm_boot(
         .load_block_handle(&last_mc_block_id)?
         .ok_or(BootError::FailedToLoadInitialBlock)?;
 
-    let state = engine.load_state(&last_mc_block_id)?;
+    let state = engine.load_state(&last_mc_block_id).await?;
     if last_mc_block_id.seq_no != 0 && !handle.meta().is_key_block() {
         last_mc_block_id = state
             .shard_state_extra()?
@@ -338,7 +338,7 @@ pub async fn download_zero_state(
 ) -> Result<(Arc<BlockHandle>, Arc<ShardStateStuff>)> {
     if let Some(handle) = engine.load_block_handle(block_id)? {
         if handle.meta().has_state() {
-            return Ok((handle, engine.load_state(block_id)?));
+            return Ok((handle, engine.load_state(block_id).await?));
         }
     }
 

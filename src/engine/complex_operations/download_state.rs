@@ -36,6 +36,8 @@ pub async fn download_state(
         };
     };
 
+    let transaction = engine.db.shard_state_storage().begin_replace().await?;
+
     let mut offset = 0;
     let mut state = Vec::new();
     let max_size = 1 << 20;
@@ -85,6 +87,8 @@ pub async fn download_state(
     }
 
     log::info!("DOWNLOADED: {} bytes", total_size);
+
+    transaction.finalize(block_id, todo!())?;
 
     debug_assert!(total_size < usize::MAX);
 
