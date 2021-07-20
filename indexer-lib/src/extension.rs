@@ -1,5 +1,5 @@
 use anyhow::Result;
-use ton_block::{CommonMsgInfo, MsgAddressInt, Serializable, TrComputePhase, Transaction};
+use ton_block::{CommonMsgInfo, MsgAddressInt, Serializable, Transaction, TransactionDescr};
 use ton_types::UInt256;
 
 use shared_deps::{NoFailure, TrustMe};
@@ -12,7 +12,7 @@ pub trait TransactionExt {
     fn sender_address(&self) -> Result<Option<MsgAddressInt>>;
     fn messages(&self) -> Result<TransactionMessages>;
     fn tx_hash(&self) -> Result<UInt256>;
-    fn success(&self) -> Result<()>;
+    fn success(&self) -> bool;
     /// Err if no in messages
     fn bounced(&self) -> Result<bool>;
 }
@@ -38,7 +38,7 @@ impl TransactionExt for Transaction {
         (&self).tx_hash()
     }
 
-    fn success(&self) -> Result<()> {
+    fn success(&self) -> bool {
         (&self).success()
     }
 
@@ -83,22 +83,15 @@ impl TransactionExt for &Transaction {
     fn tx_hash(&self) -> Result<UInt256> {
         Ok(self.serialize().convert()?.hash(0))
     }
-    fn success(&self) -> Result<()> {
-        let description = match self.description.read_struct().convert()? {
-            ton_block::TransactionDescr::Ordinary(a) => a,
-            _ => anyhow::bail!("Transaction type is not supported"),
-        };
-        let compute = description.compute_ph;
-        match compute {
-            TrComputePhase::Skipped(a) => {
-                anyhow::bail!("Transaction is skiped because: {:?}", a.reason)
-            }
-            TrComputePhase::Vm(a) => {
-                let code = a.exit_code;
-                anyhow::ensure!(code == 0, "Exit code is {}", code)
-            }
+    fn success(&self) -> bool {
+        let res = self.description.read_struct().map(|x| match x {
+            TransactionDescr::Ordinary(a) => !a.aborted,
+            _ => false,
+        });
+        match res {
+            Ok(a) => a,
+            Err(_) => false,
         }
-        Ok(())
     }
 
     fn bounced(&self) -> Result<bool> {
@@ -110,9 +103,9 @@ impl TransactionExt for &Transaction {
             CommonMsgInfo::IntMsgInfo(a) => a.bounce,
             _ => anyhow::bail!("Not an internal message"),
         };
-        match self.success().ok() {
-            None => Ok(bounce),
-            Some(_) => Ok(false),
+        match self.success() {
+            false => Ok(bounce),
+            true => Ok(false),
         }
     }
 }
@@ -146,7 +139,7 @@ where
         Ok(self.hash)
     }
 
-    fn success(&self) -> Result<()> {
+    fn success(&self) -> bool {
         self.transaction.success()
     }
 
@@ -179,7 +172,7 @@ where
         Ok(self.hash)
     }
 
-    fn success(&self) -> Result<()> {
+    fn success(&self) -> bool {
         self.transaction.success()
     }
 
