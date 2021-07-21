@@ -333,7 +333,7 @@ impl NodeClient {
             .context("Failed iterating shards")?;
 
         log::trace!("Num of shards: {}", num_of_shards);
-        let semaphore = Arc::new(Semaphore::new(self.config.pool_size as usize));
+        let semaphore = Arc::new(Semaphore::new(2 * (self.config.pool_size as usize)));
         let num_of_tasks = Arc::new(Barrier::new(num_of_shards));
         extra
             .shards()
