@@ -472,13 +472,13 @@ impl Engine {
 
     pub async fn store_block_proof(
         &self,
-        block_ud: &ton_block::BlockIdExt,
+        block_id: &ton_block::BlockIdExt,
         handle: Option<Arc<BlockHandle>>,
         proof: &BlockProofStuff,
     ) -> Result<Arc<BlockHandle>> {
         Ok(self
             .db
-            .store_block_proof(block_ud, handle, proof)
+            .store_block_proof(block_id, handle, proof)
             .await?
             .handle)
     }
@@ -695,7 +695,7 @@ impl Engine {
             let prev_key_block_proof = self.load_block_proof(&handle, false).await?;
 
             check_with_prev_key_block_proof(
-                &block_proof,
+                block_proof,
                 &prev_key_block_proof,
                 &virt_block,
                 &virt_block_info,

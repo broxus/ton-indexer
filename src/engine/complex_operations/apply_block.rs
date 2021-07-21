@@ -103,13 +103,13 @@ fn update_block_connections(
     let db = &engine.db;
 
     let prev1_handle = engine
-        .load_block_handle(&prev1_id)?
+        .load_block_handle(prev1_id)?
         .ok_or(ApplyBlockError::Prev1BlockHandleNotFound)?;
 
     match prev2_id {
         Some(prev2_id) => {
             let prev2_handle = engine
-                .load_block_handle(&prev2_id)?
+                .load_block_handle(prev2_id)?
                 .ok_or(ApplyBlockError::Prev2BlockHandleNotFound)?;
 
             db.store_block_connection(&prev1_handle, BlockConnection::Next1, handle.id())?;

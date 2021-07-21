@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::convert::TryInto;
 use std::io::{Read, Write};
 use std::sync::{Arc, Weak};
 
@@ -74,6 +75,7 @@ pub struct ShardStateReplaceTransaction<'a> {
     reader: ShardStatePacketReader,
     boc_header: Option<BocHeader>,
     cells_read: usize,
+    pending_cells: HashMap<u32, RawCell>,
 }
 
 impl<'a> ShardStateReplaceTransaction<'a> {
@@ -84,6 +86,7 @@ impl<'a> ShardStateReplaceTransaction<'a> {
             reader: ShardStatePacketReader::new(),
             boc_header: None,
             cells_read: 0,
+            pending_cells: HashMap::new(),
         }
     }
 
@@ -94,12 +97,14 @@ impl<'a> ShardStateReplaceTransaction<'a> {
     }
 
     pub fn process(&mut self, data: Vec<u8>, last: bool) -> Result<Option<UInt256>> {
+        self.reader.next_packet = data;
+
         loop {
             let header = match &self.boc_header {
                 Some(header) => header,
                 None => {
-                    let reader = self.reader.begin();
-                    let header = BocHeader::from_reader(&mut self.reader)?;
+                    let mut reader = self.reader.begin();
+                    let header = BocHeader::from_reader(&mut reader)?;
                     reader.end();
 
                     if header.index_included {
@@ -120,9 +125,21 @@ impl<'a> ShardStateReplaceTransaction<'a> {
             }
 
             while self.cells_read < header.cell_count {
-                let reader = self.reader.begin();
+                let mut reader = self.reader.begin();
 
-                todo!()
+                match RawCell::from_reader(
+                    &mut reader,
+                    header.ref_size,
+                    header.cell_count,
+                    self.cells_read,
+                )? {
+                    Some(_cell) => {
+                        println!("READ CELL");
+                        reader.end();
+                    }
+                    None if last => return Ok(Some(UInt256::default())),
+                    None => return Ok(None),
+                };
             }
         }
     }
@@ -189,7 +206,7 @@ impl BocHeader {
 
         let index_included;
         let mut has_crc = false;
-        let mut ref_size;
+        let ref_size;
 
         match magic {
             BOC_INDEXED_TAG => {
@@ -236,30 +253,12 @@ impl BocHeader {
                 .context("Root count is greater then cell count");
         }
 
-        src.read_be_uint(offset_size); // skip total cells size
+        src.read_be_uint(offset_size)?; // skip total cells size
 
         let root_index = if magic == BOC_GENERIC_TAG {
             Some(src.read_be_uint(ref_size)?)
         } else {
             None
-        };
-
-        if index_included {
-            let mut cells_sizes = vec![0; cell_count];
-
-            let mut prev_offset = 0;
-            for i in 0..cell_count {
-                let mut offset = src.read_be_uint(offset_size)?;
-                if prev_offset > offset {
-                    return Err(ShardStateStorageError::InvalidShardStateHeader)
-                        .context("Invalid offsets index");
-                }
-
-                cells_sizes[i] = (offset - prev_offset);
-                prev_offset = offset;
-            }
-
-            Some(cells_sizes)
         };
 
         Ok(Self {
@@ -273,12 +272,23 @@ impl BocHeader {
     }
 }
 
+macro_rules! try_read {
+    ($expr:expr) => {
+        match $expr {
+            Ok(data) => data,
+            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(None),
+            Err(e) => return Err(e.into()),
+        }
+    };
+}
+
 struct RawCell {
     cell_type: ton_types::CellType,
     level: u8,
     data: Vec<u8>,
-    refs: Vec<u32>,
-    hashes: Option<[UInt256; 4]>,
+    reference_indices: Vec<u32>,
+    reference_hashes: Vec<UInt256>,
+    hashes: Option<[[u8; 32]; 4]>,
     depths: Option<[u16; 4]>,
 }
 
@@ -286,14 +296,13 @@ impl RawCell {
     fn from_reader<R>(
         src: &mut R,
         ref_size: usize,
-        cell_index: usize,
-        cell_index: usize,
         cell_count: usize,
-    ) -> Result<Self>
+        cell_index: usize,
+    ) -> Result<Option<Self>>
     where
         R: Read,
     {
-        let d1 = src.read_byte()?;
+        let d1 = try_read!(src.read_byte());
         let l = d1 >> 5;
         let h = (d1 & 0b0001_0000) != 0;
         let s = (d1 & 0b0000_1000) != 0;
@@ -302,7 +311,98 @@ impl RawCell {
 
         if absent {
             let data_size = 32 * ((ton_types::LevelMask::with_level(l).level() + 1) as usize);
-            todo!()
+            let mut cell_data = vec![0; data_size + 1];
+            try_read!(src.read_exact(&mut cell_data[..data_size]));
+            cell_data[data_size] = 0x80;
+
+            return Ok(Some(RawCell {
+                cell_type: ton_types::CellType::Ordinary,
+                level: l,
+                data: cell_data,
+                reference_indices: Vec::new(),
+                reference_hashes: Vec::new(),
+                hashes: None,
+                depths: None,
+            }));
+        }
+
+        if r > 4 {
+            return Err(ShardStateStorageError::InvalidShardStateCell)
+                .context("Cell must contain at most 4 references");
+        }
+
+        let d2 = try_read!(src.read_byte());
+        let data_size = ((d2 >> 1) + if d2 & 1 != 0 { 1 } else { 0 }) as usize;
+        let no_completion_tag = d2 & 1 == 0;
+
+        let (hashes, depths) = if h {
+            let mut hashes = [[0u8; 32]; 4];
+            let mut depths = [0; 4];
+
+            let level = ton_types::LevelMask::with_mask(l).level() as usize;
+            for hash in hashes.iter_mut().take(level + 1) {
+                try_read!(src.read_exact(hash));
+            }
+            for depth in depths.iter_mut().take(level + 1) {
+                *depth = try_read!(src.read_be_uint(2)) as u16;
+            }
+            (Some(hashes), Some(depths))
+        } else {
+            (None, None)
+        };
+
+        let mut cell_data = vec![0; data_size + if no_completion_tag { 1 } else { 0 }];
+        try_read!(src.read_exact(&mut cell_data[..data_size]));
+
+        if no_completion_tag {
+            cell_data[data_size] = 0x80;
+        }
+
+        let cell_type = if !s {
+            ton_types::CellType::Ordinary
+        } else {
+            ton_types::CellType::from(cell_data[0])
+        };
+
+        let mut reference_indices = Vec::with_capacity(r);
+        if r > 0 {
+            for _ in 0..r {
+                let index = try_read!(src.read_be_uint(ref_size));
+                if index > cell_count || index <= cell_index {
+                    return Err(ShardStateStorageError::InvalidShardStateCell)
+                        .context("Reference index out of range");
+                } else {
+                    reference_indices.push(index as u32);
+                }
+            }
+        }
+
+        Ok(Some(RawCell {
+            cell_type,
+            level: l,
+            data: cell_data,
+            reference_indices,
+            reference_hashes: Vec::with_capacity(r),
+            hashes,
+            depths,
+        }))
+    }
+
+    fn hash(&self, mut index: usize) -> [u8; 32] {
+        index = ton_types::LevelMask::with_mask(self.level).calc_hash_index(index);
+        if self.cell_type == ton_types::CellType::PrunedBranch {
+            if index != self.level as usize {
+                let offset = 1 + 1 + index * 32;
+                self.data[offset..offset + 32].try_into().unwrap()
+            } else if let Some(hashes) = &self.hashes {
+                hashes[0]
+            } else {
+                unreachable!()
+            }
+        } else if let Some(hashes) = &self.hashes {
+            hashes[index]
+        } else {
+            unreachable!()
         }
     }
 }
@@ -333,14 +433,15 @@ impl ShardStatePacketReader {
     }
 
     fn begin(&'_ mut self) -> ShardStatePacketReaderTransaction<'_> {
+        let offset = self.offset;
         ShardStatePacketReaderTransaction {
             reader: self,
             reading_next_packet: false,
-            offset: self.offset,
+            offset,
         }
     }
 
-    fn set_skip(&mut self, mut n: usize) {
+    fn set_skip(&mut self, n: usize) {
         self.bytes_to_skip = n;
     }
 

@@ -48,7 +48,7 @@ impl ShardStateStuff {
             return Err(anyhow!("Given id has non-zero seq number"));
         }
 
-        let file_hash = UInt256::calc_file_hash(&bytes);
+        let file_hash = UInt256::calc_file_hash(bytes);
         if file_hash != id.file_hash {
             return Err(anyhow!("Wrong zero state's {} file hash", id));
         }
@@ -94,7 +94,7 @@ impl ShardStateStuff {
 
     #[allow(unused)]
     pub fn shard(&self) -> &ton_block::ShardIdent {
-        &self.block_id.shard()
+        self.block_id.shard()
     }
 
     pub fn block_id(&self) -> &ton_block::BlockIdExt {

@@ -95,7 +95,7 @@ fn parse_block_id(filename: &str) -> Result<ton_block::BlockIdExt> {
     let mut shard_id_parts = shard_id.split(',');
     let workchain_id = match shard_id_parts
         .next()
-        .and_then(|part| part.strip_prefix("("))
+        .and_then(|part| part.strip_prefix('('))
     {
         Some(part) => i32::from_str(part)?,
         None => return Err(PackageEntryIdError::WorkchainIdNotFound.into()),

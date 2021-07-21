@@ -119,12 +119,12 @@ async fn prepare_cold_boot_data(engine: &Arc<Engine>) -> Result<ColdBootData> {
 
         let (handle, proof) = loop {
             match engine
-                .download_block_proof(&block_id, true, true, None)
+                .download_block_proof(block_id, true, true, None)
                 .await
             {
                 Ok(proof) => match proof.check_proof_link() {
                     Ok(_) => {
-                        let handle = engine.store_block_proof(&block_id, handle, &proof).await?;
+                        let handle = engine.store_block_proof(block_id, handle, &proof).await?;
                         break (handle, proof);
                     }
                     Err(e) => {

@@ -40,7 +40,7 @@ impl ArchiveManager {
             .open(filename)
             .await?;
 
-        file.write_all(&data).await?;
+        file.write_all(data).await?;
         file.flush().await?;
 
         Ok(())
