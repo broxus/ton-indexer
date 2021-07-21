@@ -10,7 +10,7 @@ use nekoton::core::models::TransactionId;
 use nekoton::transport::models::{ExistingContract, RawContractState, RawTransaction};
 use tiny_adnl::AdnlTcpClientConfig;
 use tokio::sync::mpsc::UnboundedSender;
-use tokio::sync::Barrier;
+use tokio::sync::{Barrier, Semaphore};
 use ton::ton_node::blockid::BlockId;
 use ton_api::ton;
 use ton_block::{Deserializable, HashmapAugType, MsgAddressInt, ShardDescr, ShardIdent};
@@ -333,6 +333,7 @@ impl NodeClient {
             .context("Failed iterating shards")?;
 
         log::trace!("Num of shards: {}", num_of_shards);
+        let semaphore = Arc::new(Semaphore::new(self.config.pool_size as usize));
         let num_of_tasks = Arc::new(Barrier::new(num_of_shards));
         extra
             .shards()
@@ -345,6 +346,7 @@ impl NodeClient {
                     sink.clone(),
                     num_of_tasks.clone(),
                     bad_blocks_tx.clone(),
+                    semaphore.clone(),
                 );
                 tokio::spawn(task);
                 Ok(true)
@@ -366,6 +368,7 @@ impl NodeClient {
         sink: S,
         barrier: Arc<Barrier>,
         bad_blocks_tx: UnboundedSender<BlockId>,
+        semaphore: Arc<Semaphore>,
     ) where
         S: Sink<ton_block::Block> + Clone + Send + Sync + Unpin + 'static,
         <S as futures::Sink<ton_block::Block>>::Error: std::error::Error,
@@ -398,6 +401,11 @@ impl NodeClient {
         let num_of_tasks = Arc::new(tokio::sync::Barrier::new(processed_num + 1));
 
         for seq_no in last_known_block..current_seqno {
+            let guard = semaphore
+                .clone()
+                .acquire_owned()
+                .await
+                .expect("We are not closing semaphores");
             log::trace!("{:016x} Spawning", shard_id_numeric);
             let pool = self.pool.clone();
             let num_of_tasks = num_of_tasks.clone();
@@ -413,13 +421,14 @@ impl NodeClient {
                 let block = query_block_by_seqno(pool, id.clone()).await;
                 match block {
                     Ok(a) => sink.send(a).await.expect("Blocks channel is broken"),
-                    Err(e) => {
+                    Err(_e) => {
                         bad_blocks_tx
                             .send(id)
                             .expect("Bad blocks resolver is broken");
                     }
                 }
                 log::trace!("{:016x} {} Done", shard_id_numeric, seq_no);
+                drop(guard);
                 num_of_tasks.wait().await;
             };
             tokio::spawn(task);
