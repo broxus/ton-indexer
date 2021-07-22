@@ -88,10 +88,7 @@ impl TransactionExt for &Transaction {
             TransactionDescr::Ordinary(a) => !a.aborted,
             _ => false,
         });
-        match res {
-            Ok(a) => a,
-            Err(_) => false,
-        }
+        res.unwrap_or(false)
     }
 
     fn bounced(&self) -> Result<bool> {

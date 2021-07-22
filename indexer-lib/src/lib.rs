@@ -178,6 +178,7 @@ where
 #[derive(Debug, Clone)]
 pub struct ParsedFunctionWithBounce {
     pub bounced: bool,
+    pub is_outgoing: bool,
     pub function_name: String,
     pub input: Option<Vec<ton_abi::Token>>,
     pub output: Option<Vec<ton_abi::Token>>,
@@ -224,6 +225,7 @@ where
                 if let Some(tokens) = messages {
                     let out = ParsedFunctionWithBounce {
                         bounced: false,
+                        is_outgoing: true,
                         function_name: self.function.name.clone(),
                         input: None,
                         output: Some(tokens),
@@ -236,6 +238,7 @@ where
         }
         Ok(Some(vec![ParsedFunctionWithBounce {
             bounced,
+            is_outgoing: false,
             function_name: self.function.name.clone(),
             input,
             output,
@@ -1320,6 +1323,7 @@ mod test {
         };
         let res = input.process().unwrap().unwrap();
         assert!(res.output[0].bounced);
+        assert!(!res.output[0].is_outgoing);
     }
 
     #[test]
@@ -1341,6 +1345,6 @@ mod test {
             what_to_extract: &[fun],
         };
         let res = input.process().unwrap().unwrap();
-        dbg!(res);
+        assert!(res.output[0].is_outgoing);
     }
 }
