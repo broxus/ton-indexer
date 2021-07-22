@@ -178,7 +178,7 @@ where
 #[derive(Debug, Clone)]
 pub struct ParsedFunctionWithBounce {
     pub bounced: bool,
-    pub is_outgoing: bool,
+    pub outgoing_message_hash: Option<[u8; 32]>,
     pub function_name: String,
     pub input: Option<Vec<ton_abi::Token>>,
     pub output: Option<Vec<ton_abi::Token>>,
@@ -222,10 +222,10 @@ where
             (None, None) => {
                 let messages = process_outgoing_messages(&messages.out_messages, &self.function)
                     .context("Failed processing out messages")?;
-                if let Some(tokens) = messages {
+                if let Some((tokens, hash)) = messages {
                     let out = ParsedFunctionWithBounce {
                         bounced: false,
-                        is_outgoing: true,
+                        outgoing_message_hash: Some(hash),
                         function_name: self.function.name.clone(),
                         input: None,
                         output: Some(tokens),
@@ -238,7 +238,7 @@ where
         }
         Ok(Some(vec![ParsedFunctionWithBounce {
             bounced,
-            is_outgoing: false,
+            outgoing_message_hash: None,
             function_name: self.function.name.clone(),
             input,
             output,
@@ -249,7 +249,7 @@ where
 fn process_outgoing_messages(
     messages: &[MessageData],
     abi_function: &ton_abi::Function,
-) -> Result<Option<Vec<ton_abi::Token>>, AbiError> {
+) -> Result<Option<(Vec<ton_abi::Token>, [u8; 32])>, AbiError> {
     for msg in messages {
         let msg = &msg.msg;
         let is_internal = msg.is_internal();
@@ -264,7 +264,11 @@ fn process_outgoing_messages(
             let tokens = abi_function
                 .decode_input(body, is_internal)
                 .map_err(|e| AbiError::DecodingError(e.to_string()))?;
-            return Ok(Some(tokens));
+            let hash = msg
+                .hash()
+                .map(|x| *x.as_slice())
+                .expect("If message is parsed, than hash is ok");
+            return Ok(Some((tokens, hash)));
         }
     }
     Ok(None)
@@ -1323,7 +1327,7 @@ mod test {
         };
         let res = input.process().unwrap().unwrap();
         assert!(res.output[0].bounced);
-        assert!(!res.output[0].is_outgoing);
+        assert!(res.output[0].outgoing_message_hash.is_none());
     }
 
     #[test]
@@ -1345,6 +1349,6 @@ mod test {
             what_to_extract: &[fun],
         };
         let res = input.process().unwrap().unwrap();
-        assert!(res.output[0].is_outgoing);
+        assert!(res.output[0].outgoing_message_hash.is_some());
     }
 }
