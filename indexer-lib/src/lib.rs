@@ -12,6 +12,7 @@ use shared_deps::NoFailure;
 
 pub use crate::extension::TransactionExt;
 
+pub type BounceHandler = fn(ton_types::SliceData) -> Result<Vec<ton_abi::Token>>;
 mod extension;
 
 #[derive(Debug, Clone)]
@@ -30,7 +31,6 @@ pub struct ExtractInput<'a, W> {
 impl<W> ExtractInput<'_, W>
 where
     W: Extractable,
-    W: ShouldParseFurther,
 {
     pub fn process(&self) -> Result<Option<ParsedOutput<<W as Extractable>::Output>>> {
         let messages = self
@@ -49,7 +49,7 @@ where
             };
 
             output.append(&mut res);
-            if !<W as ShouldParseFurther>::should_continue() {
+            if !<W as Extractable>::should_continue() {
                 break;
             }
         }
@@ -61,41 +61,21 @@ where
     }
 }
 
-pub trait ShouldParseFurther {
-    /// Returns true, if parsed transaction can store only one element.
-    /// E.G. 1 function call per transaction, but n events.
-    fn should_continue() -> bool;
-}
-
-impl ShouldParseFurther for ton_abi::Function {
-    fn should_continue() -> bool {
-        false
-    }
-}
-
-impl<Fun> ShouldParseFurther for FunctionWithBounceHandler<Fun>
-where
-    Fun: Fn(ton_types::SliceData) -> Result<Vec<ton_abi::Token>>,
-{
-    fn should_continue() -> bool {
-        false
-    }
-}
-
-impl ShouldParseFurther for ton_abi::Event {
-    fn should_continue() -> bool {
-        true
-    }
-}
-
 pub trait Extractable {
     type Output: Clone + Debug;
     fn extract(&self, messages: &TransactionMessages) -> Result<Option<Vec<Self::Output>>>;
+    /// Returns true, if parsed transaction can store only one element.
+    /// E.G. 1 function call per transaction, but n events.
+    fn should_continue() -> bool {
+        false
+    }
 }
 
 impl Extractable for Event {
     type Output = ParsedEvent;
-
+    fn should_continue() -> bool {
+        true
+    }
     fn extract(&self, messages: &TransactionMessages) -> Result<Option<Vec<Self::Output>>> {
         fn hash(message: &MessageData) -> [u8; 32] {
             message
@@ -133,10 +113,8 @@ impl Extractable for ton_abi::Function {
                 None => return Ok(None),
                 Some(a) => a,
             };
-            process_function_in_message::<
-                dyn Fn(ton_types::SliceData) -> Result<Vec<ton_abi::Token>>,
-            >(&message, &self, None)
-            .context("Failed processing function in message")?
+            process_function_in_message::<BounceHandler>(&message, &self, None)
+                .context("Failed processing function in message")?
         } else {
             None
         };
@@ -174,22 +152,25 @@ pub struct ParsedEvent {
     pub message_hash: [u8; 32],
 }
 
-pub struct FunctionWithBounceHandler<Fun>
+//todo builder
+pub struct FunctionOpts<Fun>
 where
     Fun: Fn(ton_types::SliceData) -> Result<Vec<ton_abi::Token>>,
 {
     pub function: Function,
     pub handler: Option<Fun>,
+    pub match_outgoing: bool,
 }
 
-impl<Fun> From<Function> for FunctionWithBounceHandler<Fun>
+impl<Fun> From<Function> for FunctionOpts<Fun>
 where
     Fun: Fn(ton_types::SliceData) -> Result<Vec<ton_abi::Token>>,
 {
     fn from(f: Function) -> Self {
-        FunctionWithBounceHandler {
+        FunctionOpts {
             function: f,
             handler: None,
+            match_outgoing: false,
         }
     }
 }
@@ -202,7 +183,7 @@ pub struct ParsedFunctionWithBounce {
     pub output: Option<Vec<ton_abi::Token>>,
 }
 
-impl<Fun> Extractable for FunctionWithBounceHandler<Fun>
+impl<Fun> Extractable for FunctionOpts<Fun>
 where
     Fun: Fn(ton_types::SliceData) -> Result<Vec<ton_abi::Token>>,
 {
@@ -216,7 +197,7 @@ where
             };
             let header = match message.msg.int_header().context("No header") {
                 Ok(a) => a,
-                Err(e) => return Err(AbiError::DecodingError(e.to_string()).into()),
+                Err(_) => return Ok(None),
             };
             let bounced = header.bounced;
             (
@@ -236,7 +217,21 @@ where
         };
         #[allow(clippy::single_match)]
         match (&input, &output) {
-            (None, None) => return Ok(None),
+            (None, None) if !self.match_outgoing => return Ok(None),
+            (None, None) => {
+                let messages = process_outgoing_messages(&messages.out_messages, &self.function)
+                    .context("Failed processing out messages")?;
+                if let Some(tokens) = messages {
+                    let out = ParsedFunctionWithBounce {
+                        bounced: false,
+                        function_name: self.function.name.clone(),
+                        input: None,
+                        output: Some(tokens),
+                    };
+                    return Ok(Some(vec![out]));
+                }
+                return Ok(None);
+            }
             _ => (),
         }
         Ok(Some(vec![ParsedFunctionWithBounce {
@@ -248,6 +243,30 @@ where
     }
 }
 
+fn process_outgoing_messages(
+    messages: &[MessageData],
+    abi_function: &ton_abi::Function,
+) -> Result<Option<Vec<ton_abi::Token>>, AbiError> {
+    for msg in messages {
+        let msg = &msg.msg;
+        let is_internal = msg.is_internal();
+        let body = match msg.body() {
+            None => continue,
+            Some(a) => a,
+        };
+        let is_my_message = abi_function
+            .is_my_input_message(body.clone(), is_internal)
+            .unwrap_or(false);
+        if is_my_message {
+            let tokens = abi_function
+                .decode_input(body, is_internal)
+                .map_err(|e| AbiError::DecodingError(e.to_string()))?;
+            return Ok(Some(tokens));
+        }
+    }
+    Ok(None)
+}
+
 /// # Returns
 /// Ok `Some` if block has account block
 pub fn extract_from_block<W, O>(
@@ -256,7 +275,6 @@ pub fn extract_from_block<W, O>(
 ) -> Result<Vec<ParsedOutput<O>>>
 where
     W: Extractable + Extractable<Output = O>,
-    W: ShouldParseFurther,
     O: Clone + Debug,
 {
     use ton_types::HashmapType;
@@ -520,7 +538,7 @@ mod test {
 
     use shared_deps::NoFailure;
 
-    use crate::{ExtractInput, FunctionWithBounceHandler, TransactionExt};
+    use crate::{ExtractInput, FunctionOpts, TransactionExt};
 
     const DEX_ABI: &str = r#"
     {
@@ -1290,9 +1308,10 @@ mod test {
             .functions()["internalTransfer"]
             .clone();
         // internalTransfer - 416421634 416421634
-        let fun = FunctionWithBounceHandler {
+        let fun = FunctionOpts {
             function: fun,
             handler: Some(&bounce_handler),
+            match_outgoing: false,
         };
         let input = ExtractInput {
             transaction: &tx,
@@ -1301,5 +1320,27 @@ mod test {
         };
         let res = input.process().unwrap().unwrap();
         assert!(res.output[0].bounced);
+    }
+
+    #[test]
+    fn test_out() {
+        let tx = "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";
+        let fun = ton_abi::contract::Contract::load(std::io::Cursor::new(TOKEN_WALLET))
+            .unwrap()
+            .functions()["internalTransfer"]
+            .clone();
+        let tx = Transaction::construct_from_base64(tx).unwrap();
+        let fun = FunctionOpts::<super::BounceHandler> {
+            function: fun,
+            handler: None,
+            match_outgoing: true,
+        };
+        let input = ExtractInput {
+            transaction: &tx,
+            hash: tx.hash().unwrap(),
+            what_to_extract: &[fun],
+        };
+        let res = input.process().unwrap().unwrap();
+        dbg!(res);
     }
 }
