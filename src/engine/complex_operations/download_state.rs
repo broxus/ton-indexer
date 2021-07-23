@@ -4,6 +4,7 @@ use std::time::Duration;
 use anyhow::Result;
 use dashmap::DashSet;
 use tiny_adnl::utils::*;
+use tokio::sync::{mpsc, oneshot, Semaphore};
 
 use crate::engine::Engine;
 use crate::utils::*;
@@ -36,72 +37,106 @@ pub async fn download_state(
         };
     };
 
-    let mut transaction = engine.db.shard_state_storage().begin_replace().await?;
+    let (result_tx, result_rx) = oneshot::channel();
+    let (packets_tx, packets_rx) = mpsc::channel(1);
 
-    let mut offset = 0;
-    let mut state = Vec::new();
+    tokio::spawn({
+        let engine = engine.clone();
+        let block_id = block_id.clone();
+        async move { result_tx.send(background_process(&engine, block_id, packets_rx).await) }
+    });
+
     let max_size = 1 << 20;
-    let mut total_size = usize::MAX;
+    let mut offset = 0;
     let mut peer_attempt = 0;
     let mut part_attempt = 0;
 
-    'outer: while offset < total_size {
-        loop {
-            log::info!("-------------------------- Downloading part: {}", offset);
+    'outer: loop {
+        log::info!("-------------------------- Downloading part: {}", offset);
 
-            match overlay
-                .download_persistent_state_part(
-                    block_id,
-                    masterchain_block_id,
-                    offset,
-                    max_size,
-                    neighbour.clone(),
-                    peer_attempt,
-                )
-                .await
-            {
-                Ok(part) => {
-                    part_attempt = 0;
-                    let part_len = part.len();
-                    let last = part_len < max_size;
+        match overlay
+            .download_persistent_state_part(
+                block_id,
+                masterchain_block_id,
+                offset,
+                max_size,
+                neighbour.clone(),
+                peer_attempt,
+            )
+            .await
+        {
+            Ok(part) => {
+                part_attempt = 0;
+                offset += max_size;
 
-                    transaction.process(part, last)?;
+                let last = part.len() < max_size;
 
-                    if last {
-                        total_size = offset + part_len;
-                        break 'outer;
-                    }
-
-                    offset += max_size;
+                if packets_tx.send(part).await.is_err() || last {
+                    std::mem::drop(packets_tx);
+                    break 'outer;
                 }
-                Err(e) => {
-                    part_attempt += 1;
-                    peer_attempt += 1;
+            }
+            Err(e) => {
+                part_attempt += 1;
+                peer_attempt += 1;
 
-                    log::error!("Failed to download persistent state part: {}", e);
-                    if part_attempt > 10 {
-                        return Err(DownloadStateError::RanOutOfAttempts.into());
-                    }
-                    tokio::time::sleep(Duration::from_millis(100)).await;
+                log::error!("Failed to download persistent state part: {}", e);
+                if part_attempt > 10 {
+                    return Err(DownloadStateError::RanOutOfAttempts.into());
                 }
+                tokio::time::sleep(Duration::from_millis(100)).await;
             }
         }
     }
 
-    log::info!("DOWNLOADED: {} bytes", total_size);
+    log::info!("DOWNLOADED: {} bytes", offset);
 
-    transaction.finalize(block_id, todo!())?;
+    let result = result_rx.await?;
+    log::info!("RESULT: {:?}", result);
 
-    debug_assert!(total_size < usize::MAX);
+    //transaction.finalize(block_id, todo!())?;
 
-    Ok(Arc::new(ShardStateStuff::deserialize(
-        block_id.clone(),
-        &state,
-    )?))
+    // Ok(Arc::new(ShardStateStuff::deserialize(
+    //     block_id.clone(),
+    //     &state,
+    // )?))
+    todo!()
 }
+
+async fn background_process(
+    engine: &Arc<Engine>,
+    block_id: ton_block::BlockIdExt,
+    mut packets_rx: PacketsRx,
+) -> Result<()> {
+    let mut transaction = engine.db.shard_state_storage().begin_replace().await?;
+
+    let mut full = false;
+    while let Some(packet) = packets_rx.recv().await {
+        if transaction.process_packet(packet).await? {
+            full = true;
+            break;
+        }
+    }
+
+    packets_rx.close();
+    while packets_rx.recv().await.is_some() {}
+
+    if !full {
+        return Err(DownloadStateError::UnexpectedEof.into());
+    }
+
+    transaction.finalize(&block_id).await?;
+
+    Ok(())
+}
+
+type PacketsTx = mpsc::Sender<Vec<u8>>;
+type PacketsRx = mpsc::Receiver<Vec<u8>>;
 
 #[derive(thiserror::Error, Debug)]
 enum DownloadStateError {
     #[error("Ran out of attempts")]
     RanOutOfAttempts,
+    #[error("Unexpected eof")]
+    UnexpectedEof,
 }

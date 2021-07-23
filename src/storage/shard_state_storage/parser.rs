@@ -1,31 +1,51 @@
-use std::convert::TryInto;
 use std::io::{Read, Write};
 
 use anyhow::{Context, Result};
 use crc::{crc32, Hasher32};
 use ton_types::{ByteOrderRead, UInt256};
 
-#[derive(Debug)]
-pub struct BocHeader {
-    pub root_index: Option<usize>,
-    pub index_included: bool,
-    pub has_crc: bool,
-    pub ref_size: usize,
-    pub offset_size: usize,
-    pub cell_count: usize,
+macro_rules! try_read {
+    ($expr:expr) => {
+        match $expr {
+            Ok(data) => data,
+            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(None),
+            Err(e) => return Err(e.into()),
+        }
+    };
 }
 
-impl BocHeader {
-    pub fn from_reader<R>(src: &mut R) -> Result<Self>
-    where
-        R: Read,
-    {
+pub struct ShardStatePacketReader {
+    hasher: crc32::Digest,
+    offset: usize,
+    current_packet: Vec<u8>,
+    next_packet: Vec<u8>,
+    bytes_to_skip: usize,
+}
+
+impl ShardStatePacketReader {
+    pub fn new() -> Self {
+        Self {
+            hasher: crc32::Digest::new(crc32::CASTAGNOLI),
+            offset: 0,
+            current_packet: Default::default(),
+            next_packet: Default::default(),
+            bytes_to_skip: 0,
+        }
+    }
+
+    pub fn read_header(&mut self) -> Result<Option<BocHeader>> {
         const BOC_INDEXED_TAG: u32 = 0x68ff65f3;
         const BOC_INDEXED_CRC32_TAG: u32 = 0xacc3a728;
         const BOC_GENERIC_TAG: u32 = 0xb5ee9c72;
 
-        let magic = src.read_be_u32()?;
-        let first_byte = src.read_byte()?;
+        if self.process_skip() == ReaderAction::Incomplete {
+            return Ok(None);
+        }
+
+        let mut src = self.begin();
+
+        let magic = try_read!(src.read_be_u32());
+        let first_byte = try_read!(src.read_byte());
 
         let index_included;
         let mut has_crc = false;
@@ -56,15 +76,15 @@ impl BocHeader {
                 .context("Ref size must be in range [1;4]");
         }
 
-        let offset_size = src.read_byte()? as usize;
+        let offset_size = try_read!(src.read_byte()) as usize;
         if offset_size == 0 || offset_size > 8 {
             return Err(ShardStateParserError::InvalidShardStateHeader)
                 .context("Offset size must be in range [1;8]");
         }
 
-        let cell_count = src.read_be_uint(ref_size)?;
-        let root_count = src.read_be_uint(ref_size)?;
-        src.read_be_uint(ref_size)?; // skip absent
+        let cell_count = try_read!(src.read_be_uint(ref_size));
+        let root_count = try_read!(src.read_be_uint(ref_size));
+        try_read!(src.read_be_uint(ref_size)); // skip absent
 
         if root_count != 1 {
             return Err(ShardStateParserError::InvalidShardStateHeader)
@@ -75,51 +95,166 @@ impl BocHeader {
                 .context("Root count is greater then cell count");
         }
 
-        src.read_be_uint(offset_size)?; // skip total cells size
+        try_read!(src.read_be_uint(offset_size)); // skip total cells size
 
         let root_index = if magic == BOC_GENERIC_TAG {
-            Some(src.read_be_uint(ref_size)?)
+            Some(try_read!(src.read_be_uint(ref_size)))
         } else {
             None
         };
 
-        Ok(Self {
+        src.end();
+
+        self.set_skip(cell_count * offset_size);
+
+        Ok(Some(BocHeader {
             root_index,
             index_included,
             has_crc,
             ref_size,
             offset_size,
             cell_count,
-        })
+        }))
+    }
+
+    pub fn read_cell(&mut self, ref_size: usize, buffer: &mut [u8]) -> Result<Option<usize>> {
+        if self.process_skip() == ReaderAction::Incomplete {
+            return Ok(None);
+        }
+
+        let mut src = self.begin();
+
+        let d1 = try_read!(src.read_byte());
+        let l = d1 >> 5;
+        let h = (d1 & 0b0001_0000) != 0;
+        let r = (d1 & 0b0000_0111) as usize;
+        let absent = r == 0b111 && h;
+
+        buffer[0] = d1;
+
+        let size = if absent {
+            let data_size = 32 * ((ton_types::LevelMask::with_level(l).level() + 1) as usize);
+            try_read!(src.read_exact(&mut buffer[1..1 + data_size]));
+
+            // 1 byte of d1 + fixed data size of absent cell
+            1 + data_size
+        } else {
+            let d2 = try_read!(src.read_byte());
+            buffer[1] = d2;
+
+            // Skip optional precalculated hashes
+            if h && !src.skip((l as usize + 1) * (32 + 2)) {
+                return Ok(None);
+            }
+
+            let data_size = ((d2 >> 1) + if d2 & 1 != 0 { 1 } else { 0 }) as usize;
+            try_read!(src.read_exact(&mut buffer[2..2 + data_size + r * ref_size]));
+
+            // 2 bytes for d1 and d2 + data size + total references size
+            2 + data_size + r * ref_size
+        };
+
+        src.end();
+
+        Ok(Some(size))
+    }
+
+    pub fn read_crc(&mut self) -> Result<Option<()>> {
+        if self.process_skip() == ReaderAction::Incomplete {
+            return Ok(None);
+        }
+
+        let current_crc = self.hasher.sum32();
+
+        let mut src = self.begin();
+        let target_crc = try_read!(src.read_le_u32());
+        src.end();
+
+        if current_crc == target_crc {
+            Ok(Some(()))
+        } else {
+            Err(ShardStateParserError::CrcMismatch.into())
+        }
+    }
+
+    pub fn set_next_packet(&mut self, packet: Vec<u8>) {
+        self.next_packet = packet;
+    }
+
+    fn begin(&'_ mut self) -> ShardStatePacketReaderTransaction<'_> {
+        let offset = self.offset;
+        ShardStatePacketReaderTransaction {
+            reader: self,
+            reading_next_packet: false,
+            offset,
+        }
+    }
+
+    fn set_skip(&mut self, n: usize) {
+        self.bytes_to_skip = n;
+    }
+
+    fn process_skip(&mut self) -> ReaderAction {
+        if self.bytes_to_skip == 0 {
+            return ReaderAction::Complete;
+        }
+
+        let mut n = std::mem::take(&mut self.bytes_to_skip);
+
+        let remaining = self.current_packet.len() - self.offset;
+        if n > remaining {
+            n -= remaining;
+            self.hasher.write(&self.current_packet[self.offset..]);
+            self.offset = 0;
+            self.current_packet = std::mem::take(&mut self.next_packet);
+        } else {
+            self.hasher
+                .write(&self.current_packet[self.offset..self.offset + n]);
+            self.offset += n;
+            return ReaderAction::Complete;
+        }
+
+        if n > self.current_packet.len() {
+            n -= self.current_packet.len();
+            self.hasher.write(&self.current_packet);
+            self.current_packet = Vec::new();
+            self.bytes_to_skip = n;
+            ReaderAction::Incomplete
+        } else {
+            self.offset = n;
+            self.hasher.write(&self.current_packet[..self.offset]);
+            ReaderAction::Complete
+        }
     }
 }
 
-macro_rules! try_read {
-    ($expr:expr) => {
-        match $expr {
-            Ok(data) => data,
-            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(None),
-            Err(e) => return Err(e.into()),
-        }
-    };
+#[derive(Debug)]
+pub struct BocHeader {
+    pub root_index: Option<usize>,
+    pub index_included: bool,
+    pub has_crc: bool,
+    pub ref_size: usize,
+    pub offset_size: usize,
+    pub cell_count: usize,
 }
 
-pub struct RawCell {
+pub struct RawCell<'a> {
     pub cell_type: ton_types::CellType,
     pub level: u8,
-    pub data: Vec<u8>,
+    pub data: &'a [u8],
     pub reference_indices: Vec<u32>,
     pub reference_hashes: Vec<UInt256>,
     pub hashes: Option<[[u8; 32]; 4]>,
     pub depths: Option<[u16; 4]>,
 }
 
-impl RawCell {
+impl<'a> RawCell<'a> {
     pub fn from_reader<R>(
         src: &mut R,
         ref_size: usize,
         cell_count: usize,
         cell_index: usize,
+        buffer: &'a mut [u8],
     ) -> Result<Option<Self>>
     where
         R: Read,
@@ -135,7 +270,7 @@ impl RawCell {
             log::info!("ABSENT: {}, {}, {}, {}", l, h, s, r);
 
             let data_size = 32 * ((ton_types::LevelMask::with_level(l).level() + 1) as usize);
-            let mut cell_data = vec![0; data_size + 1];
+            let cell_data = &mut buffer[0..data_size + 1];
             try_read!(src.read_exact(&mut cell_data[..data_size]));
             cell_data[data_size] = 0x80;
 
@@ -176,7 +311,7 @@ impl RawCell {
             (None, None)
         };
 
-        let mut cell_data = vec![0; data_size + if no_completion_tag { 1 } else { 0 }];
+        let cell_data = &mut buffer[0..data_size + if no_completion_tag { 1 } else { 0 }];
         try_read!(src.read_exact(&mut cell_data[..data_size]));
 
         if no_completion_tag {
@@ -214,95 +349,10 @@ impl RawCell {
     }
 }
 
-pub struct PacketCrc {
-    pub value: u32,
-}
-
-impl PacketCrc {
-    pub fn from_reader<R>(src: &mut R) -> Result<Option<Self>>
-    where
-        R: Read,
-    {
-        Ok(Some(Self {
-            value: try_read!(src.read_le_u32()),
-        }))
-    }
-}
-
 #[derive(Copy, Clone, Eq, PartialEq)]
 pub enum ReaderAction {
     Incomplete,
     Complete,
-}
-
-pub struct ShardStatePacketReader {
-    hasher: crc32::Digest,
-    offset: usize,
-    current_packet: Vec<u8>,
-    next_packet: Vec<u8>,
-    bytes_to_skip: usize,
-}
-
-impl ShardStatePacketReader {
-    pub fn new() -> Self {
-        Self {
-            hasher: crc32::Digest::new(crc32::CASTAGNOLI),
-            offset: 0,
-            current_packet: Default::default(),
-            next_packet: Default::default(),
-            bytes_to_skip: 0,
-        }
-    }
-
-    pub fn crc32(&self) -> u32 {
-        self.hasher.sum32()
-    }
-
-    pub fn begin(&'_ mut self) -> ShardStatePacketReaderTransaction<'_> {
-        let offset = self.offset;
-        ShardStatePacketReaderTransaction {
-            reader: self,
-            reading_next_packet: false,
-            offset,
-        }
-    }
-
-    pub fn set_skip(&mut self, n: usize) {
-        self.bytes_to_skip = n;
-    }
-
-    pub fn set_next_packet(&mut self, packet: Vec<u8>) {
-        self.next_packet = packet;
-    }
-
-    pub fn process_skip(&mut self) -> ReaderAction {
-        let mut n = std::mem::take(&mut self.bytes_to_skip);
-
-        let remaining = self.current_packet.len() - self.offset;
-        if n > remaining {
-            n -= remaining;
-            self.hasher.write(&self.current_packet[self.offset..]);
-            self.offset = 0;
-            self.current_packet = std::mem::take(&mut self.next_packet);
-        } else {
-            self.hasher
-                .write(&self.current_packet[self.offset..self.offset + n]);
-            self.offset += n;
-            return ReaderAction::Complete;
-        }
-
-        if n > self.current_packet.len() {
-            n -= self.current_packet.len();
-            self.hasher.write(&self.current_packet);
-            self.current_packet = Vec::new();
-            self.bytes_to_skip = n;
-            ReaderAction::Incomplete
-        } else {
-            self.offset = n;
-            self.hasher.write(&self.current_packet[..self.offset]);
-            ReaderAction::Complete
-        }
-    }
 }
 
 pub struct ShardStatePacketReaderTransaction<'a> {
@@ -312,6 +362,38 @@ pub struct ShardStatePacketReaderTransaction<'a> {
 }
 
 impl<'a> ShardStatePacketReaderTransaction<'a> {
+    pub fn skip(&mut self, mut n: usize) -> bool {
+        loop {
+            let current_packet = match self.reading_next_packet {
+                // Reading non-empty current packet
+                false if self.offset < self.reader.current_packet.len() => {
+                    &self.reader.current_packet
+                }
+
+                // Current packet is empty - retry and switch to next
+                false => {
+                    self.reading_next_packet = true;
+                    self.offset = 0;
+                    continue;
+                }
+
+                // Reading non-empty next packet
+                true if self.offset < self.reader.next_packet.len() => &self.reader.next_packet,
+
+                // Reading next packet which is empty
+                true => return false,
+            };
+
+            let skipped = std::cmp::min(current_packet.len() - self.offset, n);
+            n -= skipped;
+            self.offset += skipped;
+
+            if n == 0 {
+                return true;
+            }
+        }
+    }
+
     pub fn end(self) {
         if self.reading_next_packet {
             // Write to the hasher until the end of current packet
@@ -396,4 +478,6 @@ enum ShardStateParserError {
     InvalidShardStateHeader,
     #[error("Invalid shard state cell")]
     InvalidShardStateCell,
+    #[error("Crc mismatch")]
+    CrcMismatch,
 }

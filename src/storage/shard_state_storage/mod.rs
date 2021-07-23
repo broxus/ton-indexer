@@ -1,18 +1,17 @@
 use std::collections::HashMap;
-use std::convert::TryInto;
-use std::io::{Read, Write};
+use std::io::{SeekFrom, Write};
 use std::sync::{Arc, Weak};
 
-use anyhow::{Context, Result};
-use crc::crc32::{self, Hasher32};
+use anyhow::Result;
 use dashmap::DashMap;
 use tokio::sync::{RwLock, RwLockWriteGuard};
-use ton_types::{ByteOrderRead, CellImpl, UInt256};
+use ton_types::CellImpl;
 
 use self::parser::*;
 use super::storage_cell::StorageCell;
 use crate::storage::StoredValue;
 use crate::utils::*;
+use tokio::io::{AsyncReadExt, AsyncSeekExt};
 
 mod parser;
 
@@ -63,7 +62,7 @@ impl ShardStateStorage {
         let state = self.state.write().await;
         state.shard_state_db.clear()?;
         state.dynamic_boc_db.clear()?;
-        Ok(ShardStateReplaceTransaction::new(state))
+        ShardStateReplaceTransaction::new(state).await
     }
 }
 
@@ -74,6 +73,7 @@ struct ShardStateStorageState {
 
 pub struct ShardStateReplaceTransaction<'a> {
     state: RwLockWriteGuard<'a, ShardStateStorageState>,
+    file: tokio::fs::File,
     executed: bool,
     reader: ShardStatePacketReader,
     boc_header: Option<BocHeader>,
@@ -81,96 +81,125 @@ pub struct ShardStateReplaceTransaction<'a> {
 }
 
 impl<'a> ShardStateReplaceTransaction<'a> {
-    fn new(state: RwLockWriteGuard<'a, ShardStateStorageState>) -> Self {
-        Self {
+    async fn new(
+        state: RwLockWriteGuard<'a, ShardStateStorageState>,
+    ) -> Result<ShardStateReplaceTransaction<'a>> {
+        let file = tokio::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .read(true)
+            .open("tempshardstate")
+            .await?;
+
+        Ok(Self {
             state,
+            file,
             executed: false,
             reader: ShardStatePacketReader::new(),
             boc_header: None,
             cells_read: 0,
-        }
+        })
     }
 
-    pub fn finalize(self, block_id: &ton_block::BlockIdExt, root_cell_hash: &[u8]) -> Result<()> {
-        let key = block_id.to_vec()?;
-        self.state.shard_state_db.insert(key, root_cell_hash)?;
-        Ok(())
-    }
+    pub async fn process_packet(&mut self, packet: Vec<u8>) -> Result<bool> {
+        use tokio::io::AsyncWriteExt;
 
-    pub fn process(&mut self, data: Vec<u8>, last: bool) -> Result<Option<UInt256>> {
-        self.reader.set_next_packet(data);
+        self.reader.set_next_packet(packet);
 
-        loop {
-            let header = match &self.boc_header {
-                Some(header) => header,
+        let header = loop {
+            match &self.boc_header {
+                Some(header) => break header,
                 None => {
-                    let mut reader = self.reader.begin();
-                    let header = BocHeader::from_reader(&mut reader)?;
-                    reader.end();
-
-                    log::info!("HEADER: {:?}", header);
-
-                    if header.index_included {
-                        self.reader.set_skip(header.cell_count * header.offset_size);
-                    }
-                    self.boc_header = Some(header);
+                    self.boc_header = match self.reader.read_header()? {
+                        Some(header) => {
+                            log::info!("HEADER: {:?}", header);
+                            Some(header)
+                        }
+                        None => return Ok(false),
+                    };
                     continue;
+                }
+            }
+        };
+
+        log::info!("CELLS READ: {} of {}", self.cells_read, header.cell_count);
+
+        let mut chunk_size = 0u32;
+        let mut buffer = [0; 256]; // At most 2 + 128 + 4 * 4
+
+        while self.cells_read < header.cell_count {
+            let cell_size = match self.reader.read_cell(header.ref_size, &mut buffer)? {
+                Some(cell_size) => cell_size,
+                None => {
+                    self.file.write_u32_le(chunk_size).await?;
+                    log::info!("CHUNK SIZE: {} bytes", chunk_size);
+                    return Ok(false);
                 }
             };
 
-            match self.reader.process_skip() {
-                ReaderAction::Incomplete if last => {
-                    return Err(ShardStateStorageError::InvalidShardStateHeader)
-                        .context("Cells index underflow")
-                }
-                ReaderAction::Incomplete => return Ok(None),
-                ReaderAction::Complete => { /* go further */ }
-            }
+            buffer[cell_size] = cell_size as u8;
+            self.file.write_all(&buffer[..cell_size + 1]).await?;
 
-            log::info!("CELLS READ: {} of {}", self.cells_read, header.cell_count);
-
-            while self.cells_read < header.cell_count {
-                let mut reader = self.reader.begin();
-
-                match RawCell::from_reader(
-                    &mut reader,
-                    header.ref_size,
-                    header.cell_count,
-                    self.cells_read,
-                )? {
-                    Some(_cell) => {
-                        reader.end();
-                        self.cells_read += 1;
-                    }
-                    None => return Ok(None),
-                };
-            }
-
-            log::info!("CELLS READ: {} of {}", self.cells_read, header.cell_count);
-
-            if header.has_crc {
-                let computed_crc = self.reader.crc32();
-
-                let mut reader = self.reader.begin();
-                let crc = match PacketCrc::from_reader(&mut reader)? {
-                    Some(crc) => {
-                        reader.end();
-                        crc
-                    }
-                    None => return Ok(None),
-                };
-
-                log::info!("COMPUTED CRC: {:08x}", computed_crc);
-                log::info!("TARGET CRC: {:08x}", crc.value);
-
-                if crc.value != computed_crc {
-                    return Err(ShardStateStorageError::InvalidShardStateHeader)
-                        .context("Invalid crc");
-                }
-            }
-
-            return Ok(Some(UInt256::default()));
+            chunk_size += cell_size as u32 + 1;
+            self.cells_read += 1;
         }
+
+        self.file.write_u32_le(chunk_size).await?;
+        log::info!("CHUNK SIZE: {} bytes", chunk_size);
+
+        log::info!("CELLS READ: {} of {}", self.cells_read, header.cell_count);
+
+        if header.has_crc && self.reader.read_crc()?.is_none() {
+            return Ok(false);
+        }
+
+        Ok(true)
+    }
+
+    pub async fn finalize(mut self, block_id: &ton_block::BlockIdExt) -> Result<()> {
+        use tokio::io::AsyncSeekExt;
+
+        let key = block_id.to_vec()?;
+
+        let mut tail = [0; 4];
+        let mut buffer = Vec::with_capacity(1 << 20);
+
+        let total_size = self.file.seek(SeekFrom::End(0)).await?;
+        log::info!("TOTAL SIZE: {}", total_size);
+
+        let mut total_read = 0;
+        let mut chunk_size = 0;
+        while total_read < total_size {
+            self.file.seek(SeekFrom::Current(-4 - chunk_size)).await?;
+            self.file.read_exact(&mut tail).await?;
+            total_read += 4;
+
+            let mut remaining_bytes = u32::from_le_bytes(tail) as usize;
+            buffer.resize(remaining_bytes, 0);
+
+            chunk_size = remaining_bytes as i64;
+
+            self.file.seek(SeekFrom::Current(-chunk_size - 4)).await?;
+            self.file.read_exact(&mut buffer).await?;
+            total_read += chunk_size as u64;
+
+            log::info!("PROCESSING CHUNK OF SIZE: {}", chunk_size);
+
+            while remaining_bytes > 0 {
+                let cell_size = buffer[remaining_bytes - 1] as usize;
+
+                remaining_bytes -= cell_size + 1;
+                buffer.truncate(remaining_bytes);
+            }
+
+            log::info!("READ: {}", total_read);
+        }
+
+        log::info!("DONE PROCESSING: {} of {}", total_read, total_size);
+
+        //self.state.shard_state_db.insert(key, root_cell_hash)?;
+        Ok(())
     }
 
     fn add_cell(
@@ -317,6 +346,6 @@ enum ShardStateStorageError {
     NotFound,
     #[error("Cell db transaction conflict")]
     TransactionConflict,
-    #[error("Invalid shard state header")]
-    InvalidShardStateHeader,
+    #[error("Invalid shard state packet")]
+    InvalidShardStatePacket,
 }
