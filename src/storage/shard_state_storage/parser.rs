@@ -104,21 +104,6 @@ macro_rules! try_read {
     };
 }
 
-pub struct PacketCrc {
-    pub value: u32,
-}
-
-impl PacketCrc {
-    pub fn from_reader<R>(src: &mut R) -> Result<Option<Self>>
-    where
-        R: Read,
-    {
-        Ok(Some(Self {
-            value: try_read!(src.read_le_u32()),
-        }))
-    }
-}
-
 pub struct RawCell {
     pub cell_type: ton_types::CellType,
     pub level: u8,
@@ -229,6 +214,21 @@ impl RawCell {
     }
 }
 
+pub struct PacketCrc {
+    pub value: u32,
+}
+
+impl PacketCrc {
+    pub fn from_reader<R>(src: &mut R) -> Result<Option<Self>>
+    where
+        R: Read,
+    {
+        Ok(Some(Self {
+            value: try_read!(src.read_le_u32()),
+        }))
+    }
+}
+
 #[derive(Copy, Clone, Eq, PartialEq)]
 pub enum ReaderAction {
     Incomplete,
@@ -279,27 +279,27 @@ impl ShardStatePacketReader {
         let mut n = std::mem::take(&mut self.bytes_to_skip);
 
         let remaining = self.current_packet.len() - self.offset;
-        log::info!("TO SKIP: {}, REMAINING: {}", n, remaining);
         if n > remaining {
-            log::info!("SWITCHING TO NEXT PACKET");
             n -= remaining;
+            self.hasher.write(&self.current_packet[self.offset..]);
             self.offset = 0;
             self.current_packet = std::mem::take(&mut self.next_packet);
         } else {
-            log::info!("COMPLETE 1");
+            self.hasher
+                .write(&self.current_packet[self.offset..self.offset + n]);
             self.offset += n;
             return ReaderAction::Complete;
         }
 
         if n > self.current_packet.len() {
-            log::info!("INCOMPLETE");
             n -= self.current_packet.len();
+            self.hasher.write(&self.current_packet);
             self.current_packet = Vec::new();
             self.bytes_to_skip = n;
             ReaderAction::Incomplete
         } else {
-            log::info!("COMPLETE 2");
-            self.offset += n;
+            self.offset = n;
+            self.hasher.write(&self.current_packet[..self.offset]);
             ReaderAction::Complete
         }
     }
@@ -330,7 +330,7 @@ impl<'a> ShardStatePacketReaderTransaction<'a> {
             // Write to the hasher current bytes
             self.reader
                 .hasher
-                .write(&self.reader.current_packet[..self.offset]);
+                .write(&self.reader.current_packet[self.reader.offset..self.offset]);
         }
 
         // Bump offset

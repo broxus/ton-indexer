@@ -149,6 +149,8 @@ impl<'a> ShardStateReplaceTransaction<'a> {
             log::info!("CELLS READ: {} of {}", self.cells_read, header.cell_count);
 
             if header.has_crc {
+                let computed_crc = self.reader.crc32();
+
                 let mut reader = self.reader.begin();
                 let crc = match PacketCrc::from_reader(&mut reader)? {
                     Some(crc) => {
@@ -158,7 +160,10 @@ impl<'a> ShardStateReplaceTransaction<'a> {
                     None => return Ok(None),
                 };
 
-                if crc.value != self.reader.crc32() {
+                log::info!("COMPUTED CRC: {:08x}", computed_crc);
+                log::info!("TARGET CRC: {:08x}", crc.value);
+
+                if crc.value != computed_crc {
                     return Err(ShardStateStorageError::InvalidShardStateHeader)
                         .context("Invalid crc");
                 }
