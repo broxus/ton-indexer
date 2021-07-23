@@ -36,7 +36,7 @@ pub async fn download_state(
         };
     };
 
-    let transaction = engine.db.shard_state_storage().begin_replace().await?;
+    let mut transaction = engine.db.shard_state_storage().begin_replace().await?;
 
     let mut offset = 0;
     let mut state = Vec::new();
@@ -62,10 +62,12 @@ pub async fn download_state(
             {
                 Ok(part) => {
                     part_attempt = 0;
-                    state.extend_from_slice(&part);
-
                     let part_len = part.len();
-                    if part_len < max_size {
+                    let last = part_len < max_size;
+
+                    transaction.process(part, last)?;
+
+                    if last {
                         total_size = offset + part_len;
                         break 'outer;
                     }
