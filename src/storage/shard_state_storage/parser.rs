@@ -139,6 +139,11 @@ impl ShardStatePacketReader {
             // 1 byte of d1 + fixed data size of absent cell
             1 + data_size
         } else {
+            if r > 4 {
+                return Err(ShardStateParserError::InvalidShardStateCell)
+                    .context("Cell must contain at most 4 references");
+            }
+
             let d2 = try_read!(src.read_byte());
             buffer[1] = d2;
 
@@ -242,24 +247,22 @@ pub struct RawCell<'a> {
     pub cell_type: ton_types::CellType,
     pub level: u8,
     pub data: &'a [u8],
+    pub bit_len: usize,
     pub reference_indices: Vec<u32>,
-    pub reference_hashes: Vec<UInt256>,
-    pub hashes: Option<[[u8; 32]; 4]>,
-    pub depths: Option<[u16; 4]>,
 }
 
 impl<'a> RawCell<'a> {
-    pub fn from_reader<R>(
+    pub fn from_stored_data<R>(
         src: &mut R,
         ref_size: usize,
         cell_count: usize,
         cell_index: usize,
-        buffer: &'a mut [u8],
-    ) -> Result<Option<Self>>
+        data_buffer: &'a mut [u8],
+    ) -> Result<Self>
     where
         R: Read,
     {
-        let d1 = try_read!(src.read_byte());
+        let d1 = src.read_byte()?;
         let l = d1 >> 5;
         let h = (d1 & 0b0001_0000) != 0;
         let s = (d1 & 0b0000_1000) != 0;
@@ -267,52 +270,26 @@ impl<'a> RawCell<'a> {
         let absent = r == 0b111 && h;
 
         if absent {
-            log::info!("ABSENT: {}, {}, {}, {}", l, h, s, r);
-
             let data_size = 32 * ((ton_types::LevelMask::with_level(l).level() + 1) as usize);
-            let cell_data = &mut buffer[0..data_size + 1];
-            try_read!(src.read_exact(&mut cell_data[..data_size]));
+            let cell_data = &mut data_buffer[0..data_size + 1];
+            src.read_exact(&mut cell_data[..data_size])?;
             cell_data[data_size] = 0x80;
 
-            return Ok(Some(RawCell {
+            return Ok(RawCell {
                 cell_type: ton_types::CellType::Ordinary,
                 level: l,
                 data: cell_data,
+                bit_len: ton_types::find_tag(cell_data), // ?!
                 reference_indices: Vec::new(),
-                reference_hashes: Vec::new(),
-                hashes: None,
-                depths: None,
-            }));
+            });
         }
 
-        if r > 4 {
-            log::info!("cell_index={},r={}", cell_index, r);
-            return Err(ShardStateParserError::InvalidShardStateCell)
-                .context("Cell must contain at most 4 references");
-        }
-
-        let d2 = try_read!(src.read_byte());
+        let d2 = src.read_byte()?;
         let data_size = ((d2 >> 1) + if d2 & 1 != 0 { 1 } else { 0 }) as usize;
         let no_completion_tag = d2 & 1 == 0;
 
-        let (hashes, depths) = if h {
-            let mut hashes = [[0u8; 32]; 4];
-            let mut depths = [0; 4];
-
-            let level = ton_types::LevelMask::with_mask(l).level() as usize;
-            for hash in hashes.iter_mut().take(level + 1) {
-                try_read!(src.read_exact(hash));
-            }
-            for depth in depths.iter_mut().take(level + 1) {
-                *depth = try_read!(src.read_be_uint(2)) as u16;
-            }
-            (Some(hashes), Some(depths))
-        } else {
-            (None, None)
-        };
-
-        let cell_data = &mut buffer[0..data_size + if no_completion_tag { 1 } else { 0 }];
-        try_read!(src.read_exact(&mut cell_data[..data_size]));
+        let cell_data = &mut data_buffer[0..data_size + if no_completion_tag { 1 } else { 0 }];
+        src.read_exact(&mut cell_data[..data_size])?;
 
         if no_completion_tag {
             cell_data[data_size] = 0x80;
@@ -327,7 +304,7 @@ impl<'a> RawCell<'a> {
         let mut reference_indices = Vec::with_capacity(r);
         if r > 0 {
             for _ in 0..r {
-                let index = try_read!(src.read_be_uint(ref_size));
+                let index = src.read_be_uint(ref_size)?;
                 if index > cell_count || index <= cell_index {
                     return Err(ShardStateParserError::InvalidShardStateCell)
                         .context("Reference index out of range");
@@ -337,15 +314,13 @@ impl<'a> RawCell<'a> {
             }
         }
 
-        Ok(Some(RawCell {
+        Ok(RawCell {
             cell_type,
             level: l,
             data: cell_data,
+            bit_len: ton_types::find_tag(cell_data),
             reference_indices,
-            reference_hashes: Vec::with_capacity(r),
-            hashes,
-            depths,
-        }))
+        })
     }
 }
 

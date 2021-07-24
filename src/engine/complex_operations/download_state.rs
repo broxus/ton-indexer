@@ -72,7 +72,6 @@ pub async fn download_state(
                 let last = part.len() < max_size;
 
                 if packets_tx.send(part).await.is_err() || last {
-                    std::mem::drop(packets_tx);
                     break 'outer;
                 }
             }
@@ -130,7 +129,6 @@ async fn background_process(
     Ok(())
 }
 
-type PacketsTx = mpsc::Sender<Vec<u8>>;
 type PacketsRx = mpsc::Receiver<Vec<u8>>;
 
 #[derive(thiserror::Error, Debug)]

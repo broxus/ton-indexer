@@ -1,8 +1,9 @@
 use std::collections::HashMap;
+use std::convert::TryInto;
 use std::io::{SeekFrom, Write};
 use std::sync::{Arc, Weak};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use dashmap::DashMap;
 use tokio::sync::{RwLock, RwLockWriteGuard};
 use ton_types::CellImpl;
@@ -11,7 +12,6 @@ use self::parser::*;
 use super::storage_cell::StorageCell;
 use crate::storage::StoredValue;
 use crate::utils::*;
-use tokio::io::{AsyncReadExt, AsyncSeekExt};
 
 mod parser;
 
@@ -145,8 +145,10 @@ impl<'a> ShardStateReplaceTransaction<'a> {
             self.cells_read += 1;
         }
 
-        self.file.write_u32_le(chunk_size).await?;
-        log::info!("CHUNK SIZE: {} bytes", chunk_size);
+        if chunk_size > 0 {
+            self.file.write_u32_le(chunk_size).await?;
+            log::info!("CHUNK SIZE: {} bytes", chunk_size);
+        }
 
         log::info!("CELLS READ: {} of {}", self.cells_read, header.cell_count);
 
@@ -158,16 +160,43 @@ impl<'a> ShardStateReplaceTransaction<'a> {
     }
 
     pub async fn finalize(mut self, block_id: &ton_block::BlockIdExt) -> Result<()> {
-        use tokio::io::AsyncSeekExt;
+        use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 
-        let key = block_id.to_vec()?;
+        const HASHES_ENTRY_SIZE: usize = 32 + 8 + 4;
+        const MAX_DATA_SIZE: usize = 128;
+
+        let header = match &self.boc_header {
+            Some(header) => header,
+            None => {
+                return Err(ShardStateStorageError::InvalidShardStatePacket)
+                    .context("BOC header not found")
+            }
+        };
+
+        let mut file = tokio::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .read(true)
+            .open("tempshardstate_hashes")
+            .await?;
+        file.set_len(header.cell_count as u64 * HASHES_ENTRY_SIZE as u64)
+            .await?;
 
         let mut tail = [0; 4];
-        let mut buffer = Vec::with_capacity(1 << 20);
+        let mut chunk_buffer = Vec::with_capacity(1 << 20);
+
+        // Allocate
+        let mut temp_buffer = vec![0u8; MAX_DATA_SIZE + HASHES_ENTRY_SIZE];
+        let (data_buffer, reference_buffer) = temp_buffer.split_at_mut(MAX_DATA_SIZE);
 
         let total_size = self.file.seek(SeekFrom::End(0)).await?;
         log::info!("TOTAL SIZE: {}", total_size);
 
+        let mut tree_bits: usize = 0;
+        let mut tree_cells: u32 = 0;
+
+        let mut cell_index = header.cell_count;
         let mut total_read = 0;
         let mut chunk_size = 0;
         while total_read < total_size {
@@ -176,27 +205,69 @@ impl<'a> ShardStateReplaceTransaction<'a> {
             total_read += 4;
 
             let mut remaining_bytes = u32::from_le_bytes(tail) as usize;
-            buffer.resize(remaining_bytes, 0);
+            chunk_buffer.resize(remaining_bytes, 0);
 
             chunk_size = remaining_bytes as i64;
 
             self.file.seek(SeekFrom::Current(-chunk_size - 4)).await?;
-            self.file.read_exact(&mut buffer).await?;
+            self.file.read_exact(&mut chunk_buffer).await?;
             total_read += chunk_size as u64;
 
             log::info!("PROCESSING CHUNK OF SIZE: {}", chunk_size);
 
             while remaining_bytes > 0 {
-                let cell_size = buffer[remaining_bytes - 1] as usize;
-
+                cell_index -= 1;
+                let cell_size = chunk_buffer[remaining_bytes - 1] as usize;
                 remaining_bytes -= cell_size + 1;
-                buffer.truncate(remaining_bytes);
+
+                let cell = RawCell::from_stored_data(
+                    &mut std::io::Cursor::new(
+                        &chunk_buffer[remaining_bytes..remaining_bytes + cell_size],
+                    ),
+                    header.ref_size,
+                    header.cell_count,
+                    cell_index,
+                    data_buffer,
+                )?;
+
+                let mut cell_bits = cell.bit_len;
+                let mut cell_cells = 1;
+
+                for index in cell.reference_indices {
+                    file.seek(SeekFrom::Start(index as u64 * HASHES_ENTRY_SIZE as u64))
+                        .await?;
+                    file.read_exact(reference_buffer).await?;
+
+                    cell_bits += usize::from_le_bytes(reference_buffer[32..40].try_into().unwrap());
+                    cell_cells += u32::from_le_bytes(reference_buffer[40..44].try_into().unwrap());
+                }
+
+                tree_bits += cell_bits;
+                tree_cells += cell_cells;
+
+                reference_buffer[32..40].copy_from_slice(&cell_bits.to_le_bytes());
+                reference_buffer[40..44].copy_from_slice(&cell_cells.to_le_bytes());
+
+                file.seek(SeekFrom::Start(
+                    cell_index as u64 * HASHES_ENTRY_SIZE as u64,
+                ))
+                .await?;
+                file.write_all(reference_buffer).await?;
+
+                chunk_buffer.truncate(remaining_bytes);
             }
 
-            log::info!("READ: {}", total_read);
+            log::info!(
+                "READ: {}, BITS: {}, CELLS: {}",
+                total_read,
+                tree_bits,
+                tree_cells
+            );
         }
 
         log::info!("DONE PROCESSING: {} of {}", total_read, total_size);
+
+        let key = block_id.to_vec()?;
 
         //self.state.shard_state_db.insert(key, root_cell_hash)?;
         Ok(())
