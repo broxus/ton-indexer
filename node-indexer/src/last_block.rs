@@ -1,13 +1,8 @@
+use super::errors::*;
+use crate::NodeClient;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
-
-use bb8::Pool;
-
-use super::adnl_pool::AdnlManageConnection;
-use super::errors::*;
 use ton_api::ton;
-
-use crate::query;
 
 pub struct LastBlock {
     id: parking_lot::RwLock<Option<(QueryResult<ton::ton_node::blockidext::BlockIdExt>, Instant)>>,
@@ -26,7 +21,7 @@ impl LastBlock {
 
     pub async fn get_last_block(
         &self,
-        connection: Pool<AdnlManageConnection>,
+        client: &NodeClient,
     ) -> QueryResult<ton::ton_node::blockidext::BlockIdExt> {
         let now = {
             let id = self.id.read();
@@ -50,7 +45,9 @@ impl LastBlock {
         };
 
         log::trace!("Getting mc block");
-        let id = query(connection, ton::rpc::lite_server::GetMasterchainInfo)
+        let id = client
+            .node
+            .query(ton::rpc::lite_server::GetMasterchainInfo)
             .await
             .map(|result| result.only().last);
 
@@ -59,7 +56,6 @@ impl LastBlock {
         let mut new_id = self.id.write();
         *new_id = Some((id.clone(), now));
         self.in_process.store(false, Ordering::Release);
-
         id
     }
 }

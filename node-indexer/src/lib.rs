@@ -1,5 +1,6 @@
 use std::convert::TryInto;
 use std::net::{Ipv4Addr, SocketAddrV4};
+use std::ops::Deref;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -8,9 +9,9 @@ use bb8::{Pool, PooledConnection};
 use futures::{Sink, SinkExt};
 use nekoton::core::models::TransactionId;
 use nekoton::transport::models::{ExistingContract, RawContractState, RawTransaction};
-use tiny_adnl::AdnlTcpClientConfig;
-use tokio::sync::mpsc::UnboundedSender;
-use tokio::sync::{Barrier, Semaphore};
+use tiny_adnl::{AdnlTcpClient, AdnlTcpClientConfig};
+use tokio::sync::mpsc::Sender;
+use tokio::sync::{Barrier, OwnedSemaphorePermit, Semaphore};
 use ton::ton_node::blockid::BlockId;
 use ton_api::ton;
 use ton_block::{Deserializable, HashmapAugType, MsgAddressInt, ShardDescr, ShardIdent};
@@ -59,7 +60,7 @@ pub fn default_mainnet_config() -> AdnlTcpClientConfig {
 type ShardBlocks = Arc<dashmap::DashMap<ShardIdent, i32>>;
 
 pub struct NodeClient {
-    pool: Pool<AdnlManageConnection>,
+    node: NodeConnection,
     last_block: LastBlock,
     config: Config,
     shard_cache: ShardBlocks,
@@ -74,7 +75,7 @@ impl NodeClient {
             .await?;
 
         Ok(Self {
-            pool,
+            node: NodeConnection::new(pool, config.pool_size),
             last_block: LastBlock::new(&config.threshold),
             config,
             shard_cache: ShardBlocks::default(),
@@ -82,67 +83,42 @@ impl NodeClient {
     }
 }
 
-async fn acquire_connection(
-    pool: &Pool<AdnlManageConnection>,
-) -> QueryResult<PooledConnection<'_, AdnlManageConnection>> {
-    pool.get().await.map_err(|e| {
-        log::error!("Failed getting connection from pool: {:#?}", e);
-        QueryError::ConnectionError
-    })
-}
-
-async fn bad_block_resolver<S>(
-    mut bad_block_queue: tokio::sync::mpsc::UnboundedReceiver<BlockId>,
-    pool: Pool<AdnlManageConnection>,
-    sink: S,
-) where
-    S: Sink<ton_block::Block> + Clone + Send + Sync + Unpin + 'static,
-    <S as futures::Sink<ton_block::Block>>::Error: std::error::Error,
-{
-    while let Some(id) = bad_block_queue.recv().await {
-        tokio::spawn({
-            let pool = pool.clone();
-            let id = id.clone();
-            let mut tx = sink.clone();
-            async move {
-                let result = tryhard::retry_fn(|| query_block_by_seqno(pool.clone(), id.clone()))
-                    .retries(10)
-                    .exponential_backoff(Duration::from_secs(1))
-                    .await;
-                match result {
-                    Ok(a) => {
-                        if let Err(e) = tx.send(a).await {
-                            log::error!("Failed sending via channel: {}", e)
+impl NodeClient {
+    async fn bad_block_resolver<S>(
+        self: Arc<Self>,
+        mut bad_block_queue: tokio::sync::mpsc::Receiver<BlockId>,
+        sink: S,
+    ) where
+        S: Sink<ton_block::Block> + Clone + Send + Sync + Unpin + 'static,
+        <S as futures::Sink<ton_block::Block>>::Error: std::error::Error,
+    {
+        while let Some(id) = bad_block_queue.recv().await {
+            let permit = self.node.acquire_spawn().await;
+            let pool = self.node.clone();
+            tokio::spawn({
+                let id = id.clone();
+                let mut tx = sink.clone();
+                async move {
+                    let result = tryhard::retry_fn(|| pool.query_block_by_seqno(id.clone()))
+                        .retries(10)
+                        .exponential_backoff(Duration::from_secs(1))
+                        .await;
+                    drop(permit);
+                    match result {
+                        Ok(a) => {
+                            if let Err(e) = tx.send(a).await {
+                                log::error!("Failed sending via channel: {}", e)
+                            }
+                        }
+                        Err(e) => {
+                            log::error!("Failed querying info about bad block: {}", e);
                         }
                     }
-                    Err(e) => {
-                        log::error!("Failed querying info about bad block: {}", e);
-                    }
                 }
-            }
-        });
+            });
+        }
     }
-}
 
-async fn get_block_ext_id(
-    pool: Pool<AdnlManageConnection>,
-    id: BlockId,
-) -> Result<ton_api::ton::ton_node::blockidext::BlockIdExt> {
-    Ok(query(
-        pool.clone(),
-        ton::rpc::lite_server::LookupBlock {
-            mode: 0x1,
-            id,
-            lt: None,
-            utime: None,
-        },
-    )
-    .await?
-    .id()
-    .clone())
-}
-
-impl NodeClient {
     async fn blocks_producer(
         self: Arc<Self>,
         start_block: Option<BlockId>,
@@ -150,26 +126,26 @@ impl NodeClient {
         pool_size: i32,
     ) -> Result<()> {
         async fn get_block_id(
-            pool: &Pool<AdnlManageConnection>,
+            pool: &NodeConnection,
             id: BlockId,
         ) -> Result<ton_api::ton::ton_node::blockidext::BlockIdExt> {
             tryhard::retry_fn(|| async {
                 let pool = pool.clone();
                 let id = id.clone();
-                get_block_ext_id(pool.clone(), id).await
+                pool.get_block_ext_id(id).await
             })
             .retries(20)
             .exponential_backoff(Duration::from_secs(1))
             .max_delay(Duration::from_secs(600))
             .await
         }
-        let top_block = tryhard::retry_fn(|| self.last_block.get_last_block(self.pool.clone()))
+        let top_block = tryhard::retry_fn(|| self.last_block.get_last_block(&self))
             .retries(100)
             .await
             .expect("Fatal block producer error");
 
         let mut current_block = match start_block {
-            Some(a) => get_block_id(&self.pool, a)
+            Some(a) => get_block_id(&self.node, a)
                 .await
                 .expect("Fatal block producer error"),
             None => top_block.clone(),
@@ -177,7 +153,7 @@ impl NodeClient {
 
         macro_rules! get_last_block {
             () => {
-                tryhard::retry_fn(|| self.last_block.get_last_block(self.pool.clone()))
+                tryhard::retry_fn(|| self.last_block.get_last_block(&self))
                     .retries(20)
                     .exponential_backoff(Duration::from_secs(1))
                     .max_delay(Duration::from_secs(600))
@@ -193,10 +169,11 @@ impl NodeClient {
                     log::error!("Failed sending mc block: {}", e);
                     return Ok(());
                 }
-                let query_count = std::cmp::min(pool_size * 4, blocks_diff);
+                // 8 blocks per connection
+                let query_count = std::cmp::min(pool_size * 16, blocks_diff);
                 log::debug!("Query count: {}, diff: {}", query_count, blocks_diff);
                 let block = get_block_id(
-                    &self.pool,
+                    &self.node,
                     BlockId {
                         workchain: current_block.workchain,
                         shard: current_block.shard,
@@ -224,7 +201,7 @@ impl NodeClient {
             } else {
                 log::error!("Logic has broken");
                 let block = get_block_id(
-                    &self.pool,
+                    &self.node,
                     BlockId {
                         workchain: current_block.workchain,
                         shard: current_block.shard,
@@ -251,14 +228,10 @@ impl NodeClient {
         McBlocks: Sink<BlockId> + Clone + Send + Sync + Unpin + 'static,
         <McBlocks as futures::Sink<BlockId>>::Error: std::error::Error,
     {
-        let (bad_blocks_tx, bad_blocks_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (bad_blocks_tx, bad_blocks_rx) = tokio::sync::mpsc::channel(256);
         let indexer = Arc::downgrade(self);
 
-        tokio::spawn(bad_block_resolver(
-            bad_blocks_rx,
-            self.pool.clone(),
-            sink.clone(),
-        ));
+        tokio::spawn(self.clone().bad_block_resolver(bad_blocks_rx, sink.clone()));
 
         let (masterchain_blocks_tx, mut masterchain_blocks_rx) = tokio::sync::mpsc::channel(2);
 
@@ -302,13 +275,15 @@ impl NodeClient {
         self: &Arc<Self>,
         mc_block: ton::ton_node::blockidext::BlockIdExt,
         sink: S,
-        bad_blocks_tx: UnboundedSender<BlockId>,
+        bad_blocks_tx: Sender<BlockId>,
     ) -> Result<()>
     where
         S: Sink<ton_block::Block> + Clone + Send + Sync + Unpin + 'static,
         <S as futures::Sink<ton_block::Block>>::Error: std::error::Error,
     {
-        let block = query_block(self.pool.clone(), mc_block)
+        let block = self
+            .node
+            .query_block(mc_block)
             .await
             .context("Failed getting block id")?;
         let extra = block
@@ -333,7 +308,6 @@ impl NodeClient {
             .context("Failed iterating shards")?;
 
         log::trace!("Num of shards: {}", num_of_shards);
-        let semaphore = Arc::new(Semaphore::new(2 * (self.config.pool_size as usize)));
         let num_of_tasks = Arc::new(Barrier::new(num_of_shards));
         extra
             .shards()
@@ -346,7 +320,6 @@ impl NodeClient {
                     sink.clone(),
                     num_of_tasks.clone(),
                     bad_blocks_tx.clone(),
-                    semaphore.clone(),
                 );
                 tokio::spawn(task);
                 Ok(true)
@@ -367,8 +340,7 @@ impl NodeClient {
         shard: ShardDescr,
         sink: S,
         barrier: Arc<Barrier>,
-        bad_blocks_tx: UnboundedSender<BlockId>,
-        semaphore: Arc<Semaphore>,
+        bad_blocks_tx: Sender<BlockId>,
     ) where
         S: Sink<ton_block::Block> + Clone + Send + Sync + Unpin + 'static,
         <S as futures::Sink<ton_block::Block>>::Error: std::error::Error,
@@ -397,17 +369,20 @@ impl NodeClient {
         );
 
         // +1 because of waiting in final barrier
-        log::trace!("{:016x} size: {}", shard_id_numeric, processed_num + 1);
         let num_of_tasks = Arc::new(tokio::sync::Barrier::new(processed_num + 1));
+        log::trace!("{:016x} size: {}", shard_id_numeric, processed_num + 1);
 
-        for seq_no in last_known_block..current_seqno {
-            let guard = semaphore
-                .clone()
-                .acquire_owned()
-                .await
-                .expect("We are not closing semaphores");
+        let mut connection = self.node.get_connection_or_die().await.deref().clone();
+        for (num, seq_no) in (last_known_block..current_seqno).enumerate() {
+            let permit = self.node.acquire_spawn().await;
+            // We are downloading 8 blocks per 1 connection
+            connection = if num % 8 == 0 {
+                self.node.get_connection_or_die().await.deref().clone()
+            } else {
+                connection
+            };
+            let task_connection = connection.clone();
             log::trace!("{:016x} Spawning", shard_id_numeric);
-            let pool = self.pool.clone();
             let num_of_tasks = num_of_tasks.clone();
             let mut sink = sink.clone();
             let bad_blocks_tx = bad_blocks_tx.clone();
@@ -418,18 +393,20 @@ impl NodeClient {
                     seqno: seq_no,
                 };
                 log::trace!("{:016x} {} Start", shard_id_numeric, seq_no);
-                let block = query_block_by_seqno(pool, id.clone()).await;
+                let block =
+                    NodeConnection::query_block_by_seqno_inner(task_connection, id.clone()).await;
                 match block {
                     Ok(a) => sink.send(a).await.expect("Blocks channel is broken"),
                     Err(_e) => {
                         bad_blocks_tx
                             .send(id)
+                            .await
                             .expect("Bad blocks resolver is broken");
                     }
                 }
+                drop(permit);
                 log::trace!("{:016x} {} Done", shard_id_numeric, seq_no);
-                drop(guard);
-                num_of_tasks.wait().await;
+                tokio::spawn(async move { num_of_tasks.wait().await });
             };
             tokio::spawn(task);
         }
@@ -484,7 +461,7 @@ impl NodeClient {
     ) -> Result<nekoton::transport::models::RawContractState> {
         use nekoton::core::models::{GenTimings, LastTransactionId};
 
-        let last_block = self.last_block.get_last_block(self.pool.clone()).await?;
+        let last_block = self.last_block.get_last_block(&self).await?;
         let id = contract_address
             .address()
             .get_bytestring(0)
@@ -497,7 +474,7 @@ impl NodeClient {
                 id: ton::int256(id),
             },
         };
-        let response = query(self.pool.clone(), get_state).await?.only();
+        let response = self.node.query(get_state).await?.only();
         let state = match ton_block::Account::construct_from_bytes(&response.state.0) {
             Ok(ton_block::Account::Account(account)) => {
                 let q_roots =
@@ -567,9 +544,9 @@ impl NodeClient {
                 },
             };
 
-            let response = query(
-                client.pool.clone(),
-                ton::rpc::lite_server::GetTransactions {
+            let response = client
+                .node
+                .query(ton::rpc::lite_server::GetTransactions {
                     count: count as i32,
                     account: ton::lite_server::accountid::AccountId {
                         workchain: address.workchain_id() as i32,
@@ -579,9 +556,8 @@ impl NodeClient {
                     },
                     lt: from.lt as i64,
                     hash: from.hash.into(),
-                },
-            )
-            .await?;
+                })
+                .await?;
 
             Ok(Some(response.transactions().0.clone()))
         }
@@ -632,59 +608,149 @@ impl NodeClient {
         )
     }
 }
-pub async fn query_block(
-    connection: Pool<AdnlManageConnection>,
-    id: ton::ton_node::blockidext::BlockIdExt,
-) -> QueryResult<ton_block::Block> {
-    let now = std::time::Instant::now();
-    let block = query(connection, ton::rpc::lite_server::GetBlock { id }).await?;
-    let spent = std::time::Instant::now() - now;
-    log::trace!("Spent in query_block: {:#?}", spent.as_millis());
-    let block = ton_block::Block::construct_from_bytes(&block.only().data.0)
-        .map_err(|_| QueryError::InvalidBlock)?;
 
-    Ok(block)
+#[derive(Clone)]
+struct NodeConnection {
+    connection: Pool<AdnlManageConnection>,
+    spawn_limiter: Arc<Semaphore>,
 }
 
-pub async fn query_block_by_seqno(
-    connection: Pool<AdnlManageConnection>,
-    id: ton::ton_node::blockid::BlockId,
-) -> QueryResult<ton_block::Block> {
-    let block_id = query(
-        connection.clone(),
-        ton::rpc::lite_server::LookupBlock {
-            mode: 0x1,
-            id,
-            lt: None,
-            utime: None,
-        },
-    )
-    .await?;
-    query_block(connection, block_id.only().id).await
-}
+impl NodeConnection {
+    fn new(pool: Pool<AdnlManageConnection>, pool_size: u32) -> Self {
+        Self {
+            connection: pool,
+            spawn_limiter: Arc::new(Semaphore::new((pool_size * 1024) as usize)),
+        }
+    }
 
-pub async fn query<T>(connection: Pool<AdnlManageConnection>, query: T) -> QueryResult<T::Reply>
-where
-    T: ton_api::Function,
-{
-    let query_bytes = query
-        .boxed_serialized_bytes()
-        .map_err(|_| QueryError::FailedToSerialize)?;
-    let con = acquire_connection(&connection).await?;
-    let start = std::time::Instant::now();
-    let response = con
-        .query(&ton::TLObject::new(ton::rpc::lite_server::Query {
-            data: query_bytes.into(),
-        }))
-        .await
-        .map_err(|_| QueryError::ConnectionError)?;
-    let spent = std::time::Instant::now() - start;
-    log::trace!("query: {}", spent.as_micros());
-    match response.downcast::<T::Reply>() {
-        Ok(reply) => Ok(reply),
-        Err(error) => match error.downcast::<ton::lite_server::Error>() {
-            Ok(error) => Err(QueryError::LiteServer(error)),
-            Err(_) => Err(QueryError::Unknown),
-        },
+    pub async fn acquire_spawn(&self) -> OwnedSemaphorePermit {
+        self.spawn_limiter
+            .clone()
+            .acquire_owned()
+            .await
+            .expect("We are not closing")
+    }
+
+    pub async fn get_connection_or_die(&self) -> PooledConnection<'_, AdnlManageConnection> {
+        loop {
+            match self.get_connection().await {
+                Ok(a) => break a,
+                Err(e) => {
+                    log::error!("Failed getting connection: {}", e);
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                    continue;
+                }
+            };
+        }
+    }
+
+    pub async fn get_connection(&self) -> QueryResult<PooledConnection<'_, AdnlManageConnection>> {
+        let con = self
+            .connection
+            .get()
+            .await
+            .map_err(|_| QueryError::ConnectionError)?;
+        Ok(con)
+    }
+    pub async fn query<T>(&self, query: T) -> QueryResult<T::Reply>
+    where
+        T: ton_api::Function,
+    {
+        let con = self.get_connection().await?;
+        Self::query_inner(con.deref().clone(), query).await
+    }
+
+    async fn query_inner<T>(connection: Arc<AdnlTcpClient>, query: T) -> QueryResult<T::Reply>
+    where
+        T: ton_api::Function,
+    {
+        let query_bytes = query
+            .boxed_serialized_bytes()
+            .map_err(|_| QueryError::FailedToSerialize)?;
+
+        let response = connection
+            .query(&ton::TLObject::new(ton::rpc::lite_server::Query {
+                data: query_bytes.into(),
+            }))
+            .await
+            .map_err(|_| QueryError::ConnectionError)?;
+        match response.downcast::<T::Reply>() {
+            Ok(reply) => Ok(reply),
+            Err(error) => match error.downcast::<ton::lite_server::Error>() {
+                Ok(error) => Err(QueryError::LiteServer(error)),
+                Err(_) => Err(QueryError::Unknown),
+            },
+        }
+    }
+
+    pub async fn query_block(
+        &self,
+        id: ton::ton_node::blockidext::BlockIdExt,
+    ) -> QueryResult<ton_block::Block> {
+        let block = self.query(ton::rpc::lite_server::GetBlock { id }).await?;
+        let block = ton_block::Block::construct_from_bytes(&block.only().data.0)
+            .map_err(|_| QueryError::InvalidBlock)?;
+        Ok(block)
+    }
+
+    async fn query_block_inner(
+        connection: Arc<AdnlTcpClient>,
+        id: ton::ton_node::blockidext::BlockIdExt,
+    ) -> QueryResult<ton_block::Block> {
+        let block = Self::query_inner(connection, ton::rpc::lite_server::GetBlock { id }).await?;
+        let block = ton_block::Block::construct_from_bytes(&block.only().data.0)
+            .map_err(|_| QueryError::InvalidBlock)?;
+        Ok(block)
+    }
+
+    async fn query_block_by_seqno_inner(
+        connection: Arc<AdnlTcpClient>,
+        id: ton::ton_node::blockid::BlockId,
+    ) -> QueryResult<ton_block::Block> {
+        let block_id = Self::query_inner(
+            connection.clone(),
+            ton::rpc::lite_server::LookupBlock {
+                mode: 0x1,
+                id,
+                lt: None,
+                utime: None,
+            },
+        )
+        .await?;
+        Self::query_block_inner(connection, block_id.only().id).await
+    }
+
+    pub async fn query_block_by_seqno(
+        &self,
+        id: ton::ton_node::blockid::BlockId,
+    ) -> QueryResult<ton_block::Block> {
+        let con = self.get_connection().await?;
+        Self::query_block_by_seqno_inner(con.deref().clone(), id).await
+    }
+
+    async fn get_block_ext_id_inner(
+        connection: Arc<AdnlTcpClient>,
+        id: BlockId,
+    ) -> Result<ton_api::ton::ton_node::blockidext::BlockIdExt> {
+        Ok(Self::query_inner(
+            connection,
+            ton::rpc::lite_server::LookupBlock {
+                mode: 0x1,
+                id,
+                lt: None,
+                utime: None,
+            },
+        )
+        .await?
+        .id()
+        .clone())
+    }
+
+    async fn get_block_ext_id(
+        &self,
+        id: BlockId,
+    ) -> Result<ton_api::ton::ton_node::blockidext::BlockIdExt> {
+        let con = self.get_connection().await?;
+        Self::get_block_ext_id_inner(con.deref().clone(), id).await
     }
 }
