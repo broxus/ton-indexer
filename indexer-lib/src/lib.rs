@@ -1,7 +1,7 @@
 use std::fmt::Debug;
 
 use anyhow::{Context, Result};
-use ton_abi::{Event, Function};
+use ton_abi::{Event, Function, Token};
 use ton_block::{
     AccountBlock, CurrencyCollection, Deserializable, GetRepresentationHash, MsgAddressInt,
     Serializable, Transaction,
@@ -12,7 +12,7 @@ use shared_deps::{NoFailure, TrustMe};
 
 pub use crate::extension::TransactionExt;
 
-pub type BounceHandler = fn(&ton_block::Message) -> Result<ParsedMessage>;
+pub type BounceHandler = fn(SliceData) -> Result<Vec<Token>>;
 mod extension;
 
 #[derive(Debug, Clone)]
@@ -155,7 +155,7 @@ pub struct ParsedEvent {
 //todo builder
 pub struct FunctionOpts<Fun>
 where
-    Fun: Fn(&ton_block::Message) -> Result<ParsedMessage>,
+    Fun: Fn(SliceData) -> Result<Vec<Token>>,
 {
     pub function: Function,
     pub handler: Option<Fun>,
@@ -164,7 +164,7 @@ where
 
 impl<Fun> From<Function> for FunctionOpts<Fun>
 where
-    Fun: Fn(&ton_block::Message) -> Result<ParsedMessage>,
+    Fun: Fn(SliceData) -> Result<Vec<Token>>,
 {
     fn from(f: Function) -> Self {
         FunctionOpts {
@@ -192,7 +192,7 @@ pub struct ParsedMessage {
 
 impl<Fun> Extractable for FunctionOpts<Fun>
 where
-    Fun: Fn(&ton_block::Message) -> Result<ParsedMessage>,
+    Fun: Fn(SliceData) -> Result<Vec<Token>>,
 {
     type Output = ParsedFunctionWithBounce;
 
@@ -412,13 +412,13 @@ fn process_function_in_message<'a, Fun>(
     bounce_handler: Option<&'a Fun>,
 ) -> Result<Option<ParsedMessage>, AbiError>
 where
-    Fun: Fn(&ton_block::Message) -> Result<ParsedMessage> + ?Sized,
+    Fun: Fn(SliceData) -> Result<Vec<Token>> + ?Sized,
 {
     let mut input = None;
     let MessageData { msg, .. } = msg;
     let header = match msg.int_header().context("No header") {
         Ok(a) => a,
-        Err(e) => return Err(AbiError::DecodingError(e.to_string())),
+        Err(_) => return Ok(None),
     };
     let bounced = header.bounced;
     let is_internal = msg.is_internal();
@@ -437,9 +437,12 @@ where
     if is_my_message {
         if bounced && bounce_handler.is_some() {
             let bounce_handler = bounce_handler.unwrap();
-            let res = bounce_handler(&msg);
+            let res = bounce_handler(body);
             return match res {
-                Ok(a) => Ok(Some(a)),
+                Ok(a) => Ok(Some(ParsedMessage {
+                    tokens: a,
+                    hash: *msg.serialize().trust_me().hash(0).as_slice(),
+                })),
                 Err(e) => Err(AbiError::DecodingError(e.to_string())),
             };
         }
@@ -554,6 +557,7 @@ mod test {
     use anyhow::{Context, Result};
     use ton_abi::{Token, TokenValue, Uint};
     use ton_block::{Deserializable, GetRepresentationHash, Message, Serializable, Transaction};
+    use ton_types::SliceData;
 
     use shared_deps::{NoFailure, TrustMe};
 
@@ -1309,18 +1313,13 @@ mod test {
         dbg!(out);
     }
 
-    fn bounce_handler(msg: &Message) -> Result<ParsedMessage> {
-        let mut data = msg.body().context("No body")?;
+    fn bounce_handler(mut data: SliceData) -> Result<Vec<Token>> {
         let _id = data.get_next_u32().convert()?;
         let token = data.get_next_u128().convert()?;
-        let tokens = vec![Token::new(
+        Ok(vec![Token::new(
             "amount",
             TokenValue::Uint(Uint::new(token, 128)),
-        )];
-        Ok(ParsedMessage {
-            tokens,
-            hash: *msg.serialize().trust_me().hash(0).as_slice(),
-        })
+        )])
     }
 
     #[test]
@@ -1343,6 +1342,8 @@ mod test {
             what_to_extract: &[fun],
         };
         let res = input.process().unwrap().unwrap();
+        let amount = &res.output[0].input.as_ref().unwrap().tokens[0].value;
+        assert_eq!("1", amount.to_string());
         assert!(res.output[0].bounced);
         assert!(!res.output[0].is_outgoing);
     }
