@@ -186,8 +186,8 @@ pub struct ParsedFunctionWithBounce {
 
 #[derive(Debug, Clone)]
 pub struct ParsedMessage {
-    tokens: Vec<ton_abi::Token>,
-    hash: [u8; 32],
+    pub tokens: Vec<ton_abi::Token>,
+    pub hash: [u8; 32],
 }
 
 impl<Fun> Extractable for FunctionOpts<Fun>
