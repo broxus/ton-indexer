@@ -5,6 +5,7 @@ use std::sync::{Arc, Weak};
 
 use anyhow::{Context, Result};
 use dashmap::DashMap;
+use sha2::Sha256;
 use tokio::sync::{RwLock, RwLockWriteGuard};
 use ton_types::CellImpl;
 
@@ -162,7 +163,7 @@ impl<'a> ShardStateReplaceTransaction<'a> {
     pub async fn finalize(mut self, block_id: &ton_block::BlockIdExt) -> Result<()> {
         use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 
-        const HASHES_ENTRY_SIZE: usize = 32 + 8 + 4;
+        // 2^7 bits + 1 bytes
         const MAX_DATA_SIZE: usize = 128;
 
         let header = match &self.boc_header {
@@ -180,21 +181,19 @@ impl<'a> ShardStateReplaceTransaction<'a> {
             .read(true)
             .open("tempshardstate_hashes")
             .await?;
-        file.set_len(header.cell_count as u64 * HASHES_ENTRY_SIZE as u64)
+        file.set_len(header.cell_count as u64 * HashesEntry::LEN as u64)
             .await?;
 
         let mut tail = [0; 4];
         let mut chunk_buffer = Vec::with_capacity(1 << 20);
+        let mut entries_buffer = EntriesBuffer::new();
+        let mut pruned_branches = HashMap::new();
 
-        // Allocate
-        let mut temp_buffer = vec![0u8; MAX_DATA_SIZE + HASHES_ENTRY_SIZE];
-        let (data_buffer, reference_buffer) = temp_buffer.split_at_mut(MAX_DATA_SIZE);
+        // Allocate on heap to prevent big future size
+        let mut data_buffer = vec![0u8; MAX_DATA_SIZE];
 
         let total_size = self.file.seek(SeekFrom::End(0)).await?;
         log::info!("TOTAL SIZE: {}", total_size);
-
-        let mut tree_bits: usize = 0;
-        let mut tree_cells: u32 = 0;
 
         let mut cell_index = header.cell_count;
         let mut total_read = 0;
@@ -227,42 +226,35 @@ impl<'a> ShardStateReplaceTransaction<'a> {
                     header.ref_size,
                     header.cell_count,
                     cell_index,
-                    data_buffer,
+                    &mut data_buffer,
                 )?;
 
-                let mut cell_bits = cell.bit_len;
-                let mut cell_cells = 1;
-
-                for index in cell.reference_indices {
-                    file.seek(SeekFrom::Start(index as u64 * HASHES_ENTRY_SIZE as u64))
+                for (&index, buffer) in cell
+                    .reference_indices
+                    .iter()
+                    .zip(entries_buffer.iter_child_buffers())
+                {
+                    file.seek(SeekFrom::Start(index as u64 * HashesEntry::LEN as u64))
                         .await?;
-                    file.read_exact(reference_buffer).await?;
-
-                    cell_bits += usize::from_le_bytes(reference_buffer[32..40].try_into().unwrap());
-                    cell_cells += u32::from_le_bytes(reference_buffer[40..44].try_into().unwrap());
+                    file.read_exact(buffer).await?;
                 }
 
-                tree_bits += cell_bits;
-                tree_cells += cell_cells;
+                finalize_cell(
+                    cell_index as u32,
+                    cell,
+                    &mut pruned_branches,
+                    &mut entries_buffer,
+                )?;
 
-                reference_buffer[32..40].copy_from_slice(&cell_bits.to_le_bytes());
-                reference_buffer[40..44].copy_from_slice(&cell_cells.to_le_bytes());
-
-                file.seek(SeekFrom::Start(
-                    cell_index as u64 * HASHES_ENTRY_SIZE as u64,
-                ))
-                .await?;
-                file.write_all(reference_buffer).await?;
+                file.seek(SeekFrom::Start(cell_index as u64 * HashesEntry::LEN as u64))
+                    .await?;
+                file.write_all(entries_buffer.current_entry_buffer())
+                    .await?;
 
                 chunk_buffer.truncate(remaining_bytes);
             }
 
-            log::info!(
-                "READ: {}, BITS: {}, CELLS: {}",
-                total_read,
-                tree_bits,
-                tree_cells
-            );
+            log::info!("READ: {}", total_read);
         }
 
         log::info!("DONE PROCESSING: {} of {}", total_read, total_size);
@@ -308,6 +300,283 @@ impl<'a> Drop for ShardStateReplaceTransaction<'a> {
         if !self.executed {
             let _ = self.state.shard_state_db.clear();
             let _ = self.state.dynamic_boc_db.clear();
+        }
+    }
+}
+
+fn finalize_cell(
+    cell_index: u32,
+    cell: RawCell<'_>,
+    pruned_branches: &mut HashMap<u32, Vec<u8>>,
+    entries_buffer: &mut EntriesBuffer,
+) -> Result<()> {
+    use sha2::Digest;
+
+    let (mut current_entry, children) = entries_buffer.split_children(&cell.reference_indices);
+
+    let mut children_mask = ton_types::LevelMask::with_mask(0);
+    let mut tree_bits_count = cell.bit_len;
+    let mut tree_cell_count = 1;
+
+    for (_, child) in children.iter() {
+        children_mask |= child.level_mask();
+        tree_bits_count += child.tree_bits_count();
+        tree_cell_count += child.tree_cell_count();
+    }
+
+    let mut is_merkle_cell = false;
+    let mut is_pruned_cell = false;
+    let level_mask = match cell.cell_type {
+        ton_types::CellType::Ordinary => children_mask,
+        ton_types::CellType::PrunedBranch => {
+            is_pruned_cell = true;
+            ton_types::LevelMask::with_mask(cell.level_mask)
+        }
+        ton_types::CellType::LibraryReference => ton_types::LevelMask::with_mask(0),
+        ton_types::CellType::MerkleProof => {
+            is_merkle_cell = true;
+            ton_types::LevelMask::for_merkle_cell(children_mask)
+        }
+        ton_types::CellType::MerkleUpdate => {
+            is_merkle_cell = true;
+            ton_types::LevelMask::for_merkle_cell(children_mask)
+        }
+        ton_types::CellType::Unknown => {
+            return Err(ShardStateStorageError::InvalidCell).context("Unknown cell type")
+        }
+    };
+
+    if cell.level_mask != level_mask.mask() {
+        return Err(ShardStateStorageError::InvalidCell).context("Level mask mismatch");
+    }
+
+    current_entry.set_level_mask(level_mask);
+    current_entry.set_cell_type(cell.cell_type);
+    current_entry.set_tree_bits_count(tree_bits_count);
+    current_entry.set_tree_cell_count(tree_cell_count);
+
+    let hash_count = if is_pruned_cell {
+        1
+    } else {
+        level_mask.level() + 1
+    };
+
+    for i in 0..hash_count {
+        let mut hasher = Sha256::new();
+
+        let level_mask = if is_pruned_cell {
+            level_mask
+        } else {
+            ton_types::LevelMask::with_level(i)
+        };
+
+        let (d1, d2) = ton_types::BagOfCells::calculate_descriptor_bytes(
+            cell.bit_len,
+            cell.reference_indices.len() as u8,
+            level_mask.mask(),
+            cell.cell_type != ton_types::CellType::Ordinary,
+            false,
+        );
+
+        hasher.update(&[d1, d2]);
+
+        if i == 0 {
+            let data_size = (cell.bit_len / 8) + if cell.bit_len % 8 != 0 { 1 } else { 0 };
+            hasher.update(&cell.data[..data_size]);
+        } else {
+            hasher.update(current_entry.prev_hash(i));
+        }
+
+        for (index, child) in children.iter() {
+            let child_depth = if child.cell_type() == ton_types::CellType::PrunedBranch {
+                let child_data = pruned_branches
+                    .get(index)
+                    .ok_or(ShardStateStorageError::InvalidCell)
+                    .context("Pruned branch data not found")?;
+                child.pruned_branch_depth(i, child_data)
+            } else {
+                child.depth(if is_merkle_cell { i + 1 } else { i })
+            };
+
+            if child_depth + 1 > ton_types::MAX_DEPTH {
+                return Err(ShardStateStorageError::InvalidCell).context("Max tree depth exceeded");
+            }
+
+            current_entry.set_depth(i, child_depth + 1);
+            hasher.update(&child_depth.to_be_bytes());
+        }
+
+        for (index, child) in children.iter() {
+            if child.cell_type() == ton_types::CellType::PrunedBranch {
+                let child_data = pruned_branches
+                    .get(index)
+                    .ok_or(ShardStateStorageError::InvalidCell)
+                    .context("Pruned branch data not found")?;
+                let child_hash = child.pruned_branch_hash(i, child_data);
+                hasher.update(child_hash);
+            } else {
+                let child_hash = child.hash(if is_merkle_cell { i + 1 } else { i });
+                hasher.update(child_hash);
+            }
+        }
+
+        current_entry.set_hash(i, hasher.finalize().as_slice());
+    }
+
+    if is_pruned_cell {
+        pruned_branches.insert(cell_index, cell.data.to_vec());
+    }
+
+    Ok(())
+}
+
+struct EntriesBuffer(Box<[[u8; HashesEntry::LEN]; 5]>);
+
+impl EntriesBuffer {
+    fn new() -> Self {
+        Self(Box::new([[0; HashesEntry::LEN]; 5]))
+    }
+
+    fn current_entry_buffer(&mut self) -> &mut [u8; HashesEntry::LEN] {
+        &mut self.0[0]
+    }
+
+    fn iter_child_buffers(&mut self) -> impl Iterator<Item = &mut [u8; HashesEntry::LEN]> {
+        self.0.iter_mut().skip(1)
+    }
+
+    fn split_children<'a, 'b>(
+        &'a mut self,
+        references: &'b [u32],
+    ) -> (HashesEntryWriter<'a>, EntriesBufferChildren<'b>)
+    where
+        'a: 'b,
+    {
+        if let [first, tail @ ..] = &mut *self.0 {
+            (
+                HashesEntryWriter(first),
+                EntriesBufferChildren(references, tail),
+            )
+        } else {
+            // SAFETY: array always contains 5 elements
+            unsafe { std::hint::unreachable_unchecked() }
+        }
+    }
+}
+
+struct EntriesBufferChildren<'a>(&'a [u32], &'a [[u8; HashesEntry::LEN]]);
+
+impl EntriesBufferChildren<'_> {
+    fn iter(&self) -> impl Iterator<Item = (&u32, HashesEntry)> {
+        self.0
+            .iter()
+            .zip(self.1)
+            .map(|(index, item)| (index, HashesEntry(item)))
+    }
+}
+
+struct HashesEntryWriter<'a>(&'a mut [u8]);
+
+impl HashesEntryWriter<'_> {
+    fn set_level_mask(&mut self, level_mask: ton_types::LevelMask) {
+        self.0[0] = level_mask.mask();
+    }
+
+    fn set_cell_type(&mut self, cell_type: ton_types::CellType) {
+        use num_traits::ToPrimitive;
+        self.0[1] = cell_type.to_u8().unwrap();
+    }
+
+    fn set_tree_bits_count(&mut self, count: usize) {
+        self.0[4..12].copy_from_slice(&count.to_le_bytes());
+    }
+
+    fn set_tree_cell_count(&mut self, count: usize) {
+        self.0[12..20].copy_from_slice(&count.to_le_bytes());
+    }
+
+    fn set_hash(&mut self, level: u8, hash: &[u8]) {
+        let offset = HashesEntry::HASHES_OFFSET + 32 * level as usize;
+        self.0[offset..offset + 32].copy_from_slice(hash);
+    }
+
+    fn prev_hash(&mut self, level: u8) -> &[u8] {
+        let offset = HashesEntry::HASHES_OFFSET + 32 * (level - 1) as usize;
+        &self.0[offset..offset + 32]
+    }
+
+    fn set_depth(&mut self, level: u8, depth: u16) {
+        let offset = HashesEntry::DEPTHS_OFFSET + 2 * level as usize;
+        self.0[offset..offset + 2].copy_from_slice(&depth.to_le_bytes());
+    }
+}
+
+struct HashesEntry<'a>(&'a [u8]);
+
+impl<'a> HashesEntry<'a> {
+    // 4 bytes - info (1 byte level mask, 1 byte cell type, 2 bytes padding)
+    // 8 bytes - tree bits count
+    // 4 bytes - cell count
+    // 32 * 4 bytes - hashes
+    // 2 * 4 bytes - depths
+    const LEN: usize = 4 + 8 + 8 + 32 * 4 + 2 * 4;
+    const HASHES_OFFSET: usize = 4 + 8 + 8;
+    const DEPTHS_OFFSET: usize = 4 + 8 + 8 + 32 * 4;
+
+    fn level_mask(&self) -> ton_types::LevelMask {
+        ton_types::LevelMask::with_mask(self.0[0])
+    }
+
+    fn cell_type(&self) -> ton_types::CellType {
+        ton_types::CellType::from(self.0[1])
+    }
+
+    fn tree_bits_count(&self) -> usize {
+        usize::from_le_bytes(self.0[4..12].try_into().unwrap())
+    }
+
+    fn tree_cell_count(&self) -> usize {
+        usize::from_le_bytes(self.0[12..20].try_into().unwrap())
+    }
+
+    fn hash(&self, n: u8) -> &[u8] {
+        let offset = Self::HASHES_OFFSET + 32 * self.level_mask().calc_hash_index(n as usize);
+        &self.0[offset..offset + 32]
+    }
+
+    fn depth(&self, n: u8) -> u16 {
+        let offset = Self::DEPTHS_OFFSET + 2 * self.level_mask().calc_hash_index(n as usize);
+        u16::from_le_bytes([self.0[offset], self.0[offset + 1]])
+    }
+
+    fn pruned_branch_hash<'b>(&self, n: u8, data: &'b [u8]) -> &'b [u8]
+    where
+        'a: 'b,
+    {
+        let level_mask = self.level_mask();
+        let index = level_mask.calc_hash_index(n as usize);
+        let level = level_mask.level() as usize;
+
+        if index == level {
+            let offset = Self::HASHES_OFFSET;
+            &self.0[offset..offset + 32]
+        } else {
+            let offset = 1 + 1 + index * 32;
+            &data[offset..offset + 32]
+        }
+    }
+
+    fn pruned_branch_depth(&self, n: u8, data: &[u8]) -> u16 {
+        let level_mask = self.level_mask();
+        let index = level_mask.calc_hash_index(n as usize);
+        let level = level_mask.level() as usize;
+
+        if index == level {
+            let offset = Self::DEPTHS_OFFSET;
+            u16::from_le_bytes([self.0[offset], self.0[offset + 1]])
+        } else {
+            let offset = 1 + 1 + level * 32 + index * 2;
+            u16::from_be_bytes([data[offset], data[offset + 1]])
         }
     }
 }
@@ -419,4 +688,6 @@ enum ShardStateStorageError {
     TransactionConflict,
     #[error("Invalid shard state packet")]
     InvalidShardStatePacket,
+    #[error("Invalid cell")]
+    InvalidCell,
 }

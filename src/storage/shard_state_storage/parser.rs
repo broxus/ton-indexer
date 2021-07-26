@@ -245,7 +245,7 @@ pub struct BocHeader {
 
 pub struct RawCell<'a> {
     pub cell_type: ton_types::CellType,
-    pub level: u8,
+    pub level_mask: u8,
     pub data: &'a [u8],
     pub bit_len: usize,
     pub reference_indices: Vec<u32>,
@@ -277,7 +277,7 @@ impl<'a> RawCell<'a> {
 
             return Ok(RawCell {
                 cell_type: ton_types::CellType::Ordinary,
-                level: l,
+                level_mask: l,
                 data: cell_data,
                 bit_len: ton_types::find_tag(cell_data), // ?!
                 reference_indices: Vec::new(),
@@ -316,7 +316,7 @@ impl<'a> RawCell<'a> {
 
         Ok(RawCell {
             cell_type,
-            level: l,
+            level_mask: l,
             data: cell_data,
             bit_len: ton_types::find_tag(cell_data),
             reference_indices,
