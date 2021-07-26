@@ -124,19 +124,13 @@ impl<'a> ShardStateReplaceTransaction<'a> {
             }
         };
 
-        log::info!("CELLS READ: {} of {}", self.cells_read, header.cell_count);
-
         let mut chunk_size = 0u32;
         let mut buffer = [0; 256]; // At most 2 + 128 + 4 * 4
 
         while self.cells_read < header.cell_count {
             let cell_size = match self.reader.read_cell(header.ref_size, &mut buffer)? {
                 Some(cell_size) => cell_size,
-                None => {
-                    self.file.write_u32_le(chunk_size).await?;
-                    log::info!("CHUNK SIZE: {} bytes", chunk_size);
-                    return Ok(false);
-                }
+                None => break,
             };
 
             buffer[cell_size] = cell_size as u8;
@@ -146,12 +140,16 @@ impl<'a> ShardStateReplaceTransaction<'a> {
             self.cells_read += 1;
         }
 
+        log::info!("CELLS READ: {} of {}", self.cells_read, header.cell_count);
+
         if chunk_size > 0 {
             self.file.write_u32_le(chunk_size).await?;
-            log::info!("CHUNK SIZE: {} bytes", chunk_size);
+            log::info!("CREATING CHUNK OF SIZE: {} bytes", chunk_size);
         }
 
-        log::info!("CELLS READ: {} of {}", self.cells_read, header.cell_count);
+        if self.cells_read < header.cell_count {
+            return Ok(false);
+        }
 
         if header.has_crc && self.reader.read_crc()?.is_none() {
             return Ok(false);
@@ -257,7 +255,7 @@ impl<'a> ShardStateReplaceTransaction<'a> {
             log::info!("READ: {}", total_read);
         }
 
-        log::info!("DONE PROCESSING: {} of {}", total_read, total_size);
+        log::info!("DONE PROCESSING: {} of {} bytes", total_read, total_size);
 
         let key = block_id.to_vec()?;
 
@@ -313,6 +311,8 @@ fn finalize_cell(
     use sha2::Digest;
 
     let (mut current_entry, children) = entries_buffer.split_children(&cell.reference_indices);
+
+    current_entry.clear();
 
     let mut children_mask = ton_types::LevelMask::with_mask(0);
     let mut tree_bits_count = cell.bit_len;
@@ -478,6 +478,12 @@ impl EntriesBufferChildren<'_> {
 struct HashesEntryWriter<'a>(&'a mut [u8]);
 
 impl HashesEntryWriter<'_> {
+    fn clear(&mut self) {
+        for byte in &mut *self.0 {
+            *byte = 0;
+        }
+    }
+
     fn set_level_mask(&mut self, level_mask: ton_types::LevelMask) {
         self.0[0] = level_mask.mask();
     }
