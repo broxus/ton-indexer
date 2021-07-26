@@ -483,8 +483,7 @@ impl HashesEntryWriter<'_> {
     }
 
     fn set_cell_type(&mut self, cell_type: ton_types::CellType) {
-        use num_traits::ToPrimitive;
-        self.0[1] = cell_type.to_u8().unwrap();
+        self.0[1] = cell_type.into();
     }
 
     fn set_tree_bits_count(&mut self, count: usize) {
