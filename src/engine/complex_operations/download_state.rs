@@ -90,21 +90,14 @@ pub async fn download_state(
 
     log::info!("DOWNLOADED: {} bytes", offset);
 
-    let result = result_rx.await?;
-    log::info!("RESULT: {:?}", result);
-
-    // Ok(Arc::new(ShardStateStuff::deserialize(
-    //     block_id.clone(),
-    //     &state,
-    // )?))
-    todo!()
+    result_rx.await?
 }
 
 async fn background_process(
     engine: &Arc<Engine>,
     block_id: ton_block::BlockIdExt,
     mut packets_rx: PacketsRx,
-) -> Result<()> {
+) -> Result<Arc<ShardStateStuff>> {
     let mut transaction = engine.db.shard_state_storage().begin_replace().await?;
 
     let mut full = false;
@@ -122,9 +115,7 @@ async fn background_process(
         return Err(DownloadStateError::UnexpectedEof.into());
     }
 
-    transaction.finalize(&block_id).await?;
-
-    Ok(())
+    transaction.finalize(block_id).await
 }
 
 type PacketsRx = mpsc::Receiver<Vec<u8>>;

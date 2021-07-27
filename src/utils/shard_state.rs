@@ -61,15 +61,6 @@ impl ShardStateStuff {
         Self::new(id, root)
     }
 
-    pub fn deserialize(id: ton_block::BlockIdExt, bytes: &[u8]) -> Result<Self> {
-        if id.seq_no() == 0 {
-            return Err(anyhow!("Use `deserialize_zerostate` method for zerostate"));
-        }
-        let root = ton_types::deserialize_tree_of_cells(&mut Cursor::new(bytes)).convert()?;
-
-        Self::new(id, root)
-    }
-
     pub fn state(&self) -> &ton_block::ShardStateUnsplit {
         &self.shard_state
     }

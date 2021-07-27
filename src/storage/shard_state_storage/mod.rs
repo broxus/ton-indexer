@@ -158,7 +158,10 @@ impl<'a> ShardStateReplaceTransaction<'a> {
         Ok(true)
     }
 
-    pub async fn finalize(mut self, block_id: &ton_block::BlockIdExt) -> Result<()> {
+    pub async fn finalize(
+        mut self,
+        block_id: ton_block::BlockIdExt,
+    ) -> Result<Arc<ShardStateStuff>> {
         use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 
         // 2^7 bits + 1 bytes
@@ -259,10 +262,26 @@ impl<'a> ShardStateReplaceTransaction<'a> {
 
         log::info!("DONE PROCESSING: {} of {} bytes", total_read, total_size);
 
-        let key = block_id.to_vec()?;
+        let block_id_key = block_id.to_vec()?;
 
-        //self.state.shard_state_db.insert(key, root_cell_hash)?;
-        Ok(())
+        // Current entry contains root cell
+        let current_entry = entries_buffer.split_children(&[]).0;
+        self.state
+            .shard_state_db
+            .insert(block_id_key.as_slice(), current_entry.as_reader().hash(3))?;
+
+        // Load stored shard state
+        match self.state.shard_state_db.get(block_id_key)? {
+            Some(root) => {
+                let cell_id = ton_types::UInt256::from_be_bytes(root.as_ref());
+                let cell = self.state.dynamic_boc_db.load_cell(cell_id)?;
+                Ok(Arc::new(ShardStateStuff::new(
+                    block_id,
+                    ton_types::Cell::with_cell_impl_arc(cell),
+                )?))
+            }
+            None => Err(ShardStateStorageError::NotFound.into()),
+        }
     }
 
     fn finalize_cell(
