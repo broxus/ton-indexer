@@ -270,6 +270,12 @@ impl<'a> ShardStateReplaceTransaction<'a> {
             .shard_state_db
             .insert(block_id_key.as_slice(), current_entry.as_reader().hash(3))?;
 
+        log::info!(
+            "Saved state: {} with root cell {}",
+            block_id,
+            hex::encode(current_entry.as_reader().hash(3))
+        );
+
         // Load stored shard state
         match self.state.shard_state_db.get(block_id_key)? {
             Some(root) => {
@@ -421,8 +427,8 @@ impl<'a> ShardStateReplaceTransaction<'a> {
         output_buffer.clear();
 
         output_buffer.write_all(&[cell.cell_type.to_u8().unwrap()])?;
-        output_buffer.write_all(&cell.bit_len.to_le_bytes())?;
-        output_buffer.write_all(&cell.data[0..(cell.bit_len as usize + 8) / 8])?;
+        output_buffer.write_all(&(cell.bit_len as u16).to_le_bytes())?;
+        output_buffer.write_all(&cell.data[0..(cell.bit_len + 8) / 8])?;
         output_buffer.write_all(&[cell.level_mask, 0, 1, hash_count])?; // level_mask, store_hashes, has_hashes, hash_count
         for i in 0..hash_count {
             output_buffer.write_all(current_entry.get_hash_slice(i))?;
