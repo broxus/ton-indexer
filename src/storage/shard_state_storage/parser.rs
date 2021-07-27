@@ -105,7 +105,9 @@ impl ShardStatePacketReader {
 
         src.end();
 
-        self.set_skip(cell_count * offset_size);
+        if index_included {
+            self.set_skip(cell_count * offset_size);
+        }
 
         Ok(Some(BocHeader {
             root_index,
