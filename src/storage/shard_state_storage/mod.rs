@@ -1,12 +1,14 @@
 use std::collections::HashMap;
 use std::convert::TryInto;
 use std::io::{SeekFrom, Write};
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Weak};
 
 use anyhow::{Context, Result};
 use dashmap::DashMap;
 use num_traits::ToPrimitive;
 use sha2::Sha256;
+use tokio::fs::File;
 use tokio::sync::{RwLock, RwLockWriteGuard};
 
 use self::parser::*;
@@ -17,17 +19,29 @@ use crate::utils::*;
 mod parser;
 
 pub struct ShardStateStorage {
+    downloads_dir: Arc<PathBuf>,
     state: RwLock<ShardStateStorageState>,
 }
 
 impl ShardStateStorage {
-    pub fn with_db(shard_state_db: sled::Tree, cell_db_path: sled::Tree) -> Self {
-        Self {
+    pub async fn with_db<P>(
+        shard_state_db: sled::Tree,
+        cell_db: sled::Tree,
+        file_db_path: &P,
+    ) -> Result<Self>
+    where
+        P: AsRef<Path>,
+    {
+        let downloads_dir = Arc::new(file_db_path.as_ref().join("downloads"));
+        tokio::fs::create_dir_all(downloads_dir.as_ref()).await?;
+
+        Ok(Self {
             state: RwLock::new(ShardStateStorageState {
                 shard_state_db,
-                dynamic_boc_db: DynamicBocDb::with_db(cell_db_path),
+                dynamic_boc_db: DynamicBocDb::with_db(cell_db),
             }),
-        }
+            downloads_dir,
+        })
     }
 
     pub async fn store_state(
@@ -59,11 +73,17 @@ impl ShardStateStorage {
         }
     }
 
-    pub async fn begin_replace(&'_ self) -> Result<ShardStateReplaceTransaction<'_>> {
+    pub async fn begin_replace(
+        &'_ self,
+        block_id: &ton_block::BlockIdExt,
+        clear_db: bool,
+    ) -> Result<ShardStateReplaceTransaction<'_>> {
         let state = self.state.write().await;
-        state.shard_state_db.clear()?;
-        state.dynamic_boc_db.clear()?;
-        ShardStateReplaceTransaction::new(state).await
+        if clear_db {
+            state.shard_state_db.clear()?;
+            state.dynamic_boc_db.clear()?;
+        }
+        ShardStateReplaceTransaction::new(state, &*self.downloads_dir, block_id).await
     }
 }
 
@@ -74,29 +94,59 @@ struct ShardStateStorageState {
 
 pub struct ShardStateReplaceTransaction<'a> {
     state: RwLockWriteGuard<'a, ShardStateStorageState>,
-    file: tokio::fs::File,
-    executed: bool,
+    cells_path: PathBuf,
+    cells_file: Option<File>,
+    hashes_path: PathBuf,
+    hashes_file: Option<File>,
     reader: ShardStatePacketReader,
     boc_header: Option<BocHeader>,
     cells_read: usize,
 }
 
 impl<'a> ShardStateReplaceTransaction<'a> {
-    async fn new(
+    async fn new<P>(
         state: RwLockWriteGuard<'a, ShardStateStorageState>,
-    ) -> Result<ShardStateReplaceTransaction<'a>> {
-        let file = tokio::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .read(true)
-            .open("tempshardstate")
-            .await?;
+        base_path: P,
+        block_id: &ton_block::BlockIdExt,
+    ) -> Result<ShardStateReplaceTransaction<'a>>
+    where
+        P: AsRef<Path>,
+    {
+        let block_id = format!(
+            "({},{:016x},{})",
+            block_id.shard_id.workchain_id(),
+            block_id.shard_id.shard_prefix_with_tag(),
+            block_id.seq_no
+        );
+
+        let cells_path = base_path.as_ref().join(format!("state_cells_{}", block_id));
+        let hashes_path = base_path
+            .as_ref()
+            .join(format!("state_hashes_{}", block_id));
+
+        let mut options = tokio::fs::OpenOptions::new();
+        options.write(true).create(true).truncate(true).read(true);
+
+        let (cells_file, hashes_file) = match futures::future::join(
+            options.open(&cells_path),
+            options.open(&hashes_path),
+        )
+        .await
+        {
+            (Ok(cells_file), Ok(hashes_file)) => (cells_file, hashes_file),
+            (Err(e), _) | (_, Err(e)) => {
+                tokio::fs::remove_file(&cells_path).await?;
+                tokio::fs::remove_file(&hashes_path).await?;
+                return Err(e.into());
+            }
+        };
 
         Ok(Self {
             state,
-            file,
-            executed: false,
+            cells_path,
+            cells_file: Some(cells_file),
+            hashes_path,
+            hashes_file: Some(hashes_file),
             reader: ShardStatePacketReader::new(),
             boc_header: None,
             cells_read: 0,
@@ -105,6 +155,11 @@ impl<'a> ShardStateReplaceTransaction<'a> {
 
     pub async fn process_packet(&mut self, packet: Vec<u8>) -> Result<bool> {
         use tokio::io::AsyncWriteExt;
+
+        let cells_file = match &mut self.cells_file {
+            Some(file) => file,
+            None => return Err(ShardStateStorageError::AlreadyFinalized.into()),
+        };
 
         self.reader.set_next_packet(packet);
 
@@ -134,7 +189,7 @@ impl<'a> ShardStateReplaceTransaction<'a> {
             };
 
             buffer[cell_size] = cell_size as u8;
-            self.file.write_all(&buffer[..cell_size + 1]).await?;
+            cells_file.write_all(&buffer[..cell_size + 1]).await?;
 
             chunk_size += cell_size as u32 + 1;
             self.cells_read += 1;
@@ -143,7 +198,7 @@ impl<'a> ShardStateReplaceTransaction<'a> {
         log::info!("CELLS READ: {} of {}", self.cells_read, header.cell_count);
 
         if chunk_size > 0 {
-            self.file.write_u32_le(chunk_size).await?;
+            cells_file.write_u32_le(chunk_size).await?;
             log::info!("CREATING CHUNK OF SIZE: {} bytes", chunk_size);
         }
 
@@ -167,6 +222,12 @@ impl<'a> ShardStateReplaceTransaction<'a> {
         // 2^7 bits + 1 bytes
         const MAX_DATA_SIZE: usize = 128;
 
+        let (mut cells_file, mut hashes_file) =
+            match (self.cells_file.take(), self.hashes_file.take()) {
+                (Some(cells_file), Some(hashes_file)) => (cells_file, hashes_file),
+                _ => return Err(ShardStateStorageError::AlreadyFinalized.into()),
+            };
+
         let header = match &self.boc_header {
             Some(header) => header,
             None => {
@@ -175,14 +236,10 @@ impl<'a> ShardStateReplaceTransaction<'a> {
             }
         };
 
-        let mut file = tokio::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .read(true)
-            .open("tempshardstate_hashes")
-            .await?;
-        file.set_len(header.cell_count as u64 * HashesEntry::LEN as u64)
+        cells_file.flush().await?;
+
+        hashes_file
+            .set_len(header.cell_count as u64 * HashesEntry::LEN as u64)
             .await?;
 
         let mut tail = [0; 4];
@@ -194,15 +251,15 @@ impl<'a> ShardStateReplaceTransaction<'a> {
         let mut output_buffer = Vec::with_capacity(1 << 10);
         let mut data_buffer = vec![0u8; MAX_DATA_SIZE];
 
-        let total_size = self.file.seek(SeekFrom::End(0)).await?;
+        let total_size = cells_file.seek(SeekFrom::End(0)).await?;
         log::info!("TOTAL SIZE: {}", total_size);
 
         let mut cell_index = header.cell_count;
         let mut total_read = 0;
         let mut chunk_size = 0;
         while total_read < total_size {
-            self.file.seek(SeekFrom::Current(-4 - chunk_size)).await?;
-            self.file.read_exact(&mut tail).await?;
+            cells_file.seek(SeekFrom::Current(-4 - chunk_size)).await?;
+            cells_file.read_exact(&mut tail).await?;
             total_read += 4;
 
             let mut remaining_bytes = u32::from_le_bytes(tail) as usize;
@@ -210,8 +267,8 @@ impl<'a> ShardStateReplaceTransaction<'a> {
 
             chunk_size = remaining_bytes as i64;
 
-            self.file.seek(SeekFrom::Current(-chunk_size - 4)).await?;
-            self.file.read_exact(&mut chunk_buffer).await?;
+            cells_file.seek(SeekFrom::Current(-chunk_size - 4)).await?;
+            cells_file.read_exact(&mut chunk_buffer).await?;
             total_read += chunk_size as u64;
 
             log::info!("PROCESSING CHUNK OF SIZE: {}", chunk_size);
@@ -236,9 +293,10 @@ impl<'a> ShardStateReplaceTransaction<'a> {
                     .iter()
                     .zip(entries_buffer.iter_child_buffers())
                 {
-                    file.seek(SeekFrom::Start(index as u64 * HashesEntry::LEN as u64))
+                    hashes_file
+                        .seek(SeekFrom::Start(index as u64 * HashesEntry::LEN as u64))
                         .await?;
-                    file.read_exact(buffer).await?;
+                    hashes_file.read_exact(buffer).await?;
                 }
 
                 self.finalize_cell(
@@ -249,16 +307,30 @@ impl<'a> ShardStateReplaceTransaction<'a> {
                     &mut output_buffer,
                 )?;
 
-                file.seek(SeekFrom::Start(cell_index as u64 * HashesEntry::LEN as u64))
+                hashes_file
+                    .seek(SeekFrom::Start(cell_index as u64 * HashesEntry::LEN as u64))
                     .await?;
-                file.write_all(entries_buffer.current_entry_buffer())
+                hashes_file
+                    .write_all(entries_buffer.current_entry_buffer())
                     .await?;
+                hashes_file.flush().await?;
 
                 chunk_buffer.truncate(remaining_bytes);
             }
 
             log::info!("READ: {}", total_read);
         }
+
+        log::info!("CLOSING FILES");
+        let remove_file = move |file: File, path| async move {
+            file.set_len(0).await?;
+            file.sync_all().await?;
+            tokio::fs::remove_file(&path).await?;
+            std::io::Result::Ok(())
+        };
+
+        remove_file(cells_file, &self.cells_path).await?;
+        remove_file(hashes_file, &self.hashes_path).await?;
 
         log::info!("DONE PROCESSING: {} of {} bytes", total_read, total_size);
 
@@ -270,17 +342,12 @@ impl<'a> ShardStateReplaceTransaction<'a> {
             .shard_state_db
             .insert(block_id_key.as_slice(), current_entry.as_reader().hash(3))?;
 
-        log::info!(
-            "Saved state: {} with root cell {}",
-            block_id,
-            hex::encode(current_entry.as_reader().hash(3))
-        );
-
         // Load stored shard state
         match self.state.shard_state_db.get(block_id_key)? {
             Some(root) => {
                 let cell_id = ton_types::UInt256::from_be_bytes(root.as_ref());
                 let cell = self.state.dynamic_boc_db.load_cell(cell_id)?;
+
                 Ok(Arc::new(ShardStateStuff::new(
                     block_id,
                     ton_types::Cell::with_cell_impl_arc(cell),
@@ -356,6 +423,7 @@ impl<'a> ShardStateReplaceTransaction<'a> {
             level_mask.level() + 1
         };
 
+        let mut max_depths = [0u16; 4];
         for i in 0..hash_count {
             let mut hasher = Sha256::new();
 
@@ -391,14 +459,17 @@ impl<'a> ShardStateReplaceTransaction<'a> {
                 } else {
                     child.depth(if is_merkle_cell { i + 1 } else { i })
                 };
+                hasher.update(&child_depth.to_be_bytes());
 
-                if child_depth + 1 > ton_types::MAX_DEPTH {
+                let depth = &mut max_depths[i as usize];
+                *depth = std::cmp::max(*depth, child_depth + 1);
+
+                if *depth > ton_types::MAX_DEPTH {
                     return Err(ShardStateStorageError::InvalidCell)
                         .context("Max tree depth exceeded");
                 }
 
-                current_entry.set_depth(i, child_depth + 1);
-                hasher.update(&child_depth.to_be_bytes());
+                current_entry.set_depth(i, *depth);
             }
 
             for (index, child) in children.iter() {
@@ -461,15 +532,6 @@ impl<'a> ShardStateReplaceTransaction<'a> {
 
         // Done
         Ok(())
-    }
-}
-
-impl<'a> Drop for ShardStateReplaceTransaction<'a> {
-    fn drop(&mut self) {
-        if !self.executed {
-            let _ = self.state.shard_state_db.clear();
-            let _ = self.state.dynamic_boc_db.clear();
-        }
     }
 }
 
@@ -746,6 +808,8 @@ enum ShardStateStorageError {
     CellNotFound,
     #[error("Not found")]
     NotFound,
+    #[error("Already finalized")]
+    AlreadyFinalized,
     #[error("Cell db transaction conflict")]
     TransactionConflict,
     #[error("Invalid shard state packet")]

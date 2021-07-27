@@ -133,13 +133,16 @@ impl ShardStatePacketReader {
         buffer[0] = d1;
 
         let size = if absent {
-            let data_size = 32 * ((ton_types::LevelMask::with_level(l).level() + 1) as usize);
+            let data_size = 32 * ((ton_types::LevelMask::with_mask(l).level() + 1) as usize);
             try_read!(src.read_exact(&mut buffer[1..1 + data_size]));
+
+            log::info!("ABSENT");
 
             // 1 byte of d1 + fixed data size of absent cell
             1 + data_size
         } else {
             if r > 4 {
+                log::error!("CELLS: {}", r);
                 return Err(ShardStateParserError::InvalidShardStateCell)
                     .context("Cell must contain at most 4 references");
             }
@@ -148,7 +151,8 @@ impl ShardStatePacketReader {
             buffer[1] = d2;
 
             // Skip optional precalculated hashes
-            if h && !src.skip((l as usize + 1) * (32 + 2)) {
+            let hash_count = ton_types::LevelMask::with_mask(l).level() as usize + 1;
+            if h && !src.skip(hash_count * (32 + 2)) {
                 return Ok(None);
             }
 
@@ -207,28 +211,37 @@ impl ShardStatePacketReader {
         let mut n = std::mem::take(&mut self.bytes_to_skip);
 
         let remaining = self.current_packet.len() - self.offset;
-        if n > remaining {
-            n -= remaining;
-            self.hasher.write(&self.current_packet[self.offset..]);
-            self.offset = 0;
-            self.current_packet = std::mem::take(&mut self.next_packet);
-        } else {
-            self.hasher
-                .write(&self.current_packet[self.offset..self.offset + n]);
-            self.offset += n;
-            return ReaderAction::Complete;
-        }
+        match n.cmp(&remaining) {
+            std::cmp::Ordering::Less => {
+                self.hasher
+                    .write(&self.current_packet[self.offset..self.offset + n]);
+                self.offset += n;
+                return ReaderAction::Complete;
+            }
+            std::cmp::Ordering::Equal => {
+                self.hasher.write(&self.current_packet[self.offset..]);
+                self.offset = 0;
+                self.current_packet = std::mem::take(&mut self.next_packet);
+                return ReaderAction::Complete;
+            }
+            std::cmp::Ordering::Greater => {
+                n -= remaining;
+                self.hasher.write(&self.current_packet[self.offset..]);
+                self.offset = 0;
+                self.current_packet = std::mem::take(&mut self.next_packet);
 
-        if n > self.current_packet.len() {
-            n -= self.current_packet.len();
-            self.hasher.write(&self.current_packet);
-            self.current_packet = Vec::new();
-            self.bytes_to_skip = n;
-            ReaderAction::Incomplete
-        } else {
-            self.offset = n;
-            self.hasher.write(&self.current_packet[..self.offset]);
-            ReaderAction::Complete
+                if n > self.current_packet.len() {
+                    n -= self.current_packet.len();
+                    self.hasher.write(&self.current_packet);
+                    self.current_packet = Vec::new();
+                    self.bytes_to_skip = n;
+                    ReaderAction::Incomplete
+                } else {
+                    self.offset = n;
+                    self.hasher.write(&self.current_packet[..self.offset]);
+                    ReaderAction::Complete
+                }
+            }
         }
     }
 }
@@ -270,7 +283,7 @@ impl<'a> RawCell<'a> {
         let absent = r == 0b111 && h;
 
         if absent {
-            let data_size = 32 * ((ton_types::LevelMask::with_level(l).level() + 1) as usize);
+            let data_size = 32 * ((ton_types::LevelMask::with_mask(l).level() + 1) as usize);
             let cell_data = &mut data_buffer[0..data_size + 1];
             src.read_exact(&mut cell_data[..data_size])?;
             cell_data[data_size] = 0x80;
@@ -426,13 +439,9 @@ impl<'a> Read for ShardStatePacketReaderTransaction<'a> {
             };
 
             let n = std::cmp::min(current_packet.len() - self.offset, buf.len());
-            unsafe {
-                std::ptr::copy_nonoverlapping(
-                    current_packet.as_ptr().offset(self.offset as isize),
-                    buf.as_mut_ptr(),
-                    n,
-                )
-            };
+            for i in 0..n {
+                buf[i] = current_packet[self.offset + i];
+            }
 
             result += n;
             self.offset += n;
