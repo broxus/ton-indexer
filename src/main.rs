@@ -56,19 +56,19 @@ struct LoggerSubscriber;
 impl ton_indexer_lib::BlockSubscriber for LoggerSubscriber {
     async fn process_block(
         &self,
-        block: &ton_indexer_lib::utils::BlockStuff,
+        _block: &ton_indexer_lib::utils::BlockStuff,
         _block_proof: Option<&ton_indexer_lib::utils::BlockProofStuff>,
         _shard_state: &ton_indexer_lib::utils::ShardStateStuff,
     ) -> Result<()> {
-        log::info!("FOUND BLOCK {}", block.id());
+        //log::info!("FOUND BLOCK {}", block.id());
         Ok(())
     }
 
     async fn process_shard_state(
         &self,
-        shard_state: &ton_indexer_lib::utils::ShardStateStuff,
+        _shard_state: &ton_indexer_lib::utils::ShardStateStuff,
     ) -> Result<()> {
-        log::info!("FOUND SHARD STATE {}", shard_state.block_id());
+        //log::info!("FOUND SHARD STATE {}", shard_state.block_id());
         Ok(())
     }
 }

@@ -585,7 +585,7 @@ impl Engine {
                 }
             }
 
-            log::info!("Start downloading block {} for apply", block_id);
+            log::trace!("Start downloading block {} for apply", block_id);
 
             let (max_attempts, timeouts) = if pre_apply {
                 (
@@ -619,7 +619,7 @@ impl Engine {
                     .store_block_proof(block_id, Some(handle), &block_proof)
                     .await?;
 
-                log::info!("Downloaded block {} for apply", block_id);
+                log::trace!("Downloaded block {} for apply", block_id);
 
                 self.apply_block_ext(&handle, &block, mc_seq_no, pre_apply, 0)
                     .await?;

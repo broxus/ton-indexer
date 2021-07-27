@@ -287,8 +287,6 @@ impl FullNodeOverlayClient for OverlayClient {
             )
             .await?;
 
-        log::info!("Got prepare result: {:?} for {}", prepare, block_id,);
-
         // Download
         match prepare {
             ton::ton_node::Prepared::TonNode_NotFound => Ok(None),

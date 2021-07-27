@@ -35,7 +35,7 @@ pub async fn walk_shard_blocks(
         .ok_or(ShardClientError::ShardchainBlockHandleNotFound)?;
 
     loop {
-        log::info!("walk_shard_blocks: {}", mc_block_id);
+        log::info!("walk_shard_blocks: {}", handle.id());
         let (next_handle, next_block) = engine.wait_next_applied_mc_block(&handle, None).await?;
         handle = next_handle;
 

@@ -144,8 +144,8 @@ impl<'a, T> DownloadContext<'a, T> {
         loop {
             match self.downloader.try_download(self).await {
                 Ok(Some(result)) => break Ok(result),
-                Ok(None) => log::info!("Got no data for {}", self.name),
-                Err(e) => log::info!("Error in {}: {}", self.name, e),
+                Ok(None) => log::debug!("Got no data for {}", self.name),
+                Err(e) => log::debug!("Error in {}: {}", self.name, e),
             }
 
             attempt += 1;

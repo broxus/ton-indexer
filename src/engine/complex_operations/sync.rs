@@ -89,8 +89,6 @@ pub async fn sync(engine: &Arc<Engine>) -> Result<()> {
             )
             .await?;
 
-            log::info!("sync: ------ loop {}", QueueWrapper(&queue));
-
             match response_collector.wait(false).await {
                 Some(Some((seq_no, Ok(data)))) => {
                     let queue_index = match queue.iter().position(|(queue_seq_no, status)| matches!(status, ArchiveStatus::Downloading if *queue_seq_no == seq_no)) {
@@ -287,28 +285,6 @@ async fn download_archive(
             Ok(None)
         }
         e => e,
-    }
-}
-
-struct QueueWrapper<'a>(&'a [(u32, ArchiveStatus)]);
-
-impl std::fmt::Display for QueueWrapper<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("[\n")?;
-        for (id, item) in self.0 {
-            match item {
-                ArchiveStatus::NotFound => {
-                    f.write_fmt(format_args!("    ({}, not found),\n", id))?
-                }
-                ArchiveStatus::Downloading => {
-                    f.write_fmt(format_args!("    ({}, downloading..)\n", id))?
-                }
-                ArchiveStatus::Downloaded(_) => {
-                    f.write_fmt(format_args!("    ({}, downloaded)\n", id))?
-                }
-            }
-        }
-        f.write_str("]")
     }
 }
 
