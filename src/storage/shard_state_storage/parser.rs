@@ -1,8 +1,8 @@
-use std::io::{Read, Write};
+use std::io::Read;
 
 use anyhow::{Context, Result};
 use crc::{crc32, Hasher32};
-use ton_types::{ByteOrderRead, UInt256};
+use ton_types::ByteOrderRead;
 
 macro_rules! try_read {
     ($expr:expr) => {

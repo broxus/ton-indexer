@@ -33,8 +33,8 @@ impl StorageCell {
             references.push(StorageCellReference::Unloaded(hash));
         }
 
-        let (tree_bits_count, tree_cell_count) = match reader.read_be_u64() {
-            Ok(tree_bits_count) => match reader.read_be_u64() {
+        let (tree_bits_count, tree_cell_count) = match reader.read_le_u64() {
+            Ok(tree_bits_count) => match reader.read_le_u64() {
                 Ok(tree_cell_count) => (tree_bits_count, tree_cell_count),
                 Err(_) => (0, 0),
             },
@@ -76,8 +76,8 @@ impl StorageCell {
             data.write_all(cell.reference(i as usize).convert()?.repr_hash().as_slice())?;
         }
 
-        data.write_all(&cell.tree_bits_count().to_be_bytes())?;
-        data.write_all(&cell.tree_cell_count().to_be_bytes())?;
+        data.write_all(&cell.tree_bits_count().to_le_bytes())?;
+        data.write_all(&cell.tree_cell_count().to_le_bytes())?;
 
         Ok(data)
     }

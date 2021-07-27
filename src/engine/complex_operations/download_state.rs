@@ -4,7 +4,7 @@ use std::time::Duration;
 use anyhow::Result;
 use dashmap::DashSet;
 use tiny_adnl::utils::*;
-use tokio::sync::{mpsc, oneshot, Semaphore};
+use tokio::sync::{mpsc, oneshot};
 
 use crate::engine::Engine;
 use crate::utils::*;
@@ -92,8 +92,6 @@ pub async fn download_state(
 
     let result = result_rx.await?;
     log::info!("RESULT: {:?}", result);
-
-    //transaction.finalize(block_id, todo!())?;
 
     // Ok(Arc::new(ShardStateStuff::deserialize(
     //     block_id.clone(),
