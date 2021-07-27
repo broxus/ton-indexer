@@ -1,9 +1,13 @@
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use clap::{Clap, IntoApp};
 use serde::{Deserialize, Serialize};
+use tiny_adnl::utils::*;
+
+use ton_indexer_lib::utils::*;
 
 #[derive(Clone, Debug, Clap)]
 pub struct Arguments {
@@ -36,7 +40,7 @@ async fn main() -> Result<()> {
             if let Err(e) = ton_indexer_lib::start(
                 config.indexer,
                 global_config,
-                vec![Arc::new(LoggerSubscriber)],
+                vec![Arc::new(LoggerSubscriber::default())],
             )
             .await
             {
@@ -50,17 +54,30 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-struct LoggerSubscriber;
+#[derive(Default)]
+struct LoggerSubscriber {
+    counter: AtomicUsize,
+}
 
 #[async_trait::async_trait]
 impl ton_indexer_lib::BlockSubscriber for LoggerSubscriber {
     async fn process_block(
         &self,
-        _block: &ton_indexer_lib::utils::BlockStuff,
+        block: &ton_indexer_lib::utils::BlockStuff,
         _block_proof: Option<&ton_indexer_lib::utils::BlockProofStuff>,
         _shard_state: &ton_indexer_lib::utils::ShardStateStuff,
     ) -> Result<()> {
-        //log::info!("FOUND BLOCK {}", block.id());
+        if block.id().is_masterchain() {
+            return Ok(());
+        }
+
+        if self.counter.fetch_add(1, Ordering::Relaxed) % 10 != 0 {
+            return Ok(());
+        }
+
+        let info = block.block().info.read_struct().convert()?;
+        log::info!("TIME_DIFF: {}", now() - info.gen_utime().0 as i32);
+
         Ok(())
     }
 
