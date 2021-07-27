@@ -68,7 +68,7 @@ async fn warm_boot(
         .load_block_handle(&last_mc_block_id)?
         .ok_or(BootError::FailedToLoadInitialBlock)?;
 
-    let state = engine.load_state(&last_mc_block_id)?;
+    let state = engine.load_state(&last_mc_block_id).await?;
     if last_mc_block_id.seq_no != 0 && !handle.meta().is_key_block() {
         last_mc_block_id = state
             .shard_state_extra()?
@@ -119,12 +119,12 @@ async fn prepare_cold_boot_data(engine: &Arc<Engine>) -> Result<ColdBootData> {
 
         let (handle, proof) = loop {
             match engine
-                .download_block_proof(&block_id, true, true, None)
+                .download_block_proof(block_id, true, true, None)
                 .await
             {
                 Ok(proof) => match proof.check_proof_link() {
                     Ok(_) => {
-                        let handle = engine.store_block_proof(&block_id, handle, &proof).await?;
+                        let handle = engine.store_block_proof(block_id, handle, &proof).await?;
                         break (handle, proof);
                     }
                     Err(e) => {
@@ -338,7 +338,7 @@ pub async fn download_zero_state(
 ) -> Result<(Arc<BlockHandle>, Arc<ShardStateStuff>)> {
     if let Some(handle) = engine.load_block_handle(block_id)? {
         if handle.meta().has_state() {
-            return Ok((handle, engine.load_state(block_id)?));
+            return Ok((handle, engine.load_state(block_id).await?));
         }
     }
 
@@ -423,8 +423,16 @@ async fn download_block_and_state(
             masterchain_block_id
         );
 
-        let shard_state =
-            download_state(engine, handle.id(), masterchain_block_id, active_peers).await?;
+        let shard_state = download_state(
+            engine,
+            handle.id(),
+            masterchain_block_id,
+            handle.id().is_masterchain(),
+            active_peers,
+        )
+        .await?;
+        log::info!("Downloaded state");
+
         let state_hash = shard_state.root_cell().repr_hash();
         if state_update.new_hash != state_hash {
             return Err(BootError::ShardStateHashMismatch.into());

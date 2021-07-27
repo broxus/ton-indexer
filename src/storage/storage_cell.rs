@@ -9,7 +9,7 @@ use super::shard_state_storage::DynamicBocDb;
 use crate::utils::*;
 
 pub struct StorageCell {
-    boc_db: Arc<DynamicBocDb>,
+    boc_db: DynamicBocDb,
     cell_data: ton_types::CellData,
     references: RwLock<Vec<StorageCellReference>>,
     tree_bits_count: Arc<AtomicU64>,
@@ -21,7 +21,7 @@ impl StorageCell {
         self.hash(ton_types::MAX_LEVEL as usize)
     }
 
-    pub fn deserialize(boc_db: Arc<DynamicBocDb>, data: &[u8]) -> anyhow::Result<Self> {
+    pub fn deserialize(boc_db: DynamicBocDb, data: &[u8]) -> anyhow::Result<Self> {
         let mut reader = std::io::Cursor::new(data);
 
         let cell_data = ton_types::CellData::deserialize(&mut reader).convert()?;
@@ -33,8 +33,8 @@ impl StorageCell {
             references.push(StorageCellReference::Unloaded(hash));
         }
 
-        let (tree_bits_count, tree_cell_count) = match reader.read_be_u64() {
-            Ok(tree_bits_count) => match reader.read_be_u64() {
+        let (tree_bits_count, tree_cell_count) = match reader.read_le_u64() {
+            Ok(tree_bits_count) => match reader.read_le_u64() {
                 Ok(tree_cell_count) => (tree_bits_count, tree_cell_count),
                 Err(_) => (0, 0),
             },
@@ -76,8 +76,8 @@ impl StorageCell {
             data.write_all(cell.reference(i as usize).convert()?.repr_hash().as_slice())?;
         }
 
-        data.write_all(&cell.tree_bits_count().to_be_bytes())?;
-        data.write_all(&cell.tree_cell_count().to_be_bytes())?;
+        data.write_all(&cell.tree_bits_count().to_le_bytes())?;
+        data.write_all(&cell.tree_cell_count().to_le_bytes())?;
 
         Ok(data)
     }

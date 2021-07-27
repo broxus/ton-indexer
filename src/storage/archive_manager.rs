@@ -14,7 +14,7 @@ pub struct ArchiveManager {
 }
 
 impl ArchiveManager {
-    pub async fn with_root_dir<P>(root_dir: P) -> Result<Self>
+    pub async fn with_root_dir<P>(root_dir: &P) -> Result<Self>
     where
         P: AsRef<Path>,
     {
@@ -40,7 +40,7 @@ impl ArchiveManager {
             .open(filename)
             .await?;
 
-        file.write_all(&data).await?;
+        file.write_all(data).await?;
         file.flush().await?;
 
         Ok(())

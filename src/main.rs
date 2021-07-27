@@ -57,8 +57,8 @@ impl ton_indexer_lib::BlockSubscriber for LoggerSubscriber {
     async fn process_block(
         &self,
         block: &ton_indexer_lib::utils::BlockStuff,
-        block_proof: Option<&ton_indexer_lib::utils::BlockProofStuff>,
-        shard_state: &ton_indexer_lib::utils::ShardStateStuff,
+        _block_proof: Option<&ton_indexer_lib::utils::BlockProofStuff>,
+        _shard_state: &ton_indexer_lib::utils::ShardStateStuff,
     ) -> Result<()> {
         log::info!("FOUND BLOCK {}", block.id());
         Ok(())

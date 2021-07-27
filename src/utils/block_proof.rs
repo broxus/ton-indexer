@@ -477,7 +477,7 @@ fn check_with_master_state(
     virt_block_info: &ton_block::BlockInfo,
 ) -> Result<()> {
     if virt_block_info.key_block() {
-        proof.pre_check_key_block_proof(&virt_block)?;
+        proof.pre_check_key_block_proof(virt_block)?;
     }
 
     let (validators, validators_hash_short) =

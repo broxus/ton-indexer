@@ -48,7 +48,7 @@ impl ShardStateStuff {
             return Err(anyhow!("Given id has non-zero seq number"));
         }
 
-        let file_hash = UInt256::calc_file_hash(&bytes);
+        let file_hash = UInt256::calc_file_hash(bytes);
         if file_hash != id.file_hash {
             return Err(anyhow!("Wrong zero state's {} file hash", id));
         }
@@ -57,15 +57,6 @@ impl ShardStateStuff {
         if root.repr_hash() != id.root_hash() {
             return Err(anyhow!("Wrong zero state's {} root hash", id));
         }
-
-        Self::new(id, root)
-    }
-
-    pub fn deserialize(id: ton_block::BlockIdExt, bytes: &[u8]) -> Result<Self> {
-        if id.seq_no() == 0 {
-            return Err(anyhow!("Use `deserialize_zerostate` method for zerostate"));
-        }
-        let root = ton_types::deserialize_tree_of_cells(&mut Cursor::new(bytes)).convert()?;
 
         Self::new(id, root)
     }
@@ -94,7 +85,7 @@ impl ShardStateStuff {
 
     #[allow(unused)]
     pub fn shard(&self) -> &ton_block::ShardIdent {
-        &self.block_id.shard()
+        self.block_id.shard()
     }
 
     pub fn block_id(&self) -> &ton_block::BlockIdExt {

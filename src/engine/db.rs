@@ -7,83 +7,6 @@ use ton_api::ton;
 use crate::storage::*;
 use crate::utils::*;
 
-#[async_trait::async_trait]
-pub trait Db: Send + Sync {
-    fn create_or_load_block_handle(
-        &self,
-        block_id: &ton_block::BlockIdExt,
-        block: Option<&ton_block::Block>,
-        utime: Option<u32>,
-    ) -> Result<Arc<BlockHandle>>;
-    fn load_block_handle(
-        &self,
-        block_id: &ton_block::BlockIdExt,
-    ) -> Result<Option<Arc<BlockHandle>>>;
-
-    async fn store_block_data(&self, block: &BlockStuff) -> Result<StoreBlockResult>;
-    async fn load_block_data_raw(&self, handle: &BlockHandle) -> Result<Vec<u8>>;
-    async fn load_block_data(&self, handle: &BlockHandle) -> Result<BlockStuff> {
-        let raw_block = self.load_block_data_raw(handle).await?;
-        BlockStuff::deserialize(handle.id().clone(), raw_block)
-    }
-
-    async fn store_block_proof(
-        &self,
-        block_id: &ton_block::BlockIdExt,
-        handle: Option<Arc<BlockHandle>>,
-        proof: &BlockProofStuff,
-    ) -> Result<StoreBlockResult>;
-    async fn load_block_proof_raw(&self, handle: &BlockHandle, is_link: bool) -> Result<Vec<u8>>;
-    async fn load_block_proof(
-        &self,
-        handle: &BlockHandle,
-        is_link: bool,
-    ) -> Result<BlockProofStuff> {
-        let raw_proof = self.load_block_proof_raw(handle, is_link).await?;
-        BlockProofStuff::deserialize(handle.id().clone(), raw_proof, is_link)
-    }
-
-    fn store_shard_state(&self, handle: &Arc<BlockHandle>, state: &ShardStateStuff)
-        -> Result<bool>;
-    fn load_shard_state(&self, block_id: &ton_block::BlockIdExt) -> Result<ShardStateStuff>;
-
-    fn store_block_connection(
-        &self,
-        handle: &Arc<BlockHandle>,
-        direction: BlockConnection,
-        connected_block_id: &ton_block::BlockIdExt,
-    ) -> Result<()>;
-    fn load_block_connection(
-        &self,
-        block_id: &ton_block::BlockIdExt,
-        direction: BlockConnection,
-    ) -> Result<ton_block::BlockIdExt>;
-
-    fn find_block_by_seq_no(
-        &self,
-        account_prefix: &ton_block::AccountIdPrefixFull,
-        seqno: u32,
-    ) -> Result<Arc<BlockHandle>>;
-    fn find_block_by_utime(
-        &self,
-        account_prefix: &ton_block::AccountIdPrefixFull,
-        utime: u32,
-    ) -> Result<Arc<BlockHandle>>;
-    fn find_block_by_lt(
-        &self,
-        account_prefix: &ton_block::AccountIdPrefixFull,
-        lt: u64,
-    ) -> Result<Arc<BlockHandle>>;
-
-    fn store_block_applied(&self, handle: &Arc<BlockHandle>) -> Result<bool>;
-
-    fn store_node_state(&self, key: &'static str, value: Vec<u8>) -> Result<()>;
-    fn load_node_state(&self, key: &'static str) -> Result<Vec<u8>>;
-
-    fn index_handle(&self, handle: &Arc<BlockHandle>) -> Result<()>;
-    fn assign_mc_ref_seq_no(&self, handle: &Arc<BlockHandle>, mc_ref_seq_no: u32) -> Result<()>;
-}
-
 pub struct StoreBlockResult {
     pub handle: Arc<BlockHandle>,
     pub already_existed: bool,
@@ -97,7 +20,7 @@ pub enum BlockConnection {
     Next2,
 }
 
-pub struct SledDb {
+pub struct Db {
     block_handle_storage: BlockHandleStorage,
     shard_state_storage: ShardStateStorage,
     node_state_storage: NodeStateStorage,
@@ -111,7 +34,7 @@ pub struct SledDb {
     _db: sled::Db,
 }
 
-impl SledDb {
+impl Db {
     pub async fn new<PS, PF>(sled_db_path: PS, file_db_path: PF) -> Result<Arc<Self>>
     where
         PS: AsRef<Path>,
@@ -124,9 +47,11 @@ impl SledDb {
             shard_state_storage: ShardStateStorage::with_db(
                 db.open_tree("shard_state_db")?,
                 db.open_tree("cell_db")?,
-            ),
+                &file_db_path,
+            )
+            .await?,
             node_state_storage: NodeStateStorage::with_db(db.open_tree("node_state")?),
-            archive_manager: ArchiveManager::with_root_dir(file_db_path).await?,
+            archive_manager: ArchiveManager::with_root_dir(&file_db_path).await?,
             block_index_db: BlockIndexDb::with_db(
                 db.open_tree("lt_desc_db")?,
                 db.open_tree("lt_db")?,
@@ -138,11 +63,8 @@ impl SledDb {
             _db: db,
         }))
     }
-}
 
-#[async_trait::async_trait]
-impl Db for SledDb {
-    fn create_or_load_block_handle(
+    pub fn create_or_load_block_handle(
         &self,
         block_id: &ton_block::BlockIdExt,
         block: Option<&ton_block::Block>,
@@ -173,14 +95,14 @@ impl Db for SledDb {
         Err(DbError::FailedToCreateBlockHandle.into())
     }
 
-    fn load_block_handle(
+    pub fn load_block_handle(
         &self,
         block_id: &ton_block::BlockIdExt,
     ) -> Result<Option<Arc<BlockHandle>>> {
         self.block_handle_storage.load_handle(block_id)
     }
 
-    async fn store_block_data(&self, block: &BlockStuff) -> Result<StoreBlockResult> {
+    pub async fn store_block_data(&self, block: &BlockStuff) -> Result<StoreBlockResult> {
         let handle = self.create_or_load_block_handle(block.id(), Some(block.block()), None)?;
 
         let archive_id = PackageEntryId::Block(handle.id());
@@ -204,7 +126,12 @@ impl Db for SledDb {
         })
     }
 
-    async fn load_block_data_raw(&self, handle: &BlockHandle) -> Result<Vec<u8>> {
+    pub async fn load_block_data(&self, handle: &BlockHandle) -> Result<BlockStuff> {
+        let raw_block = self.load_block_data_raw(handle).await?;
+        BlockStuff::deserialize(handle.id().clone(), raw_block)
+    }
+
+    pub async fn load_block_data_raw(&self, handle: &BlockHandle) -> Result<Vec<u8>> {
         if !handle.meta().has_data() {
             return Err(DbError::BlockDataNotFound.into());
         }
@@ -213,7 +140,7 @@ impl Db for SledDb {
             .await
     }
 
-    async fn store_block_proof(
+    pub async fn store_block_proof(
         &self,
         block_id: &ton_block::BlockIdExt,
         handle: Option<Arc<BlockHandle>>,
@@ -273,7 +200,20 @@ impl Db for SledDb {
         })
     }
 
-    async fn load_block_proof_raw(&self, handle: &BlockHandle, is_link: bool) -> Result<Vec<u8>> {
+    pub async fn load_block_proof(
+        &self,
+        handle: &BlockHandle,
+        is_link: bool,
+    ) -> Result<BlockProofStuff> {
+        let raw_proof = self.load_block_proof_raw(handle, is_link).await?;
+        BlockProofStuff::deserialize(handle.id().clone(), raw_proof, is_link)
+    }
+
+    pub async fn load_block_proof_raw(
+        &self,
+        handle: &BlockHandle,
+        is_link: bool,
+    ) -> Result<Vec<u8>> {
         let (archive_id, exists) = if is_link {
             (
                 PackageEntryId::ProofLink(handle.id()),
@@ -293,7 +233,7 @@ impl Db for SledDb {
         self.archive_manager.get_file(handle, &archive_id).await
     }
 
-    fn store_shard_state(
+    pub async fn store_shard_state(
         &self,
         handle: &Arc<BlockHandle>,
         state: &ShardStateStuff,
@@ -304,7 +244,8 @@ impl Db for SledDb {
 
         if !handle.meta().has_state() {
             self.shard_state_storage
-                .store_state(state.block_id(), state.root_cell().clone())?;
+                .store_state(state.block_id(), state.root_cell().clone())
+                .await?;
             if handle.meta().set_has_state() {
                 self.block_handle_storage.store_handle(handle)?;
                 return Ok(true);
@@ -314,14 +255,21 @@ impl Db for SledDb {
         Ok(false)
     }
 
-    fn load_shard_state(&self, block_id: &ton_block::BlockIdExt) -> Result<ShardStateStuff> {
+    pub async fn load_shard_state(
+        &self,
+        block_id: &ton_block::BlockIdExt,
+    ) -> Result<ShardStateStuff> {
         ShardStateStuff::new(
             block_id.clone(),
-            self.shard_state_storage.load_state(block_id)?,
+            self.shard_state_storage.load_state(block_id).await?,
         )
     }
 
-    fn store_block_connection(
+    pub fn shard_state_storage(&self) -> &ShardStateStorage {
+        &self.shard_state_storage
+    }
+
+    pub fn store_block_connection(
         &self,
         handle: &Arc<BlockHandle>,
         direction: BlockConnection,
@@ -351,7 +299,7 @@ impl Db for SledDb {
         Ok(())
     }
 
-    fn load_block_connection(
+    pub fn load_block_connection(
         &self,
         block_id: &ton_block::BlockIdExt,
         direction: BlockConnection,
@@ -371,7 +319,7 @@ impl Db for SledDb {
         convert_block_id_ext_api2blk(&value)
     }
 
-    fn find_block_by_seq_no(
+    pub fn find_block_by_seq_no(
         &self,
         account_prefix: &ton_block::AccountIdPrefixFull,
         seq_no: u32,
@@ -385,7 +333,7 @@ impl Db for SledDb {
             .ok_or_else(|| DbError::BlockHandleNotFound.into())
     }
 
-    fn find_block_by_utime(
+    pub fn find_block_by_utime(
         &self,
         account_prefix: &ton_block::AccountIdPrefixFull,
         utime: u32,
@@ -399,7 +347,7 @@ impl Db for SledDb {
             .ok_or_else(|| DbError::BlockHandleNotFound.into())
     }
 
-    fn find_block_by_lt(
+    pub fn find_block_by_lt(
         &self,
         account_prefix: &ton_block::AccountIdPrefixFull,
         lt: u64,
@@ -411,7 +359,7 @@ impl Db for SledDb {
             .ok_or_else(|| DbError::BlockHandleNotFound.into())
     }
 
-    fn store_block_applied(&self, handle: &Arc<BlockHandle>) -> Result<bool> {
+    pub fn store_block_applied(&self, handle: &Arc<BlockHandle>) -> Result<bool> {
         if handle.meta().set_is_applied() {
             self.block_handle_storage.store_handle(handle)?;
             Ok(true)
@@ -420,19 +368,23 @@ impl Db for SledDb {
         }
     }
 
-    fn store_node_state(&self, key: &'static str, value: Vec<u8>) -> Result<()> {
+    pub fn store_node_state(&self, key: &'static str, value: Vec<u8>) -> Result<()> {
         self.node_state_storage.store(key, value)
     }
 
-    fn load_node_state(&self, key: &'static str) -> Result<Vec<u8>> {
+    pub fn load_node_state(&self, key: &'static str) -> Result<Vec<u8>> {
         self.node_state_storage.load(key)
     }
 
-    fn index_handle(&self, handle: &Arc<BlockHandle>) -> Result<()> {
+    pub fn index_handle(&self, handle: &Arc<BlockHandle>) -> Result<()> {
         self.block_index_db.add_handle(handle)
     }
 
-    fn assign_mc_ref_seq_no(&self, handle: &Arc<BlockHandle>, mc_ref_seq_no: u32) -> Result<()> {
+    pub fn assign_mc_ref_seq_no(
+        &self,
+        handle: &Arc<BlockHandle>,
+        mc_ref_seq_no: u32,
+    ) -> Result<()> {
         if handle.set_masterchain_ref_seqno(mc_ref_seq_no)? {
             self.block_handle_storage.store_handle(handle)?;
         }

@@ -133,7 +133,7 @@ pub struct DownloadContext<'a, T> {
     pub timeouts: Option<DownloaderTimeouts>,
 
     pub client: Arc<dyn FullNodeOverlayClient>,
-    pub db: &'a dyn Db,
+    pub db: &'a Db,
 
     pub downloader: Arc<dyn Downloader<Item = T>>,
 }
