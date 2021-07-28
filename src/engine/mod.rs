@@ -636,7 +636,7 @@ impl Engine {
         pre_apply: bool,
         depth: u32,
     ) -> Result<()> {
-        while !((pre_apply && handle.meta().has_data()) || handle.meta().is_applied()) {
+        while !(pre_apply && handle.meta().has_data() || handle.meta().is_applied()) {
             self.block_applying_operations
                 .do_or_wait(
                     handle.id(),

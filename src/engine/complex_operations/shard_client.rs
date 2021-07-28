@@ -164,23 +164,18 @@ pub async fn process_block_broadcast(
         return Ok(());
     }
 
-    let key_block_proof;
-
-    let (validator_set, catchain_config) = {
+    let (key_block_proof, validator_set, catchain_config) = {
         let masterchain_prefix = ton_block::AccountIdPrefixFull::any_masterchain();
         let handle = engine.find_block_by_seq_no(&masterchain_prefix, prev_key_block_seqno)?;
         let proof = engine.load_block_proof(&handle, false).await?;
-        let validator_set_ext = proof.get_cur_validators_set()?;
-        key_block_proof = Some(proof);
-        validator_set_ext
+        let (validator_set, catchain_config) = proof.get_cur_validators_set()?;
+        (proof, validator_set, catchain_config)
     };
 
     validate_broadcast(&broadcast, &block_id, &validator_set, &catchain_config)?;
 
     if block_id.shard_id.is_masterchain() {
-        if let Some(key_block_proof) = key_block_proof {
-            proof.check_with_prev_key_block_proof(&key_block_proof)?;
-        }
+        proof.check_with_prev_key_block_proof(&key_block_proof)?;
     } else {
         proof.check_proof_link()?;
     }
@@ -211,7 +206,7 @@ pub async fn process_block_broadcast(
         let shards_client_mc_block_id = engine.load_shards_client_mc_block_id().await?;
         if shards_client_mc_block_id.seq_no + 8 >= master_ref.master.seq_no {
             engine
-                .apply_block_ext(&handle, &block, shards_client_mc_block_id.seq_no, false, 0)
+                .apply_block_ext(&handle, &block, shards_client_mc_block_id.seq_no, true, 0)
                 .await?;
         }
     }
