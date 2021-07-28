@@ -86,7 +86,7 @@ async fn background_process(
     clear_db: bool,
     mut packets_rx: PacketsRx,
 ) -> Result<Arc<ShardStateStuff>> {
-    let mut transaction = engine
+    let (mut transaction, mut ctx) = engine
         .db
         .shard_state_storage()
         .begin_replace(&block_id, clear_db)
@@ -94,9 +94,16 @@ async fn background_process(
 
     let mut full = false;
     while let Some(packet) = packets_rx.recv().await {
-        if transaction.process_packet(packet).await? {
-            full = true;
-            break;
+        match transaction.process_packet(&mut ctx, packet).await {
+            Ok(true) => {
+                full = true;
+                break;
+            }
+            Ok(false) => continue,
+            Err(e) => {
+                ctx.clear().await?;
+                return Err(e);
+            }
         }
     }
 
@@ -104,10 +111,13 @@ async fn background_process(
     while packets_rx.recv().await.is_some() {}
 
     if !full {
+        ctx.clear().await?;
         return Err(DownloadStateError::UnexpectedEof.into());
     }
 
-    transaction.finalize(block_id).await
+    let result = transaction.finalize(&mut ctx, block_id).await;
+    ctx.clear().await?;
+    result
 }
 
 struct Scheduler {
