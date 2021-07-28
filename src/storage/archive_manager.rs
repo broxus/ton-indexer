@@ -32,7 +32,10 @@ impl ArchiveManager {
             return Err(ArchiveManagerError::EmptyData.into());
         }
 
-        let filename = self.temp_dir.join(id.filename());
+        let folder = self.get_entry_folder(id);
+        tokio::fs::create_dir_all(&folder).await?;
+
+        let filename = folder.join(id.filename());
         let mut file = tokio::fs::OpenOptions::new()
             .write(true)
             .create(true)
@@ -50,7 +53,7 @@ impl ArchiveManager {
     where
         I: Borrow<ton_block::BlockIdExt> + Hash,
     {
-        self.temp_dir.join(id.filename()).exists()
+        self.get_entry_folder(id).join(id.filename()).exists()
     }
 
     pub async fn get_file<I>(&self, handle: &BlockHandle, id: &PackageEntryId<I>) -> Result<Vec<u8>>
@@ -70,7 +73,7 @@ impl ArchiveManager {
     where
         I: Borrow<ton_block::BlockIdExt> + Hash,
     {
-        let filename = self.temp_dir.join(id.filename());
+        let filename = self.get_entry_folder(id).join(id.filename());
         let data = match tokio::fs::read(&filename).await {
             Ok(data) => data,
             Err(e) => {
@@ -86,6 +89,23 @@ impl ArchiveManager {
         }
 
         Ok(data)
+    }
+
+    fn get_entry_folder<I>(&self, id: &PackageEntryId<I>) -> PathBuf
+    where
+        I: Borrow<ton_block::BlockIdExt> + Hash,
+    {
+        const GROUP_BY_SEQNO: u32 = 100000;
+
+        let block_id = id.block_id();
+
+        self.temp_dir
+            .join(format!(
+                "{},{:016x}",
+                block_id.shard_id.workchain_id(),
+                block_id.shard_id.shard_prefix_with_tag(),
+            ))
+            .join((block_id.seq_no - block_id.seq_no % GROUP_BY_SEQNO).to_string())
     }
 }
 

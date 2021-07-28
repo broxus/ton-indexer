@@ -43,6 +43,14 @@ where
             PackageEntryId::ProofLink(_) => PACKAGE_ENTRY_PROOF_LINK,
         }
     }
+
+    pub fn block_id(&self) -> &ton_block::BlockIdExt {
+        match self {
+            Self::Block(block_id) | Self::Proof(block_id) | Self::ProofLink(block_id) => {
+                block_id.borrow()
+            }
+        }
+    }
 }
 
 pub trait GetFileName {
@@ -72,15 +80,6 @@ where
                 format!("{}{}", self.filename_prefix(), block_id.borrow().filename())
             }
         }
-    }
-}
-
-impl<I> std::fmt::Display for PackageEntryId<I>
-where
-    I: Borrow<ton_block::BlockIdExt> + Hash,
-{
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.filename().as_str())
     }
 }
 
