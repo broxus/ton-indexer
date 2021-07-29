@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use futures::future::{BoxFuture, FutureExt};
+use nekoton_utils::NoFailure;
 
 use crate::engine::db::BlockConnection;
 use crate::engine::Engine;

@@ -2,10 +2,10 @@ use std::io::{Read, Write};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::Result;
+use nekoton_utils::NoFailure;
 use ton_types::ByteOrderRead;
 
 use super::StoredValue;
-use crate::utils::*;
 
 #[derive(Debug, Default)]
 pub struct BlockMeta {

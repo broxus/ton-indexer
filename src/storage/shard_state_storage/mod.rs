@@ -6,6 +6,7 @@ use std::sync::{Arc, Weak};
 
 use anyhow::{Context, Result};
 use dashmap::DashMap;
+use nekoton_utils::NoFailure;
 use num_traits::ToPrimitive;
 use sha2::Sha256;
 use tokio::fs::File;
@@ -248,7 +249,8 @@ impl<'a> ShardStateReplaceTransaction<'a> {
                     .iter()
                     .zip(entries_buffer.iter_child_buffers())
                 {
-                    hashes_file.read_exact_at(index as usize * HashesEntry::LEN, buffer);
+                    // SAFETY: `buffer` is guaranteed to be in separate memory area
+                    unsafe { hashes_file.read_exact_at(index as usize * HashesEntry::LEN, buffer) }
                 }
 
                 self.finalize_cell(
@@ -259,10 +261,13 @@ impl<'a> ShardStateReplaceTransaction<'a> {
                     &mut output_buffer,
                 )?;
 
-                hashes_file.write_all_at(
-                    cell_index * HashesEntry::LEN,
-                    entries_buffer.current_entry_buffer(),
-                );
+                // SAFETY: `entries_buffer` is guaranteed to be in separate memory area
+                unsafe {
+                    hashes_file.write_all_at(
+                        cell_index * HashesEntry::LEN,
+                        entries_buffer.current_entry_buffer(),
+                    )
+                };
 
                 chunk_buffer.truncate(remaining_bytes);
             }

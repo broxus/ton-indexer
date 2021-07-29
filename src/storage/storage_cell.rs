@@ -2,11 +2,11 @@ use std::io::Write;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
+use nekoton_utils::NoFailure;
 use parking_lot::RwLock;
 use ton_types::{ByteOrderRead, CellImpl};
 
 use super::shard_state_storage::DynamicBocDb;
-use crate::utils::*;
 
 pub struct StorageCell {
     boc_db: DynamicBocDb,

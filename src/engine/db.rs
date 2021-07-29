@@ -45,20 +45,24 @@ impl Db {
             .path(sled_db_path)
             .open()?;
 
+        let block_handle_storage = BlockHandleStorage::with_db(db.open_tree("block_handles")?);
+        let shard_state_storage = ShardStateStorage::with_db(
+            db.open_tree("shard_state_db")?,
+            db.open_tree("cell_db")?,
+            &file_db_path,
+        )
+        .await?;
+        let node_state_storage = NodeStateStorage::with_db(db.open_tree("node_state")?);
+        let archive_manager = ArchiveManager::with_root_dir(&file_db_path).await?;
+        let block_index_db =
+            BlockIndexDb::with_db(db.open_tree("lt_desc_db")?, db.open_tree("lt_db")?);
+
         Ok(Arc::new(Self {
-            block_handle_storage: BlockHandleStorage::with_db(db.open_tree("block_handles")?),
-            shard_state_storage: ShardStateStorage::with_db(
-                db.open_tree("shard_state_db")?,
-                db.open_tree("cell_db")?,
-                &file_db_path,
-            )
-            .await?,
-            node_state_storage: NodeStateStorage::with_db(db.open_tree("node_state")?),
-            archive_manager: ArchiveManager::with_root_dir(&file_db_path).await?,
-            block_index_db: BlockIndexDb::with_db(
-                db.open_tree("lt_desc_db")?,
-                db.open_tree("lt_db")?,
-            ),
+            block_handle_storage,
+            shard_state_storage,
+            node_state_storage,
+            archive_manager,
+            block_index_db,
             prev1_block_db: db.open_tree("prev1")?,
             prev2_block_db: db.open_tree("prev2")?,
             next1_block_db: db.open_tree("next1")?,

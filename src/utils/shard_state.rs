@@ -1,10 +1,9 @@
 use std::io::Cursor;
 
 use anyhow::{anyhow, Result};
+use nekoton_utils::NoFailure;
 use ton_block::{Deserializable, Serializable};
 use ton_types::{Cell, UInt256};
-
-use super::NoFailure;
 
 #[derive(Debug, Default, Clone, Eq, PartialEq)]
 pub struct ShardStateStuff {

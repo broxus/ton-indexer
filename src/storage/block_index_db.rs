@@ -2,6 +2,7 @@ use std::io::Write;
 use std::sync::Arc;
 
 use anyhow::Result;
+use nekoton_utils::NoFailure;
 use parking_lot::RwLock;
 use ton_api::ton;
 

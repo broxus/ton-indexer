@@ -2,11 +2,10 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
+use nekoton_utils::NoFailure;
 use ton_api::ton;
 use ton_block::Deserializable;
 use ton_types::{Cell, UInt256};
-
-use super::NoFailure;
 
 #[derive(Debug, Default, Clone, Eq, PartialEq)]
 pub struct BlockStuff {

@@ -21,21 +21,39 @@ mod db;
 mod downloader;
 mod node_state;
 
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+pub enum EngineStatus {
+    Booted,
+    Synced,
+}
+
 #[async_trait::async_trait]
-pub trait BlockSubscriber: Send + Sync {
+pub trait Subscriber: Send + Sync {
+    async fn engine_status_changed(&self, status: EngineStatus) {
+        let _unused_by_default = status;
+    }
+
     async fn process_block(
         &self,
         block: &BlockStuff,
         block_proof: Option<&BlockProofStuff>,
         shard_state: &ShardStateStuff,
-    ) -> Result<()>;
+    ) -> Result<()> {
+        let _unused_by_default = block;
+        let _unused_by_default = block_proof;
+        let _unused_by_default = shard_state;
+        Ok(())
+    }
 
-    async fn process_shard_state(&self, shard_state: &ShardStateStuff) -> Result<()>;
+    async fn process_shard_state(&self, shard_state: &ShardStateStuff) -> Result<()> {
+        let _unused_by_default = shard_state;
+        Ok(())
+    }
 }
 
 pub struct Engine {
     db: Arc<Db>,
-    subscribers: Vec<Arc<dyn BlockSubscriber>>,
+    subscribers: Vec<Arc<dyn Subscriber>>,
     network: Arc<NodeNetwork>,
 
     init_mc_block_id: ton_block::BlockIdExt,
@@ -54,7 +72,7 @@ impl Engine {
     pub async fn new(
         config: NodeConfig,
         global_config: GlobalConfig,
-        subscribers: Vec<Arc<dyn BlockSubscriber>>,
+        subscribers: Vec<Arc<dyn Subscriber>>,
     ) -> Result<Arc<Self>> {
         let db = Db::new(config.sled_db_path(), config.file_db_path()).await?;
 
@@ -91,42 +109,123 @@ impl Engine {
         Ok(engine)
     }
 
-    pub fn db(&self) -> &Arc<Db> {
-        &self.db
+    pub async fn start(self: &Arc<Self>) -> Result<()> {
+        // Start full node overlay service
+        let service = FullNodeOverlayService::new();
+
+        let (_, masterchain_overlay_id) = self
+            .network
+            .compute_overlay_id(ton_block::MASTERCHAIN_ID, ton_block::SHARD_FULL)?;
+        self.network
+            .add_subscriber(masterchain_overlay_id, service.clone());
+
+        let (_, basechain_overlay_id) = self
+            .network
+            .compute_overlay_id(ton_block::BASE_WORKCHAIN_ID, ton_block::SHARD_FULL)?;
+        self.network.add_subscriber(basechain_overlay_id, service);
+
+        // Boot
+        let BootData {
+            last_mc_block_id,
+            shards_client_mc_block_id,
+        } = boot(self).await?;
+
+        log::info!(
+            "Initialized (last block: {}, shards client block id: {})",
+            last_mc_block_id,
+            shards_client_mc_block_id
+        );
+
+        self.notify_subscribers_with_status(EngineStatus::Booted)
+            .await;
+
+        // Start listening broadcasts
+        self.listen_broadcasts(ton_block::ShardIdent::masterchain())
+            .await?;
+        self.listen_broadcasts(
+            ton_block::ShardIdent::with_tagged_prefix(
+                ton_block::BASE_WORKCHAIN_ID,
+                ton_block::SHARD_FULL,
+            )
+            .convert()?,
+        )
+        .await?;
+
+        // Synchronize
+        if !self.check_sync().await? {
+            sync(self).await?;
+        }
+
+        log::info!("Synced!");
+
+        self.notify_subscribers_with_status(EngineStatus::Synced)
+            .await;
+
+        // Start walking through the blocks
+        tokio::spawn({
+            let engine = self.clone();
+            async move {
+                if let Err(e) = walk_masterchain_blocks(&engine, last_mc_block_id).await {
+                    log::error!(
+                        "FATAL ERROR while walking though masterchain blocks: {:?}",
+                        e
+                    );
+                }
+            }
+        });
+
+        tokio::spawn({
+            let engine = self.clone();
+            async move {
+                if let Err(e) = walk_shard_blocks(&engine, shards_client_mc_block_id).await {
+                    log::error!("FATAL ERROR while walking though shard blocks: {:?}", e);
+                }
+            }
+        });
+
+        // Engine started
+        Ok(())
     }
 
-    pub fn network(&self) -> &Arc<NodeNetwork> {
-        &self.network
+    pub async fn broadcast_external_message(
+        &self,
+        to: &ton_block::AccountIdPrefixFull,
+        data: &[u8],
+    ) -> Result<()> {
+        let overlay = self
+            .get_full_node_overlay(to.workchain_id, to.prefix)
+            .await?;
+        overlay.broadcast_external_message(data).await
     }
 
     pub fn init_mc_block_id(&self) -> &ton_block::BlockIdExt {
         &self.init_mc_block_id
     }
 
-    pub fn set_init_mc_block_id(&self, block_id: &ton_block::BlockIdExt) {
+    fn set_init_mc_block_id(&self, block_id: &ton_block::BlockIdExt) {
         InitMcBlockId(convert_block_id_ext_blk2api(block_id))
             .store_into_db(self.db.as_ref())
             .ok();
     }
 
-    pub fn update_last_known_mc_block_seqno(&self, seqno: u32) -> bool {
+    fn update_last_known_mc_block_seqno(&self, seqno: u32) -> bool {
         self.last_known_mc_block_seqno
             .fetch_max(seqno, Ordering::SeqCst)
             < seqno
     }
 
-    pub fn update_last_known_key_block_seqno(&self, seqno: u32) -> bool {
+    fn update_last_known_key_block_seqno(&self, seqno: u32) -> bool {
         self.last_known_key_block_seqno
             .fetch_max(seqno, Ordering::SeqCst)
             < seqno
     }
 
-    pub async fn get_masterchain_overlay(&self) -> Result<Arc<dyn FullNodeOverlayClient>> {
+    async fn get_masterchain_overlay(&self) -> Result<Arc<dyn FullNodeOverlayClient>> {
         self.get_full_node_overlay(ton_block::MASTERCHAIN_ID, ton_block::SHARD_FULL)
             .await
     }
 
-    pub async fn get_full_node_overlay(
+    async fn get_full_node_overlay(
         &self,
         workchain: i32,
         shard: u64,
@@ -135,10 +234,7 @@ impl Engine {
         self.network.get_overlay(full_id, short_id).await
     }
 
-    pub async fn listen_broadcasts(
-        self: &Arc<Self>,
-        shard_ident: ton_block::ShardIdent,
-    ) -> Result<()> {
+    async fn listen_broadcasts(self: &Arc<Self>, shard_ident: ton_block::ShardIdent) -> Result<()> {
         let overlay = self
             .get_full_node_overlay(
                 shard_ident.workchain_id(),
@@ -169,7 +265,7 @@ impl Engine {
         Ok(())
     }
 
-    pub async fn download_zerostate(
+    async fn download_zerostate(
         &self,
         block_id: &ton_block::BlockIdExt,
         max_attempts: Option<u32>,
@@ -190,7 +286,7 @@ impl Engine {
         .await
     }
 
-    pub async fn download_next_masterchain_block(
+    async fn download_next_masterchain_block(
         &self,
         prev_block_id: &ton_block::BlockIdExt,
         max_attempts: Option<u32>,
@@ -215,7 +311,7 @@ impl Engine {
         .await
     }
 
-    pub async fn download_block(
+    async fn download_block(
         &self,
         block_id: &ton_block::BlockIdExt,
         max_attempts: Option<u32>,
@@ -245,7 +341,7 @@ impl Engine {
         }
     }
 
-    pub async fn download_block_proof(
+    async fn download_block_proof(
         &self,
         block_id: &ton_block::BlockIdExt,
         is_link: bool,
@@ -267,7 +363,7 @@ impl Engine {
         .await
     }
 
-    pub async fn download_next_key_blocks_ids(
+    async fn download_next_key_blocks_ids(
         &self,
         block_id: &ton_block::BlockIdExt,
     ) -> Result<Vec<ton_block::BlockIdExt>> {
@@ -275,7 +371,7 @@ impl Engine {
         mc_overlay.download_next_key_blocks_ids(block_id, 5).await
     }
 
-    pub async fn download_archive(
+    async fn download_archive(
         &self,
         mc_block_seq_no: u32,
         active_peers: &Arc<DashSet<AdnlNodeIdShort>>,
@@ -286,14 +382,14 @@ impl Engine {
             .await
     }
 
-    pub fn load_block_handle(
+    fn load_block_handle(
         &self,
         block_id: &ton_block::BlockIdExt,
     ) -> Result<Option<Arc<BlockHandle>>> {
         self.db.load_block_handle(block_id)
     }
 
-    pub fn find_block_by_seq_no(
+    fn find_block_by_seq_no(
         &self,
         account_prefix: &ton_block::AccountIdPrefixFull,
         seq_no: u32,
@@ -302,7 +398,7 @@ impl Engine {
     }
 
     #[allow(unused)]
-    pub fn find_block_by_utime(
+    fn find_block_by_utime(
         &self,
         account_prefix: &ton_block::AccountIdPrefixFull,
         utime: u32,
@@ -311,7 +407,7 @@ impl Engine {
     }
 
     #[allow(unused)]
-    pub fn find_block_by_lt(
+    fn find_block_by_lt(
         &self,
         account_prefix: &ton_block::AccountIdPrefixFull,
         lt: u64,
@@ -319,7 +415,7 @@ impl Engine {
         self.db.find_block_by_lt(account_prefix, lt)
     }
 
-    pub async fn wait_next_applied_mc_block(
+    async fn wait_next_applied_mc_block(
         &self,
         prev_handle: &Arc<BlockHandle>,
         timeout_ms: Option<u64>,
@@ -349,7 +445,7 @@ impl Engine {
         }
     }
 
-    pub async fn wait_applied_block(
+    async fn wait_applied_block(
         &self,
         block_id: &ton_block::BlockIdExt,
         timeout_ms: Option<u64>,
@@ -373,7 +469,7 @@ impl Engine {
         }
     }
 
-    pub async fn wait_state(
+    async fn wait_state(
         self: &Arc<Self>,
         block_id: &ton_block::BlockIdExt,
         timeout_ms: Option<u64>,
@@ -415,10 +511,7 @@ impl Engine {
         }
     }
 
-    pub async fn load_state(
-        &self,
-        block_id: &ton_block::BlockIdExt,
-    ) -> Result<Arc<ShardStateStuff>> {
+    async fn load_state(&self, block_id: &ton_block::BlockIdExt) -> Result<Arc<ShardStateStuff>> {
         if let Some(state) = self.shard_states_cache.get(block_id) {
             Ok(state)
         } else {
@@ -429,7 +522,7 @@ impl Engine {
         }
     }
 
-    pub async fn store_state(
+    async fn store_state(
         &self,
         handle: &Arc<BlockHandle>,
         state: &Arc<ShardStateStuff>,
@@ -447,11 +540,11 @@ impl Engine {
         Ok(())
     }
 
-    pub async fn load_block_data(&self, handle: &Arc<BlockHandle>) -> Result<BlockStuff> {
+    async fn load_block_data(&self, handle: &Arc<BlockHandle>) -> Result<BlockStuff> {
         self.db.load_block_data(handle.as_ref()).await
     }
 
-    pub async fn store_block_data(&self, block: &BlockStuff) -> Result<StoreBlockResult> {
+    async fn store_block_data(&self, block: &BlockStuff) -> Result<StoreBlockResult> {
         let store_block_result = self.db.store_block_data(block).await?;
         if store_block_result.handle.id().shard().is_masterchain() {
             if store_block_result.handle.meta().is_key_block() {
@@ -462,7 +555,7 @@ impl Engine {
         Ok(store_block_result)
     }
 
-    pub async fn load_block_proof(
+    async fn load_block_proof(
         &self,
         handle: &Arc<BlockHandle>,
         is_link: bool,
@@ -470,7 +563,7 @@ impl Engine {
         self.db.load_block_proof(handle, is_link).await
     }
 
-    pub async fn store_block_proof(
+    async fn store_block_proof(
         &self,
         block_id: &ton_block::BlockIdExt,
         handle: Option<Arc<BlockHandle>>,
@@ -483,7 +576,7 @@ impl Engine {
             .handle)
     }
 
-    pub async fn store_zerostate(
+    async fn store_zerostate(
         &self,
         block_id: &ton_block::BlockIdExt,
         state: &Arc<ShardStateStuff>,
@@ -495,7 +588,7 @@ impl Engine {
         Ok(handle)
     }
 
-    pub async fn check_sync(&self) -> Result<bool> {
+    async fn check_sync(&self) -> Result<bool> {
         let shards_client_mc_block_id = self.load_shards_client_mc_block_id().await?;
         let last_applied_mc_block_id = self.load_last_applied_mc_block_id().await?;
         if shards_client_mc_block_id.seq_no + MAX_BLOCK_APPLIER_DEPTH
@@ -523,7 +616,7 @@ impl Engine {
         Ok(false)
     }
 
-    pub async fn set_applied(&self, handle: &Arc<BlockHandle>, mc_seq_no: u32) -> Result<bool> {
+    async fn set_applied(&self, handle: &Arc<BlockHandle>, mc_seq_no: u32) -> Result<bool> {
         if handle.meta().is_applied() {
             return Ok(false);
         }
@@ -648,6 +741,12 @@ impl Engine {
         Ok(())
     }
 
+    async fn notify_subscribers_with_status(&self, status: EngineStatus) {
+        for subscriber in &self.subscribers {
+            subscriber.engine_status_changed(status).await;
+        }
+    }
+
     async fn notify_subscribers_with_block(
         &self,
         handle: &Arc<BlockHandle>,
@@ -753,6 +852,6 @@ enum EngineError {
     NonMasterchainNextBlock,
     #[error("Failed to load handle for last masterchain block")]
     FailedToLoadLastMasterchainBlockHandle,
-    #[error("Too deep recusion")]
+    #[error("Too deep recursion")]
     TooDeepRecursion,
 }

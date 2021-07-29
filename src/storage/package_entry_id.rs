@@ -3,9 +3,8 @@ use std::hash::Hash;
 use std::str::FromStr;
 
 use anyhow::Result;
+use nekoton_utils::NoFailure;
 use ton_types::UInt256;
-
-use crate::utils::*;
 
 #[derive(Debug, Hash, Eq, PartialEq)]
 pub enum PackageEntryId<I> {
@@ -178,6 +177,6 @@ mod tests {
 
         check_package_id(PackageEntryId::Block(block_id.clone()));
         check_package_id(PackageEntryId::Proof(block_id.clone()));
-        check_package_id(PackageEntryId::ProofLink(block_id.clone()));
+        check_package_id(PackageEntryId::ProofLink(block_id));
     }
 }
