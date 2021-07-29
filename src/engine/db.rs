@@ -40,7 +40,10 @@ impl Db {
         PS: AsRef<Path>,
         PF: AsRef<Path>,
     {
-        let db = sled::open(sled_db_path)?;
+        let db = sled::Config::new()
+            .cache_capacity(1 << 27) // 128 MB
+            .path(sled_db_path)
+            .open()?;
 
         Ok(Arc::new(Self {
             block_handle_storage: BlockHandleStorage::with_db(db.open_tree("block_handles")?),
