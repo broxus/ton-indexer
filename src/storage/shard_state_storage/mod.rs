@@ -11,11 +11,13 @@ use sha2::Sha256;
 use tokio::fs::File;
 use tokio::sync::{RwLock, RwLockWriteGuard};
 
+use self::mapped_file::*;
 use self::parser::*;
 use super::storage_cell::StorageCell;
 use crate::storage::StoredValue;
 use crate::utils::*;
 
+mod mapped_file;
 mod parser;
 
 pub struct ShardStateStorage {
@@ -77,13 +79,15 @@ impl ShardStateStorage {
         &'_ self,
         block_id: &ton_block::BlockIdExt,
         clear_db: bool,
-    ) -> Result<ShardStateReplaceTransaction<'_>> {
+    ) -> Result<(ShardStateReplaceTransaction<'_>, FilesContext)> {
         let state = self.state.write().await;
         if clear_db {
             state.shard_state_db.clear()?;
             state.dynamic_boc_db.clear()?;
         }
-        ShardStateReplaceTransaction::new(state, &*self.downloads_dir, block_id).await
+
+        let ctx = FilesContext::new(self.downloads_dir.as_ref(), block_id).await?;
+        Ok((ShardStateReplaceTransaction::new(state).await?, ctx))
     }
 }
 
@@ -94,72 +98,31 @@ struct ShardStateStorageState {
 
 pub struct ShardStateReplaceTransaction<'a> {
     state: RwLockWriteGuard<'a, ShardStateStorageState>,
-    cells_path: PathBuf,
-    cells_file: Option<File>,
-    hashes_path: PathBuf,
-    hashes_file: Option<File>,
     reader: ShardStatePacketReader,
     boc_header: Option<BocHeader>,
     cells_read: usize,
 }
 
 impl<'a> ShardStateReplaceTransaction<'a> {
-    async fn new<P>(
+    async fn new(
         state: RwLockWriteGuard<'a, ShardStateStorageState>,
-        base_path: P,
-        block_id: &ton_block::BlockIdExt,
-    ) -> Result<ShardStateReplaceTransaction<'a>>
-    where
-        P: AsRef<Path>,
-    {
-        let block_id = format!(
-            "({},{:016x},{})",
-            block_id.shard_id.workchain_id(),
-            block_id.shard_id.shard_prefix_with_tag(),
-            block_id.seq_no
-        );
-
-        let cells_path = base_path.as_ref().join(format!("state_cells_{}", block_id));
-        let hashes_path = base_path
-            .as_ref()
-            .join(format!("state_hashes_{}", block_id));
-
-        let mut options = tokio::fs::OpenOptions::new();
-        options.write(true).create(true).truncate(true).read(true);
-
-        let (cells_file, hashes_file) = match futures::future::join(
-            options.open(&cells_path),
-            options.open(&hashes_path),
-        )
-        .await
-        {
-            (Ok(cells_file), Ok(hashes_file)) => (cells_file, hashes_file),
-            (Err(e), _) | (_, Err(e)) => {
-                tokio::fs::remove_file(&cells_path).await?;
-                tokio::fs::remove_file(&hashes_path).await?;
-                return Err(e.into());
-            }
-        };
-
+    ) -> Result<ShardStateReplaceTransaction<'a>> {
         Ok(Self {
             state,
-            cells_path,
-            cells_file: Some(cells_file),
-            hashes_path,
-            hashes_file: Some(hashes_file),
             reader: ShardStatePacketReader::new(),
             boc_header: None,
             cells_read: 0,
         })
     }
 
-    pub async fn process_packet(&mut self, packet: Vec<u8>) -> Result<bool> {
+    pub async fn process_packet(
+        &mut self,
+        ctx: &mut FilesContext,
+        packet: Vec<u8>,
+    ) -> Result<bool> {
         use tokio::io::AsyncWriteExt;
 
-        let cells_file = match &mut self.cells_file {
-            Some(file) => file,
-            None => return Err(ShardStateStorageError::AlreadyFinalized.into()),
-        };
+        let cells_file = ctx.cells_file()?;
 
         self.reader.set_next_packet(packet);
 
@@ -214,19 +177,14 @@ impl<'a> ShardStateReplaceTransaction<'a> {
     }
 
     pub async fn finalize(
-        mut self,
+        self,
+        ctx: &mut FilesContext,
         block_id: ton_block::BlockIdExt,
     ) -> Result<Arc<ShardStateStuff>> {
-        use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
+        use tokio::io::{AsyncReadExt, AsyncSeekExt};
 
         // 2^7 bits + 1 bytes
         const MAX_DATA_SIZE: usize = 128;
-
-        let (mut cells_file, mut hashes_file) =
-            match (self.cells_file.take(), self.hashes_file.take()) {
-                (Some(cells_file), Some(hashes_file)) => (cells_file, hashes_file),
-                _ => return Err(ShardStateStorageError::AlreadyFinalized.into()),
-            };
 
         let header = match &self.boc_header {
             Some(header) => header,
@@ -236,11 +194,8 @@ impl<'a> ShardStateReplaceTransaction<'a> {
             }
         };
 
-        cells_file.flush().await?;
-
-        hashes_file
-            .set_len(header.cell_count as u64 * HashesEntry::LEN as u64)
-            .await?;
+        let hashes_file = ctx.create_mapped_hashes_file(header.cell_count * HashesEntry::LEN)?;
+        let cells_file = ctx.cells_file()?;
 
         let mut tail = [0; 4];
         let mut entries_buffer = EntriesBuffer::new();
@@ -293,10 +248,7 @@ impl<'a> ShardStateReplaceTransaction<'a> {
                     .iter()
                     .zip(entries_buffer.iter_child_buffers())
                 {
-                    hashes_file
-                        .seek(SeekFrom::Start(index as u64 * HashesEntry::LEN as u64))
-                        .await?;
-                    hashes_file.read_exact(buffer).await?;
+                    hashes_file.read_exact_at(index as usize * HashesEntry::LEN, buffer);
                 }
 
                 self.finalize_cell(
@@ -307,30 +259,16 @@ impl<'a> ShardStateReplaceTransaction<'a> {
                     &mut output_buffer,
                 )?;
 
-                hashes_file
-                    .seek(SeekFrom::Start(cell_index as u64 * HashesEntry::LEN as u64))
-                    .await?;
-                hashes_file
-                    .write_all(entries_buffer.current_entry_buffer())
-                    .await?;
-                hashes_file.flush().await?;
+                hashes_file.write_all_at(
+                    cell_index * HashesEntry::LEN,
+                    entries_buffer.current_entry_buffer(),
+                );
 
                 chunk_buffer.truncate(remaining_bytes);
             }
 
             log::info!("READ: {}", total_read);
         }
-
-        log::info!("CLOSING FILES");
-        let remove_file = move |file: File, path| async move {
-            file.set_len(0).await?;
-            file.sync_all().await?;
-            tokio::fs::remove_file(&path).await?;
-            std::io::Result::Ok(())
-        };
-
-        remove_file(cells_file, &self.cells_path).await?;
-        remove_file(hashes_file, &self.hashes_path).await?;
 
         log::info!("DONE PROCESSING: {} of {} bytes", total_read, total_size);
 
@@ -532,6 +470,73 @@ impl<'a> ShardStateReplaceTransaction<'a> {
 
         // Done
         Ok(())
+    }
+}
+
+pub struct FilesContext {
+    cells_path: PathBuf,
+    cells_file: Option<File>,
+    hashes_path: PathBuf,
+}
+
+impl FilesContext {
+    async fn new<P>(downloads_dir: &P, block_id: &ton_block::BlockIdExt) -> Result<Self>
+    where
+        P: AsRef<Path>,
+    {
+        let block_id = format!(
+            "({},{:016x},{})",
+            block_id.shard_id.workchain_id(),
+            block_id.shard_id.shard_prefix_with_tag(),
+            block_id.seq_no
+        );
+
+        let cells_path = downloads_dir
+            .as_ref()
+            .join(format!("state_cells_{}", block_id));
+        let hashes_path = downloads_dir
+            .as_ref()
+            .join(format!("state_hashes_{}", block_id));
+
+        let cells_file = Some(
+            tokio::fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .read(true)
+                .open(&cells_path)
+                .await
+                .context("Failed to create cells file")?,
+        );
+
+        Ok(Self {
+            cells_path,
+            cells_file,
+            hashes_path,
+        })
+    }
+
+    pub async fn clear(mut self) -> Result<()> {
+        if let Some(file) = self.cells_file.take() {
+            file.set_len(0).await?;
+            file.sync_all().await?;
+        };
+
+        tokio::fs::remove_file(self.cells_path).await?;
+        tokio::fs::remove_file(self.hashes_path).await?;
+        Ok(())
+    }
+
+    fn cells_file(&mut self) -> Result<&mut File> {
+        match &mut self.cells_file {
+            Some(file) => Ok(file),
+            None => Err(ShardStateStorageError::AlreadyFinalized.into()),
+        }
+    }
+
+    fn create_mapped_hashes_file(&self, length: usize) -> Result<MappedFile> {
+        let mapped_file = MappedFile::new(&self.hashes_path, length)?;
+        Ok(mapped_file)
     }
 }
 
