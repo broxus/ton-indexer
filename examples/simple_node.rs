@@ -1,3 +1,4 @@
+use std::net::{IpAddr, SocketAddrV4};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -7,8 +8,8 @@ use clap::{Clap, IntoApp};
 use serde::{Deserialize, Serialize};
 use tiny_adnl::utils::*;
 
-use ton_indexer_lib::utils::BlockIdExtExtension;
-use ton_indexer_lib::*;
+use ton_indexer::utils::*;
+use ton_indexer::*;
 
 #[derive(Clone, Debug, Clap)]
 pub struct Arguments {
@@ -49,18 +50,28 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
+async fn start(node_config: NodeConfig, global_config: GlobalConfig) -> Result<()> {
+    let subscribers =
+        vec![Arc::new(LoggerSubscriber::default()) as Arc<dyn ton_indexer::Subscriber>];
+
+    let engine = Engine::new(node_config, global_config, subscribers).await?;
+    engine.start().await?;
+
+    futures::future::pending().await
+}
+
 #[derive(Default)]
 struct LoggerSubscriber {
     counter: AtomicUsize,
 }
 
 #[async_trait::async_trait]
-impl ton_indexer_lib::Subscriber for LoggerSubscriber {
+impl ton_indexer::Subscriber for LoggerSubscriber {
     async fn process_block(
         &self,
-        block: &ton_indexer_lib::utils::BlockStuff,
-        _block_proof: Option<&ton_indexer_lib::utils::BlockProofStuff>,
-        _shard_state: &ton_indexer_lib::utils::ShardStateStuff,
+        block: &BlockStuff,
+        _block_proof: Option<&BlockProofStuff>,
+        _shard_state: &ShardStateStuff,
     ) -> Result<()> {
         if block.id().is_masterchain() {
             return Ok(());
@@ -76,27 +87,15 @@ impl ton_indexer_lib::Subscriber for LoggerSubscriber {
         Ok(())
     }
 
-    async fn process_shard_state(
-        &self,
-        _shard_state: &ton_indexer_lib::utils::ShardStateStuff,
-    ) -> Result<()> {
+    async fn process_shard_state(&self, _shard_state: &ShardStateStuff) -> Result<()> {
         //log::info!("FOUND SHARD STATE {}", shard_state.block_id());
         Ok(())
     }
 }
 
-async fn start(node_config: NodeConfig, global_config: GlobalConfig) {
-    let subscribers = vec![Arc::new(LoggerSubscriber::default())];
-
-    let engine = Engine::new(node_config, global_config, subscribers).await?;
-    engine.start().await?;
-
-    futures::future::pending().await
-}
-
 #[derive(Serialize, Deserialize)]
 struct Config {
-    indexer: ton_indexer_lib::NodeConfig,
+    indexer: ton_indexer::NodeConfig,
 
     #[serde(default = "default_logger_settings")]
     pub logger_settings: serde_yaml::Value,
@@ -104,8 +103,29 @@ struct Config {
 
 impl Config {
     async fn generate() -> Result<Self> {
+        const DEFAULT_PORT: u16 = 30303;
+
+        let ip = external_ip::ConsensusBuilder::new()
+            .add_sources(external_ip::get_http_sources::<external_ip::Sources>())
+            .build()
+            .get_consensus()
+            .await;
+
+        let ip_address = match ip {
+            Some(IpAddr::V4(ip)) => SocketAddrV4::new(ip, DEFAULT_PORT),
+            Some(_) => anyhow::bail!("IPv6 not supported"),
+            None => anyhow::bail!("External ip not found"),
+        };
+
+        let indexer = ton_indexer::NodeConfig {
+            ip_address,
+            keys: Vec::new(),
+            sled_db_path: PathBuf::new().join("db/sled"),
+            file_db_path: PathBuf::new().join("db/file"),
+        };
+
         Ok(Self {
-            indexer: ton_indexer_lib::NodeConfig::generate().await?,
+            indexer,
             logger_settings: default_logger_settings(),
         })
     }
@@ -117,7 +137,7 @@ fn default_logger_settings() -> serde_yaml::Value {
       stdout:
         kind: console
         encoder:
-          pattern: "{d(%Y-%m-%d %H:%M:%S %Z)(utc)} - {h({l})} {M} {f}:{L} = {m} {n}"
+          pattern: "{d(%Y-%m-%d %H:%M:%S %Z)(utc)} - {h({l})} {M} = {m} {n}"
     root:
       level: error
       appenders:
@@ -153,7 +173,7 @@ fn read_config(path: PathBuf) -> Result<Config> {
     Ok(config)
 }
 
-fn read_global_config(path: PathBuf) -> Result<ton_indexer_lib::GlobalConfig> {
+fn read_global_config(path: PathBuf) -> Result<ton_indexer::GlobalConfig> {
     let file = std::fs::File::open(path)?;
     let reader = std::io::BufReader::new(file);
     let config = serde_json::from_reader(reader)?;

@@ -177,6 +177,6 @@ mod tests {
 
         check_package_id(PackageEntryId::Block(block_id.clone()));
         check_package_id(PackageEntryId::Proof(block_id.clone()));
-        check_package_id(PackageEntryId::ProofLink(block_id.clone()));
+        check_package_id(PackageEntryId::ProofLink(block_id));
     }
 }

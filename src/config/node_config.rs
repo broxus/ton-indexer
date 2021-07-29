@@ -1,5 +1,5 @@
 use std::convert::TryFrom;
-use std::net::{IpAddr, SocketAddrV4};
+use std::net::SocketAddrV4;
 use std::path::PathBuf;
 
 use anyhow::Result;
@@ -15,27 +15,6 @@ pub struct NodeConfig {
 }
 
 impl NodeConfig {
-    pub async fn generate() -> Result<Self> {
-        let ip = external_ip::ConsensusBuilder::new()
-            .add_sources(external_ip::get_http_sources::<external_ip::Sources>())
-            .build()
-            .get_consensus()
-            .await;
-
-        let ip_address = match ip {
-            Some(IpAddr::V4(ip)) => SocketAddrV4::new(ip, DEFAULT_PORT),
-            Some(_) => return Err(NodeConfigError::NotSupported.into()),
-            None => return Err(NodeConfigError::ExternalIpNotFound.into()),
-        };
-
-        Ok(Self {
-            ip_address,
-            keys: Vec::new(),
-            sled_db_path: PathBuf::new().join("db/sled"),
-            file_db_path: PathBuf::new().join("db/file"),
-        })
-    }
-
     pub fn sled_db_path(&self) -> &PathBuf {
         &self.sled_db_path
     }
@@ -65,14 +44,4 @@ pub struct AdnlNodeKey {
     tag: usize,
     #[serde(with = "serde_hex_array")]
     key: [u8; 32],
-}
-
-const DEFAULT_PORT: u16 = 30303;
-
-#[derive(thiserror::Error, Debug)]
-enum NodeConfigError {
-    #[error("IPv6 not yet supported")]
-    NotSupported,
-    #[error("Failed to determine external IP")]
-    ExternalIpNotFound,
 }
