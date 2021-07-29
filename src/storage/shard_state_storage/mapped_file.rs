@@ -17,6 +17,7 @@ impl MappedFile {
             .write(true)
             .read(true)
             .truncate(true)
+            .create(true)
             .open(path)?;
 
         file.set_len(length as u64)?;
