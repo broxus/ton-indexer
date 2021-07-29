@@ -7,7 +7,8 @@ use clap::{Clap, IntoApp};
 use serde::{Deserialize, Serialize};
 use tiny_adnl::utils::*;
 
-use ton_indexer_lib::utils::*;
+use ton_indexer_lib::utils::BlockIdExtExtension;
+use ton_indexer_lib::*;
 
 #[derive(Clone, Debug, Clap)]
 pub struct Arguments {
@@ -37,13 +38,7 @@ async fn main() -> Result<()> {
             let global_config = read_global_config(global_config)?;
             init_logger(&config.logger_settings)?;
 
-            if let Err(e) = ton_indexer_lib::start(
-                config.indexer,
-                global_config,
-                vec![Arc::new(LoggerSubscriber::default())],
-            )
-            .await
-            {
+            if let Err(e) = start(config.indexer, global_config).await {
                 eprintln!("{:?}", e);
                 std::process::exit(1);
             }
@@ -60,7 +55,7 @@ struct LoggerSubscriber {
 }
 
 #[async_trait::async_trait]
-impl ton_indexer_lib::BlockSubscriber for LoggerSubscriber {
+impl ton_indexer_lib::Subscriber for LoggerSubscriber {
     async fn process_block(
         &self,
         block: &ton_indexer_lib::utils::BlockStuff,
@@ -88,6 +83,15 @@ impl ton_indexer_lib::BlockSubscriber for LoggerSubscriber {
         //log::info!("FOUND SHARD STATE {}", shard_state.block_id());
         Ok(())
     }
+}
+
+async fn start(node_config: NodeConfig, global_config: GlobalConfig) {
+    let subscribers = vec![Arc::new(LoggerSubscriber::default())];
+
+    let engine = Engine::new(node_config, global_config, subscribers).await?;
+    engine.start().await?;
+
+    futures::future::pending().await
 }
 
 #[derive(Serialize, Deserialize)]

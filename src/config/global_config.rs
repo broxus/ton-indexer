@@ -1,10 +1,9 @@
 use std::convert::{TryFrom, TryInto};
 
 use anyhow::Result;
+use nekoton_utils::*;
 use serde::{Deserialize, Deserializer};
 use ton_api::{ton, IntoBoxed};
-
-use crate::utils::*;
 
 #[derive(Debug, Clone)]
 pub struct GlobalConfig {
@@ -168,7 +167,7 @@ struct DhtNodeJson {
     id: IdJson,
     addr_list: AddressListJson,
     version: i32,
-    #[serde(deserialize_with = "serde_deserialize_base64_array")]
+    #[serde(with = "serde_base64_array")]
     signature: [u8; 64],
 }
 
@@ -176,7 +175,7 @@ struct DhtNodeJson {
 struct IdJson {
     #[serde(rename = "@type")]
     ty: String,
-    #[serde(deserialize_with = "serde_deserialize_base64_array")]
+    #[serde(with = "serde_base64_array")]
     key: [u8; 32],
 }
 
@@ -211,9 +210,9 @@ struct ZeroStateJson {
     workchain: i32,
     shard: i64,
     seqno: i32,
-    #[serde(deserialize_with = "serde_deserialize_base64_array")]
+    #[serde(with = "serde_base64_array")]
     root_hash: [u8; 32],
-    #[serde(deserialize_with = "serde_deserialize_base64_array")]
+    #[serde(with = "serde_base64_array")]
     file_hash: [u8; 32],
 }
 

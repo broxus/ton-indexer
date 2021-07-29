@@ -3,9 +3,8 @@ use std::hash::Hash;
 use std::str::FromStr;
 
 use anyhow::Result;
+use nekoton_utils::NoFailure;
 use ton_types::UInt256;
-
-use crate::utils::*;
 
 #[derive(Debug, Hash, Eq, PartialEq)]
 pub enum PackageEntryId<I> {

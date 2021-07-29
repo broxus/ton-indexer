@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
+use nekoton_utils::NoFailure;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use ton_api::ton;
 

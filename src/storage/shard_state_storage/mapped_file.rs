@@ -45,24 +45,28 @@ impl MappedFile {
         Ok(Self { file, length, ptr })
     }
 
-    pub fn read_exact_at(&self, offset: usize, buffer: &mut [u8]) {
-        unsafe {
-            std::ptr::copy_nonoverlapping(
-                (self.ptr as *const u8).offset(offset as isize),
-                buffer.as_mut_ptr(),
-                buffer.len(),
-            )
-        };
+    /// Copies chunk of bytes to the specified buffer
+    ///
+    /// # Safety
+    /// The caller must take care that the buffer is not out of the mapped memory!
+    pub unsafe fn read_exact_at(&self, offset: usize, buffer: &mut [u8]) {
+        std::ptr::copy_nonoverlapping(
+            (self.ptr as *const u8).add(offset),
+            buffer.as_mut_ptr(),
+            buffer.len(),
+        )
     }
 
-    pub fn write_all_at(&self, offset: usize, buffer: &[u8]) {
-        unsafe {
-            std::ptr::copy_nonoverlapping(
-                buffer.as_ptr(),
-                (self.ptr as *mut u8).offset(offset as isize),
-                buffer.len(),
-            )
-        };
+    /// Copies buffer to the mapped memory
+    ///
+    /// # Safety
+    /// The caller must take care that the buffer is not out of the mapped memory!
+    pub unsafe fn write_all_at(&self, offset: usize, buffer: &[u8]) {
+        std::ptr::copy_nonoverlapping(
+            buffer.as_ptr(),
+            (self.ptr as *mut u8).add(offset),
+            buffer.len(),
+        )
     }
 }
 

@@ -218,13 +218,13 @@ impl ShardStatePacketReader {
                 self.hasher
                     .write(&self.current_packet[self.offset..self.offset + n]);
                 self.offset += n;
-                return ReaderAction::Complete;
+                ReaderAction::Complete
             }
             std::cmp::Ordering::Equal => {
                 self.hasher.write(&self.current_packet[self.offset..]);
                 self.offset = 0;
                 self.current_packet = std::mem::take(&mut self.next_packet);
-                return ReaderAction::Complete;
+                ReaderAction::Complete
             }
             std::cmp::Ordering::Greater => {
                 n -= remaining;

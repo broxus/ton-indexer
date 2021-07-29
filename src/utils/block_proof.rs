@@ -1,8 +1,9 @@
 use anyhow::{anyhow, Result};
+use nekoton_utils::NoFailure;
 use ton_block::Deserializable;
 use ton_types::{Cell, HashmapType};
 
-use super::{BlockIdExtExtension, NoFailure, ShardStateStuff};
+use super::{BlockIdExtExtension, ShardStateStuff};
 
 #[derive(Debug, Default, Clone, Eq, PartialEq)]
 pub struct BlockProofStuff {

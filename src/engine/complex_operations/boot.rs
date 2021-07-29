@@ -17,7 +17,7 @@ pub struct BootData {
 }
 
 pub async fn boot(engine: &Arc<Engine>) -> Result<BootData> {
-    let last_mc_block_id = match LastMcBlockId::load_from_db(engine.db().as_ref()) {
+    let last_mc_block_id = match LastMcBlockId::load_from_db(engine.db.as_ref()) {
         Ok(block_id) => {
             let last_mc_block_id = convert_block_id_ext_api2blk(&block_id.0)?;
             warm_boot(engine, last_mc_block_id).await?
@@ -32,8 +32,7 @@ pub async fn boot(engine: &Arc<Engine>) -> Result<BootData> {
         }
     };
 
-    let shards_client_mc_block_id = match ShardsClientMcBlockId::load_from_db(engine.db().as_ref())
-    {
+    let shards_client_mc_block_id = match ShardsClientMcBlockId::load_from_db(engine.db.as_ref()) {
         Ok(block_id) => convert_block_id_ext_api2blk(&block_id.0)?,
         Err(_) => {
             engine

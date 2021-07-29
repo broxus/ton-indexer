@@ -3,9 +3,8 @@ use std::net::{IpAddr, SocketAddrV4};
 use std::path::PathBuf;
 
 use anyhow::Result;
+use nekoton_utils::*;
 use serde::{Deserialize, Serialize};
-
-use crate::utils::*;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NodeConfig {
