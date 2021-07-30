@@ -800,7 +800,7 @@ pub struct CellDb {
 
 impl CellDb {
     pub fn contains(&self, hash: &ton_types::UInt256) -> Result<bool> {
-        let has_key = self.db.contains_key(hash.as_ref())?;
+        let has_key = self.db.contains_key(hash.as_slice())?;
         Ok(has_key)
     }
 
