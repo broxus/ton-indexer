@@ -30,10 +30,10 @@ thiserror = "*"
 
 sled = { git = "https://github.com/spacejam/sled.git", rev = "9dacc9721ee8fe3608f0d09e2d5f91f10a2c61eb" }
 
-ton_api = { git = "https://github.com/broxus/ton-labs-tl.git", package = "ton_api", branch = "original", default-features = false }
+ton_api = { git = "https://github.com/broxus/ton-labs-tl.git", package = "ton_api", default-features = false }
 tiny-adnl = { git = "https://github.com/broxus/tiny-adnl.git" }
-ton_block = { git = "https://github.com/tonlabs/ton-labs-block.git" }
-ton_types = { git = "https://github.com/tonlabs/ton-labs-types.git" }
+ton_block = { git = "https://github.com/broxus/ton-labs-block.git" }
+ton_types = { git = "https://github.com/broxus/ton-labs-types.git" }
 
 nekoton-utils = { git = "https://github.com/broxus/nekoton.git" }
 
