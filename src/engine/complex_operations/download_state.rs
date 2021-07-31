@@ -299,7 +299,9 @@ async fn download_packet_worker(ctx: Arc<DownloadContext>, mut offsets_rx: Offse
                     part_attempt += 1;
                     ctx.peer_attempt.fetch_add(1, Ordering::Release);
 
-                    log::debug!("Failed to download persistent state part {}: {}", offset, e);
+                    if !ctx.got_last_part.load(Ordering::Acquire) {
+                        log::error!("Failed to download persistent state part {}: {}", offset, e);
+                    }
 
                     if part_attempt > 10 {
                         offsets_rx.close();
