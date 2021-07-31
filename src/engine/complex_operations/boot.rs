@@ -3,6 +3,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 use dashmap::DashSet;
+use nekoton_utils::NoFailure;
 use tiny_adnl::utils::*;
 
 use super::download_state::*;

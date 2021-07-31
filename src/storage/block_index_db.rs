@@ -190,7 +190,7 @@ impl BlockIndexDb {
                 index,
             },
             &LtDbEntry {
-                block_id_ext: handle.id().into(),
+                block_id_ext: convert_block_id_ext_blk2api(handle.id()),
                 gen_lt: handle.meta().gen_lt(),
                 gen_utime: handle.meta().gen_utime(),
             },

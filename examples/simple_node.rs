@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use clap::{Clap, IntoApp};
+use nekoton_utils::NoFailure;
 use serde::{Deserialize, Serialize};
 use tiny_adnl::utils::*;
 
