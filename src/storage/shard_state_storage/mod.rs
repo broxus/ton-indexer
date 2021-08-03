@@ -27,11 +27,7 @@ pub struct ShardStateStorage {
 }
 
 impl ShardStateStorage {
-    pub async fn with_db<P>(
-        shard_state_db: sled::Tree,
-        cell_db: sled::Tree,
-        file_db_path: &P,
-    ) -> Result<Self>
+    pub async fn with_db<P>(shard_state_db: Tree, cell_db: Tree, file_db_path: &P) -> Result<Self>
     where
         P: AsRef<Path>,
     {
@@ -93,7 +89,7 @@ impl ShardStateStorage {
 }
 
 struct ShardStateStorageState {
-    shard_state_db: sled::Tree,
+    shard_state_db: Tree,
     dynamic_boc_db: DynamicBocDb,
 }
 
@@ -722,7 +718,7 @@ pub struct DynamicBocDb {
 }
 
 impl DynamicBocDb {
-    fn with_db(db: sled::Tree) -> Self {
+    fn with_db(db: Tree) -> Self {
         Self {
             cell_db: CellDb { db },
             cells: Arc::new(DashMap::new()),
@@ -795,7 +791,7 @@ impl DynamicBocDb {
 
 #[derive(Clone)]
 pub struct CellDb {
-    db: sled::Tree,
+    db: Tree,
 }
 
 impl CellDb {

@@ -16,7 +16,7 @@ pub struct BlockIndexDb {
 }
 
 impl BlockIndexDb {
-    pub fn with_db(lt_desc_db: sled::Tree, lt_db: sled::Tree) -> Self {
+    pub fn with_db(lt_desc_db: Tree, lt_db: Tree) -> Self {
         Self {
             lt_desc_db: RwLock::new(LtDescDb { db: lt_desc_db }),
             lt_db: LtDb { db: lt_db },
@@ -212,7 +212,7 @@ impl BlockIndexDb {
 }
 
 struct LtDb {
-    db: sled::Tree,
+    db: Tree,
 }
 
 impl LtDb {
@@ -256,7 +256,7 @@ struct LtDbEntry {
 }
 
 struct LtDescDb {
-    db: sled::Tree,
+    db: Tree,
 }
 
 impl LtDescDb {

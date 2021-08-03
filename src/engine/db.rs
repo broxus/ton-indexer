@@ -27,11 +27,11 @@ pub struct Db {
     archive_manager: ArchiveManager,
     block_index_db: BlockIndexDb,
 
-    prev1_block_db: sled::Tree,
-    prev2_block_db: sled::Tree,
-    next1_block_db: sled::Tree,
-    next2_block_db: sled::Tree,
-    _db: sled::Db,
+    prev1_block_db: Tree,
+    prev2_block_db: Tree,
+    next1_block_db: Tree,
+    next2_block_db: Tree,
+    _db: rocksdb::DB,
 }
 
 impl Db {
@@ -40,22 +40,21 @@ impl Db {
         PS: AsRef<Path>,
         PF: AsRef<Path>,
     {
-        let db = sled::Config::new()
-            .cache_capacity(1 << 27) // 128 MB
-            .path(sled_db_path)
-            .open()?;
-
-        let block_handle_storage = BlockHandleStorage::with_db(db.open_tree("block_handles")?);
+        let _db = rocksdb::DB::open_default(&sled_db_path)?;
+        let block_handle_storage =
+            BlockHandleStorage::with_db(Tree::new(&sled_db_path, "block_handles")?);
         let shard_state_storage = ShardStateStorage::with_db(
-            db.open_tree("shard_state_db")?,
-            db.open_tree("cell_db")?,
+            Tree::new(&sled_db_path, "shard_state_db")?,
+            Tree::new(&sled_db_path, "cell_db")?,
             &file_db_path,
         )
         .await?;
-        let node_state_storage = NodeStateStorage::with_db(db.open_tree("node_state")?);
+        let node_state_storage = NodeStateStorage::with_db(Tree::new(&sled_db_path, "node_state")?);
         let archive_manager = ArchiveManager::with_root_dir(&file_db_path).await?;
-        let block_index_db =
-            BlockIndexDb::with_db(db.open_tree("lt_desc_db")?, db.open_tree("lt_db")?);
+        let block_index_db = BlockIndexDb::with_db(
+            Tree::new(&sled_db_path, "lt_desc_db")?,
+            Tree::new(&sled_db_path, "lt_db")?,
+        );
 
         Ok(Arc::new(Self {
             block_handle_storage,
@@ -63,11 +62,11 @@ impl Db {
             node_state_storage,
             archive_manager,
             block_index_db,
-            prev1_block_db: db.open_tree("prev1")?,
-            prev2_block_db: db.open_tree("prev2")?,
-            next1_block_db: db.open_tree("next1")?,
-            next2_block_db: db.open_tree("next2")?,
-            _db: db,
+            prev1_block_db: Tree::new(&sled_db_path, "prev1")?,
+            prev2_block_db: Tree::new(&sled_db_path, "prev2")?,
+            next1_block_db: Tree::new(&sled_db_path, "next1")?,
+            next2_block_db: Tree::new(&sled_db_path, "next2")?,
+            _db,
         }))
     }
 
