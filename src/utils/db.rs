@@ -67,6 +67,6 @@ impl Tree {
     }
 
     pub fn get_cf(&self) -> Result<Arc<BoundColumnFamily>> {
-        Ok(self.db.cf_handle(&self.name).context("No cf")?)
+        self.db.cf_handle(&self.name).context("No cf")
     }
 }

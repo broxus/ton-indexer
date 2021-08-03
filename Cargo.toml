@@ -29,7 +29,8 @@ tokio = { version = "1.6", features = ["sync", "fs"] }
 thiserror = "*"
 
 rocksdb = { version = "0.17.0", features = ["multi-threaded-cf"] }
-ton_api = { git = "https://github.com/broxus/ton-labs-tl.git", package = "ton_api" }
+
+ton_api = { git = "https://github.com/broxus/ton-labs-tl.git", package = "ton_api", default-features = false }
 tiny-adnl = { git = "https://github.com/broxus/tiny-adnl.git" }
 ton_block = { git = "https://github.com/broxus/ton-labs-block.git" }
 ton_types = { git = "https://github.com/broxus/ton-labs-types.git" }
