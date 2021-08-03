@@ -67,20 +67,12 @@ impl Tree {
     }
 }
 
-pub fn open_db<T: AsRef<Path>>(path: T) -> Result<Arc<DB>> {
-    const CF_NAMES: [&str; 10] = [
-        "block_handles",
-        "shard_state_db",
-        "cell_db",
-        "node_state",
-        "lt_desc_db",
-        "lt_db",
-        "prev1",
-        "prev2",
-        "next1",
-        "next2",
-    ];
-    let db = Arc::new(rocksdb::DB::open_cf(&default_options(), &path, &CF_NAMES)?);
+pub fn open_db<T: AsRef<Path>, I, N>(path: T, cfs: I) -> Result<Arc<DB>>
+where
+    T: Iterator<Item = N>,
+    N: AsRef<str>,
+{
+    let db = Arc::new(rocksdb::DB::open_cf(&default_options(), &path, cfs)?);
     Ok(db)
 }
 
