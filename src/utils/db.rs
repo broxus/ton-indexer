@@ -1,8 +1,8 @@
+use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use rocksdb::{BoundColumnFamily, DB};
-use std::path::Path;
+use rocksdb::{BoundColumnFamily, Options, DB};
 
 #[derive(Clone)]
 pub struct Tree {
@@ -46,7 +46,9 @@ impl Tree {
     }
 
     pub fn clear(&self) -> Result<()> {
-        Ok(self.db.drop_cf(&self.name)?)
+        self.db.drop_cf(&self.name)?;
+        self.db.create_cf(&self.name, &default_options())?;
+        Ok(())
     }
 
     pub fn contains_key<T: AsRef<[u8]>>(&self, key: T) -> Result<bool> {
@@ -64,9 +66,6 @@ impl Tree {
 }
 
 pub fn open_db<T: AsRef<Path>>(path: T) -> Result<Arc<DB>> {
-    let mut opts = rocksdb::Options::default();
-    opts.create_if_missing(true);
-    opts.create_missing_column_families(true);
     const CF_NAMES: [&str; 14] = [
         "prev1_block_db",
         "prev2_block_db",
@@ -83,6 +82,13 @@ pub fn open_db<T: AsRef<Path>>(path: T) -> Result<Arc<DB>> {
         "next1",
         "next2",
     ];
-    let db = Arc::new(rocksdb::DB::open_cf(&opts, &path, &CF_NAMES)?);
+    let db = Arc::new(rocksdb::DB::open_cf(&default_options(), &path, &CF_NAMES)?);
     Ok(db)
+}
+
+fn default_options() -> Options {
+    let mut opts = rocksdb::Options::default();
+    opts.create_if_missing(true);
+    opts.create_missing_column_families(true);
+    opts
 }
