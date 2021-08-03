@@ -27,7 +27,7 @@ impl Db {
         PS: AsRef<Path>,
         PF: AsRef<Path>,
     {
-        let db = crate::utils::open_db(
+        let db = open_db(
             sled_db_path,
             &[
                 columns::BlockHandles::NAME,

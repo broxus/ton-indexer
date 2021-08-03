@@ -42,6 +42,7 @@ impl Tree {
         Ok(self.db.put_cf(&cf, key, value)?)
     }
 
+    #[allow(dead_code)]
     pub fn remove<T: AsRef<[u8]>>(&self, key: T) -> Result<()> {
         let cf = self.get_cf()?;
         Ok(self.db.delete_cf(&cf, key)?)
@@ -67,9 +68,10 @@ impl Tree {
     }
 }
 
-pub fn open_db<T: AsRef<Path>, I, N>(path: T, cfs: I) -> Result<Arc<DB>>
+pub fn open_db<T, I, N>(path: T, cfs: I) -> Result<Arc<DB>>
 where
-    T: Iterator<Item = N>,
+    T: AsRef<Path>,
+    I: IntoIterator<Item = N>,
     N: AsRef<str>,
 {
     let db = Arc::new(rocksdb::DB::open_cf(&default_options(), &path, cfs)?);

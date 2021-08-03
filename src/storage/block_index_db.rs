@@ -7,7 +7,7 @@ use parking_lot::RwLock;
 use ton_api::ton;
 
 use super::block_handle::*;
-use super::StoredValue;
+use super::{StoredValue, Tree};
 use crate::utils::*;
 
 pub struct BlockIndexDb {

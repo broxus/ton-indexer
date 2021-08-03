@@ -1,5 +1,6 @@
-use crate::utils::Tree;
 use anyhow::Result;
+
+use super::tree::*;
 
 pub struct NodeStateStorage {
     db: Tree,

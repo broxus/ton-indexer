@@ -16,6 +16,7 @@ use crate::storage::StoredValue;
 use crate::utils::*;
 
 use super::storage_cell::StorageCell;
+use super::tree::*;
 
 use self::mapped_file::*;
 use self::parser::*;

@@ -5,8 +5,8 @@ use dashmap::DashMap;
 
 use super::block_handle::*;
 use super::block_meta::*;
+use super::tree::*;
 use crate::storage::StoredValue;
-use crate::utils::Tree;
 
 pub struct BlockHandleStorage {
     cache: Arc<DashMap<ton_block::BlockIdExt, Weak<BlockHandle>>>,
