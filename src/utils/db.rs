@@ -14,12 +14,14 @@ pub struct Tree {
 /// So we are not storing it in any way
 impl Tree {
     pub fn new(db: Arc<DB>, name: &str) -> Result<Self> {
-        println!("{}", name);
-        let _handle: Arc<BoundColumnFamily> = db
-            .cf_handle(name)
-            .with_context(|| format!("No cf for {}", name))?;
-        //checking that tree exists
-        drop(_handle);
+        // Check that tree exists
+        {
+            let handle: Arc<BoundColumnFamily> = db
+                .cf_handle(name)
+                .with_context(|| format!("No cf for {}", name))?;
+            drop(handle);
+        }
+
         Ok(Self {
             db,
             name: name.to_string(),
@@ -66,11 +68,7 @@ impl Tree {
 }
 
 pub fn open_db<T: AsRef<Path>>(path: T) -> Result<Arc<DB>> {
-    const CF_NAMES: [&str; 14] = [
-        "prev1_block_db",
-        "prev2_block_db",
-        "next1_block_db",
-        "next2_block_db",
+    const CF_NAMES: [&str; 10] = [
         "block_handles",
         "shard_state_db",
         "cell_db",
