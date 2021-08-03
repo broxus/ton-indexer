@@ -31,7 +31,7 @@ pub struct Db {
     prev2_block_db: Tree,
     next1_block_db: Tree,
     next2_block_db: Tree,
-    _db: rocksdb::DB,
+    _db: Arc<rocksdb::DB>,
 }
 
 impl Db {
@@ -40,20 +40,20 @@ impl Db {
         PS: AsRef<Path>,
         PF: AsRef<Path>,
     {
-        let _db = rocksdb::DB::open_default(&sled_db_path)?;
+        let db = crate::utils::open_db(sled_db_path)?;
         let block_handle_storage =
-            BlockHandleStorage::with_db(Tree::new(&sled_db_path, "block_handles")?);
+            BlockHandleStorage::with_db(Tree::new(db.clone(), "block_handles")?);
         let shard_state_storage = ShardStateStorage::with_db(
-            Tree::new(&sled_db_path, "shard_state_db")?,
-            Tree::new(&sled_db_path, "cell_db")?,
+            Tree::new(db.clone(), "shard_state_db")?,
+            Tree::new(db.clone(), "cell_db")?,
             &file_db_path,
         )
         .await?;
-        let node_state_storage = NodeStateStorage::with_db(Tree::new(&sled_db_path, "node_state")?);
+        let node_state_storage = NodeStateStorage::with_db(Tree::new(db.clone(), "node_state")?);
         let archive_manager = ArchiveManager::with_root_dir(&file_db_path).await?;
         let block_index_db = BlockIndexDb::with_db(
-            Tree::new(&sled_db_path, "lt_desc_db")?,
-            Tree::new(&sled_db_path, "lt_db")?,
+            Tree::new(db.clone(), "lt_desc_db")?,
+            Tree::new(db.clone(), "lt_db")?,
         );
 
         Ok(Arc::new(Self {
@@ -62,11 +62,11 @@ impl Db {
             node_state_storage,
             archive_manager,
             block_index_db,
-            prev1_block_db: Tree::new(&sled_db_path, "prev1")?,
-            prev2_block_db: Tree::new(&sled_db_path, "prev2")?,
-            next1_block_db: Tree::new(&sled_db_path, "next1")?,
-            next2_block_db: Tree::new(&sled_db_path, "next2")?,
-            _db,
+            prev1_block_db: Tree::new(db.clone(), "prev1")?,
+            prev2_block_db: Tree::new(db.clone(), "prev2")?,
+            next1_block_db: Tree::new(db.clone(), "next1")?,
+            next2_block_db: Tree::new(db.clone(), "next2")?,
+            _db: db,
         }))
     }
 

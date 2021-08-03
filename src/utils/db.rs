@@ -1,15 +1,8 @@
-use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use rocksdb::{BoundColumnFamily, Options, DB};
-
-const CF_NAMES: [&str; 4] = [
-    "prev1_block_db",
-    "prev2_block_db",
-    "next1_block_db",
-    "next2_block_db",
-];
+use rocksdb::{BoundColumnFamily, DB};
+use std::path::Path;
 
 #[derive(Clone)]
 pub struct Tree {
@@ -20,14 +13,13 @@ pub struct Tree {
 /// Note. get_cf Usually took p999 511ns,
 /// So we are not storing it in any way
 impl Tree {
-    pub fn new<T: AsRef<Path>>(path: &T, name: &str) -> Result<Self> {
-        let mut opts = Options::default();
-        opts.create_if_missing(true);
-        opts.create_missing_column_families(true);
-        let db = Arc::new(DB::open_cf(&opts, path, &CF_NAMES)?);
-        let tree: Arc<BoundColumnFamily> = db.cf_handle(name).context("No cf")?;
+    pub fn new(db: Arc<DB>, name: &str) -> Result<Self> {
+        println!("{}", name);
+        let _handle: Arc<BoundColumnFamily> = db
+            .cf_handle(name)
+            .with_context(|| format!("No cf for {}", name))?;
         //checking that tree exists
-        drop(tree);
+        drop(_handle);
         Ok(Self {
             db,
             name: name.to_string(),
@@ -69,4 +61,28 @@ impl Tree {
     pub fn get_cf(&self) -> Result<Arc<BoundColumnFamily>> {
         self.db.cf_handle(&self.name).context("No cf")
     }
+}
+
+pub fn open_db<T: AsRef<Path>>(path: T) -> Result<Arc<DB>> {
+    let mut opts = rocksdb::Options::default();
+    opts.create_if_missing(true);
+    opts.create_missing_column_families(true);
+    const CF_NAMES: [&str; 14] = [
+        "prev1_block_db",
+        "prev2_block_db",
+        "next1_block_db",
+        "next2_block_db",
+        "block_handles",
+        "shard_state_db",
+        "cell_db",
+        "node_state",
+        "lt_desc_db",
+        "lt_db",
+        "prev1",
+        "prev2",
+        "next1",
+        "next2",
+    ];
+    let db = Arc::new(rocksdb::DB::open_cf(&opts, &path, &CF_NAMES)?);
+    Ok(db)
 }
