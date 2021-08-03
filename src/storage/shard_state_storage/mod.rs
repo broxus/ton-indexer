@@ -12,11 +12,13 @@ use sha2::Sha256;
 use tokio::fs::File;
 use tokio::sync::{RwLock, RwLockWriteGuard};
 
-use self::mapped_file::*;
-use self::parser::*;
-use super::storage_cell::StorageCell;
 use crate::storage::StoredValue;
 use crate::utils::*;
+
+use super::storage_cell::StorageCell;
+
+use self::mapped_file::*;
+use self::parser::*;
 
 mod mapped_file;
 mod parser;
@@ -729,17 +731,14 @@ impl DynamicBocDb {
         let mut transaction = HashMap::new();
 
         let written_count = self.prepare_tree_of_cells(root, &mut transaction)?;
+        let cf = self.cell_db.db.get_cf()?;
+        let db = self.cell_db.db.raw_db_handle();
+        let mut batch = rocksdb::WriteBatch::default();
 
-        self.cell_db
-            .db
-            .transaction::<_, _, ()>(move |diff| {
-                for (cell_id, data) in &transaction {
-                    diff.insert(cell_id.as_slice(), data.as_slice())?;
-                }
-                Ok(())
-            })
-            .map_err(|_| ShardStateStorageError::TransactionConflict)?;
-
+        for (cell_id, data) in &transaction {
+            batch.put_cf(&cf, cell_id, data);
+        }
+        db.write(batch)?;
         Ok(written_count)
     }
 
@@ -816,8 +815,6 @@ enum ShardStateStorageError {
     NotFound,
     #[error("Already finalized")]
     AlreadyFinalized,
-    #[error("Cell db transaction conflict")]
-    TransactionConflict,
     #[error("Invalid shard state packet")]
     InvalidShardStatePacket,
     #[error("Invalid cell")]
