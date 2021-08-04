@@ -470,7 +470,7 @@ impl Engine {
         }
     }
 
-    async fn wait_state(
+    pub async fn wait_state(
         self: &Arc<Self>,
         block_id: &ton_block::BlockIdExt,
         timeout_ms: Option<u64>,
@@ -512,7 +512,10 @@ impl Engine {
         }
     }
 
-    async fn load_state(&self, block_id: &ton_block::BlockIdExt) -> Result<Arc<ShardStateStuff>> {
+    pub async fn load_state(
+        &self,
+        block_id: &ton_block::BlockIdExt,
+    ) -> Result<Arc<ShardStateStuff>> {
         if let Some(state) = self.shard_states_cache.get(block_id) {
             Ok(state)
         } else {
