@@ -7,19 +7,6 @@ use ton_api::ton;
 use crate::storage::*;
 use crate::utils::*;
 
-pub struct StoreBlockResult {
-    pub handle: Arc<BlockHandle>,
-    pub already_existed: bool,
-}
-
-#[derive(Debug, Copy, Clone, Eq, PartialEq)]
-pub enum BlockConnection {
-    Prev1,
-    Prev2,
-    Next1,
-    Next2,
-}
-
 pub struct Db {
     block_handle_storage: BlockHandleStorage,
     shard_state_storage: ShardStateStorage,
@@ -27,11 +14,11 @@ pub struct Db {
     archive_manager: ArchiveManager,
     block_index_db: BlockIndexDb,
 
-    prev1_block_db: sled::Tree,
-    prev2_block_db: sled::Tree,
-    next1_block_db: sled::Tree,
-    next2_block_db: sled::Tree,
-    _db: sled::Db,
+    prev1_block_db: Tree,
+    prev2_block_db: Tree,
+    next1_block_db: Tree,
+    next2_block_db: Tree,
+    _db: Arc<rocksdb::DB>,
 }
 
 impl Db {
@@ -40,22 +27,37 @@ impl Db {
         PS: AsRef<Path>,
         PF: AsRef<Path>,
     {
-        let db = sled::Config::new()
-            .cache_capacity(1 << 27) // 128 MB
-            .path(sled_db_path)
-            .open()?;
+        let db = open_db(
+            sled_db_path,
+            &[
+                columns::BlockHandles::NAME,
+                columns::ShardStateDb::NAME,
+                columns::CellDb::NAME,
+                columns::NodeState::NAME,
+                columns::LtDesc::NAME,
+                columns::Lt::NAME,
+                columns::Prev1::NAME,
+                columns::Prev2::NAME,
+                columns::Next1::NAME,
+                columns::Next2::NAME,
+            ],
+        )?;
 
-        let block_handle_storage = BlockHandleStorage::with_db(db.open_tree("block_handles")?);
+        let block_handle_storage =
+            BlockHandleStorage::with_db(Tree::new(db.clone(), columns::BlockHandles::NAME)?);
         let shard_state_storage = ShardStateStorage::with_db(
-            db.open_tree("shard_state_db")?,
-            db.open_tree("cell_db")?,
+            Tree::new(db.clone(), columns::ShardStateDb::NAME)?,
+            Tree::new(db.clone(), columns::CellDb::NAME)?,
             &file_db_path,
         )
         .await?;
-        let node_state_storage = NodeStateStorage::with_db(db.open_tree("node_state")?);
+        let node_state_storage =
+            NodeStateStorage::with_db(Tree::new(db.clone(), columns::NodeState::NAME)?);
         let archive_manager = ArchiveManager::with_root_dir(&file_db_path).await?;
-        let block_index_db =
-            BlockIndexDb::with_db(db.open_tree("lt_desc_db")?, db.open_tree("lt_db")?);
+        let block_index_db = BlockIndexDb::with_db(
+            Tree::new(db.clone(), columns::LtDesc::NAME)?,
+            Tree::new(db.clone(), columns::Lt::NAME)?,
+        );
 
         Ok(Arc::new(Self {
             block_handle_storage,
@@ -63,10 +65,10 @@ impl Db {
             node_state_storage,
             archive_manager,
             block_index_db,
-            prev1_block_db: db.open_tree("prev1")?,
-            prev2_block_db: db.open_tree("prev2")?,
-            next1_block_db: db.open_tree("next1")?,
-            next2_block_db: db.open_tree("next2")?,
+            prev1_block_db: Tree::new(db.clone(), columns::Prev1::NAME)?,
+            prev2_block_db: Tree::new(db.clone(), columns::Prev2::NAME)?,
+            next1_block_db: Tree::new(db.clone(), columns::Next1::NAME)?,
+            next2_block_db: Tree::new(db.clone(), columns::Next2::NAME)?,
             _db: db,
         }))
     }
@@ -397,6 +399,76 @@ impl Db {
         }
         Ok(())
     }
+}
+
+pub struct StoreBlockResult {
+    pub handle: Arc<BlockHandle>,
+    pub already_existed: bool,
+}
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+pub enum BlockConnection {
+    Prev1,
+    Prev2,
+    Next1,
+    Next2,
+}
+
+mod columns {
+    pub struct BlockHandles;
+    pub struct ShardStateDb;
+    pub struct CellDb;
+    pub struct NodeState;
+    pub struct LtDesc;
+    pub struct Lt;
+    pub struct Prev1;
+    pub struct Prev2;
+    pub struct Next1;
+    pub struct Next2;
+}
+
+pub trait ColumnName {
+    const NAME: &'static str;
+}
+
+impl ColumnName for columns::BlockHandles {
+    const NAME: &'static str = "block_handles";
+}
+
+impl ColumnName for columns::ShardStateDb {
+    const NAME: &'static str = "shard_state_db";
+}
+
+impl ColumnName for columns::CellDb {
+    const NAME: &'static str = "cell_db";
+}
+
+impl ColumnName for columns::NodeState {
+    const NAME: &'static str = "node_state";
+}
+
+impl ColumnName for columns::LtDesc {
+    const NAME: &'static str = "lt_desc";
+}
+
+impl ColumnName for columns::Lt {
+    const NAME: &'static str = "lt";
+}
+
+impl ColumnName for columns::Prev1 {
+    const NAME: &'static str = "prev1";
+}
+
+impl ColumnName for columns::Prev2 {
+    const NAME: &'static str = "prev2";
+}
+
+impl ColumnName for columns::Next1 {
+    const NAME: &'static str = "next1";
+}
+
+impl ColumnName for columns::Next2 {
+    const NAME: &'static str = "next2";
 }
 
 #[derive(thiserror::Error, Debug)]

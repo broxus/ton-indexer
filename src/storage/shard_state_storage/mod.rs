@@ -12,11 +12,14 @@ use sha2::Sha256;
 use tokio::fs::File;
 use tokio::sync::{RwLock, RwLockWriteGuard};
 
-use self::mapped_file::*;
-use self::parser::*;
-use super::storage_cell::StorageCell;
 use crate::storage::StoredValue;
 use crate::utils::*;
+
+use super::storage_cell::StorageCell;
+use super::tree::*;
+
+use self::mapped_file::*;
+use self::parser::*;
 
 mod mapped_file;
 mod parser;
@@ -27,11 +30,7 @@ pub struct ShardStateStorage {
 }
 
 impl ShardStateStorage {
-    pub async fn with_db<P>(
-        shard_state_db: sled::Tree,
-        cell_db: sled::Tree,
-        file_db_path: &P,
-    ) -> Result<Self>
+    pub async fn with_db<P>(shard_state_db: Tree, cell_db: Tree, file_db_path: &P) -> Result<Self>
     where
         P: AsRef<Path>,
     {
@@ -93,7 +92,7 @@ impl ShardStateStorage {
 }
 
 struct ShardStateStorageState {
-    shard_state_db: sled::Tree,
+    shard_state_db: Tree,
     dynamic_boc_db: DynamicBocDb,
 }
 
@@ -722,7 +721,7 @@ pub struct DynamicBocDb {
 }
 
 impl DynamicBocDb {
-    fn with_db(db: sled::Tree) -> Self {
+    fn with_db(db: Tree) -> Self {
         Self {
             cell_db: CellDb { db },
             cells: Arc::new(DashMap::new()),
@@ -733,17 +732,14 @@ impl DynamicBocDb {
         let mut transaction = HashMap::new();
 
         let written_count = self.prepare_tree_of_cells(root, &mut transaction)?;
+        let cf = self.cell_db.db.get_cf()?;
+        let db = self.cell_db.db.raw_db_handle();
+        let mut batch = rocksdb::WriteBatch::default();
 
-        self.cell_db
-            .db
-            .transaction::<_, _, ()>(move |diff| {
-                for (cell_id, data) in &transaction {
-                    diff.insert(cell_id.as_slice(), data.as_slice())?;
-                }
-                Ok(())
-            })
-            .map_err(|_| ShardStateStorageError::TransactionConflict)?;
-
+        for (cell_id, data) in &transaction {
+            batch.put_cf(&cf, cell_id, data);
+        }
+        db.write(batch)?;
         Ok(written_count)
     }
 
@@ -795,7 +791,7 @@ impl DynamicBocDb {
 
 #[derive(Clone)]
 pub struct CellDb {
-    db: sled::Tree,
+    db: Tree,
 }
 
 impl CellDb {
@@ -820,8 +816,6 @@ enum ShardStateStorageError {
     NotFound,
     #[error("Already finalized")]
     AlreadyFinalized,
-    #[error("Cell db transaction conflict")]
-    TransactionConflict,
     #[error("Invalid shard state packet")]
     InvalidShardStatePacket,
     #[error("Invalid cell")]

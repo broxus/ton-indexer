@@ -1,11 +1,13 @@
 use anyhow::Result;
 
+use super::tree::*;
+
 pub struct NodeStateStorage {
-    db: sled::Tree,
+    db: Tree,
 }
 
 impl NodeStateStorage {
-    pub fn with_db(db: sled::Tree) -> Self {
+    pub fn with_db(db: Tree) -> Self {
         Self { db }
     }
 

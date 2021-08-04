@@ -13,6 +13,7 @@ pub use self::block_meta::*;
 pub use self::node_state_storage::*;
 pub use self::package_entry_id::*;
 pub use self::shard_state_storage::*;
+pub use self::tree::*;
 
 mod archive_manager;
 mod archive_package;
@@ -24,6 +25,7 @@ mod node_state_storage;
 mod package_entry_id;
 mod shard_state_storage;
 mod storage_cell;
+mod tree;
 
 pub trait StoredValue {
     fn size_hint(&self) -> Option<usize> {
