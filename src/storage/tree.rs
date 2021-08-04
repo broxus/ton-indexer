@@ -56,7 +56,7 @@ impl Tree {
 
     pub fn contains_key<T: AsRef<[u8]>>(&self, key: T) -> Result<bool> {
         let cf = self.get_cf()?;
-        Ok(self.db.key_may_exist_cf(&cf, key))
+        Ok(self.db.get_pinned_cf(&cf, key)?.is_some())
     }
 
     pub fn raw_db_handle(&self) -> &Arc<DB> {
