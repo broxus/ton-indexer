@@ -3,7 +3,6 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use anyhow::Result;
-use dashmap::DashSet;
 use tiny_adnl::utils::*;
 
 use crate::engine::Engine;
@@ -15,7 +14,7 @@ pub async fn sync(engine: &Arc<Engine>) -> Result<()> {
 
     log::info!("Started sync");
 
-    let active_peers = Arc::new(DashSet::new());
+    let active_peers = Arc::new(DashSet::default());
     let mut queue: Vec<(u32, ArchiveStatus)> = Vec::with_capacity(MAX_CONCURRENCY);
     let mut response_collector = ResponseCollector::new();
     let mut concurrency = 1;

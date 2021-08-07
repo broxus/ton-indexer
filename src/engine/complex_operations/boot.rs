@@ -2,7 +2,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
-use dashmap::DashSet;
 use nekoton_utils::NoFailure;
 use tiny_adnl::utils::*;
 
@@ -363,7 +362,7 @@ async fn download_start_blocks_and_states(
     engine: &Arc<Engine>,
     masterchain_block_id: &ton_block::BlockIdExt,
 ) -> Result<()> {
-    let active_peers = Arc::new(DashSet::new());
+    let active_peers = Arc::new(DashSet::default());
 
     let (_, init_mc_block) = download_block_and_state(
         engine,

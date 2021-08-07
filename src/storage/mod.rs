@@ -2,6 +2,7 @@ use std::io::{Read, Write};
 
 use anyhow::Result;
 use nekoton_utils::NoFailure;
+use smallvec::SmallVec;
 use ton_types::ByteOrderRead;
 
 pub use self::archive_manager::*;
@@ -14,7 +15,6 @@ pub use self::node_state_storage::*;
 pub use self::package_entry_id::*;
 pub use self::shard_state_storage::*;
 pub use self::tree::*;
-use smallvec::SmallVec;
 
 mod archive_manager;
 mod archive_package;

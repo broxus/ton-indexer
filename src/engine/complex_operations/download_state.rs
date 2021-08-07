@@ -3,7 +3,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use dashmap::DashSet;
 use tiny_adnl::utils::*;
 use tiny_adnl::Neighbour;
 use tokio::sync::{mpsc, oneshot};

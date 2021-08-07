@@ -2,7 +2,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{anyhow, Result};
-use dashmap::DashSet;
 use tiny_adnl::utils::*;
 use tiny_adnl::{Neighbour, OverlayClient};
 use ton_api::ton::{self, TLObject};

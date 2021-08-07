@@ -2,7 +2,6 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 
 use anyhow::Result;
-use dashmap::DashSet;
 use nekoton_utils::NoFailure;
 use tiny_adnl::utils::*;
 use ton_api::ton;
