@@ -2,7 +2,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use rocksdb::{BoundColumnFamily, Options, DB};
+use rocksdb::{BoundColumnFamily, DBPinnableSlice, Options, DB};
 
 #[derive(Clone)]
 pub struct Tree {
@@ -28,9 +28,9 @@ impl Tree {
         })
     }
 
-    pub fn get<T: AsRef<[u8]>>(&self, key: T) -> Result<Option<Vec<u8>>> {
+    pub fn get<T: AsRef<[u8]>>(&self, key: T) -> Result<Option<DBPinnableSlice>> {
         let cf = self.get_cf()?;
-        Ok(self.db.get_cf(&cf, key)?)
+        Ok(self.db.get_pinned_cf(&cf, key)?)
     }
 
     pub fn insert<K, V>(&self, key: K, value: V) -> Result<()>
@@ -82,5 +82,6 @@ fn default_options() -> Options {
     let mut opts = rocksdb::Options::default();
     opts.create_if_missing(true);
     opts.create_missing_column_families(true);
+    opts.set_max_background_jobs(num_cpus::get() as i32);
     opts
 }

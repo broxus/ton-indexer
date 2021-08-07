@@ -64,8 +64,8 @@ impl ShardStateStorage {
 
     pub async fn load_state(&self, block_id: &ton_block::BlockIdExt) -> Result<ton_types::Cell> {
         let state = self.state.read().await;
-
-        match state.shard_state_db.get(block_id.to_vec()?)? {
+        let shard_state = state.shard_state_db.get(block_id.to_vec()?)?;
+        match shard_state {
             Some(root) => {
                 let cell_id = ton_types::UInt256::from_be_bytes(root.as_ref());
                 let cell = state.dynamic_boc_db.load_cell(cell_id)?;

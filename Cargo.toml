@@ -36,7 +36,8 @@ ton_block = { git = "https://github.com/broxus/ton-labs-block.git" }
 ton_types = { git = "https://github.com/broxus/ton-labs-types.git" }
 
 nekoton-utils = { git = "https://github.com/broxus/nekoton.git" }
-
+num_cpus = "1.13.0"
+smallvec = { version = "1.6.1", features = ["serde", "write", "union"] }
 [dev-dependencies]
 clap = "3.0.0-beta.2"
 config = "0.11"

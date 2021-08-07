@@ -14,6 +14,7 @@ pub use self::node_state_storage::*;
 pub use self::package_entry_id::*;
 pub use self::shard_state_storage::*;
 pub use self::tree::*;
+use smallvec::SmallVec;
 
 mod archive_manager;
 mod archive_package;
@@ -45,8 +46,11 @@ pub trait StoredValue {
         Self::deserialize(&mut std::io::Cursor::new(data))
     }
 
-    fn to_vec(&self) -> Result<Vec<u8>> {
-        let mut result = self.size_hint().map(Vec::with_capacity).unwrap_or_default();
+    fn to_vec(&self) -> Result<SmallVec<[u8; 32]>> {
+        let mut result = self
+            .size_hint()
+            .map(SmallVec::with_capacity)
+            .unwrap_or_default();
         self.serialize(&mut result)?;
         Ok(result)
     }
