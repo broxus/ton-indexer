@@ -2,6 +2,7 @@ use std::io::Read;
 
 use anyhow::{Context, Result};
 use crc::{crc32, Hasher32};
+use smallvec::SmallVec;
 use ton_types::ByteOrderRead;
 
 macro_rules! try_read {
@@ -263,7 +264,7 @@ pub struct RawCell<'a> {
     pub level_mask: u8,
     pub data: &'a [u8],
     pub bit_len: usize,
-    pub reference_indices: Vec<u32>,
+    pub reference_indices: SmallVec<[u32; 4]>,
 }
 
 impl<'a> RawCell<'a> {
@@ -295,7 +296,7 @@ impl<'a> RawCell<'a> {
                 level_mask: l,
                 data: cell_data,
                 bit_len: ton_types::find_tag(cell_data), // ?!
-                reference_indices: Vec::new(),
+                reference_indices: SmallVec::new(),
             });
         }
 
@@ -316,16 +317,14 @@ impl<'a> RawCell<'a> {
             ton_types::CellType::from(cell_data[0])
         };
 
-        let mut reference_indices = Vec::with_capacity(r);
-        if r > 0 {
-            for _ in 0..r {
-                let index = src.read_be_uint(ref_size)?;
-                if index > cell_count || index <= cell_index {
-                    return Err(ShardStateParserError::InvalidShardStateCell)
-                        .context("Reference index out of range");
-                } else {
-                    reference_indices.push(index as u32);
-                }
+        let mut reference_indices = SmallVec::with_capacity(r);
+        for _ in 0..r {
+            let index = src.read_be_uint(ref_size)?;
+            if index > cell_count || index <= cell_index {
+                return Err(ShardStateParserError::InvalidShardStateCell)
+                    .context("Reference index out of range");
+            } else {
+                reference_indices.push(index as u32);
             }
         }
 
