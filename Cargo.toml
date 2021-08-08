@@ -21,10 +21,12 @@ hex = "0.4"
 num-traits = "0.2"
 log = "0.4"
 libc = "0.2"
+num_cpus = "1.13.0"
 parking_lot = "0.11"
 rand = "0.7"
 serde = { version = "1.0", features = ["derive"] }
 sha2 = "0.9"
+smallvec = { version = "1.6.1", features = ["serde", "write", "union"] }
 tokio = { version = "1.6", features = ["sync", "fs"] }
 thiserror = "*"
 
@@ -36,8 +38,7 @@ ton_block = { git = "https://github.com/broxus/ton-labs-block.git" }
 ton_types = { git = "https://github.com/broxus/ton-labs-types.git" }
 
 nekoton-utils = { git = "https://github.com/broxus/nekoton.git" }
-num_cpus = "1.13.0"
-smallvec = { version = "1.6.1", features = ["serde", "write", "union"] }
+
 [dev-dependencies]
 clap = "3.0.0-beta.2"
 config = "0.11"

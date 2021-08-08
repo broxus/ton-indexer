@@ -29,9 +29,9 @@ mod storage_cell;
 mod tree;
 
 pub trait StoredValue {
-    fn size_hint(&self) -> Option<usize> {
-        None
-    }
+    const SIZE_HINT: usize;
+
+    type OnStackSlice: smallvec::Array<Item = u8>;
 
     fn serialize<W: Write>(&self, writer: &mut W) -> Result<()>;
 
@@ -46,20 +46,23 @@ pub trait StoredValue {
         Self::deserialize(&mut std::io::Cursor::new(data))
     }
 
-    fn to_vec(&self) -> Result<SmallVec<[u8; 32]>> {
-        let mut result = self
-            .size_hint()
-            .map(SmallVec::with_capacity)
-            .unwrap_or_default();
+    fn to_vec(&self) -> Result<SmallVec<Self::OnStackSlice>> {
+        let mut result = SmallVec::with_capacity(Self::SIZE_HINT);
         self.serialize(&mut result)?;
         Ok(result)
     }
 }
 
 impl StoredValue for ton_block::BlockIdExt {
-    fn size_hint(&self) -> Option<usize> {
-        Some(4 + 8 + 4 + 32 + 32)
-    }
+    /// 4 bytes workchain id,
+    /// 8 bytes shard id,
+    /// 4 bytes seqno,
+    /// 32 bytes root hash,
+    /// 32 bytes file hash
+    const SIZE_HINT: usize = 4 + 8 + 4 + 32 + 32;
+
+    /// 96 is minimal suitable for `smallvec::Array` and `SIZE_HINT`
+    type OnStackSlice = [u8; 96];
 
     fn serialize<W: Write>(&self, writer: &mut W) -> Result<()> {
         self.shard_id.serialize(writer)?;
@@ -82,9 +85,11 @@ impl StoredValue for ton_block::BlockIdExt {
 }
 
 impl StoredValue for ton_block::ShardIdent {
-    fn size_hint(&self) -> Option<usize> {
-        Some(4 + 8)
-    }
+    /// 4 bytes workchain id
+    /// 8 bytes shard id
+    const SIZE_HINT: usize = 4 + 8;
+
+    type OnStackSlice = [u8; Self::SIZE_HINT];
 
     fn serialize<W: Write>(&self, writer: &mut W) -> Result<()> {
         writer.write_all(&self.workchain_id().to_le_bytes())?;
