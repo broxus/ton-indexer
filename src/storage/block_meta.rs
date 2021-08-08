@@ -155,7 +155,7 @@ impl StoredValue for BlockMeta {
     /// 8 bytes gen_lt
     const SIZE_HINT: usize = 8 + 4 + 8;
 
-    type OnStackSlice = [u8; 18];
+    type OnStackSlice = [u8; Self::SIZE_HINT];
 
     fn serialize<W: Write>(&self, writer: &mut W) -> Result<()> {
         const FLAGS_MASK: u64 = 0x0000_ffff_ffff_ffff;
