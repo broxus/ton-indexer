@@ -3,7 +3,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
-use dashmap::DashMap;
 use tiny_adnl::utils::*;
 use tiny_adnl::*;
 use ton_api::ton;
@@ -22,7 +21,7 @@ pub struct NodeNetwork {
     rldp: Arc<RldpNode>,
     masterchain_overlay_short_id: OverlayIdShort,
     masterchain_overlay_id: OverlayIdFull,
-    overlays: Arc<DashMap<OverlayIdShort, Arc<OverlayClient>>>,
+    overlays: Arc<FxDashMap<OverlayIdShort, Arc<OverlayClient>>>,
     overlay_awaiters: OperationsPool<OverlayIdShort, Arc<dyn FullNodeOverlayClient>>,
 }
 

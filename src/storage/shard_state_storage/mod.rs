@@ -5,10 +5,10 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Weak};
 
 use anyhow::{Context, Result};
-use dashmap::DashMap;
 use nekoton_utils::NoFailure;
 use num_traits::ToPrimitive;
 use sha2::Sha256;
+use tiny_adnl::utils::*;
 use tokio::fs::File;
 use tokio::sync::{RwLock, RwLockWriteGuard};
 
@@ -721,14 +721,14 @@ impl<'a> HashesEntry<'a> {
 #[derive(Clone)]
 pub struct DynamicBocDb {
     cell_db: Arc<CellDb>,
-    cells: Arc<DashMap<ton_types::UInt256, Weak<StorageCell>>>,
+    cells: Arc<FxDashMap<ton_types::UInt256, Weak<StorageCell>>>,
 }
 
 impl DynamicBocDb {
     fn with_db(db: Tree<columns::CellDb>) -> Self {
         Self {
             cell_db: Arc::new(CellDb::new(db)),
-            cells: Arc::new(DashMap::new()),
+            cells: Arc::new(FxDashMap::default()),
         }
     }
 

@@ -1,7 +1,7 @@
 use std::sync::{Arc, Weak};
 
 use anyhow::Result;
-use dashmap::DashMap;
+use tiny_adnl::utils::*;
 
 use super::block_handle::*;
 use super::block_meta::*;
@@ -9,7 +9,7 @@ use super::tree::*;
 use crate::storage::{columns, StoredValue};
 
 pub struct BlockHandleStorage {
-    cache: Arc<DashMap<ton_block::BlockIdExt, Weak<BlockHandle>>>,
+    cache: Arc<FxDashMap<ton_block::BlockIdExt, Weak<BlockHandle>>>,
     db: Tree<columns::BlockHandles>,
 }
 

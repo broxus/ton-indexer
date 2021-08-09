@@ -374,7 +374,7 @@ impl Engine {
     async fn download_archive(
         &self,
         mc_block_seq_no: u32,
-        active_peers: &Arc<DashSet<AdnlNodeIdShort>>,
+        active_peers: &Arc<ActivePeers>,
     ) -> Result<Option<Vec<u8>>> {
         let mc_overlay = self.get_masterchain_overlay().await?;
         mc_overlay

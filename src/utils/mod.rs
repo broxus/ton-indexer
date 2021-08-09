@@ -1,3 +1,5 @@
+use tiny_adnl::utils::*;
+
 pub use block::*;
 pub use block_proof::*;
 pub use shard_state::*;
@@ -7,3 +9,5 @@ mod block;
 mod block_proof;
 mod shard_state;
 mod shard_state_cache;
+
+pub type ActivePeers = FxDashSet<AdnlNodeIdShort>;

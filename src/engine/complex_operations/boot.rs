@@ -362,7 +362,7 @@ async fn download_start_blocks_and_states(
     engine: &Arc<Engine>,
     masterchain_block_id: &ton_block::BlockIdExt,
 ) -> Result<()> {
-    let active_peers = Arc::new(DashSet::default());
+    let active_peers = Arc::new(ActivePeers::default());
 
     let (_, init_mc_block) = download_block_and_state(
         engine,
@@ -390,7 +390,7 @@ async fn download_block_and_state(
     engine: &Arc<Engine>,
     block_id: &ton_block::BlockIdExt,
     masterchain_block_id: &ton_block::BlockIdExt,
-    active_peers: &Arc<DashSet<AdnlNodeIdShort>>,
+    active_peers: &Arc<ActivePeers>,
 ) -> Result<(Arc<BlockHandle>, BlockStuff)> {
     let handle = engine
         .load_block_handle(block_id)?

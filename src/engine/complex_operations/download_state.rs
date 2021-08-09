@@ -3,7 +3,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use tiny_adnl::utils::*;
 use tiny_adnl::Neighbour;
 use tokio::sync::{mpsc, oneshot};
 
@@ -20,7 +19,7 @@ pub async fn download_state(
     block_id: &ton_block::BlockIdExt,
     masterchain_block_id: &ton_block::BlockIdExt,
     clear_db: bool,
-    active_peers: &Arc<DashSet<AdnlNodeIdShort>>,
+    active_peers: &Arc<ActivePeers>,
 ) -> Result<Arc<ShardStateStuff>> {
     let overlay = engine
         .get_full_node_overlay(

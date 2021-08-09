@@ -2,7 +2,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use dashmap::DashMap;
+use tiny_adnl::utils::*;
 
 use super::shard_state::ShardStateStuff;
 
@@ -10,7 +10,7 @@ pub struct ShardStateCache {
     map: Arc<ShardStatesMap>,
 }
 
-type ShardStatesMap = DashMap<ton_block::BlockIdExt, (Arc<ShardStateStuff>, AtomicU64)>;
+type ShardStatesMap = FxDashMap<ton_block::BlockIdExt, (Arc<ShardStateStuff>, AtomicU64)>;
 
 impl ShardStateCache {
     pub fn new(ttl_sec: u64) -> Self {

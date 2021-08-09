@@ -1,7 +1,7 @@
 use std::sync::{Arc, Weak};
 
 use anyhow::Result;
-use dashmap::DashMap;
+use tiny_adnl::utils::*;
 use tokio::sync::RwLock;
 
 use super::block_meta::BlockMeta;
@@ -11,14 +11,14 @@ pub struct BlockHandle {
     meta: BlockMeta,
     block_file_lock: RwLock<()>,
     proof_file_block: RwLock<()>,
-    cache: Arc<DashMap<ton_block::BlockIdExt, Weak<BlockHandle>>>,
+    cache: Arc<FxDashMap<ton_block::BlockIdExt, Weak<BlockHandle>>>,
 }
 
 impl BlockHandle {
     pub fn with_values(
         id: ton_block::BlockIdExt,
         meta: BlockMeta,
-        cache: Arc<DashMap<ton_block::BlockIdExt, Weak<BlockHandle>>>,
+        cache: Arc<FxDashMap<ton_block::BlockIdExt, Weak<BlockHandle>>>,
     ) -> Self {
         Self {
             id,

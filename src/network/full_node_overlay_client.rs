@@ -17,7 +17,7 @@ pub trait FullNodeOverlayClient: Send + Sync {
         &self,
         block_id: &ton_block::BlockIdExt,
         masterchain_block_id: &ton_block::BlockIdExt,
-        active_peers: &Arc<DashSet<AdnlNodeIdShort>>,
+        active_peers: &Arc<ActivePeers>,
     ) -> Result<Option<Arc<Neighbour>>>;
 
     async fn download_persistent_state_part(
@@ -61,7 +61,7 @@ pub trait FullNodeOverlayClient: Send + Sync {
     async fn download_archive(
         &self,
         masterchain_seqno: u32,
-        active_peers: &Arc<DashSet<AdnlNodeIdShort>>,
+        active_peers: &Arc<ActivePeers>,
     ) -> Result<Option<Vec<u8>>>;
 
     async fn wait_broadcast(&self) -> Result<(ton::ton_node::Broadcast, AdnlNodeIdShort)>;
@@ -84,7 +84,7 @@ impl FullNodeOverlayClient for OverlayClient {
         &self,
         block_id: &ton_block::BlockIdExt,
         masterchain_block_id: &ton_block::BlockIdExt,
-        active_peers: &Arc<DashSet<AdnlNodeIdShort>>,
+        active_peers: &Arc<ActivePeers>,
     ) -> Result<Option<Arc<Neighbour>>> {
         let (prepare, neighbour): (ton::ton_node::PreparedState, _) = self
             .send_adnl_query(
@@ -381,7 +381,7 @@ impl FullNodeOverlayClient for OverlayClient {
     async fn download_archive(
         &self,
         masterchain_seqno: u32,
-        active_peers: &Arc<DashSet<AdnlNodeIdShort>>,
+        active_peers: &Arc<ActivePeers>,
     ) -> Result<Option<Vec<u8>>> {
         const CHUNK_SIZE: i32 = 1 << 21; // 2 MB
 

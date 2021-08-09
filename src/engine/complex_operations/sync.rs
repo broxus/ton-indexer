@@ -14,7 +14,7 @@ pub async fn sync(engine: &Arc<Engine>) -> Result<()> {
 
     log::info!("Started sync");
 
-    let active_peers = Arc::new(DashSet::default());
+    let active_peers = Arc::new(ActivePeers::default());
     let mut queue: Vec<(u32, ArchiveStatus)> = Vec::with_capacity(MAX_CONCURRENCY);
     let mut response_collector = ResponseCollector::new();
     let mut concurrency = 1;
@@ -531,7 +531,6 @@ impl BlocksEntry {
     }
 }
 
-type ActivePeers = DashSet<AdnlNodeIdShort>;
 type ArchiveResponse = (u32, Result<Option<Vec<u8>>>);
 
 const BLOCKS_IN_ARCHIVE: u32 = 100;
