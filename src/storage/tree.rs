@@ -8,6 +8,8 @@ use rocksdb::{BoundColumnFamily, DBPinnableSlice, Options, DB};
 pub struct Tree {
     db: Arc<DB>,
     name: String,
+    write_config: Arc<rocksdb::WriteOptions>,
+    read_config: Arc<rocksdb::ReadOptions>,
 }
 
 /// Note. get_cf Usually took p999 511ns,
@@ -25,12 +27,14 @@ impl Tree {
         Ok(Self {
             db,
             name: name.to_string(),
+            write_config: Arc::new(Default::default()),
+            read_config: Arc::new(Default::default()),
         })
     }
 
     pub fn get<T: AsRef<[u8]>>(&self, key: T) -> Result<Option<DBPinnableSlice>> {
         let cf = self.get_cf()?;
-        Ok(self.db.get_pinned_cf(&cf, key)?)
+        Ok(self.db.get_pinned_cf_opt(&cf, key, &self.read_config)?)
     }
 
     pub fn insert<K, V>(&self, key: K, value: V) -> Result<()>
@@ -39,13 +43,13 @@ impl Tree {
         V: AsRef<[u8]>,
     {
         let cf = self.get_cf()?;
-        Ok(self.db.put_cf(&cf, key, value)?)
+        Ok(self.db.put_cf_opt(&cf, key, value, &self.write_config)?)
     }
 
     #[allow(dead_code)]
     pub fn remove<T: AsRef<[u8]>>(&self, key: T) -> Result<()> {
         let cf = self.get_cf()?;
-        Ok(self.db.delete_cf(&cf, key)?)
+        Ok(self.db.delete_cf_opt(&cf, key, &self.write_config)?)
     }
 
     pub fn clear(&self) -> Result<()> {
@@ -56,7 +60,10 @@ impl Tree {
 
     pub fn contains_key<T: AsRef<[u8]>>(&self, key: T) -> Result<bool> {
         let cf = self.get_cf()?;
-        Ok(self.db.get_pinned_cf(&cf, key)?.is_some())
+        Ok(self
+            .db
+            .get_pinned_cf_opt(&cf, key, &self.read_config)?
+            .is_some())
     }
 
     pub fn raw_db_handle(&self) -> &Arc<DB> {
@@ -83,5 +90,6 @@ fn default_options() -> Options {
     opts.create_if_missing(true);
     opts.create_missing_column_families(true);
     opts.set_max_background_jobs(num_cpus::get() as i32);
+    opts.set_optimize_filters_for_hits(true);
     opts
 }
