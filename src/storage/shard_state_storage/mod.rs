@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::convert::TryInto;
 use std::io::{SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -203,7 +202,7 @@ impl<'a> ShardStateReplaceTransaction<'a> {
 
         let mut tail = [0; 4];
         let mut entries_buffer = EntriesBuffer::new();
-        let mut pruned_branches = HashMap::new();
+        let mut pruned_branches = FxHashMap::default();
 
         // Allocate on heap to prevent big future size
         let mut chunk_buffer = Vec::with_capacity(1 << 20);
@@ -307,7 +306,7 @@ impl<'a> ShardStateReplaceTransaction<'a> {
         &self,
         cell_index: u32,
         cell: RawCell<'_>,
-        pruned_branches: &mut HashMap<u32, Vec<u8>>,
+        pruned_branches: &mut FxHashMap<u32, Vec<u8>>,
         entries_buffer: &mut EntriesBuffer,
         output_buffer: &mut Vec<u8>,
     ) -> Result<()> {
@@ -733,7 +732,7 @@ impl DynamicBocDb {
     }
 
     pub fn store_dynamic_boc(&self, root: ton_types::Cell) -> Result<usize> {
-        let mut transaction = HashMap::new();
+        let mut transaction = FxHashMap::default();
 
         let written_count = self.prepare_tree_of_cells(root, &mut transaction)?;
         let cf = self.cell_db.db.get_cf()?;
@@ -773,7 +772,7 @@ impl DynamicBocDb {
     fn prepare_tree_of_cells(
         &self,
         cell: ton_types::Cell,
-        transaction: &mut HashMap<ton_types::UInt256, Vec<u8>>,
+        transaction: &mut FxHashMap<ton_types::UInt256, Vec<u8>>,
     ) -> Result<usize> {
         // TODO: rewrite using DFS
 
