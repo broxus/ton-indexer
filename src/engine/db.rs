@@ -14,10 +14,10 @@ pub struct Db {
     archive_manager: ArchiveManager,
     block_index_db: BlockIndexDb,
 
-    prev1_block_db: Tree,
-    prev2_block_db: Tree,
-    next1_block_db: Tree,
-    next2_block_db: Tree,
+    prev1_block_db: Tree<columns::Prev1>,
+    prev2_block_db: Tree<columns::Prev2>,
+    next1_block_db: Tree<columns::Next1>,
+    next2_block_db: Tree<columns::Next2>,
     _db: Arc<rocksdb::DB>,
 }
 
@@ -27,37 +27,34 @@ impl Db {
         PS: AsRef<Path>,
         PF: AsRef<Path>,
     {
-        let db = open_db(
-            sled_db_path,
-            &[
-                columns::BlockHandles::NAME,
-                columns::ShardStateDb::NAME,
-                columns::CellDb::NAME,
-                columns::NodeState::NAME,
-                columns::LtDesc::NAME,
-                columns::Lt::NAME,
-                columns::Prev1::NAME,
-                columns::Prev2::NAME,
-                columns::Next1::NAME,
-                columns::Next2::NAME,
-            ],
-        )?;
+        let db = DbBuilder::new(sled_db_path)
+            .options(|opts| {
+                opts.create_if_missing(true);
+                opts.create_missing_column_families(true);
+                opts.set_max_background_jobs(num_cpus::get() as i32);
+            })
+            .column::<columns::BlockHandles>()
+            .column::<columns::ShardStateDb>()
+            .column::<columns::CellDb>()
+            .column::<columns::NodeState>()
+            .column::<columns::LtDesc>()
+            .column::<columns::Lt>()
+            .column::<columns::Prev1>()
+            .column::<columns::Prev2>()
+            .column::<columns::Next1>()
+            .column::<columns::Next2>()
+            .build()?;
 
-        let block_handle_storage =
-            BlockHandleStorage::with_db(Tree::new(db.clone(), columns::BlockHandles::NAME)?);
+        let block_handle_storage = BlockHandleStorage::with_db(Tree::new(db.clone())?);
         let shard_state_storage = ShardStateStorage::with_db(
-            Tree::new(db.clone(), columns::ShardStateDb::NAME)?,
-            Tree::new(db.clone(), columns::CellDb::NAME)?,
+            Tree::new(db.clone())?,
+            Tree::new(db.clone())?,
             &file_db_path,
         )
         .await?;
-        let node_state_storage =
-            NodeStateStorage::with_db(Tree::new(db.clone(), columns::NodeState::NAME)?);
+        let node_state_storage = NodeStateStorage::with_db(Tree::new(db.clone())?);
         let archive_manager = ArchiveManager::with_root_dir(&file_db_path).await?;
-        let block_index_db = BlockIndexDb::with_db(
-            Tree::new(db.clone(), columns::LtDesc::NAME)?,
-            Tree::new(db.clone(), columns::Lt::NAME)?,
-        );
+        let block_index_db = BlockIndexDb::with_db(Tree::new(db.clone())?, Tree::new(db.clone())?);
 
         Ok(Arc::new(Self {
             block_handle_storage,
@@ -65,10 +62,10 @@ impl Db {
             node_state_storage,
             archive_manager,
             block_index_db,
-            prev1_block_db: Tree::new(db.clone(), columns::Prev1::NAME)?,
-            prev2_block_db: Tree::new(db.clone(), columns::Prev2::NAME)?,
-            next1_block_db: Tree::new(db.clone(), columns::Next1::NAME)?,
-            next2_block_db: Tree::new(db.clone(), columns::Next2::NAME)?,
+            prev1_block_db: Tree::new(db.clone())?,
+            prev2_block_db: Tree::new(db.clone())?,
+            next1_block_db: Tree::new(db.clone())?,
+            next2_block_db: Tree::new(db.clone())?,
             _db: db,
         }))
     }
@@ -284,25 +281,40 @@ impl Db {
         direction: BlockConnection,
         connected_block_id: &ton_block::BlockIdExt,
     ) -> Result<()> {
-        let (db, exists) = match direction {
-            BlockConnection::Prev1 => (&self.prev1_block_db, handle.meta().has_prev1()),
-            BlockConnection::Prev2 => (&self.prev2_block_db, handle.meta().has_prev2()),
-            BlockConnection::Next1 => (&self.next1_block_db, handle.meta().has_next1()),
-            BlockConnection::Next2 => (&self.next2_block_db, handle.meta().has_next2()),
+        // Use strange match because all columns have different types
+        let store = match direction {
+            BlockConnection::Prev1 => {
+                if handle.meta().has_prev1() {
+                    return Ok(());
+                }
+                store_block_connection_impl(&self.prev1_block_db, handle, connected_block_id)?;
+                handle.meta().set_has_prev1()
+            }
+            BlockConnection::Prev2 => {
+                if handle.meta().has_prev2() {
+                    return Ok(());
+                }
+                store_block_connection_impl(&self.prev2_block_db, handle, connected_block_id)?;
+                handle.meta().set_has_prev2()
+            }
+            BlockConnection::Next1 => {
+                if handle.meta().has_next1() {
+                    return Ok(());
+                }
+                store_block_connection_impl(&self.next1_block_db, handle, connected_block_id)?;
+                handle.meta().set_has_next1()
+            }
+            BlockConnection::Next2 => {
+                if handle.meta().has_next2() {
+                    return Ok(());
+                }
+                store_block_connection_impl(&self.next2_block_db, handle, connected_block_id)?;
+                handle.meta().set_has_next2()
+            }
         };
 
-        if !exists {
-            let value = bincode::serialize(&convert_block_id_ext_blk2api(connected_block_id))?;
-            db.insert(handle.id().root_hash.as_slice(), value)?;
-
-            if match direction {
-                BlockConnection::Prev1 => handle.meta().set_has_prev1(),
-                BlockConnection::Prev2 => handle.meta().set_has_prev2(),
-                BlockConnection::Next1 => handle.meta().set_has_next1(),
-                BlockConnection::Next2 => handle.meta().set_has_next2(),
-            } {
-                self.block_handle_storage.store_handle(handle)?;
-            }
+        if store {
+            self.block_handle_storage.store_handle(handle)?;
         }
 
         Ok(())
@@ -313,19 +325,12 @@ impl Db {
         block_id: &ton_block::BlockIdExt,
         direction: BlockConnection,
     ) -> Result<ton_block::BlockIdExt> {
-        let db = match direction {
-            BlockConnection::Prev1 => &self.prev1_block_db,
-            BlockConnection::Prev2 => &self.prev2_block_db,
-            BlockConnection::Next1 => &self.next1_block_db,
-            BlockConnection::Next2 => &self.next2_block_db,
-        };
-
-        let value = match db.get(block_id.root_hash.as_slice())? {
-            Some(value) => bincode::deserialize::<ton::ton_node::blockidext::BlockIdExt>(&value)?,
-            None => return Err(DbError::NotFound.into()),
-        };
-
-        convert_block_id_ext_api2blk(&value)
+        match direction {
+            BlockConnection::Prev1 => load_block_connection_impl(&self.prev1_block_db, block_id),
+            BlockConnection::Prev2 => load_block_connection_impl(&self.prev2_block_db, block_id),
+            BlockConnection::Next1 => load_block_connection_impl(&self.next1_block_db, block_id),
+            BlockConnection::Next2 => load_block_connection_impl(&self.next2_block_db, block_id),
+        }
     }
 
     pub fn find_block_by_seq_no(
@@ -401,6 +406,37 @@ impl Db {
     }
 }
 
+#[inline]
+fn store_block_connection_impl<T>(
+    db: &Tree<T>,
+    handle: &BlockHandle,
+    block_id: &ton_block::BlockIdExt,
+) -> Result<()>
+where
+    T: Column,
+{
+    let value = bincode::serialize(&convert_block_id_ext_blk2api(block_id))?;
+    db.insert(handle.id().root_hash.as_slice(), value)
+}
+
+#[inline]
+fn load_block_connection_impl<T>(
+    db: &Tree<T>,
+    block_id: &ton_block::BlockIdExt,
+) -> Result<ton_block::BlockIdExt>
+where
+    T: Column,
+{
+    let value = match db.get(block_id.root_hash.as_slice())? {
+        Some(value) => {
+            bincode::deserialize::<ton::ton_node::blockidext::BlockIdExt>(value.as_ref())?
+        }
+        None => return Err(DbError::NotFound.into()),
+    };
+
+    convert_block_id_ext_api2blk(&value)
+}
+
 pub struct StoreBlockResult {
     pub handle: Arc<BlockHandle>,
     pub already_existed: bool,
@@ -412,63 +448,6 @@ pub enum BlockConnection {
     Prev2,
     Next1,
     Next2,
-}
-
-mod columns {
-    pub struct BlockHandles;
-    pub struct ShardStateDb;
-    pub struct CellDb;
-    pub struct NodeState;
-    pub struct LtDesc;
-    pub struct Lt;
-    pub struct Prev1;
-    pub struct Prev2;
-    pub struct Next1;
-    pub struct Next2;
-}
-
-pub trait ColumnName {
-    const NAME: &'static str;
-}
-
-impl ColumnName for columns::BlockHandles {
-    const NAME: &'static str = "block_handles";
-}
-
-impl ColumnName for columns::ShardStateDb {
-    const NAME: &'static str = "shard_state_db";
-}
-
-impl ColumnName for columns::CellDb {
-    const NAME: &'static str = "cell_db";
-}
-
-impl ColumnName for columns::NodeState {
-    const NAME: &'static str = "node_state";
-}
-
-impl ColumnName for columns::LtDesc {
-    const NAME: &'static str = "lt_desc";
-}
-
-impl ColumnName for columns::Lt {
-    const NAME: &'static str = "lt";
-}
-
-impl ColumnName for columns::Prev1 {
-    const NAME: &'static str = "prev1";
-}
-
-impl ColumnName for columns::Prev2 {
-    const NAME: &'static str = "prev2";
-}
-
-impl ColumnName for columns::Next1 {
-    const NAME: &'static str = "next1";
-}
-
-impl ColumnName for columns::Next2 {
-    const NAME: &'static str = "next2";
 }
 
 #[derive(thiserror::Error, Debug)]

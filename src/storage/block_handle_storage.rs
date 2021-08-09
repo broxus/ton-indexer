@@ -6,15 +6,15 @@ use dashmap::DashMap;
 use super::block_handle::*;
 use super::block_meta::*;
 use super::tree::*;
-use crate::storage::StoredValue;
+use crate::storage::{columns, StoredValue};
 
 pub struct BlockHandleStorage {
     cache: Arc<DashMap<ton_block::BlockIdExt, Weak<BlockHandle>>>,
-    db: Tree,
+    db: Tree<columns::BlockHandles>,
 }
 
 impl BlockHandleStorage {
-    pub fn with_db(db: Tree) -> Self {
+    pub fn with_db(db: Tree<columns::BlockHandles>) -> Self {
         Self {
             cache: Arc::new(Default::default()),
             db,

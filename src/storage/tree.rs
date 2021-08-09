@@ -1,38 +1,104 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use rocksdb::{BoundColumnFamily, DBPinnableSlice, Options, DB};
+use rocksdb::{BoundColumnFamily, DBPinnableSlice, Options, ReadOptions, WriteOptions, DB};
 
-#[derive(Clone)]
-pub struct Tree {
+pub trait Column {
+    const NAME: &'static str;
+
+    fn options(opts: &mut Options) {
+        let _unused = opts;
+    }
+
+    fn write_options(opts: &mut WriteOptions) {
+        let _unused = opts;
+    }
+
+    fn read_options(opts: &mut ReadOptions) {
+        let _unused = opts;
+    }
+}
+
+pub struct DbBuilder {
+    path: PathBuf,
+    options: Options,
+    descriptors: Vec<rocksdb::ColumnFamilyDescriptor>,
+}
+
+impl DbBuilder {
+    pub fn new<P>(path: P) -> Self
+    where
+        P: AsRef<Path>,
+    {
+        Self {
+            path: path.as_ref().into(),
+            options: Default::default(),
+            descriptors: Default::default(),
+        }
+    }
+
+    pub fn options<F>(mut self, mut f: F) -> Self
+    where
+        F: FnMut(&mut Options),
+    {
+        f(&mut self.options);
+        self
+    }
+
+    pub fn column<T>(mut self) -> Self
+    where
+        T: Column,
+    {
+        let mut opts = Default::default();
+        T::options(&mut opts);
+        self.descriptors
+            .push(rocksdb::ColumnFamilyDescriptor::new(T::NAME, opts));
+        self
+    }
+
+    pub fn build(self) -> Result<Arc<DB>> {
+        Ok(Arc::new(DB::open_cf_descriptors(
+            &self.options,
+            &self.path,
+            self.descriptors,
+        )?))
+    }
+}
+
+pub struct Tree<T> {
     db: Arc<DB>,
-    name: String,
-    write_config: Arc<rocksdb::WriteOptions>,
-    read_config: Arc<rocksdb::ReadOptions>,
+    write_config: WriteOptions,
+    read_config: ReadOptions,
+    _column: std::marker::PhantomData<T>,
 }
 
 /// Note. get_cf Usually took p999 511ns,
 /// So we are not storing it in any way
-impl Tree {
-    pub fn new(db: Arc<DB>, name: &str) -> Result<Self> {
+impl<T> Tree<T>
+where
+    T: Column,
+{
+    pub fn new(db: Arc<DB>) -> Result<Self> {
         // Check that tree exists
-        {
-            let handle: Arc<BoundColumnFamily> = db
-                .cf_handle(name)
-                .with_context(|| format!("No cf for {}", name))?;
-            drop(handle);
-        }
+        db.cf_handle(T::NAME)
+            .with_context(|| format!("No cf for {}", T::NAME))?;
+
+        let mut write_config = Default::default();
+        T::write_options(&mut write_config);
+
+        let mut read_config = Default::default();
+        T::read_options(&mut read_config);
 
         Ok(Self {
             db,
-            name: name.to_string(),
-            write_config: Arc::new(Default::default()),
-            read_config: Arc::new(Default::default()),
+            write_config,
+            read_config,
+            _column: Default::default(),
         })
     }
 
-    pub fn get<T: AsRef<[u8]>>(&self, key: T) -> Result<Option<DBPinnableSlice>> {
+    pub fn get<K: AsRef<[u8]>>(&self, key: K) -> Result<Option<DBPinnableSlice>> {
         let cf = self.get_cf()?;
         Ok(self.db.get_pinned_cf_opt(&cf, key, &self.read_config)?)
     }
@@ -47,18 +113,22 @@ impl Tree {
     }
 
     #[allow(dead_code)]
-    pub fn remove<T: AsRef<[u8]>>(&self, key: T) -> Result<()> {
+    pub fn remove<K: AsRef<[u8]>>(&self, key: K) -> Result<()> {
         let cf = self.get_cf()?;
         Ok(self.db.delete_cf_opt(&cf, key, &self.write_config)?)
     }
 
     pub fn clear(&self) -> Result<()> {
-        self.db.drop_cf(&self.name)?;
-        self.db.create_cf(&self.name, &default_options())?;
+        self.db.drop_cf(T::NAME)?;
+
+        let mut options = Default::default();
+        T::options(&mut options);
+
+        self.db.create_cf(T::NAME, &options)?;
         Ok(())
     }
 
-    pub fn contains_key<T: AsRef<[u8]>>(&self, key: T) -> Result<bool> {
+    pub fn contains_key<K: AsRef<[u8]>>(&self, key: K) -> Result<bool> {
         let cf = self.get_cf()?;
         Ok(self
             .db
@@ -71,25 +141,6 @@ impl Tree {
     }
 
     pub fn get_cf(&self) -> Result<Arc<BoundColumnFamily>> {
-        self.db.cf_handle(&self.name).context("No cf")
+        self.db.cf_handle(T::NAME).context("No cf")
     }
-}
-
-pub fn open_db<T, I, N>(path: T, cfs: I) -> Result<Arc<DB>>
-where
-    T: AsRef<Path>,
-    I: IntoIterator<Item = N>,
-    N: AsRef<str>,
-{
-    let db = Arc::new(rocksdb::DB::open_cf(&default_options(), &path, cfs)?);
-    Ok(db)
-}
-
-fn default_options() -> Options {
-    let mut opts = rocksdb::Options::default();
-    opts.create_if_missing(true);
-    opts.create_missing_column_families(true);
-    opts.set_max_background_jobs(num_cpus::get() as i32);
-    opts.set_optimize_filters_for_hits(true);
-    opts
 }

@@ -28,6 +28,64 @@ mod shard_state_storage;
 mod storage_cell;
 mod tree;
 
+pub mod columns {
+    use super::Column;
+
+    pub struct BlockHandles;
+    impl Column for BlockHandles {
+        const NAME: &'static str = "block_handles";
+    }
+
+    pub struct ShardStateDb;
+    impl Column for ShardStateDb {
+        const NAME: &'static str = "shard_state_db";
+    }
+
+    pub struct CellDb;
+    impl Column for CellDb {
+        const NAME: &'static str = "cell_db";
+
+        fn options(opts: &mut rocksdb::Options) {
+            opts.set_optimize_filters_for_hits(true);
+        }
+    }
+
+    pub struct NodeState;
+    impl Column for NodeState {
+        const NAME: &'static str = "node_state";
+    }
+
+    pub struct LtDesc;
+    impl Column for LtDesc {
+        const NAME: &'static str = "lt_desc";
+    }
+
+    pub struct Lt;
+    impl Column for Lt {
+        const NAME: &'static str = "lt";
+    }
+
+    pub struct Prev1;
+    impl Column for Prev1 {
+        const NAME: &'static str = "prev1";
+    }
+
+    pub struct Prev2;
+    impl Column for Prev2 {
+        const NAME: &'static str = "prev2";
+    }
+
+    pub struct Next1;
+    impl Column for Next1 {
+        const NAME: &'static str = "next1";
+    }
+
+    pub struct Next2;
+    impl Column for Next2 {
+        const NAME: &'static str = "next2";
+    }
+}
+
 pub trait StoredValue {
     const SIZE_HINT: usize;
 

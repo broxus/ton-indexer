@@ -12,7 +12,7 @@ use sha2::Sha256;
 use tokio::fs::File;
 use tokio::sync::{RwLock, RwLockWriteGuard};
 
-use crate::storage::StoredValue;
+use crate::storage::{columns, StoredValue};
 use crate::utils::*;
 
 use super::storage_cell::StorageCell;
@@ -30,7 +30,11 @@ pub struct ShardStateStorage {
 }
 
 impl ShardStateStorage {
-    pub async fn with_db<P>(shard_state_db: Tree, cell_db: Tree, file_db_path: &P) -> Result<Self>
+    pub async fn with_db<P>(
+        shard_state_db: Tree<columns::ShardStateDb>,
+        cell_db: Tree<columns::CellDb>,
+        file_db_path: &P,
+    ) -> Result<Self>
     where
         P: AsRef<Path>,
     {
@@ -92,7 +96,7 @@ impl ShardStateStorage {
 }
 
 struct ShardStateStorageState {
-    shard_state_db: Tree,
+    shard_state_db: Tree<columns::ShardStateDb>,
     dynamic_boc_db: DynamicBocDb,
 }
 
@@ -716,14 +720,14 @@ impl<'a> HashesEntry<'a> {
 
 #[derive(Clone)]
 pub struct DynamicBocDb {
-    cell_db: CellDb,
+    cell_db: Arc<CellDb>,
     cells: Arc<DashMap<ton_types::UInt256, Weak<StorageCell>>>,
 }
 
 impl DynamicBocDb {
-    fn with_db(db: Tree) -> Self {
+    fn with_db(db: Tree<columns::CellDb>) -> Self {
         Self {
-            cell_db: CellDb { db },
+            cell_db: Arc::new(CellDb::new(db)),
             cells: Arc::new(DashMap::new()),
         }
     }
@@ -761,7 +765,7 @@ impl DynamicBocDb {
     }
 
     pub fn clear(&self) -> Result<()> {
-        self.cell_db.db.clear()?;
+        self.cell_db.clear()?;
         self.cells.clear();
         Ok(())
     }
@@ -789,22 +793,29 @@ impl DynamicBocDb {
     }
 }
 
-#[derive(Clone)]
-pub struct CellDb {
-    db: Tree,
+struct CellDb {
+    db: Tree<columns::CellDb>,
 }
 
 impl CellDb {
-    pub fn contains(&self, hash: &ton_types::UInt256) -> Result<bool> {
+    fn new(db: Tree<columns::CellDb>) -> Self {
+        Self { db }
+    }
+
+    fn contains(&self, hash: &ton_types::UInt256) -> Result<bool> {
         let has_key = self.db.contains_key(hash.as_slice())?;
         Ok(has_key)
     }
 
-    pub fn load(&self, boc_db: &DynamicBocDb, hash: &ton_types::UInt256) -> Result<StorageCell> {
+    fn load(&self, boc_db: &DynamicBocDb, hash: &ton_types::UInt256) -> Result<StorageCell> {
         match self.db.get(hash.as_slice())? {
             Some(value) => StorageCell::deserialize(boc_db.clone(), value.as_ref()),
             None => Err(ShardStateStorageError::CellNotFound.into()),
         }
+    }
+
+    fn clear(&self) -> Result<()> {
+        self.db.clear()
     }
 }
 

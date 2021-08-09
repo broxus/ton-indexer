@@ -7,7 +7,7 @@ use parking_lot::RwLock;
 use ton_api::ton;
 
 use super::block_handle::*;
-use super::{StoredValue, Tree};
+use super::{columns, StoredValue, Tree};
 use crate::utils::*;
 
 pub struct BlockIndexDb {
@@ -16,7 +16,7 @@ pub struct BlockIndexDb {
 }
 
 impl BlockIndexDb {
-    pub fn with_db(lt_desc_db: Tree, lt_db: Tree) -> Self {
+    pub fn with_db(lt_desc_db: Tree<columns::LtDesc>, lt_db: Tree<columns::Lt>) -> Self {
         Self {
             lt_desc_db: RwLock::new(LtDescDb { db: lt_desc_db }),
             lt_db: LtDb { db: lt_db },
@@ -212,7 +212,7 @@ impl BlockIndexDb {
 }
 
 struct LtDb {
-    db: Tree,
+    db: Tree<columns::Lt>,
 }
 
 impl LtDb {
@@ -256,7 +256,7 @@ struct LtDbEntry {
 }
 
 struct LtDescDb {
-    db: Tree,
+    db: Tree<columns::LtDesc>,
 }
 
 impl LtDescDb {
