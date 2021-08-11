@@ -24,7 +24,7 @@ impl MappedFile {
 
         // SAFETY: File was opened successfully, file mode is RW, offset is aligned
         let ptr = unsafe {
-            libc::mmap64(
+            libc::mmap(
                 std::ptr::null_mut(),
                 length,
                 libc::PROT_READ | libc::PROT_WRITE,
