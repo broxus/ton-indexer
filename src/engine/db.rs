@@ -37,6 +37,8 @@ impl Db {
                 opts.set_compression_type(DBCompressionType::Zstd);
                 opts.set_zstd_max_train_bytes(2 << 24);
                 opts.set_stats_dump_period_sec(300);
+                opts.set_allow_mmap_writes(true);
+                opts.set_allow_mmap_reads(true);
             })
             .column::<columns::BlockHandles>()
             .column::<columns::ShardStateDb>()

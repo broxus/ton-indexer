@@ -29,7 +29,7 @@ mod storage_cell;
 mod tree;
 
 pub mod columns {
-    use rocksdb::{Options, ReadOptions, WriteOptions};
+    use rocksdb::Options;
 
     use super::Column;
 
