@@ -1,51 +1,31 @@
 use std::borrow::Borrow;
 use std::hash::Hash;
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
+use rocksdb::DBPinnableSlice;
 use tokio::io::AsyncWriteExt;
+use ton_block::Serializable;
+
+use crate::storage::columns::ArchiveManagerDb;
+use crate::storage::Tree;
 
 use super::block_handle::*;
 use super::package_entry_id::*;
 
 pub struct ArchiveManager {
-    temp_dir: Arc<PathBuf>,
+    db: Tree<ArchiveManagerDb>,
 }
 
 impl ArchiveManager {
-    pub async fn with_root_dir<P>(root_dir: &P) -> Result<Self>
-    where
-        P: AsRef<Path>,
-    {
-        let temp_dir = Arc::new(root_dir.as_ref().join("temp"));
-        tokio::fs::create_dir_all(temp_dir.as_ref()).await?;
-
-        Ok(Self { temp_dir })
+    pub fn with_db(db: Tree<ArchiveManagerDb>) -> Self {
+        Self { db }
     }
-
     pub async fn add_file<I>(&self, id: &PackageEntryId<I>, data: &[u8]) -> Result<()>
     where
         I: Borrow<ton_block::BlockIdExt> + Hash,
     {
-        if data.is_empty() {
-            return Err(ArchiveManagerError::EmptyData.into());
-        }
-
-        let folder = self.get_entry_folder(id);
-        tokio::fs::create_dir_all(&folder).await?;
-
-        let filename = folder.join(id.filename());
-        let mut file = tokio::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(filename)
-            .await?;
-
-        file.write_all(data).await?;
-        file.flush().await?;
-
+        self.db
+            .insert(id.block_id().write_to_bytes().unwrap(), data)?;
         Ok(())
     }
 
@@ -53,10 +33,14 @@ impl ArchiveManager {
     where
         I: Borrow<ton_block::BlockIdExt> + Hash,
     {
-        self.get_entry_folder(id).join(id.filename()).exists()
+        self.read_temp_file(id).is_ok()
     }
 
-    pub async fn get_file<I>(&self, handle: &BlockHandle, id: &PackageEntryId<I>) -> Result<Vec<u8>>
+    pub async fn get_file<I>(
+        &self,
+        handle: &BlockHandle,
+        id: &PackageEntryId<I>,
+    ) -> Result<DBPinnableSlice<'_>>
     where
         I: Borrow<ton_block::BlockIdExt> + Hash,
     {
@@ -66,46 +50,18 @@ impl ArchiveManager {
                 handle.proof_file_lock().read().await
             }
         };
-        self.read_temp_file(id).await
+
+        self.read_temp_file(id)
     }
 
-    async fn read_temp_file<I>(&self, id: &PackageEntryId<I>) -> Result<Vec<u8>>
+    fn read_temp_file<I>(&self, id: &PackageEntryId<I>) -> Result<DBPinnableSlice<'_>>
     where
         I: Borrow<ton_block::BlockIdExt> + Hash,
     {
-        let filename = self.get_entry_folder(id).join(id.filename());
-        let data = match tokio::fs::read(&filename).await {
-            Ok(data) => data,
-            Err(e) => {
-                return Err(match e.kind() {
-                    std::io::ErrorKind::NotFound => ArchiveManagerError::FileNotFound.into(),
-                    _ => ArchiveManagerError::FailedToReadFile.into(),
-                })
-            }
-        };
-
-        if data.is_empty() {
-            return Err(ArchiveManagerError::InvalidFileData.into());
+        match self.db.get(id.block_id().write_to_bytes().unwrap())? {
+            Some(a) => Ok(a),
+            None => Err(ArchiveManagerError::InvalidFileData.into()),
         }
-
-        Ok(data)
-    }
-
-    fn get_entry_folder<I>(&self, id: &PackageEntryId<I>) -> PathBuf
-    where
-        I: Borrow<ton_block::BlockIdExt> + Hash,
-    {
-        const GROUP_BY_SEQNO: u32 = 100000;
-
-        let block_id = id.block_id();
-
-        self.temp_dir
-            .join(format!(
-                "{},{:016x}",
-                block_id.shard_id.workchain_id(),
-                block_id.shard_id.shard_prefix_with_tag(),
-            ))
-            .join((block_id.seq_no - block_id.seq_no % GROUP_BY_SEQNO).to_string())
     }
 }
 

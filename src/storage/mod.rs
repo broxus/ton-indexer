@@ -30,10 +30,15 @@ mod tree;
 
 pub mod columns {
     use super::Column;
+    pub struct ArchiveManagerDb;
 
     pub struct BlockHandles;
     impl Column for BlockHandles {
         const NAME: &'static str = "block_handles";
+    }
+
+    impl Column for ArchiveManagerDb {
+        const NAME: &'static str = "archive";
     }
 
     pub struct ShardStateDb;

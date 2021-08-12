@@ -32,6 +32,7 @@ impl Db {
                 opts.create_if_missing(true);
                 opts.create_missing_column_families(true);
                 opts.set_max_background_jobs(num_cpus::get() as i32);
+                opts.set_stats_dump_period_sec(10);
             })
             .column::<columns::BlockHandles>()
             .column::<columns::ShardStateDb>()
@@ -53,7 +54,7 @@ impl Db {
         )
         .await?;
         let node_state_storage = NodeStateStorage::with_db(Tree::new(db.clone())?);
-        let archive_manager = ArchiveManager::with_root_dir(&file_db_path).await?;
+        let archive_manager = ArchiveManager::with_db(Tree::new(db.clone())?);
         let block_index_db = BlockIndexDb::with_db(Tree::new(db.clone())?, Tree::new(db.clone())?);
 
         Ok(Arc::new(Self {
@@ -144,6 +145,7 @@ impl Db {
         self.archive_manager
             .get_file(handle, &PackageEntryId::Block(handle.id()))
             .await
+            .map(|x| x.to_vec())
     }
 
     pub async fn store_block_proof(
@@ -236,7 +238,10 @@ impl Db {
             return Err(DbError::BlockProofNotFound.into());
         }
 
-        self.archive_manager.get_file(handle, &archive_id).await
+        self.archive_manager
+            .get_file(handle, &archive_id)
+            .await
+            .map(|x| x.to_vec())
     }
 
     pub async fn store_shard_state(
