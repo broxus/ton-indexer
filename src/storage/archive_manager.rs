@@ -1,10 +1,8 @@
 use std::borrow::Borrow;
 use std::hash::Hash;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use rocksdb::DBPinnableSlice;
-use tokio::io::AsyncWriteExt;
-use ton_block::Serializable;
 
 use crate::storage::columns::ArchiveManagerDb;
 use crate::storage::Tree;
@@ -24,8 +22,7 @@ impl ArchiveManager {
     where
         I: Borrow<ton_block::BlockIdExt> + Hash,
     {
-        self.db
-            .insert(id.block_id().write_to_bytes().unwrap(), data)?;
+        self.db.insert(id.to_vec()?, data)?;
         Ok(())
     }
 
@@ -58,7 +55,7 @@ impl ArchiveManager {
     where
         I: Borrow<ton_block::BlockIdExt> + Hash,
     {
-        match self.db.get(id.block_id().write_to_bytes().unwrap())? {
+        match self.db.get(id.to_vec()?)? {
             Some(a) => Ok(a),
             None => Err(ArchiveManagerError::InvalidFileData.into()),
         }
@@ -67,12 +64,6 @@ impl ArchiveManager {
 
 #[derive(thiserror::Error, Debug)]
 enum ArchiveManagerError {
-    #[error("Trying to write empty data")]
-    EmptyData,
-    #[error("File not found")]
-    FileNotFound,
-    #[error("Failed to read file")]
-    FailedToReadFile,
     #[error("Invalid file data")]
     InvalidFileData,
 }

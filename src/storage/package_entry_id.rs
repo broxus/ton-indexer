@@ -1,10 +1,14 @@
 use std::borrow::Borrow;
 use std::hash::Hash;
+use std::io::Write;
 use std::str::FromStr;
 
 use anyhow::Result;
 use nekoton_utils::NoFailure;
 use ton_types::UInt256;
+
+use super::StoredValue;
+use smallvec::SmallVec;
 
 #[derive(Debug, Hash, Eq, PartialEq)]
 pub enum PackageEntryId<I> {
@@ -37,18 +41,24 @@ where
 {
     fn filename_prefix(&self) -> &'static str {
         match self {
-            PackageEntryId::Block(_) => PACKAGE_ENTRY_BLOCK,
-            PackageEntryId::Proof(_) => PACKAGE_ENTRY_PROOF,
-            PackageEntryId::ProofLink(_) => PACKAGE_ENTRY_PROOF_LINK,
+            Self::Block(_) => PACKAGE_ENTRY_BLOCK,
+            Self::Proof(_) => PACKAGE_ENTRY_PROOF,
+            Self::ProofLink(_) => PACKAGE_ENTRY_PROOF_LINK,
         }
     }
 
-    pub fn block_id(&self) -> &ton_block::BlockIdExt {
-        match self {
-            Self::Block(block_id) | Self::Proof(block_id) | Self::ProofLink(block_id) => {
-                block_id.borrow()
-            }
-        }
+    pub fn to_vec(&self) -> Result<SmallVec<[u8; 96]>> {
+        let mut result = SmallVec::with_capacity(84);
+        let (ty, block_id) = match self {
+            Self::Block(id) => (0, id),
+            Self::Proof(id) => (1, id),
+            Self::ProofLink(id) => (2, id),
+        };
+
+        result.write_all(&[ty, 0, 0, 0])?;
+        block_id.borrow().serialize(&mut result)?;
+
+        Ok(result)
     }
 }
 
