@@ -44,6 +44,7 @@ impl Db {
             .column::<columns::Prev2>()
             .column::<columns::Next1>()
             .column::<columns::Next2>()
+            .column::<columns::ArchiveManagerDb>()
             .build()?;
 
         let block_handle_storage = BlockHandleStorage::with_db(Tree::new(db.clone())?);
