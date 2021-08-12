@@ -2,6 +2,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::Result;
+use rocksdb::DBCompressionType;
 use ton_api::ton;
 
 use crate::storage::*;
@@ -31,8 +32,11 @@ impl Db {
             .options(|opts| {
                 opts.create_if_missing(true);
                 opts.create_missing_column_families(true);
-                opts.set_max_background_jobs(num_cpus::get() as i32);
-                opts.set_stats_dump_period_sec(10);
+                opts.set_max_background_jobs((num_cpus::get() as i32) / 2);
+                opts.increase_parallelism(num_cpus::get() as i32);
+                opts.set_compression_type(DBCompressionType::Zstd);
+                opts.set_zstd_max_train_bytes(2 << 24);
+                opts.set_stats_dump_period_sec(300);
             })
             .column::<columns::BlockHandles>()
             .column::<columns::ShardStateDb>()
