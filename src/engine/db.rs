@@ -2,6 +2,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::Result;
+use rlimit::Resource;
 use rocksdb::DBCompressionType;
 use ton_api::ton;
 
@@ -28,17 +29,45 @@ impl Db {
         PS: AsRef<Path>,
         PF: AsRef<Path>,
     {
+        //todo get it from user
+        let limit = match fdlimit::raise_fd_limit() {
+            Some(a) => a,
+            None => {
+                let (x, _) = rlimit::getrlimit(Resource::NOFILE).unwrap_or((256, 0));
+                x
+            }
+        };
         let db = DbBuilder::new(sled_db_path)
             .options(|opts| {
+                // Memory consuming options
+                // 8 mb
+                // for direct io buffering
+                opts.set_writable_file_max_buffer_size(1024 * 1024 * 8);
+                // 8 mb
+                // for direct io buffering
+                opts.set_compaction_readahead_size(1024 * 1024 * 8);
+                // 256
+                // all metatables size
+                opts.set_db_write_buffer_size(256 * 1024 * 1024);
+                // total 272
+
+                // compression opts
+                opts.set_zstd_max_train_bytes(8 * 1024 * 1024);
+                opts.set_compression_type(DBCompressionType::Lz4);
+                // io
+                opts.set_use_direct_io_for_flush_and_compaction(true);
+                opts.set_recycle_log_file_num(32);
+                opts.set_use_direct_reads(true);
+                opts.set_max_open_files(limit as i32);
+                // cf
                 opts.create_if_missing(true);
                 opts.create_missing_column_families(true);
+                // cpu
                 opts.set_max_background_jobs((num_cpus::get() as i32) / 2);
                 opts.increase_parallelism(num_cpus::get() as i32);
-                opts.set_compression_type(DBCompressionType::Zstd);
-                opts.set_zstd_max_train_bytes(2 << 24);
+                // debug
+                opts.enable_statistics();
                 opts.set_stats_dump_period_sec(300);
-                opts.set_allow_mmap_writes(true);
-                opts.set_allow_mmap_reads(true);
             })
             .column::<columns::BlockHandles>()
             .column::<columns::ShardStateDb>()
