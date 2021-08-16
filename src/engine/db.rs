@@ -2,6 +2,8 @@ use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::Result;
+use rlimit::Resource;
+use rocksdb::DBCompressionType;
 use ton_api::ton;
 
 use crate::storage::*;
@@ -27,11 +29,45 @@ impl Db {
         PS: AsRef<Path>,
         PF: AsRef<Path>,
     {
+        //todo get it from user
+        let limit = match fdlimit::raise_fd_limit() {
+            Some(a) => a,
+            None => {
+                let (x, _) = rlimit::getrlimit(Resource::NOFILE).unwrap_or((256, 0));
+                x
+            }
+        };
         let db = DbBuilder::new(sled_db_path)
             .options(|opts| {
+                // Memory consuming options
+                // 8 mb
+                // for direct io buffering
+                opts.set_writable_file_max_buffer_size(1024 * 1024 * 8);
+                // 8 mb
+                // for direct io buffering
+                opts.set_compaction_readahead_size(1024 * 1024 * 8);
+                // 256
+                // all metatables size
+                opts.set_db_write_buffer_size(256 * 1024 * 1024);
+                // total 272
+
+                // compression opts
+                opts.set_zstd_max_train_bytes(8 * 1024 * 1024);
+                opts.set_compression_type(DBCompressionType::Lz4);
+                // io
+                opts.set_use_direct_io_for_flush_and_compaction(true);
+                opts.set_recycle_log_file_num(32);
+                opts.set_use_direct_reads(true);
+                opts.set_max_open_files(limit as i32);
+                // cf
                 opts.create_if_missing(true);
                 opts.create_missing_column_families(true);
-                opts.set_max_background_jobs(num_cpus::get() as i32);
+                // cpu
+                opts.set_max_background_jobs((num_cpus::get() as i32) / 2);
+                opts.increase_parallelism(num_cpus::get() as i32);
+                // debug
+                opts.enable_statistics();
+                opts.set_stats_dump_period_sec(300);
             })
             .column::<columns::BlockHandles>()
             .column::<columns::ShardStateDb>()
@@ -43,6 +79,7 @@ impl Db {
             .column::<columns::Prev2>()
             .column::<columns::Next1>()
             .column::<columns::Next2>()
+            .column::<columns::ArchiveManagerDb>()
             .build()?;
 
         let block_handle_storage = BlockHandleStorage::with_db(Tree::new(db.clone())?);
@@ -53,7 +90,7 @@ impl Db {
         )
         .await?;
         let node_state_storage = NodeStateStorage::with_db(Tree::new(db.clone())?);
-        let archive_manager = ArchiveManager::with_root_dir(&file_db_path).await?;
+        let archive_manager = ArchiveManager::with_db(Tree::new(db.clone())?);
         let block_index_db = BlockIndexDb::with_db(Tree::new(db.clone())?, Tree::new(db.clone())?);
 
         Ok(Arc::new(Self {
@@ -144,6 +181,7 @@ impl Db {
         self.archive_manager
             .get_file(handle, &PackageEntryId::Block(handle.id()))
             .await
+            .map(|x| x.to_vec())
     }
 
     pub async fn store_block_proof(
@@ -236,7 +274,10 @@ impl Db {
             return Err(DbError::BlockProofNotFound.into());
         }
 
-        self.archive_manager.get_file(handle, &archive_id).await
+        self.archive_manager
+            .get_file(handle, &archive_id)
+            .await
+            .map(|x| x.to_vec())
     }
 
     pub async fn store_shard_state(

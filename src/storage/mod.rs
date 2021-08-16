@@ -28,11 +28,23 @@ mod storage_cell;
 mod tree;
 
 pub mod columns {
+    use rocksdb::Options;
+
     use super::Column;
+
+    pub struct ArchiveManagerDb;
 
     pub struct BlockHandles;
     impl Column for BlockHandles {
         const NAME: &'static str = "block_handles";
+    }
+
+    impl Column for ArchiveManagerDb {
+        const NAME: &'static str = "archive";
+
+        fn options(opts: &mut Options) {
+            opts.optimize_for_point_lookup(50);
+        }
     }
 
     pub struct ShardStateDb;
@@ -46,6 +58,7 @@ pub mod columns {
 
         fn options(opts: &mut rocksdb::Options) {
             opts.set_optimize_filters_for_hits(true);
+            opts.optimize_for_point_lookup(100); //size in mb
         }
     }
 
