@@ -73,7 +73,7 @@ impl Engine {
         global_config: GlobalConfig,
         subscribers: Vec<Arc<dyn Subscriber>>,
     ) -> Result<Arc<Self>> {
-        let db = Db::new(config.sled_db_path(), config.file_db_path()).await?;
+        let db = Db::new(config.rocks_db_path(), config.file_db_path()).await?;
 
         let zero_state_id = global_config.zero_state.clone();
 

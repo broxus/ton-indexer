@@ -10,13 +10,13 @@ use serde::{Deserialize, Serialize};
 pub struct NodeConfig {
     pub ip_address: SocketAddrV4,
     pub keys: Vec<AdnlNodeKey>,
-    pub sled_db_path: PathBuf,
+    pub rocks_db_path: PathBuf,
     pub file_db_path: PathBuf,
 }
 
 impl NodeConfig {
-    pub fn sled_db_path(&self) -> &PathBuf {
-        &self.sled_db_path
+    pub fn rocks_db_path(&self) -> &PathBuf {
+        &self.rocks_db_path
     }
 
     pub fn file_db_path(&self) -> &PathBuf {

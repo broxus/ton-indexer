@@ -120,7 +120,7 @@ impl Config {
         let indexer = ton_indexer::NodeConfig {
             ip_address,
             keys: Vec::new(),
-            sled_db_path: PathBuf::new().join("db/sled"),
+            rocks_db_path: PathBuf::new().join("db/rocksdb"),
             file_db_path: PathBuf::new().join("db/file"),
         };
 
