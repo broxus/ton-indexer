@@ -1,7 +1,6 @@
 use std::io::Cursor;
 
 use anyhow::{anyhow, Result};
-use nekoton_utils::NoFailure;
 use ton_block::{Deserializable, Serializable};
 use ton_types::{Cell, UInt256};
 
@@ -15,8 +14,7 @@ pub struct ShardStateStuff {
 
 impl ShardStateStuff {
     pub fn new(block_id: ton_block::BlockIdExt, root: Cell) -> Result<Self> {
-        let shard_state =
-            ton_block::ShardStateUnsplit::construct_from(&mut root.clone().into()).convert()?;
+        let shard_state = ton_block::ShardStateUnsplit::construct_from(&mut root.clone().into())?;
 
         if shard_state.shard() != block_id.shard() {
             return Err(anyhow!("State's shard block_id is not equal to given one"));
@@ -30,16 +28,14 @@ impl ShardStateStuff {
 
         Ok(Self {
             block_id,
-            shard_state_extra: shard_state.read_custom().convert()?,
+            shard_state_extra: shard_state.read_custom()?,
             shard_state,
             root,
         })
     }
 
     pub fn construct_split_root(left: Cell, right: Cell) -> Result<Cell> {
-        ton_block::ShardStateSplit { left, right }
-            .serialize()
-            .convert()
+        ton_block::ShardStateSplit { left, right }.serialize()
     }
 
     pub fn deserialize_zerostate(id: ton_block::BlockIdExt, bytes: &[u8]) -> Result<Self> {
@@ -52,7 +48,7 @@ impl ShardStateStuff {
             return Err(anyhow!("Wrong zero state's {} file hash", id));
         }
 
-        let root = ton_types::deserialize_tree_of_cells(&mut Cursor::new(bytes)).convert()?;
+        let root = ton_types::deserialize_tree_of_cells(&mut Cursor::new(bytes))?;
         if root.repr_hash() != id.root_hash() {
             return Err(anyhow!("Wrong zero state's {} root hash", id));
         }

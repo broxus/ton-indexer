@@ -5,7 +5,6 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use clap::{Clap, IntoApp};
-use nekoton_utils::NoFailure;
 use serde::{Deserialize, Serialize};
 use tiny_adnl::utils::*;
 
@@ -82,7 +81,7 @@ impl ton_indexer::Subscriber for LoggerSubscriber {
             return Ok(());
         }
 
-        let info = block.block().info.read_struct().convert()?;
+        let info = block.block().info.read_struct()?;
         log::info!("TIME_DIFF: {}", now() - info.gen_utime().0 as i32);
 
         Ok(())

@@ -1,7 +1,6 @@
 use std::io::{Read, Write};
 
 use anyhow::Result;
-use nekoton_utils::NoFailure;
 use smallvec::SmallVec;
 use ton_types::ByteOrderRead;
 
@@ -161,6 +160,6 @@ impl StoredValue for ton_block::ShardIdent {
     {
         let workchain_id = reader.read_le_u32()? as i32;
         let shard_prefix_tagged = reader.read_le_u64()?;
-        Self::with_tagged_prefix(workchain_id, shard_prefix_tagged).convert()
+        Self::with_tagged_prefix(workchain_id, shard_prefix_tagged)
     }
 }

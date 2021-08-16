@@ -2,7 +2,6 @@ use std::io::Write;
 use std::sync::Arc;
 
 use anyhow::Result;
-use nekoton_utils::NoFailure;
 use parking_lot::RwLock;
 use ton_api::ton;
 
@@ -82,8 +81,7 @@ impl BlockIndexDb {
                 prefix_len,
                 account_prefix.workchain_id,
                 account_prefix.prefix,
-            )
-            .convert()?;
+            )?;
 
             let lt_desc_key = shard.to_vec()?;
             let lt_desc = match self.lt_desc_db.read().try_load_lt_desc(&lt_desc_key)? {

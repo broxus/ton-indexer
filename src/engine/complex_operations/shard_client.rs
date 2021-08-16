@@ -1,7 +1,6 @@
 use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
-use nekoton_utils::NoFailure;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use ton_api::ton;
 
@@ -157,7 +156,7 @@ pub async fn process_block_broadcast(
         broadcast.proof.0.clone(),
         !block_id.shard_id.is_masterchain(),
     )?;
-    let block_info = proof.virtualize_block()?.0.read_info().convert()?;
+    let block_info = proof.virtualize_block()?.0.read_info()?;
 
     let prev_key_block_seqno = block_info.prev_key_block_seqno();
     let last_applied_mc_block_id = engine.load_last_applied_mc_block_id().await?;
@@ -200,8 +199,7 @@ pub async fn process_block_broadcast(
         let master_ref = block
             .block()
             .read_info()
-            .and_then(|info| info.read_master_ref())
-            .convert()?
+            .and_then(|info| info.read_master_ref())?
             .ok_or(ShardClientError::InvalidBlockExtra)?;
 
         let shards_client_mc_block_id = engine.load_shards_client_mc_block_id().await?;
@@ -221,15 +219,13 @@ fn validate_broadcast(
     validator_set: &ton_block::ValidatorSet,
     catchain_config: &ton_block::CatchainConfig,
 ) -> Result<()> {
-    let (validators, validators_hash_short) = validator_set
-        .calc_subset(
-            catchain_config,
-            block_id.shard_id.shard_prefix_with_tag(),
-            block_id.shard_id.workchain_id(),
-            broadcast.catchain_seqno as u32,
-            ton_block::UnixTime32(0),
-        )
-        .convert()?;
+    let (validators, validators_hash_short) = validator_set.calc_subset(
+        catchain_config,
+        block_id.shard_id.shard_prefix_with_tag(),
+        block_id.shard_id.workchain_id(),
+        broadcast.catchain_seqno as u32,
+        ton_block::UnixTime32(0),
+    )?;
 
     if validators_hash_short != broadcast.validator_set_hash as u32 {
         return Err(anyhow!(
@@ -245,7 +241,7 @@ fn validate_broadcast(
     for signature in &broadcast.signatures.0 {
         block_pure_signatures.add_sigpair(ton_block::CryptoSignaturePair {
             node_id_short: ton_types::UInt256::from(&signature.who.0),
-            sign: ton_block::CryptoSignature::from_bytes(&signature.signature).convert()?,
+            sign: ton_block::CryptoSignature::from_bytes(&signature.signature)?,
         });
     }
 
@@ -253,9 +249,7 @@ fn validate_broadcast(
     let data_to_sign =
         ton_block::Block::build_data_for_sign(&block_id.root_hash, &block_id.file_hash);
     let total_weight: u64 = validators.iter().map(|v| v.weight).sum();
-    let weight = block_pure_signatures
-        .check_signatures(validators, &data_to_sign)
-        .convert()?;
+    let weight = block_pure_signatures.check_signatures(validators, &data_to_sign)?;
 
     if weight * 3 <= total_weight * 2 {
         return Err(anyhow!(

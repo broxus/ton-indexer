@@ -3,7 +3,6 @@ use std::hash::Hash;
 use std::str::FromStr;
 
 use anyhow::Result;
-use nekoton_utils::NoFailure;
 use ton_types::UInt256;
 
 #[derive(Debug, Hash, Eq, PartialEq)]
@@ -112,16 +111,15 @@ fn parse_block_id(filename: &str) -> Result<ton_block::BlockIdExt> {
         None => return Err(PackageEntryIdError::SeqnoNotFound.into()),
     };
 
-    let shard_id =
-        ton_block::ShardIdent::with_tagged_prefix(workchain_id, shard_prefix_tagged).convert()?;
+    let shard_id = ton_block::ShardIdent::with_tagged_prefix(workchain_id, shard_prefix_tagged)?;
 
     let root_hash = match parts.next() {
-        Some(part) => UInt256::from_str(part).convert()?,
+        Some(part) => UInt256::from_str(part)?,
         None => return Err(PackageEntryIdError::RootHashNotFound.into()),
     };
 
     let file_hash = match parts.next() {
-        Some(part) => UInt256::from_str(part).convert()?,
+        Some(part) => UInt256::from_str(part)?,
         None => return Err(PackageEntryIdError::FileHashNotFound.into()),
     };
 

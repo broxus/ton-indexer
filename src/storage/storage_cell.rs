@@ -2,7 +2,6 @@ use std::io::Write;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-use nekoton_utils::NoFailure;
 use parking_lot::RwLock;
 use ton_types::{ByteOrderRead, CellImpl};
 
@@ -24,7 +23,7 @@ impl StorageCell {
     pub fn deserialize(boc_db: DynamicBocDb, data: &[u8]) -> anyhow::Result<Self> {
         let mut reader = std::io::Cursor::new(data);
 
-        let cell_data = ton_types::CellData::deserialize(&mut reader).convert()?;
+        let cell_data = ton_types::CellData::deserialize(&mut reader)?;
         let references_count = reader.read_byte()?;
         let mut references = Vec::with_capacity(references_count as usize);
 
@@ -54,7 +53,7 @@ impl StorageCell {
     pub fn deserialize_references(data: &[u8]) -> anyhow::Result<Vec<StorageCellReference>> {
         let mut reader = std::io::Cursor::new(data);
 
-        let _cell_data = ton_types::CellData::deserialize(&mut reader).convert()?;
+        let _cell_data = ton_types::CellData::deserialize(&mut reader)?;
         let references_count = reader.read_byte()?;
         let mut references = Vec::with_capacity(references_count as usize);
 
@@ -69,11 +68,11 @@ impl StorageCell {
         let references_count = cell.references_count() as u8;
 
         let mut data = Vec::new();
-        cell.cell_data().serialize(&mut data).convert()?;
+        cell.cell_data().serialize(&mut data)?;
         data.write_all(&[references_count])?;
 
         for i in 0..references_count {
-            data.write_all(cell.reference(i as usize).convert()?.repr_hash().as_slice())?;
+            data.write_all(cell.reference(i as usize)?.repr_hash().as_slice())?;
         }
 
         data.write_all(&cell.tree_bits_count().to_le_bytes())?;

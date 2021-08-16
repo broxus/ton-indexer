@@ -2,7 +2,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
-use nekoton_utils::NoFailure;
 use ton_api::ton;
 use ton_block::Deserializable;
 use ton_types::{Cell, UInt256};
@@ -26,13 +25,12 @@ impl BlockStuff {
     }
 
     pub fn deserialize(id: ton_block::BlockIdExt, data: Vec<u8>) -> Result<Self> {
-        let root =
-            ton_types::deserialize_tree_of_cells(&mut std::io::Cursor::new(&data)).convert()?;
+        let root = ton_types::deserialize_tree_of_cells(&mut std::io::Cursor::new(&data))?;
         if id.root_hash != root.repr_hash() {
             return Err(anyhow!("wrong root hash for {}", id));
         }
 
-        let block = ton_block::Block::construct_from(&mut root.clone().into()).convert()?;
+        let block = ton_block::Block::construct_from(&mut root.clone().into())?;
         Ok(Self {
             id,
             block,
@@ -56,11 +54,11 @@ impl BlockStuff {
     pub fn construct_prev_id(
         &self,
     ) -> Result<(ton_block::BlockIdExt, Option<ton_block::BlockIdExt>)> {
-        let header = self.block.read_info().convert()?;
-        match header.read_prev_ref().convert()? {
+        let header = self.block.read_info()?;
+        match header.read_prev_ref()? {
             ton_block::BlkPrevInfo::Block { prev } => {
                 let shard_id = if header.after_split() {
-                    header.shard().merge().convert()?
+                    header.shard().merge()?
                 } else {
                     *header.shard()
                 };
@@ -75,9 +73,9 @@ impl BlockStuff {
                 Ok((id, None))
             }
             ton_block::BlkPrevInfo::Blocks { prev1, prev2 } => {
-                let prev1 = prev1.read_struct().convert()?;
-                let prev2 = prev2.read_struct().convert()?;
-                let (shard1, shard2) = header.shard().split().convert()?;
+                let prev1 = prev1.read_struct()?;
+                let prev2 = prev2.read_struct()?;
+                let (shard1, shard2) = header.shard().split()?;
 
                 let id1 = ton_block::BlockIdExt {
                     shard_id: shard1,
@@ -101,10 +99,8 @@ impl BlockStuff {
     pub fn shards_blocks(&self) -> Result<HashMap<ton_block::ShardIdent, ton_block::BlockIdExt>> {
         let mut shards = HashMap::new();
         self.block()
-            .read_extra()
-            .convert()?
-            .read_custom()
-            .convert()?
+            .read_extra()?
+            .read_custom()?
             .ok_or_else(|| anyhow!("Given block is not a master block."))?
             .hashes()
             .iterate_shards(
@@ -118,8 +114,7 @@ impl BlockStuff {
                     shards.insert(ident, last_shard_block);
                     Ok(true)
                 },
-            )
-            .convert()?;
+            )?;
 
         Ok(shards)
     }
@@ -139,7 +134,7 @@ pub fn convert_block_id_ext_api2blk(
     id: &ton::ton_node::blockidext::BlockIdExt,
 ) -> Result<ton_block::BlockIdExt> {
     Ok(ton_block::BlockIdExt::with_params(
-        ton_block::ShardIdent::with_tagged_prefix(id.workchain, id.shard as u64).convert()?,
+        ton_block::ShardIdent::with_tagged_prefix(id.workchain, id.shard as u64)?,
         id.seqno as u32,
         UInt256::from(&id.root_hash.0),
         UInt256::from(&id.file_hash.0),

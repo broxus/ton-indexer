@@ -2,7 +2,6 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use futures::future::{BoxFuture, FutureExt};
-use nekoton_utils::NoFailure;
 
 use crate::engine::db::BlockConnection;
 use crate::engine::Engine;
@@ -122,7 +121,7 @@ fn update_block_connections(
             let prev1_shard = prev1_handle.id().shard_id;
             let shard = handle.id().shard_id;
 
-            if prev1_shard != shard && prev1_shard.split().convert()?.1 == shard {
+            if prev1_shard != shard && prev1_shard.split()?.1 == shard {
                 db.store_block_connection(&prev1_handle, BlockConnection::Next2, handle.id())?;
             } else {
                 db.store_block_connection(&prev1_handle, BlockConnection::Next1, handle.id())?;
@@ -166,12 +165,12 @@ async fn compute_and_store_shard_state(
             .clone(),
     };
 
-    let merkle_update = block.block().read_state_update().convert()?;
+    let merkle_update = block.block().read_state_update()?;
 
     let shard_state = tokio::task::spawn_blocking({
         let block_id = block.id().clone();
         move || -> Result<Arc<ShardStateStuff>> {
-            let shard_state_root = merkle_update.apply_for(&prev_shard_state_root).convert()?;
+            let shard_state_root = merkle_update.apply_for(&prev_shard_state_root)?;
             Ok(Arc::new(ShardStateStuff::new(block_id, shard_state_root)?))
         }
     })

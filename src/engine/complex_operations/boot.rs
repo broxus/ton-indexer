@@ -2,7 +2,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
-use nekoton_utils::NoFailure;
 use tiny_adnl::utils::*;
 
 use super::download_state::*;
@@ -302,10 +301,9 @@ async fn download_base_wc_zero_state(
     engine: &Arc<Engine>,
     zero_state: &ShardStateStuff,
 ) -> Result<()> {
-    let workchains = zero_state.config_params()?.workchains().convert()?;
+    let workchains = zero_state.config_params()?.workchains()?;
     let base_workchain = workchains
-        .get(&0)
-        .convert()?
+        .get(&0)?
         .ok_or(BootError::BaseWorkchainInfoNotFound)?;
 
     log::info!(
@@ -319,8 +317,7 @@ async fn download_base_wc_zero_state(
             shard_id: ton_block::ShardIdent::with_tagged_prefix(
                 ton_block::BASE_WORKCHAIN_ID,
                 ton_block::SHARD_FULL,
-            )
-            .convert()?,
+            )?,
             seq_no: 0,
             root_hash: base_workchain.zerostate_root_hash,
             file_hash: base_workchain.zerostate_file_hash,
@@ -415,7 +412,7 @@ async fn download_block_and_state(
     };
 
     if !handle.meta().has_state() {
-        let state_update = block.block().read_state_update().convert()?;
+        let state_update = block.block().read_state_update()?;
         log::info!(
             "Download state: {} for {}",
             handle.id(),

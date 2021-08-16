@@ -1,5 +1,4 @@
 use anyhow::{anyhow, Result};
-use nekoton_utils::NoFailure;
 use ton_block::Deserializable;
 use ton_types::{Cell, HashmapType};
 
@@ -20,9 +19,8 @@ impl BlockProofStuff {
         data: Vec<u8>,
         is_link: bool,
     ) -> Result<Self> {
-        let root =
-            ton_types::deserialize_tree_of_cells(&mut std::io::Cursor::new(&data)).convert()?;
-        let proof = ton_block::BlockProof::construct_from(&mut root.clone().into()).convert()?;
+        let root = ton_types::deserialize_tree_of_cells(&mut std::io::Cursor::new(&data))?;
+        let proof = ton_block::BlockProof::construct_from(&mut root.clone().into())?;
 
         if proof.proof_for != block_id {
             return Err(anyhow!(
@@ -47,8 +45,7 @@ impl BlockProofStuff {
 
     pub fn virtualize_block_root(&self) -> Result<Cell> {
         let merkle_proof =
-            ton_block::MerkleProof::construct_from(&mut self.proof.root.clone().into())
-                .convert()?;
+            ton_block::MerkleProof::construct_from(&mut self.proof.root.clone().into())?;
         let block_virt_root = merkle_proof.proof.virtualize(1);
 
         if *self.proof.proof_for.root_hash() != block_virt_root.repr_hash() {
@@ -65,10 +62,7 @@ impl BlockProofStuff {
     pub fn virtualize_block(&self) -> Result<(ton_block::Block, ton_api::ton::int256)> {
         let cell = self.virtualize_block_root()?;
         let hash = ton_api::ton::int256(cell.repr_hash().as_slice().to_owned());
-        Ok((
-            ton_block::Block::construct_from(&mut cell.into()).convert()?,
-            hash,
-        ))
+        Ok((ton_block::Block::construct_from(&mut cell.into())?, hash))
     }
 
     pub fn is_link(&self) -> bool {
@@ -95,8 +89,7 @@ impl BlockProofStuff {
             ));
         }
 
-        let (validator_set, catchain_config) =
-            virt_block.read_cur_validator_set_and_cc_conf().convert()?;
+        let (validator_set, catchain_config) = virt_block.read_cur_validator_set_and_cc_conf()?;
 
         Ok((validator_set, catchain_config))
     }
@@ -154,9 +147,9 @@ impl BlockProofStuff {
             ));
         }
 
-        let info = virt_block.read_info().convert()?;
-        let _value_flow = virt_block.read_value_flow().convert()?;
-        let _state_update = virt_block.read_state_update().convert()?;
+        let info = virt_block.read_info()?;
+        let _value_flow = virt_block.read_value_flow()?;
+        let _state_update = virt_block.read_state_update()?;
 
         if info.version() != 0 {
             return Err(anyhow!(
@@ -184,7 +177,7 @@ impl BlockProofStuff {
             ));
         }
 
-        if info.read_master_ref().convert()?.is_none() != info.shard().is_masterchain() {
+        if info.read_master_ref()?.is_none() != info.shard().is_masterchain() {
             return Err(anyhow!(
                 "proof for block {} contains a Merkle proof with invalid not_master flag in block info",
                 self.id,
@@ -260,8 +253,7 @@ impl BlockProofStuff {
         let count = signatures
             .pure_signatures
             .signatures()
-            .count(expected_count)
-            .convert()?;
+            .count(expected_count)?;
         if expected_count != count {
             return Err(anyhow!(
                 "Proof for {}: signature count mismatch: declared: {}, calculated: {}",
@@ -301,8 +293,8 @@ impl BlockProofStuff {
     }
 
     fn pre_check_key_block_proof(&self, virt_block: &ton_block::Block) -> Result<()> {
-        let extra = virt_block.read_extra().convert()?;
-        let mc_extra = extra.read_custom().convert()?.ok_or_else(|| {
+        let extra = virt_block.read_extra()?;
+        let mc_extra = extra.read_custom()?.ok_or_else(|| {
             anyhow!(
                 "proof for key block {} contains a Merkle proof without masterchain block extra",
                 self.id(),
@@ -316,15 +308,15 @@ impl BlockProofStuff {
             )
         })?;
 
-        let _cur_validator_set = config.config(34).convert()?
+        let _cur_validator_set = config.config(34)?
             .ok_or_else(|| anyhow!(
                 "proof for key block {} contains a Merkle proof without current validators config param (34)",
                 self.id(),
             ))?;
         for param in 32..=38 {
-            let _val_set = config.config(param).convert()?;
+            let _val_set = config.config(param)?;
         }
-        let _catchain_config = config.config(28).convert()?;
+        let _catchain_config = config.config(28)?;
 
         Ok(())
     }
@@ -366,10 +358,8 @@ impl BlockProofStuff {
             ));
         }
 
-        let (validator_set, catchain_config) = state
-            .state()
-            .read_cur_validator_set_and_cc_conf()
-            .convert()?;
+        let (validator_set, catchain_config) =
+            state.state().read_cur_validator_set_and_cc_conf()?;
 
         self.calc_validators_subset(&validator_set, &catchain_config, block_info.gen_utime().0)
     }
@@ -407,19 +397,17 @@ impl BlockProofStuff {
         catchain_config: &ton_block::CatchainConfig,
         gen_utime: u32,
     ) -> Result<(Vec<ton_block::ValidatorDescr>, u32)> {
-        validator_set
-            .calc_subset(
-                catchain_config,
-                self.id.shard().shard_prefix_with_tag(),
-                self.id.shard().workchain_id(),
-                self.proof
-                    .signatures
-                    .as_ref()
-                    .map(|s| s.validator_info.catchain_seqno)
-                    .unwrap_or_default(),
-                ton_block::UnixTime32(gen_utime),
-            )
-            .convert()
+        validator_set.calc_subset(
+            catchain_config,
+            self.id.shard().shard_prefix_with_tag(),
+            self.id.shard().workchain_id(),
+            self.proof
+                .signatures
+                .as_ref()
+                .map(|s| s.validator_info.catchain_seqno)
+                .unwrap_or_default(),
+            ton_block::UnixTime32(gen_utime),
+        )
     }
 }
 

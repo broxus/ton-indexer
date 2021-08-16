@@ -2,7 +2,6 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 
 use anyhow::Result;
-use nekoton_utils::NoFailure;
 use tiny_adnl::utils::*;
 use ton_api::ton;
 
@@ -142,13 +141,10 @@ impl Engine {
         // Start listening broadcasts
         self.listen_broadcasts(ton_block::ShardIdent::masterchain())
             .await?;
-        self.listen_broadcasts(
-            ton_block::ShardIdent::with_tagged_prefix(
-                ton_block::BASE_WORKCHAIN_ID,
-                ton_block::SHARD_FULL,
-            )
-            .convert()?,
-        )
+        self.listen_broadcasts(ton_block::ShardIdent::with_tagged_prefix(
+            ton_block::BASE_WORKCHAIN_ID,
+            ton_block::SHARD_FULL,
+        )?)
         .await?;
 
         // Synchronize

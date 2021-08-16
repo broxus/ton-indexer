@@ -2,7 +2,6 @@ use std::io::{Read, Write};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::Result;
-use nekoton_utils::NoFailure;
 use ton_types::ByteOrderRead;
 
 use super::StoredValue;
@@ -16,7 +15,7 @@ pub struct BlockMeta {
 
 impl BlockMeta {
     pub fn from_block(block: &ton_block::Block) -> Result<Self> {
-        let info = block.read_info().convert()?;
+        let info = block.read_info()?;
         let flags = if info.key_block() {
             BLOCK_META_FLAG_IS_KEY_BLOCK
         } else {

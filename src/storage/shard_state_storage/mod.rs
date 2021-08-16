@@ -4,7 +4,6 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Weak};
 
 use anyhow::{Context, Result};
-use nekoton_utils::NoFailure;
 use num_traits::ToPrimitive;
 use sha2::Sha256;
 use tiny_adnl::utils::*;
@@ -785,7 +784,7 @@ impl DynamicBocDb {
 
         let mut count = 1;
         for i in 0..cell.references_count() {
-            count += self.prepare_tree_of_cells(cell.reference(i).convert()?, transaction)?;
+            count += self.prepare_tree_of_cells(cell.reference(i)?, transaction)?;
         }
 
         Ok(count)
