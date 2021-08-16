@@ -137,7 +137,7 @@ impl Scheduler {
         worker_count: usize,
         max_size: usize,
     ) -> Result<Self> {
-        let (response_tx, response_rx) = mpsc::unbounded_channel();
+        let (response_tx, response_rx) = mpsc::channel(worker_count);
 
         let got_last_part = Arc::new(AtomicBool::new(false));
 
@@ -288,7 +288,7 @@ async fn download_packet_worker(ctx: Arc<DownloadContext>, mut offsets_rx: Offse
                 .await
             {
                 Ok(part) => {
-                    if ctx.response_tx.send((offset, Ok(part))).is_err() {
+                    if ctx.response_tx.send((offset, Ok(part))).await.is_err() {
                         break 'tasks;
                     }
                     continue 'tasks;
@@ -307,7 +307,8 @@ async fn download_packet_worker(ctx: Arc<DownloadContext>, mut offsets_rx: Offse
 
                         let _ = ctx
                             .response_tx
-                            .send((offset, Err(DownloadStateError::RanOutOfAttempts.into())));
+                            .send((offset, Err(DownloadStateError::RanOutOfAttempts.into())))
+                            .await;
                         break 'tasks;
                     }
 
@@ -344,8 +345,8 @@ enum PacketStatus {
     Done,
 }
 
-type ResponseRx = mpsc::UnboundedReceiver<(usize, Result<Vec<u8>>)>;
-type ResponseTx = mpsc::UnboundedSender<(usize, Result<Vec<u8>>)>;
+type ResponseRx = mpsc::Receiver<(usize, Result<Vec<u8>>)>;
+type ResponseTx = mpsc::Sender<(usize, Result<Vec<u8>>)>;
 
 type OffsetsRx = mpsc::Receiver<usize>;
 type OffsetsTx = mpsc::Sender<usize>;

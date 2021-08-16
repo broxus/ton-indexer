@@ -55,6 +55,7 @@ pub struct Engine {
     subscribers: Vec<Arc<dyn Subscriber>>,
     network: Arc<NodeNetwork>,
 
+    initial_sync_before: i32,
     init_mc_block_id: ton_block::BlockIdExt,
     last_known_mc_block_seqno: AtomicU32,
     last_known_key_block_seqno: AtomicU32,
@@ -74,6 +75,7 @@ impl Engine {
         global_config: GlobalConfig,
         subscribers: Vec<Arc<dyn Subscriber>>,
     ) -> Result<Arc<Self>> {
+        let initial_sync_before = config.initial_sync_before;
         let shard_state_cache_enabled = config.shard_state_cache_enabled;
         let db = Db::new(&config.rocks_db_path, &config.file_db_path).await?;
 
@@ -93,6 +95,7 @@ impl Engine {
             db,
             subscribers,
             network,
+            initial_sync_before,
             init_mc_block_id,
             last_known_mc_block_seqno: AtomicU32::new(0),
             last_known_key_block_seqno: AtomicU32::new(0),

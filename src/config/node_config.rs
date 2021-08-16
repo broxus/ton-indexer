@@ -15,6 +15,9 @@ pub struct NodeConfig {
 
     #[serde(default)]
     pub shard_state_cache_enabled: bool,
+
+    #[serde(default = "initial_sync_before")]
+    pub initial_sync_before: i32,
 }
 
 impl TryFrom<NodeConfig> for tiny_adnl::AdnlNodeConfig {
@@ -30,6 +33,10 @@ impl TryFrom<NodeConfig> for tiny_adnl::AdnlNodeConfig {
                 .collect::<Result<Vec<_>>>()?,
         )
     }
+}
+
+fn initial_sync_before() -> i32 {
+    300
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
