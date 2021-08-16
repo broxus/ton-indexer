@@ -12,16 +12,9 @@ pub struct NodeConfig {
     pub keys: Vec<AdnlNodeKey>,
     pub rocks_db_path: PathBuf,
     pub file_db_path: PathBuf,
-}
 
-impl NodeConfig {
-    pub fn rocks_db_path(&self) -> &PathBuf {
-        &self.rocks_db_path
-    }
-
-    pub fn file_db_path(&self) -> &PathBuf {
-        &self.file_db_path
-    }
+    #[serde(default)]
+    pub shard_state_cache_enabled: bool,
 }
 
 impl TryFrom<NodeConfig> for tiny_adnl::AdnlNodeConfig {

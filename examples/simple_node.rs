@@ -122,6 +122,7 @@ impl Config {
             keys: Vec::new(),
             rocks_db_path: PathBuf::new().join("db/rocksdb"),
             file_db_path: PathBuf::new().join("db/file"),
+            shard_state_cache_enabled: false,
         };
 
         Ok(Self {

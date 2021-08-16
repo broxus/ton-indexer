@@ -59,6 +59,7 @@ pub struct Engine {
     last_known_mc_block_seqno: AtomicU32,
     last_known_key_block_seqno: AtomicU32,
 
+    shard_state_cache_enabled: bool,
     shard_states_cache: ShardStateCache,
 
     shard_states_operations: OperationsPool<ton_block::BlockIdExt, Arc<ShardStateStuff>>,
@@ -73,7 +74,8 @@ impl Engine {
         global_config: GlobalConfig,
         subscribers: Vec<Arc<dyn Subscriber>>,
     ) -> Result<Arc<Self>> {
-        let db = Db::new(config.rocks_db_path(), config.file_db_path()).await?;
+        let shard_state_cache_enabled = config.shard_state_cache_enabled;
+        let db = Db::new(&config.rocks_db_path, &config.file_db_path).await?;
 
         let zero_state_id = global_config.zero_state.clone();
 
@@ -94,6 +96,7 @@ impl Engine {
             init_mc_block_id,
             last_known_mc_block_seqno: AtomicU32::new(0),
             last_known_key_block_seqno: AtomicU32::new(0),
+            shard_state_cache_enabled,
             shard_states_cache: ShardStateCache::new(120),
             shard_states_operations: OperationsPool::new("shard_states_operations"),
             block_applying_operations: OperationsPool::new("block_applying_operations"),
@@ -511,14 +514,20 @@ impl Engine {
         &self,
         block_id: &ton_block::BlockIdExt,
     ) -> Result<Arc<ShardStateStuff>> {
-        if let Some(state) = self.shard_states_cache.get(block_id) {
-            Ok(state)
-        } else {
-            let state = Arc::new(self.db.load_shard_state(block_id).await?);
+        if self.shard_state_cache_enabled {
+            if let Some(state) = self.shard_states_cache.get(block_id) {
+                return Ok(state);
+            }
+        }
+
+        let state = Arc::new(self.db.load_shard_state(block_id).await?);
+
+        if self.shard_state_cache_enabled {
             self.shard_states_cache
                 .set(block_id, |_| Some(state.clone()));
-            Ok(state)
         }
+
+        Ok(state)
     }
 
     async fn store_state(
@@ -526,9 +535,11 @@ impl Engine {
         handle: &Arc<BlockHandle>,
         state: &Arc<ShardStateStuff>,
     ) -> Result<()> {
-        self.shard_states_cache.set(handle.id(), |existing| {
-            existing.is_none().then(|| state.clone())
-        });
+        if self.shard_state_cache_enabled {
+            self.shard_states_cache.set(handle.id(), |existing| {
+                existing.is_none().then(|| state.clone())
+            });
+        }
 
         self.db.store_shard_state(handle, state.as_ref()).await?;
 
