@@ -8,6 +8,7 @@ use ton_api::ton;
 
 use crate::storage::*;
 use crate::utils::*;
+use rocksdb::perf::MemoryUsageStats;
 
 pub struct Db {
     block_handle_storage: BlockHandleStorage,
@@ -105,6 +106,13 @@ impl Db {
             next2_block_db: Tree::new(db.clone())?,
             _db: db,
         }))
+    }
+
+    pub fn get_memory_usage_stats(&self) -> Result<MemoryUsageStats> {
+        Ok(rocksdb::perf::get_memory_usage_stats(
+            Some(&[&self._db]),
+            None,
+        )?)
     }
 
     pub fn create_or_load_block_handle(

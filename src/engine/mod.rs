@@ -14,6 +14,7 @@ use self::complex_operations::*;
 use self::db::*;
 use self::downloader::*;
 use self::node_state::*;
+pub use rocksdb::perf::MemoryUsageStats;
 
 pub mod complex_operations;
 mod db;
@@ -187,6 +188,10 @@ impl Engine {
 
         // Engine started
         Ok(())
+    }
+
+    pub fn get_memory_usage_stats(&self) -> Result<MemoryUsageStats> {
+        self.db.get_memory_usage_stats()
     }
 
     pub async fn broadcast_external_message(

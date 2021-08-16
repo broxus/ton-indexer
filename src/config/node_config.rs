@@ -6,6 +6,8 @@ use anyhow::Result;
 use nekoton_utils::*;
 use serde::{Deserialize, Serialize};
 
+const MAX_DB_MEMTABLES_SIZE: usize = 256 * 1024 * 1024;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NodeConfig {
     pub ip_address: SocketAddrV4,
@@ -18,6 +20,12 @@ pub struct NodeConfig {
 
     #[serde(default = "initial_sync_before")]
     pub initial_sync_before: i32,
+    #[serde(default = "default_memtable_size")]
+    pub max_db_memtables_size: usize,
+}
+
+const fn default_memtable_size() -> usize {
+    MAX_DB_MEMTABLES_SIZE
 }
 
 impl TryFrom<NodeConfig> for tiny_adnl::AdnlNodeConfig {

@@ -2,7 +2,6 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use rocksdb::perf::MemoryUsageStats;
 use rocksdb::{BoundColumnFamily, DBPinnableSlice, Options, ReadOptions, WriteOptions, DB};
 
 pub trait Column {
@@ -143,13 +142,5 @@ where
 
     pub fn get_cf(&self) -> Result<Arc<BoundColumnFamily>> {
         self.db.cf_handle(T::NAME).context("No cf")
-    }
-
-    #[allow(unused)]
-    pub fn get_memory_usage_stats(&self) -> Result<MemoryUsageStats> {
-        Ok(rocksdb::perf::get_memory_usage_stats(
-            Some(&[&self.db]),
-            None,
-        )?)
     }
 }
