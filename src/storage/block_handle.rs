@@ -78,6 +78,7 @@ impl Drop for BlockHandle {
         let mut res = std::fs::OpenOptions::new()
             .create(true)
             .write(true)
+            .append(true)
             .open("drop_stats")
             .unwrap();
         res.write_all(
