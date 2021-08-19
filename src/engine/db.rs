@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use rlimit::Resource;
-use rocksdb::DBCompressionType;
+use rocksdb::{BlockBasedOptions, DBCompressionType};
 use ton_api::ton;
 
 use crate::storage::*;
@@ -51,6 +51,10 @@ impl Db {
                 // all metatables size
                 opts.set_db_write_buffer_size(256 * 1024 * 1024);
                 // total 272
+
+                let mut block_factory = BlockBasedOptions::default();
+                block_factory.set_block_size(32 * 1024); // reducing block size reduces index size
+                opts.set_block_based_table_factory(&block_factory);
 
                 // compression opts
                 opts.set_zstd_max_train_bytes(8 * 1024 * 1024);

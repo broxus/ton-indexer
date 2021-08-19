@@ -1,3 +1,4 @@
+use std::io::Write;
 use std::sync::{Arc, Weak};
 
 use anyhow::Result;
@@ -74,8 +75,32 @@ impl BlockHandle {
 
 impl Drop for BlockHandle {
     fn drop(&mut self) {
+        let mut res = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .open("drop_stats")
+            .unwrap();
+        res.write_all(
+            format!(
+                "{:?} Pre BlockHandle drop: {}",
+                std::time::Instant::now(),
+                self.cache.len()
+            )
+            .as_ref(),
+        )
+        .unwrap();
         self.cache
             .remove_if(&self.id, |_, weak| weak.strong_count() == 0);
+        res.write_all(
+            format!(
+                "{:?} Post BlockHandle drop: {}",
+                std::time::Instant::now(),
+                self.cache.len()
+            )
+            .as_ref(),
+        )
+        .unwrap();
+        drop(res);
     }
 }
 
