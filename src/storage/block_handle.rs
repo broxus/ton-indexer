@@ -82,8 +82,8 @@ impl Drop for BlockHandle {
             .unwrap();
         res.write_all(
             format!(
-                "{:?} Pre BlockHandle drop: {}",
-                std::time::Instant::now(),
+                "{} Pre BlockHandle drop: {}\n",
+                chrono::Utc::now().to_rfc3339(),
                 self.cache.len()
             )
             .as_ref(),
@@ -93,13 +93,14 @@ impl Drop for BlockHandle {
             .remove_if(&self.id, |_, weak| weak.strong_count() == 0);
         res.write_all(
             format!(
-                "{:?} Post BlockHandle drop: {}",
-                std::time::Instant::now(),
+                "{} Post BlockHandle drop: {}\n",
+                chrono::Utc::now().to_rfc3339(),
                 self.cache.len()
             )
             .as_ref(),
         )
         .unwrap();
+        res.flush();
         drop(res);
     }
 }

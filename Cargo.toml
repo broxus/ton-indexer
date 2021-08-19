@@ -40,6 +40,7 @@ ton_block = { git = "https://github.com/broxus/ton-labs-block.git" }
 ton_types = { git = "https://github.com/broxus/ton-labs-types.git" }
 
 nekoton-utils = { git = "https://github.com/broxus/nekoton.git" }
+chrono = "0.4.19"
 
 [dev-dependencies]
 clap = "3.0.0-beta.2"
