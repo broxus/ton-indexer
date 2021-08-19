@@ -54,6 +54,7 @@ impl Db {
 
                 let mut block_factory = BlockBasedOptions::default();
                 block_factory.set_block_size(32 * 1024); // reducing block size reduces index size
+                block_factory.disable_cache(); // very bad decision, but we are testing
                 opts.set_block_based_table_factory(&block_factory);
 
                 // compression opts
