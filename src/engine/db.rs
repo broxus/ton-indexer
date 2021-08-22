@@ -16,6 +16,7 @@ pub struct Db {
     node_state_storage: NodeStateStorage,
     archive_manager: ArchiveManager,
     block_index_db: BlockIndexDb,
+    background_sync_meta_store: BackgroundSyncMetaStore,
 
     prev1_block_db: Tree<columns::Prev1>,
     prev2_block_db: Tree<columns::Prev2>,
@@ -86,6 +87,7 @@ impl Db {
             .column::<columns::Next1>()
             .column::<columns::Next2>()
             .column::<columns::ArchiveManagerDb>()
+            .column::<columns::BackgroundSyncMeta>()
             .build()?;
 
         let block_handle_storage = BlockHandleStorage::with_db(Tree::new(db.clone())?);
@@ -98,13 +100,14 @@ impl Db {
         let node_state_storage = NodeStateStorage::with_db(Tree::new(db.clone())?);
         let archive_manager = ArchiveManager::with_db(Tree::new(db.clone())?);
         let block_index_db = BlockIndexDb::with_db(Tree::new(db.clone())?, Tree::new(db.clone())?);
-
+        let background_sync_meta = BackgroundSyncMetaStore::new(Tree::new(db.clone())?);
         Ok(Arc::new(Self {
             block_handle_storage,
             shard_state_storage,
             node_state_storage,
             archive_manager,
             block_index_db,
+            background_sync_meta_store: background_sync_meta,
             prev1_block_db: Tree::new(db.clone())?,
             prev2_block_db: Tree::new(db.clone())?,
             next1_block_db: Tree::new(db.clone())?,
@@ -457,6 +460,10 @@ impl Db {
             self.block_handle_storage.store_handle(handle)?;
         }
         Ok(())
+    }
+
+    pub fn background_sync_store(&self) -> &BackgroundSyncMetaStore {
+        &self.background_sync_meta_store
     }
 }
 

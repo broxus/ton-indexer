@@ -14,9 +14,11 @@ pub use self::node_state_storage::*;
 pub use self::package_entry_id::*;
 pub use self::shard_state_storage::*;
 pub use self::tree::*;
+pub use background_sync_meta::BackgroundSyncMetaStore;
 
 mod archive_manager;
 mod archive_package;
+mod background_sync_meta;
 mod block_handle;
 mod block_handle_storage;
 mod block_index_db;
@@ -95,6 +97,12 @@ pub mod columns {
     pub struct Next2;
     impl Column for Next2 {
         const NAME: &'static str = "next2";
+    }
+
+    pub struct BackgroundSyncMeta;
+
+    impl Column for BackgroundSyncMeta {
+        const NAME: &'static str = "background_sync_meta";
     }
 }
 

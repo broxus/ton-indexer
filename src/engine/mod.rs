@@ -862,6 +862,10 @@ impl Engine {
             downloader,
         })
     }
+
+    pub fn get_db(&self) -> &Db {
+        &self.db
+    }
 }
 
 #[derive(thiserror::Error, Debug)]

@@ -311,7 +311,7 @@ async fn apply(
     Ok(())
 }
 
-async fn import_package(
+pub(super) async fn import_package(
     engine: &Arc<Engine>,
     maps: Arc<BlockMaps>,
     last_mc_block_id: &ton_block::BlockIdExt,
@@ -438,7 +438,7 @@ async fn import_shard_blocks(engine: &Arc<Engine>, maps: Arc<BlockMaps>) -> Resu
     Ok(())
 }
 
-async fn save_block(
+pub async fn save_block(
     engine: &Arc<Engine>,
     block_id: &ton_block::BlockIdExt,
     block: &BlockStuff,
@@ -453,7 +453,7 @@ async fn save_block(
     Ok(handle)
 }
 
-fn parse_archive(data: Vec<u8>) -> Result<Arc<BlockMaps>> {
+pub(super) fn parse_archive(data: Vec<u8>) -> Result<Arc<BlockMaps>> {
     let mut reader = ArchivePackageViewReader::new(&data)?;
 
     let mut maps = BlockMaps::default();
@@ -506,19 +506,19 @@ fn parse_archive(data: Vec<u8>) -> Result<Arc<BlockMaps>> {
 }
 
 #[derive(Default)]
-struct BlockMaps {
-    mc_block_ids: BTreeMap<u32, ton_block::BlockIdExt>,
-    blocks: BTreeMap<ton_block::BlockIdExt, BlocksEntry>,
+pub(super) struct BlockMaps {
+    pub(super) mc_block_ids: BTreeMap<u32, ton_block::BlockIdExt>,
+    pub(super) blocks: BTreeMap<ton_block::BlockIdExt, BlocksEntry>,
 }
 
 #[derive(Default)]
-struct BlocksEntry {
-    block: Option<BlockStuff>,
-    proof: Option<BlockProofStuff>,
+pub(super) struct BlocksEntry {
+    pub(super) block: Option<BlockStuff>,
+    pub(super) proof: Option<BlockProofStuff>,
 }
 
 impl BlocksEntry {
-    fn get_data(&self) -> Result<(&BlockStuff, &BlockProofStuff)> {
+    pub(super) fn get_data(&self) -> Result<(&BlockStuff, &BlockProofStuff)> {
         let block = match &self.block {
             Some(block) => block,
             None => return Err(SyncError::BlockNotFound.into()),

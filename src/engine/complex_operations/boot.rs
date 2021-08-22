@@ -10,6 +10,7 @@ use crate::engine::Engine;
 use crate::storage::*;
 use crate::utils::*;
 
+#[derive(Debug, Clone)]
 pub struct BootData {
     pub last_mc_block_id: ton_block::BlockIdExt,
     pub shards_client_mc_block_id: ton_block::BlockIdExt,
@@ -40,11 +41,15 @@ pub async fn boot(engine: &Arc<Engine>) -> Result<BootData> {
             last_mc_block_id.clone()
         }
     };
-
-    Ok(BootData {
+    let boot_data = BootData {
         last_mc_block_id,
         shards_client_mc_block_id,
-    })
+    };
+    tokio::spawn(super::background_sync::sync(
+        engine.clone(),
+        boot_data.clone(),
+    ));
+    Ok(boot_data)
 }
 
 async fn cold_boot(engine: &Arc<Engine>) -> Result<ton_block::BlockIdExt> {
