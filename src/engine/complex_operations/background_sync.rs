@@ -97,6 +97,7 @@ pub async fn sync(engine: Arc<Engine>, boot_data: BlockIdExt) -> Result<()> {
 }
 
 async fn download_archive(engine: &Engine, peers: &Arc<ActivePeers>, id: u32) -> Result<Vec<u8>> {
+    log::info!("Downloading archive for {}", id);
     let arch = engine
         .download_archive(id, peers)
         .await
