@@ -34,7 +34,8 @@ pub async fn sync(engine: Arc<Engine>, boot_data: BlockIdExt) -> Result<()> {
                     .id()
                     .clone();
                 let low = get_key_block_from_regular(&engine, &high, &account_id)
-                    .await?
+                    .await
+                    .context("Failed getting keyblock from regular")?
                     .id()
                     .clone();
                 (low, high)
@@ -52,7 +53,8 @@ pub async fn sync(engine: Arc<Engine>, boot_data: BlockIdExt) -> Result<()> {
             high_id = low_id;
             high = low.clone();
             low = get_key_block_from_regular(&engine, &low, &account_id)
-                .await?
+                .await
+                .context("Failed getting keyblock from regular")?
                 .id()
                 .clone();
             store.commit_low_key_block(&low)?;
