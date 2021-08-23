@@ -64,12 +64,19 @@ pub async fn sync(engine: Arc<Engine>, boot_data: BlockIdExt) -> Result<()> {
         log::info!("Background sync: Parsing archive for block {}", low_id);
 
         let maps = parse_archive(data)?;
-        let last_id = *maps
+        let last_id = maps
             .mc_block_ids
             .iter()
-            .map(|x| x.0)
+            .map(|x| x.1.seq_no)
             .last()
             .context("Empty package")?;
+        let first_id = maps
+            .mc_block_ids
+            .iter()
+            .map(|x| x.1.seq_no)
+            .next()
+            .context("Empty package")?;
+        log::warn!("First: {}. Last: {}", first_id, last_id);
         for (id, entry) in &maps.blocks {
             let (block, proof) = entry.get_data()?;
             save_block(&engine, id, block, proof)
@@ -83,6 +90,7 @@ pub async fn sync(engine: Arc<Engine>, boot_data: BlockIdExt) -> Result<()> {
         );
         store.commit_seq_no(last_id)?;
         low_id = last_id;
+        log::info!("Background sync: committed {:?}", low_id);
     }
 }
 
