@@ -3,22 +3,19 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use ton_block::{AccountIdPrefixFull, BlockIdExt};
 
-use crate::engine::complex_operations::{parse_archive, save_block, BootData};
+use crate::engine::complex_operations::{parse_archive, save_block};
 use crate::storage::BlockHandle;
 use crate::utils::ActivePeers;
 use crate::Engine;
 
-pub async fn sync(engine: Arc<Engine>, boot_data: BootData) -> Result<()> {
-    log::info!(
-        "Starting background sync from {}",
-        boot_data.last_mc_block_id.seq_no
-    );
+pub async fn sync(engine: Arc<Engine>, boot_data: BlockIdExt) -> Result<()> {
+    log::info!("Starting background sync from {}", boot_data.seq_no);
     let store = engine.get_db().background_sync_store();
 
     // checking if we have already started sync process
     let (mut low, mut high, account_id) = {
         let handle = engine
-            .load_block_handle(&boot_data.last_mc_block_id)?
+            .load_block_handle(&boot_data)?
             .context("No handle for loaded block")?;
         let data = engine.load_block_data(&handle).await?.block().read_info()?;
         let prefix = data.shard().shard_prefix_with_tag();
@@ -32,7 +29,7 @@ pub async fn sync(engine: Arc<Engine>, boot_data: BootData) -> Result<()> {
             Err(e) => {
                 log::warn!("No committed blocks: {:?}", e);
                 let high = engine
-                    .load_block_handle(&boot_data.last_mc_block_id)?
+                    .load_block_handle(&boot_data)?
                     .context("No handle for already downloaded block")?
                     .id()
                     .clone();

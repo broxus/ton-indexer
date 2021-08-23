@@ -158,9 +158,16 @@ impl Engine {
         if !self.check_sync().await? {
             sync(self).await?;
         }
-
         log::info!("Synced!");
-
+        tokio::spawn({
+            let engine = self.clone();
+            let boot_data = last_mc_block_id.clone();
+            async move {
+                if let Err(e) = complex_operations::background_sync::sync(engine, boot_data).await {
+                    log::error!("Background sync fail: {:?}", e);
+                }
+            }
+        });
         self.notify_subscribers_with_status(EngineStatus::Synced)
             .await;
 

@@ -45,15 +45,6 @@ pub async fn boot(engine: &Arc<Engine>) -> Result<BootData> {
         last_mc_block_id,
         shards_client_mc_block_id,
     };
-    tokio::spawn({
-        let engine = engine.clone();
-        let boot_data = boot_data.clone();
-        async move {
-            if let Err(e) = super::background_sync::sync(engine, boot_data).await {
-                log::error!("Background sync fail: {:?}", e);
-            }
-        }
-    });
     Ok(boot_data)
 }
 
