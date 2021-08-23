@@ -71,14 +71,9 @@ pub async fn sync(engine: Arc<Engine>, boot_data: BlockIdExt) -> Result<()> {
             .iter()
             .map(|x| x.1.seq_no)
             .last()
-            .context("Empty package")?;
-        let first_id = maps
-            .mc_block_ids
-            .iter()
-            .map(|x| x.1.seq_no)
-            .next()
-            .context("Empty package")?;
-        log::warn!("First: {}. Last: {}", first_id, last_id);
+            .context("Empty package")?
+            + 1;
+
         for (id, entry) in &maps.blocks {
             let (block, proof) = entry.get_data()?;
             save_block(&engine, id, block, proof)
