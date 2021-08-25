@@ -163,7 +163,7 @@ impl Engine {
             let engine = self.clone();
             let boot_data = last_mc_block_id.clone();
             async move {
-                if let Err(e) = complex_operations::background_sync::sync(engine, boot_data).await {
+                if let Err(e) = crate::engine::background_sync(engine, boot_data).await {
                     log::error!("Background sync fail: {:?}", e);
                 }
             }
