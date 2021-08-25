@@ -537,62 +537,41 @@ pub async fn background_sync(engine: Arc<Engine>, boot_data: BlockIdExt) -> Resu
     let store = engine.get_db().background_sync_store();
 
     // checking if we have already started sync process
-    let (mut low, mut high, account_id) = {
-        let handle = engine
-            .load_block_handle(&boot_data)?
-            .context("No handle for loaded block")?;
-        let data = engine.load_block_data(&handle).await?.block().read_info()?;
-        let prefix = data.shard().shard_prefix_with_tag();
-        let account_id = AccountIdPrefixFull {
-            workchain_id: -1,
-            prefix,
-        };
-
-        let (low, high) = match store.get_committed_blocks() {
-            Ok((low, high)) => (low, high),
-            Err(e) => {
-                log::warn!("No committed blocks: {:?}", e);
-                let high = engine
-                    .load_block_handle(&boot_data)?
-                    .context("No handle for already downloaded block")?
-                    .id()
-                    .clone();
-                let low = get_key_block_from_regular(&engine, &high, &account_id)
-                    .await
-                    .context("Failed getting keyblock from regular")?
-                    .id()
-                    .clone();
-                (low, high)
-            }
-        };
-
-        (low, high, account_id)
+    let (low, high) = match store.get_committed_blocks() {
+        Ok((low, high)) => (low, high),
+        Err(e) => {
+            log::warn!("No committed blocks: {:?}", e);
+            let handle = engine
+                .load_block_handle(&boot_data)?
+                .context("No handle for loaded block")?;
+            let data = engine.load_block_data(&handle).await?.block().read_info()?;
+            let prefix = data.shard().shard_prefix_with_tag();
+            let account_id = AccountIdPrefixFull {
+                workchain_id: -1,
+                prefix,
+            };
+            let high = engine
+                .load_block_handle(&boot_data)?
+                .context("No handle for already downloaded block")?
+                .id()
+                .clone();
+            let low = engine
+                .find_block_by_seq_no(&account_id, engine.initial_sync_before as u32)?
+                .id()
+                .clone();
+            (low, high)
+        }
     };
 
-    let mut low_id = low.seq_no;
-    let mut high_id = high.seq_no;
+    let low_id = low.seq_no;
+    let high_id = high.seq_no;
 
-    // Downloading all archives from low key block to high key block
-    // Than moving window by one key block left
-    // while low key block != 0
-    loop {
-        log::info!(
-            "Started downloading archives from {} to {}",
-            low_id,
-            high_id
-        );
-        download_archives(&engine, low_id, high_id).await?;
-        high_id = low_id;
-        high = low.clone();
-        low = get_key_block_from_regular(&engine, &low, &account_id)
-            .await
-            .context("Failed getting keyblock from regular")?
-            .id()
-            .clone();
-        store.commit_low_key_block(&low)?;
-        store.commit_high_key_block(&high)?;
-        low_id = low.seq_no;
-    }
+    log::info!(
+        "Started downloading archives from {} to {}",
+        low_id,
+        high_id
+    );
+    download_archives(&engine, low_id, high_id).await
 }
 
 async fn download_archives(engine: &Arc<Engine>, low_id: u32, high_id: u32) -> Result<()> {
@@ -600,17 +579,24 @@ async fn download_archives(engine: &Arc<Engine>, low_id: u32, high_id: u32) -> R
         let maps = parse_archive(archive)?;
         for (id, entry) in &maps.blocks {
             let (block, proof) = entry.get_data()?;
-            save_block(engine, id, block, proof)
-                .await
-                .context("Failed saving block")?;
+            // if doesn't have block - save it
+            if engine.load_block_handle(block.id())?.is_none() {
+                save_block(engine, id, block, proof)
+                    .await
+                    .context("Failed saving block")?;
+            }
         }
         let max_id = maps
             .mc_block_ids
             .iter()
-            .map(|x| x.1.seq_no)
+            .map(|x| x.1)
             .max()
             .context("No blocks")?;
-        Ok(max_id > high_id)
+        engine
+            .db
+            .background_sync_store()
+            .commit_low_key_block(max_id)?;
+        Ok(max_id.seq_no > high_id)
     }
 
     let active_peers = Arc::new(ActivePeers::default());
@@ -619,7 +605,6 @@ async fn download_archives(engine: &Arc<Engine>, low_id: u32, high_id: u32) -> R
     let mut concurrency = 1;
     let next_mc_seq_no = low_id + 1;
 
-    //saving blocks
     'outer: loop {
         start_downloads(
             engine,
@@ -725,21 +710,6 @@ async fn download_archives(engine: &Arc<Engine>, low_id: u32, high_id: u32) -> R
         }
     }
     Ok(())
-}
-
-async fn get_key_block_from_regular(
-    engine: &Engine,
-    block: &BlockIdExt,
-    id: &AccountIdPrefixFull,
-) -> Result<Arc<BlockHandle>> {
-    let handle = engine
-        .load_block_handle(block)?
-        .context("No handle for loaded block")?;
-    let data = engine.load_block_data(&handle).await?.block().read_info()?;
-    let pre_seqno = data.prev_key_block_seqno();
-
-    let key_block = engine.find_block_by_seq_no(id, pre_seqno)?;
-    Ok(key_block)
 }
 
 type ArchiveResponse = (u32, Result<Option<Vec<u8>>>);
