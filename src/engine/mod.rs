@@ -426,9 +426,17 @@ impl Engine {
         utime: u32,
         block_prefix: &AccountIdPrefixFull,
     ) -> Result<Arc<BlockHandle>> {
+        let total = self
+            .db
+            .key_block_iter()
+            .context("Failed creating keyblock iterator")?
+            .into_iter()
+            .count();
+        log::info!("Total keyblocks: {}", total);
         let block = self
             .db
-            .key_block_iter()?
+            .key_block_iter()
+            .context("Failed creating keyblock iterator")?
             .into_iter()
             .find(|(_, meta)| meta.gen_utime() < utime)
             .context("Key block not found")?;

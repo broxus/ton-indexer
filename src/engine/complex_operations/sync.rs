@@ -533,7 +533,9 @@ impl BlocksEntry {
 }
 
 pub async fn background_sync(engine: Arc<Engine>, boot_data: BlockIdExt) -> Result<()> {
-    log::info!("Starting background sync from {}", boot_data.seq_no);
+    if engine.initial_sync_before == 0 {
+        return Ok(());
+    }
     let store = engine.get_db().background_sync_store();
 
     // checking if we have already started sync process
@@ -565,7 +567,7 @@ pub async fn background_sync(engine: Arc<Engine>, boot_data: BlockIdExt) -> Resu
         }
     };
 
-    log::info!("Started downloading archives from {} to {}", low, high);
+    log::info!("Started background sync from {} to {}", low, high);
     download_archives(&engine, low, high)
         .await
         .context("Failed downloading archives")
