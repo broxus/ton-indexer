@@ -51,7 +51,7 @@ pub async fn boot(engine: &Arc<Engine>) -> Result<BootData> {
 async fn cold_boot(engine: &Arc<Engine>) -> Result<ton_block::BlockIdExt> {
     let boot_data = prepare_cold_boot_data(engine).await?;
     let key_blocks = get_key_blocks(engine, boot_data).await?;
-    let last_key_block = choose_key_block(key_blocks, engine.initial_sync_before)?;
+    let last_key_block = choose_key_block(key_blocks, 300)?;
 
     let block_id = last_key_block.id();
     download_start_blocks_and_states(engine, block_id).await?;
