@@ -48,7 +48,7 @@ impl BlockHandleStorage {
     pub fn key_block_iter(&self) -> Result<impl Iterator<Item = (UInt256, BlockMeta)> + '_> {
         use rocksdb::IteratorMode;
         let db = self.db.raw_db_handle();
-        let iterator = db.iterator(IteratorMode::End);
+        let iterator = db.iterator_cf(&self.db.get_cf()?, IteratorMode::End);
         let iter = iterator
             .into_iter()
             .filter_map(|(k, v)| {

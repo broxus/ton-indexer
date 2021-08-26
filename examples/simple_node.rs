@@ -123,7 +123,7 @@ impl Config {
             rocks_db_path: PathBuf::new().join("db/rocksdb"),
             file_db_path: PathBuf::new().join("db/file"),
             shard_state_cache_enabled: false,
-            initial_sync_before: 0,
+            initial_sync_before: 300,
             max_db_memtables_size: 256 * 1024 * 1024,
         };
 
