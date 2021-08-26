@@ -432,8 +432,10 @@ impl Engine {
             .into_iter()
             .find(|(_, meta)| meta.gen_utime() < utime)
             .context("Key block not found")?;
+        log::info!("Keyblock utime: {}", block.1.gen_utime());
         self.db
             .find_block_by_utime(block_prefix, block.1.gen_utime())
+            .context("Haven't found keyblock by utime")
     }
 
     #[allow(unused)]
