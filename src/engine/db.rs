@@ -9,6 +9,7 @@ use ton_api::ton;
 use crate::storage::*;
 use crate::utils::*;
 use rocksdb::perf::MemoryUsageStats;
+use ton_types::UInt256;
 
 pub struct Db {
     block_handle_storage: BlockHandleStorage,
@@ -464,6 +465,10 @@ impl Db {
 
     pub fn background_sync_store(&self) -> &BackgroundSyncMetaStore {
         &self.background_sync_meta_store
+    }
+
+    pub fn key_block_iter(&self) -> Result<impl Iterator<Item = (UInt256, BlockMeta)> + '_> {
+        self.block_handle_storage.key_block_iter()
     }
 }
 

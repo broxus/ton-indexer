@@ -1,7 +1,7 @@
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use tiny_adnl::utils::*;
 use ton_api::ton;
 
@@ -15,6 +15,7 @@ use self::db::*;
 use self::downloader::*;
 use self::node_state::*;
 pub use rocksdb::perf::MemoryUsageStats;
+use ton_block::AccountIdPrefixFull;
 
 pub mod complex_operations;
 mod db;
@@ -418,6 +419,21 @@ impl Engine {
         utime: u32,
     ) -> Result<Arc<BlockHandle>> {
         self.db.find_block_by_utime(account_prefix, utime)
+    }
+
+    fn find_keyblock_before_utime(
+        &self,
+        utime: u32,
+        block_prefix: &AccountIdPrefixFull,
+    ) -> Result<Arc<BlockHandle>> {
+        let block = self
+            .db
+            .key_block_iter()?
+            .into_iter()
+            .find(|(_, meta)| meta.gen_utime() < utime)
+            .context("Key block not found")?;
+        self.db
+            .find_block_by_utime(block_prefix, block.1.gen_utime())
     }
 
     #[allow(unused)]

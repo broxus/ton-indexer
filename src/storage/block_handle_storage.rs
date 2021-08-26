@@ -2,11 +2,13 @@ use std::sync::{Arc, Weak};
 
 use anyhow::Result;
 use tiny_adnl::utils::*;
+use ton_types::UInt256;
+
+use crate::storage::{columns, StoredValue};
 
 use super::block_handle::*;
 use super::block_meta::*;
 use super::tree::*;
-use crate::storage::{columns, StoredValue};
 
 pub struct BlockHandleStorage {
     cache: Arc<FxDashMap<ton_block::BlockIdExt, Weak<BlockHandle>>>,
@@ -41,6 +43,27 @@ impl BlockHandleStorage {
                 break None;
             }
         })
+    }
+
+    pub fn key_block_iter(&self) -> Result<impl Iterator<Item = (UInt256, BlockMeta)> + '_> {
+        use rocksdb::IteratorMode;
+        let db = self.db.raw_db_handle();
+        let iterator = db.iterator(IteratorMode::End);
+        let iter = iterator
+            .into_iter()
+            .filter_map(|(k, v)| {
+                let key = if k.len() == 32 {
+                    UInt256::from_slice(&k)
+                } else {
+                    return None;
+                };
+                match BlockMeta::from_slice(&v) {
+                    Ok(a) => Some((key, a)),
+                    Err(_) => None,
+                }
+            })
+            .filter(|(_, v)| v.is_key_block());
+        Ok(iter)
     }
 
     pub fn store_handle(&self, handle: &Arc<BlockHandle>) -> Result<()> {

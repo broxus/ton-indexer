@@ -538,7 +538,7 @@ pub async fn background_sync(engine: Arc<Engine>, boot_data: BlockIdExt) -> Resu
 
     // checking if we have already started sync process
     let (low, high) = match store.get_committed_blocks() {
-        Ok((low, high)) => (low, high),
+        Ok((low, high)) => (low.seq_no, high.seq_no),
         Err(e) => {
             log::warn!("No committed blocks: {:?}", e);
             let handle = engine
@@ -554,24 +554,21 @@ pub async fn background_sync(engine: Arc<Engine>, boot_data: BlockIdExt) -> Resu
                 .load_block_handle(&boot_data)?
                 .context("No handle for already downloaded block")?
                 .id()
-                .clone();
+                .seq_no;
             let low = engine
-                .find_block_by_seq_no(&account_id, engine.initial_sync_before as u32)?
-                .id()
-                .clone();
-            (low, high)
+                .find_keyblock_before_utime(
+                    (tiny_adnl::utils::now() - engine.initial_sync_before) as u32,
+                    &account_id,
+                )
+                .context("No keyblock found")?;
+            (low.id().seq_no, high)
         }
     };
 
-    let low_id = low.seq_no;
-    let high_id = high.seq_no;
-
-    log::info!(
-        "Started downloading archives from {} to {}",
-        low_id,
-        high_id
-    );
-    download_archives(&engine, low_id, high_id).await
+    log::info!("Started downloading archives from {} to {}", low, high);
+    download_archives(&engine, low, high)
+        .await
+        .context("Failed downloading archives")
 }
 
 async fn download_archives(engine: &Arc<Engine>, low_id: u32, high_id: u32) -> Result<()> {
