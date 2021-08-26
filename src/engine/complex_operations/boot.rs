@@ -9,6 +9,7 @@ use crate::engine::node_state::*;
 use crate::engine::Engine;
 use crate::storage::*;
 use crate::utils::*;
+const INTITAL_SYNC_TIME_SECONDS: i32 = 300;
 
 #[derive(Debug, Clone)]
 pub struct BootData {
@@ -51,7 +52,7 @@ pub async fn boot(engine: &Arc<Engine>) -> Result<BootData> {
 async fn cold_boot(engine: &Arc<Engine>) -> Result<ton_block::BlockIdExt> {
     let boot_data = prepare_cold_boot_data(engine).await?;
     let key_blocks = get_key_blocks(engine, boot_data).await?;
-    let last_key_block = choose_key_block(key_blocks, 300)?;
+    let last_key_block = choose_key_block(key_blocks, INTITAL_SYNC_TIME_SECONDS)?;
 
     let block_id = last_key_block.id();
     download_start_blocks_and_states(engine, block_id).await?;
@@ -201,7 +202,7 @@ async fn get_key_blocks(
             current_utime
         );
 
-        if last_utime + engine.initial_sync_before > current_utime
+        if last_utime + INTITAL_SYNC_TIME_SECONDS > current_utime
             || last_utime + 2 * KEY_BLOCK_UTIME_STEP > current_utime
         {
             return Ok(result);

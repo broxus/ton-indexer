@@ -533,6 +533,10 @@ impl BlocksEntry {
 }
 
 pub async fn background_sync(engine: Arc<Engine>, boot_data: BlockIdExt) -> Result<()> {
+    if engine.background_sync_before == 0 {
+        log::warn!("Background sync is 0");
+        return Ok(());
+    }
     let store = engine.get_db().background_sync_store();
 
     // checking if we have already started sync process
@@ -554,8 +558,8 @@ pub async fn background_sync(engine: Arc<Engine>, boot_data: BlockIdExt) -> Resu
                 .context("No handle for already downloaded block")?
                 .id()
                 .seq_no;
-            log::info!("Initial sync: {} seconds", engine.initial_sync_before);
-            let utime = (tiny_adnl::utils::now() - engine.initial_sync_before) as u32;
+            log::info!("Initial sync: {} seconds", engine.background_sync_before);
+            let utime = tiny_adnl::utils::now() as u32 - engine.background_sync_before;
             log::info!("Syncing from keyblock with utime before {}", utime);
             let low = engine
                 .find_keyblock_before_utime(utime, &account_id)

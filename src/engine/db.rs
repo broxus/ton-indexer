@@ -3,15 +3,17 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use rlimit::Resource;
-use rocksdb::{BlockBasedOptions, DBCompressionType};
+use rocksdb::perf::MemoryUsageStats;
+use rocksdb::{BlockBasedOptions, Cache, DBCompressionType};
 use ton_api::ton;
+use ton_types::UInt256;
 
 use crate::storage::*;
 use crate::utils::*;
-use rocksdb::perf::MemoryUsageStats;
-use ton_types::UInt256;
 
 pub struct Db {
+    block_cache: Cache,
+    uncompressed_block_cache: Cache,
     block_handle_storage: BlockHandleStorage,
     shard_state_storage: ShardStateStorage,
     node_state_storage: NodeStateStorage,
@@ -27,7 +29,11 @@ pub struct Db {
 }
 
 impl Db {
-    pub async fn new<PS, PF>(sled_db_path: PS, file_db_path: PF) -> Result<Arc<Self>>
+    pub async fn new<PS, PF>(
+        sled_db_path: PS,
+        file_db_path: PF,
+        mut mem_limit: usize,
+    ) -> Result<Arc<Self>>
     where
         PS: AsRef<Path>,
         PF: AsRef<Path>,
@@ -40,6 +46,21 @@ impl Db {
                 x
             }
         };
+
+        let total_blocks_cache_size = (mem_limit / 3) * 2;
+        mem_limit -= total_blocks_cache_size;
+        let block_cache = Cache::new_lru_cache(total_blocks_cache_size / 2)?;
+        mem_limit /= 2;
+        let uncompressed_block_cache = Cache::new_lru_cache(total_blocks_cache_size / 2)?;
+
+        let mut block_factory = BlockBasedOptions::default();
+        block_factory.set_block_cache(&block_cache);
+        block_factory.set_block_cache_compressed(&uncompressed_block_cache);
+        block_factory.set_cache_index_and_filter_blocks(true);
+        block_factory.set_pin_l0_filter_and_index_blocks_in_cache(true);
+        block_factory.set_pin_top_level_index_and_filter(true);
+        block_factory.set_block_size(32 * 1024); // reducing block size reduces index size
+
         let db = DbBuilder::new(sled_db_path)
             .options(|opts| {
                 // Memory consuming options
@@ -51,22 +72,20 @@ impl Db {
                 opts.set_compaction_readahead_size(1024 * 1024 * 8);
                 // 256
                 // all metatables size
-                opts.set_db_write_buffer_size(256 * 1024 * 1024);
+                opts.set_db_write_buffer_size(mem_limit);
                 // total 272
 
-                let mut block_factory = BlockBasedOptions::default();
-                block_factory.set_block_size(32 * 1024); // reducing block size reduces index size
-                block_factory.disable_cache(); // very bad decision, but we are testing
                 opts.set_block_based_table_factory(&block_factory);
 
                 // compression opts
-                opts.set_zstd_max_train_bytes(8 * 1024 * 1024);
+                opts.set_zstd_max_train_bytes(32 * 1024 * 1024);
                 opts.set_compression_type(DBCompressionType::Lz4);
                 // io
                 opts.set_use_direct_io_for_flush_and_compaction(true);
                 opts.set_recycle_log_file_num(32);
                 opts.set_use_direct_reads(true);
                 opts.set_max_open_files(limit as i32);
+
                 // cf
                 opts.create_if_missing(true);
                 opts.create_missing_column_families(true);
@@ -103,6 +122,8 @@ impl Db {
         let block_index_db = BlockIndexDb::with_db(Tree::new(db.clone())?, Tree::new(db.clone())?);
         let background_sync_meta = BackgroundSyncMetaStore::new(Tree::new(db.clone())?);
         Ok(Arc::new(Self {
+            block_cache,
+            uncompressed_block_cache,
             block_handle_storage,
             shard_state_storage,
             node_state_storage,
@@ -120,7 +141,7 @@ impl Db {
     pub fn get_memory_usage_stats(&self) -> Result<MemoryUsageStats> {
         Ok(rocksdb::perf::get_memory_usage_stats(
             Some(&[&self._db]),
-            None,
+            Some(&[&self.block_cache, &self.uncompressed_block_cache]),
         )?)
     }
 
