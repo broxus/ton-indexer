@@ -555,11 +555,10 @@ pub async fn background_sync(engine: Arc<Engine>, boot_data: BlockIdExt) -> Resu
                 .context("No handle for already downloaded block")?
                 .id()
                 .seq_no;
+            let utime = (tiny_adnl::utils::now() - engine.initial_sync_before) as u32;
+            log::info!("Syncing from keyblock with utime before {}", utime);
             let low = engine
-                .find_keyblock_before_utime(
-                    (tiny_adnl::utils::now() - engine.initial_sync_before) as u32,
-                    &account_id,
-                )
+                .find_keyblock_before_utime(utime, &account_id)
                 .context("No keyblock found")?;
             (low.id().seq_no, high)
         }
