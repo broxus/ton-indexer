@@ -20,7 +20,7 @@ pub async fn sync(engine: &Arc<Engine>) -> Result<()> {
     let mut response_collector = ResponseCollector::new();
     let mut concurrency = 1;
 
-    'outer: while !engine.check_sync().await? {
+    'outer: while !engine.is_synced().await? {
         let last_mc_block_id = {
             let mc_block_id = engine.load_last_applied_mc_block_id().await?;
             let sc_block_id = engine.load_shards_client_mc_block_id().await?;
@@ -78,7 +78,7 @@ pub async fn sync(engine: &Arc<Engine>) -> Result<()> {
         );
 
         // Process queue
-        while !engine.check_sync().await? {
+        while !engine.is_synced().await? {
             start_downloads(
                 engine,
                 &mut queue,
@@ -218,7 +218,7 @@ async fn retry_downloading_not_found_archives(
                 }
             }
         }
-        None if !engine.check_sync().await? => {
+        None if !engine.is_synced().await? => {
             let mut earliest = None;
             for (seq_no, status) in queue.iter_mut() {
                 match status {
@@ -571,7 +571,9 @@ pub async fn background_sync(engine: Arc<Engine>, boot_data: BlockIdExt) -> Resu
     log::info!("Started background sync from {} to {}", low, high);
     download_archives(&engine, low, high)
         .await
-        .context("Failed downloading archives")
+        .context("Failed downloading archives")?;
+    log::info!("Background sync finished");
+    Ok(())
 }
 
 async fn download_archives(engine: &Arc<Engine>, low_id: u32, high_id: u32) -> Result<()> {
@@ -579,7 +581,7 @@ async fn download_archives(engine: &Arc<Engine>, low_id: u32, high_id: u32) -> R
         let maps = parse_archive(archive)?;
         for (id, entry) in &maps.blocks {
             let (block, proof) = entry.get_data()?;
-            // if doesn't have block - save it
+            // if don't have block - save it
             if engine.load_block_handle(block.id())?.is_none() {
                 save_block(engine, id, block, proof)
                     .await
@@ -607,6 +609,7 @@ async fn download_archives(engine: &Arc<Engine>, low_id: u32, high_id: u32) -> R
     let next_mc_seq_no = low_id + 1;
 
     'outer: loop {
+        // save blocks
         start_downloads(
             engine,
             &mut queue,
@@ -616,47 +619,82 @@ async fn download_archives(engine: &Arc<Engine>, low_id: u32, high_id: u32) -> R
             next_mc_seq_no,
         )
         .await?;
-        match queue.iter().position(|(seq_no, status)| matches!(status, ArchiveStatus::Downloaded(_) if *seq_no <= next_mc_seq_no)) {
-                Some(downloaded_item) => {
+        if let Some(downloaded_item)= queue.iter().position(|(seq_no, status)| matches!(status, ArchiveStatus::Downloaded(_) if *seq_no <= next_mc_seq_no)) {
+
                     let (_, data) = match queue.remove(downloaded_item) {
                         (seq_no, ArchiveStatus::Downloaded(data)) => (seq_no, data),
                         _ => unreachable!()
                     };
-                   if  save_archive(engine,data, high_id).await?{
-                       return Ok(())
-                   }
+                    if save_archive(engine, data, high_id).await.context("Failed saving archive")? {
+                        return Ok(())
+                    }
                     continue 'outer;
                 }
-                None => break,
-            }
-    }
 
-    // Process queue
-    loop {
-        start_downloads(
-            engine,
-            &mut queue,
-            &active_peers,
-            &mut response_collector,
-            concurrency,
-            next_mc_seq_no,
-        )
-        .await?;
+        // Process queue
+        loop {
+            start_downloads(
+                engine,
+                &mut queue,
+                &active_peers,
+                &mut response_collector,
+                concurrency,
+                next_mc_seq_no,
+            )
+            .await?;
 
-        match response_collector.wait(false).await.flatten() {
-            Some((seq_no, Ok(data))) => {
-                let queue_index = match queue.iter().position(|(queue_seq_no, status)| matches!(status, ArchiveStatus::Downloading if *queue_seq_no == seq_no)) {
-                        Some(index) => index,
+            match response_collector.wait(false).await.flatten() {
+                Some((seq_no, Ok(data))) => {
+                    let queue_index = match queue.iter().position(|(queue_seq_no, status)| matches!(status, ArchiveStatus::Downloading if *queue_seq_no == seq_no)) {
+                    Some(index) => index,
+                    None => {
+                        return Err(SyncError::BrokenQueue.into())
+                    }
+                };
+
+                    let data = match data {
+                        Some(data) => data,
                         None => {
-                            return Err(SyncError::BrokenQueue.into())
+                            let (_, status) = &mut queue[queue_index];
+                            *status = ArchiveStatus::NotFound;
+                            retry_downloading_not_found_archives(
+                                engine,
+                                &mut queue,
+                                &active_peers,
+                                &mut response_collector,
+                            )
+                            .await?;
+                            continue;
                         }
                     };
 
-                let data = match data {
-                    Some(data) => data,
-                    None => {
+                    if seq_no <= high_id + 1 {
+                        match save_archive(engine, data, high_id).await {
+                            Ok(finished) => {
+                                queue.remove(queue_index);
+                                if finished {
+                                    return Ok(());
+                                }
+                                concurrency = MAX_CONCURRENCY;
+                                break;
+                            }
+                            Err(e) => {
+                                log::error!(
+                                "Background sync: failed to save downloaded archive for block {}: {:?}",
+                                seq_no,
+                                e
+                            );
+                                start_download(
+                                    engine,
+                                    &active_peers,
+                                    &mut response_collector,
+                                    seq_no,
+                                );
+                            }
+                        }
+                    } else {
                         let (_, status) = &mut queue[queue_index];
-                        *status = ArchiveStatus::NotFound;
+                        *status = ArchiveStatus::Downloaded(data);
                         retry_downloading_not_found_archives(
                             engine,
                             &mut queue,
@@ -664,53 +702,20 @@ async fn download_archives(engine: &Arc<Engine>, low_id: u32, high_id: u32) -> R
                             &mut response_collector,
                         )
                         .await?;
-                        continue;
                     }
-                };
-
-                if seq_no <= high_id + 1 {
-                    match save_archive(engine, data, high_id).await {
-                        Ok(finished) => {
-                            queue.remove(queue_index);
-                            concurrency = MAX_CONCURRENCY;
-                            if finished {
-                                return Ok(());
-                            }
-                            break;
-                        }
-                        Err(e) => {
-                            log::error!(
-                                "Background sync: failed to save downloaded archive for block {}: {:?}",
-                                seq_no,
-                                e
-                            );
-                            start_download(engine, &active_peers, &mut response_collector, seq_no);
-                        }
-                    }
-                } else {
-                    let (_, status) = &mut queue[queue_index];
-                    *status = ArchiveStatus::Downloaded(data);
-                    retry_downloading_not_found_archives(
-                        engine,
-                        &mut queue,
-                        &active_peers,
-                        &mut response_collector,
-                    )
-                    .await?;
                 }
+                Some((seq_no, Err(e))) => {
+                    log::error!(
+                        "Background sync: Failed to download archive for block {}: {:?}",
+                        seq_no,
+                        e
+                    );
+                    start_download(engine, &active_peers, &mut response_collector, seq_no);
+                }
+                _ => return Err(SyncError::BrokenQueue.into()),
             }
-            Some((seq_no, Err(e))) => {
-                log::error!(
-                    "Background sync: Failed to download archive for block {}: {:?}",
-                    seq_no,
-                    e
-                );
-                start_download(engine, &active_peers, &mut response_collector, seq_no);
-            }
-            _ => return Err(SyncError::BrokenQueue.into()),
         }
     }
-    Ok(())
 }
 
 type ArchiveResponse = (u32, Result<Option<Vec<u8>>>);

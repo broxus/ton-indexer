@@ -160,7 +160,7 @@ impl Engine {
         .await?;
 
         // Synchronize
-        if !self.check_sync().await? {
+        if !self.is_synced().await? {
             sync(self).await?;
         }
         log::info!("Synced!");
@@ -643,7 +643,7 @@ impl Engine {
         Ok(handle)
     }
 
-    async fn check_sync(&self) -> Result<bool> {
+    async fn is_synced(&self) -> Result<bool> {
         let shards_client_mc_block_id = self.load_shards_client_mc_block_id().await?;
         let last_applied_mc_block_id = self.load_last_applied_mc_block_id().await?;
         if shards_client_mc_block_id.seq_no + MAX_BLOCK_APPLIER_DEPTH
