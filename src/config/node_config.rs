@@ -25,7 +25,7 @@ pub struct NodeConfig {
 //third of all memory as suggested in docs
 fn default_memtable_size() -> usize {
     let sys = sysinfo::System::new_all();
-    let total = sys.total_memory();
+    let total = sys.total_memory() * 1024;
     (total / 3) as usize
 }
 

@@ -47,10 +47,9 @@ impl Db {
             }
         };
 
-        let total_blocks_cache_size = (mem_limit / 3) * 2;
+        let total_blocks_cache_size = (mem_limit * 2) / 3;
         mem_limit -= total_blocks_cache_size;
         let block_cache = Cache::new_lru_cache(total_blocks_cache_size / 2)?;
-        mem_limit /= 2;
         let uncompressed_block_cache = Cache::new_lru_cache(total_blocks_cache_size / 2)?;
 
         let mut block_factory = BlockBasedOptions::default();
