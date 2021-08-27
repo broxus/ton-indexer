@@ -312,7 +312,7 @@ async fn apply(
     Ok(())
 }
 
-pub(super) async fn import_package(
+async fn import_package(
     engine: &Arc<Engine>,
     maps: Arc<BlockMaps>,
     last_mc_block_id: &ton_block::BlockIdExt,
@@ -596,6 +596,7 @@ async fn download_archives(engine: &Arc<Engine>, low_id: u32, high_id: u32) -> R
             .db
             .background_sync_store()
             .commit_low_key_block(max_id)?;
+        log::info!("Background sync: Saved archive {}", max_id.seq_no);
         Ok(max_id.seq_no > high_id)
     }
 
