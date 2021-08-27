@@ -229,16 +229,9 @@ impl NodeNetwork {
             .dht
             .find_overlay_nodes(overlay_id, external_iter)
             .await?;
-        log::trace!("Found overlay nodes ({}):", nodes.len());
+        log::trace!("Found overlay nodes ({})", nodes.len());
 
-        let mut result = Vec::new();
-        for (ip, node) in nodes.into_iter() {
-            if let Some(peer) = self.overlay.add_public_peer(overlay_id, ip, &node)? {
-                log::trace!("Node id: {}, address: {}", peer, ip);
-                result.push(peer);
-            }
-        }
-        Ok(result)
+        tokio::task::block_in_place(|| self.overlay.add_public_peers(overlay_id, nodes))
     }
 }
 
@@ -323,14 +316,14 @@ async fn process_overlay_peers(
             }
         };
 
-        overlay.add_public_peer(overlay_id, ip, &peer)?;
-        neighbours.add_overlay_peer(peer_id);
-
         log::trace!(
             "add_overlay_peers: add overlay peer {:?}, address: {}",
             peer,
             ip
         );
+
+        overlay.add_public_peer(overlay_id, ip, peer)?;
+        neighbours.add_overlay_peer(peer_id);
     }
 
     Ok(())

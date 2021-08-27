@@ -51,5 +51,5 @@ serde_yaml = "0.8"
 tokio = { version = "1.6", features = ["sync", "fs", "rt-multi-thread", "macros"] }
 
 [features]
-default = []
+default = ["asm"]
 asm = ["sha2/asm", "ed25519-dalek/asm", "ton_types/asm", "ton_block/asm", "tiny-adnl/asm"]
