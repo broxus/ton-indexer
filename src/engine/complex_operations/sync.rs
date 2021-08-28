@@ -9,6 +9,7 @@ use ton_block::{AccountIdPrefixFull, BlockIdExt};
 use crate::engine::Engine;
 use crate::storage::*;
 use crate::utils::*;
+use std::fmt::{Debug, Formatter};
 
 const MAX_CONCURRENCY: usize = 8;
 
@@ -285,6 +286,22 @@ enum ArchiveStatus {
     Downloading,
     NotFound,
     Downloaded(Vec<u8>),
+}
+
+impl Debug for ArchiveStatus {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ArchiveStatus::Downloading => {
+                writeln!(f, "Downloading")
+            }
+            ArchiveStatus::NotFound => {
+                writeln!(f, "NotFound")
+            }
+            ArchiveStatus::Downloaded(a) => {
+                writeln!(f, "Downloaded {} bytes", a.len())
+            }
+        }
+    }
 }
 
 async fn apply(
@@ -666,6 +683,7 @@ async fn download_archives(engine: &Arc<Engine>, low_id: u32, high_id: u32) -> R
 
             match response_collector.wait(false).await.flatten() {
                 Some((seq_no, Ok(data))) => {
+                    log::info!("Background sync: downloaded {}", seq_no);
                     let data = match data {
                         Some(data) => data,
                         None => {
@@ -728,7 +746,10 @@ async fn download_archives(engine: &Arc<Engine>, low_id: u32, high_id: u32) -> R
                     );
                     start_download(engine, &active_peers, &mut response_collector, seq_no);
                 }
-                _ => return Err(SyncError::BrokenQueue.into()),
+                _ => {
+                    log::error!("Background queue: {:?}", queue.0);
+                    return Err(SyncError::BrokenQueue.into());
+                }
             }
         }
     }
