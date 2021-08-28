@@ -233,7 +233,7 @@ impl NodeNetwork {
 
         let mut result = Vec::new();
         for (ip, node) in nodes.into_iter() {
-            if let Some(peer) = self.overlay.add_public_peer(overlay_id, ip, &node)? {
+            if let Some(peer) = self.overlay.add_public_peer(overlay_id, ip, node)? {
                 log::trace!("Node id: {}, address: {}", peer, ip);
                 result.push(peer);
             }
@@ -323,14 +323,13 @@ async fn process_overlay_peers(
             }
         };
 
-        overlay.add_public_peer(overlay_id, ip, &peer)?;
-        neighbours.add_overlay_peer(peer_id);
-
         log::trace!(
             "add_overlay_peers: add overlay peer {:?}, address: {}",
             peer,
             ip
         );
+        overlay.add_public_peer(overlay_id, ip, peer)?;
+        neighbours.add_overlay_peer(peer_id);
     }
 
     Ok(())
