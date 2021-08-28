@@ -671,7 +671,7 @@ async fn download_archives(engine: &Arc<Engine>, low_id: u32, high_id: u32) -> R
                         None => {
                             queue
                                 .set_status(seq_no, ArchiveStatus::NotFound)
-                                .context("Broken queue")?;
+                                .context("Broken queue while not found")?;
                             retry_downloading_not_found_archives(
                                 engine,
                                 &mut queue,
@@ -710,7 +710,7 @@ async fn download_archives(engine: &Arc<Engine>, low_id: u32, high_id: u32) -> R
                     } else {
                         queue
                             .set_status(seq_no, ArchiveStatus::Downloaded(data))
-                            .context("Broken queue")?;
+                            .context("Broken queue while downloaded")?;
                         retry_downloading_not_found_archives(
                             engine,
                             &mut queue,
