@@ -5,8 +5,7 @@ use std::path::PathBuf;
 use anyhow::Result;
 use nekoton_utils::*;
 use serde::{Deserialize, Serialize};
-
-const MAX_DB_MEMTABLES_SIZE: usize = 256 * 1024 * 1024;
+use sysinfo::SystemExt;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NodeConfig {
@@ -17,15 +16,31 @@ pub struct NodeConfig {
 
     #[serde(default)]
     pub shard_state_cache_enabled: bool,
-
-    #[serde(default = "initial_sync_before")]
-    pub initial_sync_before: i32,
+    #[serde(default)]
+    pub old_blocks_policy: OldBlocksPolicy,
     #[serde(default = "default_memtable_size")]
-    pub max_db_memtables_size: usize,
+    pub max_db_memory_usage: usize,
 }
 
-const fn default_memtable_size() -> usize {
-    MAX_DB_MEMTABLES_SIZE
+#[derive(Debug, Copy, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", content = "background_sync_before")]
+pub enum OldBlocksPolicy {
+    Ignore,
+    WaitSyncBefore(u32),
+    ParallelSyncBefore(u32),
+}
+
+impl Default for OldBlocksPolicy {
+    fn default() -> Self {
+        Self::Ignore
+    }
+}
+
+//third of all memory as suggested in docs
+fn default_memtable_size() -> usize {
+    let sys = sysinfo::System::new_all();
+    let total = sys.total_memory() * 1024;
+    (total / 3) as usize
 }
 
 impl TryFrom<NodeConfig> for tiny_adnl::AdnlNodeConfig {
@@ -41,10 +56,6 @@ impl TryFrom<NodeConfig> for tiny_adnl::AdnlNodeConfig {
                 .collect::<Result<Vec<_>>>()?,
         )
     }
-}
-
-fn initial_sync_before() -> i32 {
-    300
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

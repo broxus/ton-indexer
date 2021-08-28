@@ -6,6 +6,7 @@ use ton_types::ByteOrderRead;
 
 pub use self::archive_manager::*;
 pub use self::archive_package::*;
+pub use self::background_sync_meta::*;
 pub use self::block_handle::*;
 pub use self::block_handle_storage::*;
 pub use self::block_index_db::*;
@@ -17,6 +18,7 @@ pub use self::tree::*;
 
 mod archive_manager;
 mod archive_package;
+mod background_sync_meta;
 mod block_handle;
 mod block_handle_storage;
 mod block_index_db;
@@ -95,6 +97,12 @@ pub mod columns {
     pub struct Next2;
     impl Column for Next2 {
         const NAME: &'static str = "next2";
+    }
+
+    pub struct BackgroundSyncMeta;
+
+    impl Column for BackgroundSyncMeta {
+        const NAME: &'static str = "background_sync_meta";
     }
 }
 

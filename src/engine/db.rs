@@ -1,21 +1,26 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use rlimit::Resource;
-use rocksdb::{BlockBasedOptions, DBCompressionType};
+use rocksdb::perf::MemoryUsageStats;
+use rocksdb::{BlockBasedOptions, Cache, DBCompressionType};
 use ton_api::ton;
+use ton_types::UInt256;
 
 use crate::storage::*;
 use crate::utils::*;
-use rocksdb::perf::MemoryUsageStats;
+use ton_block::AccountIdPrefixFull;
 
 pub struct Db {
+    block_cache: Cache,
+    uncompressed_block_cache: Cache,
     block_handle_storage: BlockHandleStorage,
     shard_state_storage: ShardStateStorage,
     node_state_storage: NodeStateStorage,
     archive_manager: ArchiveManager,
     block_index_db: BlockIndexDb,
+    background_sync_meta_store: BackgroundSyncMetaStore,
 
     prev1_block_db: Tree<columns::Prev1>,
     prev2_block_db: Tree<columns::Prev2>,
@@ -24,8 +29,20 @@ pub struct Db {
     _db: Arc<rocksdb::DB>,
 }
 
+pub struct RocksdbStats {
+    pub whole_db_stats: MemoryUsageStats,
+    pub uncompressed_block_cache_usage: usize,
+    pub uncompressed_block_cache_pined_usage: usize,
+    pub compressed_block_cache_usage: usize,
+    pub compressed_block_cache_pined_usage: usize,
+}
+
 impl Db {
-    pub async fn new<PS, PF>(sled_db_path: PS, file_db_path: PF) -> Result<Arc<Self>>
+    pub async fn new<PS, PF>(
+        sled_db_path: PS,
+        file_db_path: PF,
+        mut mem_limit: usize,
+    ) -> Result<Arc<Self>>
     where
         PS: AsRef<Path>,
         PF: AsRef<Path>,
@@ -38,6 +55,20 @@ impl Db {
                 x
             }
         };
+
+        let total_blocks_cache_size = (mem_limit * 2) / 3;
+        mem_limit -= total_blocks_cache_size;
+        let block_cache = Cache::new_lru_cache(total_blocks_cache_size / 2)?;
+        let uncompressed_block_cache = Cache::new_lru_cache(total_blocks_cache_size / 2)?;
+
+        let mut block_factory = BlockBasedOptions::default();
+        block_factory.set_block_cache(&block_cache);
+        block_factory.set_block_cache_compressed(&uncompressed_block_cache);
+        block_factory.set_cache_index_and_filter_blocks(true);
+        block_factory.set_pin_l0_filter_and_index_blocks_in_cache(true);
+        block_factory.set_pin_top_level_index_and_filter(true);
+        block_factory.set_block_size(32 * 1024); // reducing block size reduces index size
+
         let db = DbBuilder::new(sled_db_path)
             .options(|opts| {
                 // Memory consuming options
@@ -49,21 +80,20 @@ impl Db {
                 opts.set_compaction_readahead_size(1024 * 1024 * 8);
                 // 256
                 // all metatables size
-                opts.set_db_write_buffer_size(256 * 1024 * 1024);
+                opts.set_db_write_buffer_size(mem_limit);
                 // total 272
 
-                let mut block_factory = BlockBasedOptions::default();
-                block_factory.set_block_size(32 * 1024); // reducing block size reduces index size
                 opts.set_block_based_table_factory(&block_factory);
 
                 // compression opts
-                opts.set_zstd_max_train_bytes(8 * 1024 * 1024);
+                opts.set_zstd_max_train_bytes(32 * 1024 * 1024);
                 opts.set_compression_type(DBCompressionType::Lz4);
                 // io
                 opts.set_use_direct_io_for_flush_and_compaction(true);
                 opts.set_recycle_log_file_num(32);
                 opts.set_use_direct_reads(true);
                 opts.set_max_open_files(limit as i32);
+
                 // cf
                 opts.create_if_missing(true);
                 opts.create_missing_column_families(true);
@@ -85,6 +115,7 @@ impl Db {
             .column::<columns::Next1>()
             .column::<columns::Next2>()
             .column::<columns::ArchiveManagerDb>()
+            .column::<columns::BackgroundSyncMeta>()
             .build()?;
 
         let block_handle_storage = BlockHandleStorage::with_db(Tree::new(db.clone())?);
@@ -97,13 +128,16 @@ impl Db {
         let node_state_storage = NodeStateStorage::with_db(Tree::new(db.clone())?);
         let archive_manager = ArchiveManager::with_db(Tree::new(db.clone())?);
         let block_index_db = BlockIndexDb::with_db(Tree::new(db.clone())?, Tree::new(db.clone())?);
-
+        let background_sync_meta = BackgroundSyncMetaStore::new(Tree::new(db.clone())?);
         Ok(Arc::new(Self {
+            block_cache,
+            uncompressed_block_cache,
             block_handle_storage,
             shard_state_storage,
             node_state_storage,
             archive_manager,
             block_index_db,
+            background_sync_meta_store: background_sync_meta,
             prev1_block_db: Tree::new(db.clone())?,
             prev2_block_db: Tree::new(db.clone())?,
             next1_block_db: Tree::new(db.clone())?,
@@ -112,11 +146,20 @@ impl Db {
         }))
     }
 
-    pub fn get_memory_usage_stats(&self) -> Result<MemoryUsageStats> {
-        Ok(rocksdb::perf::get_memory_usage_stats(
-            Some(&[&self._db]),
-            None,
-        )?)
+    pub fn get_memory_usage_stats(&self) -> Result<RocksdbStats> {
+        let whole_db_stats = rocksdb::perf::get_memory_usage_stats(Some(&[&self._db]), None)?;
+        let uncompressed_stats = self.uncompressed_block_cache.get_usage();
+        let uncompressed_pined_stats = self.uncompressed_block_cache.get_pinned_usage();
+        let compressed_stats = self.block_cache.get_usage();
+        let compressed_pined_stats = self.block_cache.get_pinned_usage();
+
+        Ok(RocksdbStats {
+            whole_db_stats,
+            uncompressed_block_cache_usage: uncompressed_stats,
+            uncompressed_block_cache_pined_usage: uncompressed_pined_stats,
+            compressed_block_cache_usage: compressed_stats,
+            compressed_block_cache_pined_usage: compressed_pined_stats,
+        })
     }
 
     pub fn create_or_load_block_handle(
@@ -386,6 +429,17 @@ impl Db {
         }
     }
 
+    pub fn find_keyblock_before_utime(&self, utime: u32) -> Result<Arc<BlockHandle>> {
+        let (.., block) = self
+            .key_block_iter()
+            .context("Failed creating keyblock iterator")?
+            .find(|(_, meta)| meta.gen_utime() <= utime)
+            .context("Key block not found")?;
+
+        self.find_block_by_utime(&MASTERCHAIN_ACCOUNT_PREFIX, block.gen_utime())
+            .context("Exact key block was not found")
+    }
+
     pub fn find_block_by_seq_no(
         &self,
         account_prefix: &ton_block::AccountIdPrefixFull,
@@ -457,6 +511,14 @@ impl Db {
         }
         Ok(())
     }
+
+    pub fn background_sync_store(&self) -> &BackgroundSyncMetaStore {
+        &self.background_sync_meta_store
+    }
+
+    pub fn key_block_iter(&self) -> Result<impl Iterator<Item = (UInt256, BlockMeta)> + '_> {
+        self.block_handle_storage.key_block_iter()
+    }
 }
 
 #[inline]
@@ -502,6 +564,11 @@ pub enum BlockConnection {
     Next1,
     Next2,
 }
+
+const MASTERCHAIN_ACCOUNT_PREFIX: AccountIdPrefixFull = AccountIdPrefixFull {
+    workchain_id: ton_block::MASTERCHAIN_ID,
+    prefix: ton_block::SHARD_FULL,
+};
 
 #[derive(thiserror::Error, Debug)]
 enum DbError {

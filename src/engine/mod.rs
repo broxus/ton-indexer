@@ -5,6 +5,8 @@ use anyhow::Result;
 use tiny_adnl::utils::*;
 use ton_api::ton;
 
+pub use rocksdb::perf::MemoryUsageStats;
+
 use crate::config::*;
 use crate::network::*;
 use crate::storage::*;
@@ -14,7 +16,6 @@ use self::complex_operations::*;
 use self::db::*;
 use self::downloader::*;
 use self::node_state::*;
-pub use rocksdb::perf::MemoryUsageStats;
 
 pub mod complex_operations;
 mod db;
@@ -55,8 +56,7 @@ pub struct Engine {
     db: Arc<Db>,
     subscribers: Vec<Arc<dyn Subscriber>>,
     network: Arc<NodeNetwork>,
-
-    initial_sync_before: i32,
+    old_blocks_policy: OldBlocksPolicy,
     init_mc_block_id: ton_block::BlockIdExt,
     last_known_mc_block_seqno: AtomicU32,
     last_known_key_block_seqno: AtomicU32,
@@ -76,9 +76,14 @@ impl Engine {
         global_config: GlobalConfig,
         subscribers: Vec<Arc<dyn Subscriber>>,
     ) -> Result<Arc<Self>> {
-        let initial_sync_before = config.initial_sync_before;
+        let old_blocks_policy = config.old_blocks_policy;
         let shard_state_cache_enabled = config.shard_state_cache_enabled;
-        let db = Db::new(&config.rocks_db_path, &config.file_db_path).await?;
+        let db = Db::new(
+            &config.rocks_db_path,
+            &config.file_db_path,
+            config.max_db_memory_usage,
+        )
+        .await?;
 
         let zero_state_id = global_config.zero_state.clone();
 
@@ -96,7 +101,7 @@ impl Engine {
             db,
             subscribers,
             network,
-            initial_sync_before,
+            old_blocks_policy,
             init_mc_block_id,
             last_known_mc_block_seqno: AtomicU32::new(0),
             last_known_key_block_seqno: AtomicU32::new(0),
@@ -155,11 +160,29 @@ impl Engine {
         .await?;
 
         // Synchronize
-        if !self.check_sync().await? {
+        if !self.is_synced().await? {
             sync(self).await?;
         }
-
         log::info!("Synced!");
+
+        match self.old_blocks_policy {
+            OldBlocksPolicy::Ignore => { /* do nothing */ }
+            OldBlocksPolicy::WaitSyncBefore(sync_before) => {
+                if let Err(e) = background_sync(self, last_mc_block_id.clone(), sync_before).await {
+                    log::error!("Background sync fail: {:?}", e);
+                }
+            }
+            OldBlocksPolicy::ParallelSyncBefore(sync_before) => {
+                let engine = self.clone();
+                let high_block = last_mc_block_id.clone();
+
+                tokio::spawn(async move {
+                    if let Err(e) = background_sync(&engine, high_block, sync_before).await {
+                        log::error!("Background sync fail: {:?}", e);
+                    }
+                });
+            }
+        }
 
         self.notify_subscribers_with_status(EngineStatus::Synced)
             .await;
@@ -190,7 +213,7 @@ impl Engine {
         Ok(())
     }
 
-    pub fn get_memory_usage_stats(&self) -> Result<MemoryUsageStats> {
+    pub fn get_memory_usage_stats(&self) -> Result<RocksdbStats> {
         self.db.get_memory_usage_stats()
     }
 
@@ -413,6 +436,10 @@ impl Engine {
         self.db.find_block_by_utime(account_prefix, utime)
     }
 
+    fn find_keyblock_before_utime(&self, utime: u32) -> Result<Arc<BlockHandle>> {
+        self.db.find_keyblock_before_utime(utime)
+    }
+
     #[allow(unused)]
     fn find_block_by_lt(
         &self,
@@ -606,7 +633,7 @@ impl Engine {
         Ok(handle)
     }
 
-    async fn check_sync(&self) -> Result<bool> {
+    async fn is_synced(&self) -> Result<bool> {
         let shards_client_mc_block_id = self.load_shards_client_mc_block_id().await?;
         let last_applied_mc_block_id = self.load_last_applied_mc_block_id().await?;
         if shards_client_mc_block_id.seq_no + MAX_BLOCK_APPLIER_DEPTH

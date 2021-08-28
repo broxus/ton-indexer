@@ -10,6 +10,7 @@ use crate::engine::Engine;
 use crate::storage::*;
 use crate::utils::*;
 
+#[derive(Debug, Clone)]
 pub struct BootData {
     pub last_mc_block_id: ton_block::BlockIdExt,
     pub shards_client_mc_block_id: ton_block::BlockIdExt,
@@ -40,17 +41,17 @@ pub async fn boot(engine: &Arc<Engine>) -> Result<BootData> {
             last_mc_block_id.clone()
         }
     };
-
-    Ok(BootData {
+    let boot_data = BootData {
         last_mc_block_id,
         shards_client_mc_block_id,
-    })
+    };
+    Ok(boot_data)
 }
 
 async fn cold_boot(engine: &Arc<Engine>) -> Result<ton_block::BlockIdExt> {
     let boot_data = prepare_cold_boot_data(engine).await?;
     let key_blocks = get_key_blocks(engine, boot_data).await?;
-    let last_key_block = choose_key_block(key_blocks, engine.initial_sync_before)?;
+    let last_key_block = choose_key_block(key_blocks)?;
 
     let block_id = last_key_block.id();
     download_start_blocks_and_states(engine, block_id).await?;
@@ -200,7 +201,7 @@ async fn get_key_blocks(
             current_utime
         );
 
-        if last_utime + engine.initial_sync_before > current_utime
+        if last_utime + INTITAL_SYNC_TIME_SECONDS > current_utime
             || last_utime + 2 * KEY_BLOCK_UTIME_STEP > current_utime
         {
             return Ok(result);
@@ -208,10 +209,7 @@ async fn get_key_blocks(
     }
 }
 
-fn choose_key_block(
-    mut key_blocks: Vec<Arc<BlockHandle>>,
-    initial_sync_before: i32,
-) -> Result<Arc<BlockHandle>> {
+fn choose_key_block(mut key_blocks: Vec<Arc<BlockHandle>>) -> Result<Arc<BlockHandle>> {
     while let Some(handle) = key_blocks.pop() {
         let handle_utime = handle.meta().gen_utime();
         let prev_utime = match key_blocks.last() {
@@ -226,7 +224,7 @@ fn choose_key_block(
             is_persistent
         );
 
-        if !is_persistent || handle_utime as i32 + initial_sync_before > now() {
+        if !is_persistent || handle_utime as i32 + INTITAL_SYNC_TIME_SECONDS > now() {
             log::info!("Ignoring state: too new");
             continue;
         }
@@ -459,6 +457,7 @@ fn persistent_state_ttl(utime: u32) -> u32 {
 }
 
 const KEY_BLOCK_UTIME_STEP: i32 = 86400;
+const INTITAL_SYNC_TIME_SECONDS: i32 = 300;
 
 #[derive(thiserror::Error, Debug)]
 enum BootError {
