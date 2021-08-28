@@ -187,6 +187,9 @@ impl Engine {
         self.notify_subscribers_with_status(EngineStatus::Synced)
             .await;
 
+        let last_mc_block_id = self.load_last_applied_mc_block_id().await?;
+        let shards_client_mc_block_id = self.load_shards_client_mc_block_id().await?;
+
         // Start walking through the blocks
         tokio::spawn({
             let engine = self.clone();
