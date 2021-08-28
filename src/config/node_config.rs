@@ -49,7 +49,7 @@ fn initial_sync_before() -> i32 {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AdnlNodeKey {
-    tag: usize,
+    pub tag: usize,
     #[serde(with = "serde_hex_array")]
-    key: [u8; 32],
+    pub key: [u8; 32],
 }
