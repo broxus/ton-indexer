@@ -1,5 +1,5 @@
 use std::borrow::Cow;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
@@ -16,7 +16,7 @@ pub async fn sync(engine: &Arc<Engine>) -> Result<()> {
     log::info!("Started sync");
 
     let active_peers = Arc::new(ActivePeers::default());
-    let mut queue: Vec<(u32, ArchiveStatus)> = Vec::with_capacity(MAX_CONCURRENCY);
+    let mut queue = Queue::new(MAX_CONCURRENCY);
     let mut response_collector = ResponseCollector::new();
     let mut concurrency = 1;
 
@@ -54,17 +54,16 @@ pub async fn sync(engine: &Arc<Engine>) -> Result<()> {
             )
             .await?;
 
-            match queue.iter().position(|(seq_no, status)| matches!(status, ArchiveStatus::Downloaded(_) if *seq_no <= next_mc_seq_no)) {
-                Some(downloaded_item) => {
-                    let (seq_no, data) = match queue.remove(downloaded_item) {
-                        (seq_no, ArchiveStatus::Downloaded(data)) => (seq_no, data),
-                        _ => unreachable!()
-                    };
-
+            match queue.finish_download(next_mc_seq_no) {
+                Some((seq_no, data)) => {
                     match apply(engine, &last_mc_block_id, seq_no, data).await {
                         Ok(()) => continue 'outer,
                         Err(e) => {
-                            log::error!("sync: Failed to apply queued archive for block {}: {:?}", seq_no, e);
+                            log::error!(
+                                "sync: Failed to apply queued archive for block {}: {:?}",
+                                seq_no,
+                                e
+                            );
                         }
                     }
                 }
@@ -91,18 +90,12 @@ pub async fn sync(engine: &Arc<Engine>) -> Result<()> {
 
             match response_collector.wait(false).await.flatten() {
                 Some((seq_no, Ok(data))) => {
-                    let queue_index = match queue.iter().position(|(queue_seq_no, status)| matches!(status, ArchiveStatus::Downloading if *queue_seq_no == seq_no)) {
-                        Some(index) => index,
-                        None => {
-                            return Err(SyncError::BrokenQueue.into())
-                        }
-                    };
-
                     let data = match data {
                         Some(data) => data,
                         None => {
-                            let (_, status) = &mut queue[queue_index];
-                            *status = ArchiveStatus::NotFound;
+                            queue
+                                .set_status(seq_no, ArchiveStatus::NotFound)
+                                .context("Broken queue")?;
                             retry_downloading_not_found_archives(
                                 engine,
                                 &mut queue,
@@ -117,7 +110,7 @@ pub async fn sync(engine: &Arc<Engine>) -> Result<()> {
                     if seq_no <= last_mc_block_id.seq_no + 1 {
                         match apply(engine, &last_mc_block_id, seq_no, data).await {
                             Ok(_) => {
-                                queue.remove(queue_index);
+                                queue.0.remove(&seq_no);
                                 concurrency = MAX_CONCURRENCY;
                                 break;
                             }
@@ -136,8 +129,9 @@ pub async fn sync(engine: &Arc<Engine>) -> Result<()> {
                             }
                         }
                     } else {
-                        let (_, status) = &mut queue[queue_index];
-                        *status = ArchiveStatus::Downloaded(data);
+                        queue
+                            .set_status(seq_no, ArchiveStatus::Downloaded(data))
+                            .context("Broken queue")?;
                         retry_downloading_not_found_archives(
                             engine,
                             &mut queue,
@@ -165,7 +159,7 @@ pub async fn sync(engine: &Arc<Engine>) -> Result<()> {
 
 async fn start_downloads(
     engine: &Arc<Engine>,
-    queue: &mut Vec<(u32, ArchiveStatus)>,
+    queue: &mut Queue,
     active_peers: &Arc<ActivePeers>,
     response_collector: &mut ResponseCollector<ArchiveResponse>,
     concurrency: usize,
@@ -174,12 +168,11 @@ async fn start_downloads(
     retry_downloading_not_found_archives(engine, queue, active_peers, response_collector).await?;
 
     while response_collector.count_pending() < concurrency {
-        if queue.len() > concurrency {
+        if queue.0.len() > concurrency {
             break;
         }
-
-        if queue.iter().all(|(seq_no, _)| *seq_no != mc_seq_no) {
-            queue.push((mc_seq_no, ArchiveStatus::Downloading));
+        if queue.0.get(&mc_seq_no).is_none() {
+            queue.0.insert(mc_seq_no, ArchiveStatus::Downloading);
             start_download(engine, active_peers, response_collector, mc_seq_no);
         }
 
@@ -191,12 +184,12 @@ async fn start_downloads(
 
 async fn retry_downloading_not_found_archives(
     engine: &Arc<Engine>,
-    queue: &mut Vec<(u32, ArchiveStatus)>,
+    queue: &mut Queue,
     active_peers: &Arc<ActivePeers>,
     response_collector: &mut ResponseCollector<ArchiveResponse>,
 ) -> Result<()> {
     let mut latest = None;
-    for (seq_no, status) in queue.iter() {
+    for (seq_no, status) in queue.0.iter() {
         if !matches!(status, ArchiveStatus::Downloaded(_))
             || matches!(latest, Some(latest) if latest >= *seq_no)
         {
@@ -207,7 +200,7 @@ async fn retry_downloading_not_found_archives(
 
     match latest {
         Some(latest) => {
-            for (seq_no, status) in queue.iter_mut() {
+            for (seq_no, status) in queue.0.iter_mut() {
                 if latest < *seq_no {
                     continue;
                 }
@@ -220,7 +213,7 @@ async fn retry_downloading_not_found_archives(
         }
         None if !engine.is_synced().await? => {
             let mut earliest = None;
-            for (seq_no, status) in queue.iter_mut() {
+            for (seq_no, status) in queue.0.iter_mut() {
                 match status {
                     ArchiveStatus::NotFound if matches!(earliest, Some(earliest) if earliest <= *seq_no) => {
                         continue
@@ -230,12 +223,12 @@ async fn retry_downloading_not_found_archives(
                 }
             }
 
-            let earliest = earliest
-                .and_then(|earliest| queue.iter_mut().find(|(seq_no, _)| *seq_no == earliest));
+            let earliest =
+                earliest.and_then(|earliest| queue.0.get_mut(&earliest).map(|x| (earliest, x)));
 
             if let Some((seq_no, status)) = earliest {
                 *status = ArchiveStatus::Downloading;
-                start_download(engine, active_peers, response_collector, *seq_no);
+                start_download(engine, active_peers, response_collector, seq_no);
             }
         }
         None => { /* do nothing */ }
@@ -576,6 +569,35 @@ pub async fn background_sync(engine: Arc<Engine>, boot_data: BlockIdExt) -> Resu
     Ok(())
 }
 
+struct Queue(HashMap<u32, ArchiveStatus>);
+
+impl Queue {
+    fn new(size: usize) -> Self {
+        Self {
+            0: HashMap::with_capacity(size),
+        }
+    }
+
+    fn set_status(&mut self, seq_no: u32, status: ArchiveStatus) -> Option<()> {
+        *self.0.get_mut(&seq_no)? = status;
+        Some(())
+    }
+
+    fn finish_download(&mut self, id: u32) -> Option<(u32, Vec<u8>)> {
+        let seq_no = self
+            .0
+            .iter()
+            .find(
+                |(seq_no, status)| matches!(status, ArchiveStatus::Downloaded(_) if **seq_no <= id),
+            )
+            .map(|a| *a.0)?;
+        match self.0.remove(&seq_no) {
+            Some(ArchiveStatus::Downloaded(a)) => Some((seq_no, a)),
+            _ => None,
+        }
+    }
+}
+
 async fn download_archives(engine: &Arc<Engine>, low_id: u32, high_id: u32) -> Result<()> {
     async fn save_archive(engine: &Arc<Engine>, archive: Vec<u8>, high_id: u32) -> Result<bool> {
         let maps = parse_archive(archive)?;
@@ -603,7 +625,7 @@ async fn download_archives(engine: &Arc<Engine>, low_id: u32, high_id: u32) -> R
     }
 
     let active_peers = Arc::new(ActivePeers::default());
-    let mut queue: Vec<(u32, ArchiveStatus)> = Vec::with_capacity(MAX_CONCURRENCY);
+    let mut queue = Queue::new(MAX_CONCURRENCY);
     let mut response_collector = ResponseCollector::new();
     let mut concurrency = 1;
     let next_mc_seq_no = low_id + 1;
@@ -619,17 +641,16 @@ async fn download_archives(engine: &Arc<Engine>, low_id: u32, high_id: u32) -> R
             next_mc_seq_no,
         )
         .await?;
-        if let Some(downloaded_item)= queue.iter().position(|(seq_no, status)| matches!(status, ArchiveStatus::Downloaded(_) if *seq_no <= next_mc_seq_no)) {
 
-                    let (_, data) = match queue.remove(downloaded_item) {
-                        (seq_no, ArchiveStatus::Downloaded(data)) => (seq_no, data),
-                        _ => unreachable!()
-                    };
-                    if save_archive(engine, data, high_id).await.context("Failed saving archive")? {
-                        return Ok(())
-                    }
-                    continue 'outer;
-                }
+        if let Some((_, data)) = queue.finish_download(next_mc_seq_no) {
+            if save_archive(engine, data, high_id)
+                .await
+                .context("Failed saving archive")?
+            {
+                return Ok(());
+            }
+            continue 'outer;
+        }
 
         // Process queue
         loop {
@@ -645,18 +666,12 @@ async fn download_archives(engine: &Arc<Engine>, low_id: u32, high_id: u32) -> R
 
             match response_collector.wait(false).await.flatten() {
                 Some((seq_no, Ok(data))) => {
-                    let queue_index = match queue.iter().position(|(queue_seq_no, status)| matches!(status, ArchiveStatus::Downloading if *queue_seq_no == seq_no)) {
-                    Some(index) => index,
-                    None => {
-                        return Err(SyncError::BrokenQueue.into())
-                    }
-                };
-
                     let data = match data {
                         Some(data) => data,
                         None => {
-                            let (_, status) = &mut queue[queue_index];
-                            *status = ArchiveStatus::NotFound;
+                            queue
+                                .set_status(seq_no, ArchiveStatus::NotFound)
+                                .context("Broken queue")?;
                             retry_downloading_not_found_archives(
                                 engine,
                                 &mut queue,
@@ -671,7 +686,7 @@ async fn download_archives(engine: &Arc<Engine>, low_id: u32, high_id: u32) -> R
                     if seq_no <= high_id + 1 {
                         match save_archive(engine, data, high_id).await {
                             Ok(finished) => {
-                                queue.remove(queue_index);
+                                queue.0.remove(&seq_no);
                                 if finished {
                                     return Ok(());
                                 }
@@ -693,8 +708,9 @@ async fn download_archives(engine: &Arc<Engine>, low_id: u32, high_id: u32) -> R
                             }
                         }
                     } else {
-                        let (_, status) = &mut queue[queue_index];
-                        *status = ArchiveStatus::Downloaded(data);
+                        queue
+                            .set_status(seq_no, ArchiveStatus::Downloaded(data))
+                            .context("Broken queue")?;
                         retry_downloading_not_found_archives(
                             engine,
                             &mut queue,

@@ -28,6 +28,14 @@ pub struct Db {
     _db: Arc<rocksdb::DB>,
 }
 
+pub struct RocksdbStats {
+    pub whole_db_stats: MemoryUsageStats,
+    pub uncompressed_block_cache_usage: usize,
+    pub uncompressed_block_cache_pined_usage: usize,
+    pub compressed_block_cache_usage: usize,
+    pub compressed_block_cache_pined_usage: usize,
+}
+
 impl Db {
     pub async fn new<PS, PF>(
         sled_db_path: PS,
@@ -137,11 +145,20 @@ impl Db {
         }))
     }
 
-    pub fn get_memory_usage_stats(&self) -> Result<MemoryUsageStats> {
-        Ok(rocksdb::perf::get_memory_usage_stats(
-            Some(&[&self._db]),
-            Some(&[&self.block_cache, &self.uncompressed_block_cache]),
-        )?)
+    pub fn get_memory_usage_stats(&self) -> Result<RocksdbStats> {
+        let whole_db_stats = rocksdb::perf::get_memory_usage_stats(Some(&[&self._db]), None)?;
+        let uncompressed_stats = self.uncompressed_block_cache.get_usage();
+        let uncompressed_pined_stats = self.uncompressed_block_cache.get_pinned_usage();
+        let compressed_stats = self.block_cache.get_usage();
+        let compressed_pined_stats = self.block_cache.get_pinned_usage();
+
+        Ok(RocksdbStats {
+            whole_db_stats,
+            uncompressed_block_cache_usage: uncompressed_stats,
+            uncompressed_block_cache_pined_usage: uncompressed_pined_stats,
+            compressed_block_cache_usage: compressed_stats,
+            compressed_block_cache_pined_usage: compressed_pined_stats,
+        })
     }
 
     pub fn create_or_load_block_handle(

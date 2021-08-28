@@ -202,7 +202,7 @@ impl Engine {
         Ok(())
     }
 
-    pub fn get_memory_usage_stats(&self) -> Result<MemoryUsageStats> {
+    pub fn get_memory_usage_stats(&self) -> Result<RocksdbStats> {
         self.db.get_memory_usage_stats()
     }
 
