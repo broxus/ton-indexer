@@ -26,8 +26,8 @@ pub struct NodeConfig {
 #[serde(tag = "type", content = "background_sync_before")]
 pub enum OldBlocksPolicy {
     Ignore,
-    WaitSyncBefore(u32),
-    ParallelSyncBefore(u32),
+    WaitSyncBeforeSeqno(u32),
+    ParallelSyncBeforeSeqno(u32),
 }
 
 impl Default for OldBlocksPolicy {

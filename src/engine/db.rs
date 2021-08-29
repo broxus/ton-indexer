@@ -1,16 +1,14 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use rlimit::Resource;
 use rocksdb::perf::MemoryUsageStats;
 use rocksdb::{BlockBasedOptions, Cache, DBCompressionType};
 use ton_api::ton;
-use ton_types::UInt256;
 
 use crate::storage::*;
 use crate::utils::*;
-use ton_block::AccountIdPrefixFull;
 
 pub struct Db {
     block_cache: Cache,
@@ -429,17 +427,6 @@ impl Db {
         }
     }
 
-    pub fn find_keyblock_before_utime(&self, utime: u32) -> Result<Arc<BlockHandle>> {
-        let (.., block) = self
-            .key_block_iter()
-            .context("Failed creating keyblock iterator")?
-            .find(|(_, meta)| meta.gen_utime() <= utime)
-            .context("Key block not found")?;
-
-        self.find_block_by_utime(&MASTERCHAIN_ACCOUNT_PREFIX, block.gen_utime())
-            .context("Exact key block was not found")
-    }
-
     pub fn find_block_by_seq_no(
         &self,
         account_prefix: &ton_block::AccountIdPrefixFull,
@@ -515,10 +502,6 @@ impl Db {
     pub fn background_sync_store(&self) -> &BackgroundSyncMetaStore {
         &self.background_sync_meta_store
     }
-
-    pub fn key_block_iter(&self) -> Result<impl Iterator<Item = (UInt256, BlockMeta)> + '_> {
-        self.block_handle_storage.key_block_iter()
-    }
 }
 
 #[inline]
@@ -564,11 +547,6 @@ pub enum BlockConnection {
     Next1,
     Next2,
 }
-
-const MASTERCHAIN_ACCOUNT_PREFIX: AccountIdPrefixFull = AccountIdPrefixFull {
-    workchain_id: ton_block::MASTERCHAIN_ID,
-    prefix: ton_block::SHARD_FULL,
-};
 
 #[derive(thiserror::Error, Debug)]
 enum DbError {

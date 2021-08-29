@@ -159,30 +159,30 @@ impl Engine {
         )?)
         .await?;
 
-        // Synchronize
-        if !self.is_synced().await? {
-            sync(self).await?;
-        }
-        log::info!("Synced!");
-
         match self.old_blocks_policy {
             OldBlocksPolicy::Ignore => { /* do nothing */ }
-            OldBlocksPolicy::WaitSyncBefore(sync_before) => {
-                if let Err(e) = background_sync(self, last_mc_block_id.clone(), sync_before).await {
+            OldBlocksPolicy::WaitSyncBeforeSeqno(seqno) => {
+                if let Err(e) = background_sync(self, last_mc_block_id.clone(), seqno).await {
                     log::error!("Background sync fail: {:?}", e);
                 }
             }
-            OldBlocksPolicy::ParallelSyncBefore(sync_before) => {
+            OldBlocksPolicy::ParallelSyncBeforeSeqno(seqno) => {
                 let engine = self.clone();
                 let high_block = last_mc_block_id.clone();
 
                 tokio::spawn(async move {
-                    if let Err(e) = background_sync(&engine, high_block, sync_before).await {
+                    if let Err(e) = background_sync(&engine, high_block, seqno).await {
                         log::error!("Background sync fail: {:?}", e);
                     }
                 });
             }
         }
+
+        // Synchronize
+        if !self.is_synced().await? {
+            sync(self).await?;
+        }
+        log::info!("Synced!");
 
         self.notify_subscribers_with_status(EngineStatus::Synced)
             .await;
@@ -439,10 +439,6 @@ impl Engine {
         self.db.find_block_by_utime(account_prefix, utime)
     }
 
-    fn find_keyblock_before_utime(&self, utime: u32) -> Result<Arc<BlockHandle>> {
-        self.db.find_keyblock_before_utime(utime)
-    }
-
     #[allow(unused)]
     fn find_block_by_lt(
         &self,
@@ -636,7 +632,7 @@ impl Engine {
         Ok(handle)
     }
 
-    async fn is_synced(&self) -> Result<bool> {
+    pub async fn is_synced(&self) -> Result<bool> {
         let shards_client_mc_block_id = self.load_shards_client_mc_block_id().await?;
         let last_applied_mc_block_id = self.load_last_applied_mc_block_id().await?;
         if shards_client_mc_block_id.seq_no + MAX_BLOCK_APPLIER_DEPTH
@@ -673,7 +669,7 @@ impl Engine {
         self.db.store_block_applied(handle)
     }
 
-    async fn load_last_applied_mc_block_id(&self) -> Result<ton_block::BlockIdExt> {
+    pub async fn load_last_applied_mc_block_id(&self) -> Result<ton_block::BlockIdExt> {
         convert_block_id_ext_api2blk(&LastMcBlockId::load_from_db(self.db.as_ref())?.0)
     }
 
@@ -681,7 +677,7 @@ impl Engine {
         LastMcBlockId(convert_block_id_ext_blk2api(block_id)).store_into_db(self.db.as_ref())
     }
 
-    async fn load_shards_client_mc_block_id(&self) -> Result<ton_block::BlockIdExt> {
+    pub async fn load_shards_client_mc_block_id(&self) -> Result<ton_block::BlockIdExt> {
         convert_block_id_ext_api2blk(&ShardsClientMcBlockId::load_from_db(self.db.as_ref())?.0)
     }
 
