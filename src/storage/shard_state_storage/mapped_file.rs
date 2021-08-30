@@ -11,8 +11,6 @@ impl MappedFile {
     where
         P: AsRef<Path>,
     {
-        use std::os::unix::io::AsRawFd;
-
         let file = std::fs::OpenOptions::new()
             .write(true)
             .read(true)
@@ -21,6 +19,14 @@ impl MappedFile {
             .open(path)?;
 
         file.set_len(length as u64)?;
+
+        Self::from_existing_file(file)
+    }
+
+    pub fn from_existing_file(file: std::fs::File) -> std::io::Result<Self> {
+        use std::os::unix::io::AsRawFd;
+
+        let length = file.metadata()?.len() as usize;
 
         // SAFETY: File was opened successfully, file mode is RW, offset is aligned
         let ptr = unsafe {
@@ -43,6 +49,10 @@ impl MappedFile {
         }
 
         Ok(Self { file, length, ptr })
+    }
+
+    pub fn length(&self) -> usize {
+        self.length
     }
 
     /// Copies chunk of bytes to the specified buffer

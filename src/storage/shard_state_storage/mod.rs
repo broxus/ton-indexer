@@ -1,5 +1,5 @@
 use std::convert::TryInto;
-use std::io::{SeekFrom, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Weak};
 
@@ -183,8 +183,6 @@ impl<'a> ShardStateReplaceTransaction<'a> {
         ctx: &mut FilesContext,
         block_id: ton_block::BlockIdExt,
     ) -> Result<Arc<ShardStateStuff>> {
-        use tokio::io::{AsyncReadExt, AsyncSeekExt};
-
         // 2^7 bits + 1 bytes
         const MAX_DATA_SIZE: usize = 128;
 
@@ -197,108 +195,107 @@ impl<'a> ShardStateReplaceTransaction<'a> {
         };
 
         let hashes_file = ctx.create_mapped_hashes_file(header.cell_count * HashesEntry::LEN)?;
-        let cells_file = ctx.cells_file()?;
+        let cells_file = ctx.create_mapped_cells_file().await?;
 
-        let mut tail = [0; 4];
-        let mut entries_buffer = EntriesBuffer::new();
-        let mut pruned_branches = FxHashMap::default();
+        tokio::task::block_in_place(|| {
+            let mut tail = [0; 4];
+            let mut entries_buffer = EntriesBuffer::new();
+            let mut pruned_branches = FxHashMap::default();
 
-        // Allocate on heap to prevent big future size
-        let mut chunk_buffer = Vec::with_capacity(1 << 20);
-        let mut output_buffer = Vec::with_capacity(1 << 10);
-        let mut data_buffer = vec![0u8; MAX_DATA_SIZE];
+            // Allocate on heap to prevent big future size
+            let mut chunk_buffer = Vec::with_capacity(1 << 20);
+            let mut output_buffer = Vec::with_capacity(1 << 10);
+            let mut data_buffer = vec![0u8; MAX_DATA_SIZE];
 
-        let total_size = cells_file.seek(SeekFrom::End(0)).await?;
-        log::info!("TOTAL SIZE: {}", total_size);
+            let total_size = cells_file.length();
+            log::info!("TOTAL SIZE: {}", total_size);
 
-        let mut cell_index = header.cell_count;
-        let mut total_read = 0;
-        let mut chunk_size = 0;
-        while total_read < total_size {
-            cells_file.seek(SeekFrom::Current(-4 - chunk_size)).await?;
-            cells_file.read_exact(&mut tail).await?;
-            total_read += 4;
+            let mut file_pos = total_size;
+            let mut cell_index = header.cell_count;
+            while file_pos >= 4 {
+                file_pos -= 4;
+                unsafe { cells_file.read_exact_at(file_pos, &mut tail) };
 
-            let mut remaining_bytes = u32::from_le_bytes(tail) as usize;
-            chunk_buffer.resize(remaining_bytes, 0);
+                let mut chunk_size = u32::from_le_bytes(tail) as usize;
+                chunk_buffer.resize(chunk_size, 0);
 
-            chunk_size = remaining_bytes as i64;
+                file_pos -= chunk_size;
+                unsafe { cells_file.read_exact_at(file_pos, &mut chunk_buffer) };
 
-            cells_file.seek(SeekFrom::Current(-chunk_size - 4)).await?;
-            cells_file.read_exact(&mut chunk_buffer).await?;
-            total_read += chunk_size as u64;
+                log::info!("PROCESSING CHUNK OF SIZE: {}", chunk_size);
 
-            log::info!("PROCESSING CHUNK OF SIZE: {}", chunk_size);
+                while chunk_size > 0 {
+                    cell_index -= 1;
+                    let cell_size = chunk_buffer[chunk_size - 1] as usize;
+                    chunk_size -= cell_size + 1;
 
-            while remaining_bytes > 0 {
-                cell_index -= 1;
-                let cell_size = chunk_buffer[remaining_bytes - 1] as usize;
-                remaining_bytes -= cell_size + 1;
+                    let cell = RawCell::from_stored_data(
+                        &mut std::io::Cursor::new(
+                            &chunk_buffer[chunk_size..chunk_size + cell_size],
+                        ),
+                        header.ref_size,
+                        header.cell_count,
+                        cell_index,
+                        &mut data_buffer,
+                    )?;
 
-                let cell = RawCell::from_stored_data(
-                    &mut std::io::Cursor::new(
-                        &chunk_buffer[remaining_bytes..remaining_bytes + cell_size],
-                    ),
-                    header.ref_size,
-                    header.cell_count,
-                    cell_index,
-                    &mut data_buffer,
-                )?;
+                    for (&index, buffer) in cell
+                        .reference_indices
+                        .iter()
+                        .zip(entries_buffer.iter_child_buffers())
+                    {
+                        // SAFETY: `buffer` is guaranteed to be in separate memory area
+                        unsafe {
+                            hashes_file.read_exact_at(index as usize * HashesEntry::LEN, buffer)
+                        }
+                    }
 
-                for (&index, buffer) in cell
-                    .reference_indices
-                    .iter()
-                    .zip(entries_buffer.iter_child_buffers())
-                {
-                    // SAFETY: `buffer` is guaranteed to be in separate memory area
-                    unsafe { hashes_file.read_exact_at(index as usize * HashesEntry::LEN, buffer) }
+                    self.finalize_cell(
+                        cell_index as u32,
+                        cell,
+                        &mut pruned_branches,
+                        &mut entries_buffer,
+                        &mut output_buffer,
+                    )?;
+
+                    // SAFETY: `entries_buffer` is guaranteed to be in separate memory area
+                    unsafe {
+                        hashes_file.write_all_at(
+                            cell_index * HashesEntry::LEN,
+                            entries_buffer.current_entry_buffer(),
+                        )
+                    };
+
+                    chunk_buffer.truncate(chunk_size);
                 }
 
-                self.finalize_cell(
-                    cell_index as u32,
-                    cell,
-                    &mut pruned_branches,
-                    &mut entries_buffer,
-                    &mut output_buffer,
-                )?;
-
-                // SAFETY: `entries_buffer` is guaranteed to be in separate memory area
-                unsafe {
-                    hashes_file.write_all_at(
-                        cell_index * HashesEntry::LEN,
-                        entries_buffer.current_entry_buffer(),
-                    )
-                };
-
-                chunk_buffer.truncate(remaining_bytes);
+                log::info!("READ: {}", total_size - file_pos);
             }
 
-            log::info!("READ: {}", total_read);
-        }
+            log::info!("DONE PROCESSING: {} bytes", total_size);
 
-        log::info!("DONE PROCESSING: {} of {} bytes", total_read, total_size);
+            let block_id_key = block_id.to_vec()?;
 
-        let block_id_key = block_id.to_vec()?;
+            // Current entry contains root cell
+            let current_entry = entries_buffer.split_children(&[]).0;
+            self.state
+                .shard_state_db
+                .insert(block_id_key.as_slice(), current_entry.as_reader().hash(3))?;
 
-        // Current entry contains root cell
-        let current_entry = entries_buffer.split_children(&[]).0;
-        self.state
-            .shard_state_db
-            .insert(block_id_key.as_slice(), current_entry.as_reader().hash(3))?;
+            // Load stored shard state
+            match self.state.shard_state_db.get(block_id_key)? {
+                Some(root) => {
+                    let cell_id = ton_types::UInt256::from_be_bytes(root.as_ref());
+                    let cell = self.state.dynamic_boc_db.load_cell(cell_id)?;
 
-        // Load stored shard state
-        match self.state.shard_state_db.get(block_id_key)? {
-            Some(root) => {
-                let cell_id = ton_types::UInt256::from_be_bytes(root.as_ref());
-                let cell = self.state.dynamic_boc_db.load_cell(cell_id)?;
-
-                Ok(Arc::new(ShardStateStuff::new(
-                    block_id,
-                    ton_types::Cell::with_cell_impl_arc(cell),
-                )?))
+                    Ok(Arc::new(ShardStateStuff::new(
+                        block_id,
+                        ton_types::Cell::with_cell_impl_arc(cell),
+                    )?))
+                }
+                None => Err(ShardStateStorageError::NotFound.into()),
             }
-            None => Err(ShardStateStorageError::NotFound.into()),
-        }
+        })
     }
 
     fn finalize_cell(
@@ -522,12 +519,7 @@ impl FilesContext {
         })
     }
 
-    pub async fn clear(mut self) -> Result<()> {
-        if let Some(file) = self.cells_file.take() {
-            file.set_len(0).await?;
-            file.sync_all().await?;
-        };
-
+    pub async fn clear(self) -> Result<()> {
         tokio::fs::remove_file(self.cells_path).await?;
         tokio::fs::remove_file(self.hashes_path).await?;
         Ok(())
@@ -542,6 +534,16 @@ impl FilesContext {
 
     fn create_mapped_hashes_file(&self, length: usize) -> Result<MappedFile> {
         let mapped_file = MappedFile::new(&self.hashes_path, length)?;
+        Ok(mapped_file)
+    }
+
+    async fn create_mapped_cells_file(&mut self) -> Result<MappedFile> {
+        let file = match self.cells_file.take() {
+            Some(file) => file.into_std().await,
+            None => return Err(ShardStateStorageError::AlreadyFinalized.into()),
+        };
+
+        let mapped_file = MappedFile::from_existing_file(file)?;
         Ok(mapped_file)
     }
 }
