@@ -15,29 +15,32 @@ impl BackgroundSyncMetaStore {
         Self { db }
     }
 
-    pub fn commit_low_key_block(&self, id: &BlockIdExt) -> Result<()> {
+    pub fn store_low_key_block(&self, id: &BlockIdExt) -> Result<()> {
         self.db.insert(LOW_ID, id.to_vec()?)
     }
 
-    pub fn commit_high_key_block(&self, id: &BlockIdExt) -> Result<()> {
+    pub fn load_low_key_block(&self) -> Result<Option<BlockIdExt>> {
+        Ok(match self.db.get(LOW_ID)? {
+            Some(data) => Some(BlockIdExt::from_slice(data.as_ref())?),
+            None => None,
+        })
+    }
+
+    pub fn store_high_key_block(&self, id: &BlockIdExt) -> Result<()> {
         self.db.insert(HIGH_ID, id.to_vec()?)
     }
 
-    /// Returns Low and High key blocks
-    pub fn get_committed_blocks(&self) -> Result<Option<(BlockIdExt, BlockIdExt)>> {
-        let low = self
-            .db
-            .get(LOW_ID)?
-            .map(|x| BlockIdExt::from_slice(x.as_ref()).ok())
-            .flatten();
-        let high = self
+    pub fn load_high_key_block(&self) -> Result<BlockIdExt> {
+        let data = self
             .db
             .get(HIGH_ID)?
-            .map(|x| BlockIdExt::from_slice(x.as_ref()).ok())
-            .flatten();
-        match (low, high) {
-            (Some(a), Some(b)) => Ok(Some((a, b))),
-            _ => Ok(None),
-        }
+            .ok_or(BackgroundSyncMetaError::HighBlockNotFound)?;
+        BlockIdExt::from_slice(data.as_ref())
     }
+}
+
+#[derive(thiserror::Error, Debug)]
+enum BackgroundSyncMetaError {
+    #[error("High block not found")]
+    HighBlockNotFound,
 }

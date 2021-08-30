@@ -86,11 +86,6 @@ impl ton_indexer::Subscriber for LoggerSubscriber {
 
         Ok(())
     }
-
-    async fn process_shard_state(&self, _shard_state: &ShardStateStuff) -> Result<()> {
-        //log::info!("FOUND SHARD STATE {}", shard_state.block_id());
-        Ok(())
-    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -119,12 +114,7 @@ impl Config {
 
         let indexer = ton_indexer::NodeConfig {
             ip_address,
-            keys: Vec::new(),
-            rocks_db_path: PathBuf::new().join("db/rocksdb"),
-            file_db_path: PathBuf::new().join("db/file"),
-            shard_state_cache_enabled: false,
-            old_blocks_policy: Default::default(),
-            max_db_memory_usage: 256 * 1024 * 1024,
+            ..Default::default()
         };
 
         Ok(Self {

@@ -25,9 +25,16 @@ pub async fn boot(engine: &Arc<Engine>) -> Result<BootData> {
         Err(e) => {
             log::warn!("Failed to load last masterchain block id: {}", e);
             let last_mc_block_id = cold_boot(engine).await?;
+
             engine
                 .store_last_applied_mc_block_id(&last_mc_block_id)
                 .await?;
+
+            engine
+                .db
+                .background_sync_store()
+                .store_high_key_block(&last_mc_block_id)?;
+
             last_mc_block_id
         }
     };
@@ -41,11 +48,11 @@ pub async fn boot(engine: &Arc<Engine>) -> Result<BootData> {
             last_mc_block_id.clone()
         }
     };
-    let boot_data = BootData {
+
+    Ok(BootData {
         last_mc_block_id,
         shards_client_mc_block_id,
-    };
-    Ok(boot_data)
+    })
 }
 
 async fn cold_boot(engine: &Arc<Engine>) -> Result<ton_block::BlockIdExt> {
@@ -344,7 +351,6 @@ pub async fn download_zero_state(
             Ok(state) => {
                 let handle = engine.store_zerostate(block_id, &state).await?;
                 engine.set_applied(&handle, 0).await?;
-                engine.notify_subscribers_with_state(&state).await?;
                 return Ok((handle, state));
             }
             Err(e) => {
@@ -437,7 +443,6 @@ async fn download_block_and_state(
 
         log::info!("Received shard state for: {}", shard_state.block_id());
         engine.store_state(&handle, &shard_state).await?;
-        engine.notify_subscribers_with_state(&shard_state).await?;
     }
 
     engine

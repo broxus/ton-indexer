@@ -1,4 +1,4 @@
-use std::convert::{TryFrom, TryInto};
+use std::convert::TryFrom;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -29,10 +29,10 @@ impl NodeNetwork {
     pub const TAG_DHT_KEY: usize = 1;
     pub const TAG_OVERLAY_KEY: usize = 2;
 
-    pub async fn new(config: NodeConfig, global_config: GlobalConfig) -> Result<Arc<Self>> {
+    pub async fn new(config: AdnlNodeConfig, global_config: GlobalConfig) -> Result<Arc<Self>> {
         let masterchain_zero_state_id = global_config.zero_state;
 
-        let adnl = AdnlNode::with_config(config.try_into()?);
+        let adnl = AdnlNode::with_config(config);
         let dht = DhtNode::with_adnl_node(adnl.clone(), Self::TAG_DHT_KEY)?;
 
         let overlay = OverlayNode::with_adnl_node_and_zero_state(

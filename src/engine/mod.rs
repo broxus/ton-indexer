@@ -45,11 +45,6 @@ pub trait Subscriber: Send + Sync {
         let _unused_by_default = shard_state;
         Ok(())
     }
-
-    async fn process_shard_state(&self, shard_state: &ShardStateStuff) -> Result<()> {
-        let _unused_by_default = shard_state;
-        Ok(())
-    }
 }
 
 pub struct Engine {
@@ -94,7 +89,7 @@ impl Engine {
             }
         }
 
-        let network = NodeNetwork::new(config, global_config).await?;
+        let network = NodeNetwork::new(config.build_adnl_node_config()?, global_config).await?;
         network.start().await?;
 
         let engine = Arc::new(Self {
@@ -161,20 +156,8 @@ impl Engine {
 
         match self.old_blocks_policy {
             OldBlocksPolicy::Ignore => { /* do nothing */ }
-            OldBlocksPolicy::WaitSyncBeforeSeqno(seqno) => {
-                if let Err(e) = background_sync(self, last_mc_block_id.clone(), seqno).await {
-                    log::error!("Background sync fail: {:?}", e);
-                }
-            }
-            OldBlocksPolicy::ParallelSyncBeforeSeqno(seqno) => {
-                let engine = self.clone();
-                let high_block = last_mc_block_id.clone();
-
-                tokio::spawn(async move {
-                    if let Err(e) = background_sync(&engine, high_block, seqno).await {
-                        log::error!("Background sync fail: {:?}", e);
-                    }
-                });
+            OldBlocksPolicy::Sync { from_seqno } => {
+                background_sync(self, from_seqno).await?;
             }
         }
 
@@ -814,13 +797,6 @@ impl Engine {
             }
         }
 
-        Ok(())
-    }
-
-    async fn notify_subscribers_with_state(&self, shard_state: &ShardStateStuff) -> Result<()> {
-        for subscriber in &self.subscribers {
-            subscriber.process_shard_state(shard_state).await?;
-        }
         Ok(())
     }
 
