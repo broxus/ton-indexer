@@ -4,6 +4,9 @@ version = "0.1.0"
 authors = ["Ivan Kalinin <i.kalinin@dexpa.io>"]
 edition = "2018"
 
+[workspace]
+members =["ton-indexer-alloc"]
+
 [[example]]
 name = "simple_node"
 path = "examples/simple_node.rs"

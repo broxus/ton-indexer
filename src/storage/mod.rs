@@ -45,7 +45,7 @@ pub mod columns {
         const NAME: &'static str = "archive";
 
         fn options(opts: &mut Options) {
-            opts.optimize_for_point_lookup(50);
+            opts.set_optimize_filters_for_hits(true);
         }
     }
 
@@ -60,7 +60,6 @@ pub mod columns {
 
         fn options(opts: &mut rocksdb::Options) {
             opts.set_optimize_filters_for_hits(true);
-            opts.optimize_for_point_lookup(100); //size in mb
         }
     }
 
