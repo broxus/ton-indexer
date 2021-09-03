@@ -6,8 +6,7 @@ use nekoton_utils::*;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use sysinfo::SystemExt;
-use tiny_adnl::utils::AdnlAddressUdp;
-use tiny_adnl::AdnlNodeConfig;
+use tiny_adnl::*;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NodeConfig {
@@ -26,6 +25,17 @@ pub struct NodeConfig {
     pub shard_state_cache_enabled: bool,
     #[serde(default = "default_max_db_memory_usage")]
     pub max_db_memory_usage: usize,
+
+    #[serde(default)]
+    pub adnl_options: AdnlNodeOptions,
+    #[serde(default)]
+    pub rldp_options: RldpNodeOptions,
+    #[serde(default)]
+    pub dht_options: DhtNodeOptions,
+    #[serde(default)]
+    pub neighbours_options: NeighboursOptions,
+    #[serde(default)]
+    pub overlay_shard_options: OverlayShardOptions,
 }
 
 impl Default for NodeConfig {
@@ -38,16 +48,12 @@ impl Default for NodeConfig {
             shard_state_cache_enabled: false,
             old_blocks_policy: Default::default(),
             max_db_memory_usage: default_max_db_memory_usage(),
+            adnl_options: Default::default(),
+            rldp_options: Default::default(),
+            dht_options: Default::default(),
+            neighbours_options: Default::default(),
+            overlay_shard_options: Default::default(),
         }
-    }
-}
-
-impl NodeConfig {
-    pub fn build_adnl_node_config(&self) -> Result<AdnlNodeConfig> {
-        AdnlNodeConfig::from_ip_address_and_keys(
-            AdnlAddressUdp::new(self.ip_address),
-            self.adnl_keys.to_vec(),
-        )
     }
 }
 
@@ -74,11 +80,11 @@ impl NodeKeys {
         }
     }
 
-    pub fn to_vec(&self) -> Vec<(ed25519_dalek::SecretKey, usize)> {
-        vec![
+    pub fn build_keystore(&self) -> Result<AdnlKeystore> {
+        AdnlKeystore::from_tagged_keys(vec![
             (make_key(&self.dht_key), 1),
             (make_key(&self.overlay_key), 2),
-        ]
+        ])
     }
 }
 

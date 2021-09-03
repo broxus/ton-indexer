@@ -89,7 +89,17 @@ impl Engine {
             }
         }
 
-        let network = NodeNetwork::new(config.build_adnl_node_config()?, global_config).await?;
+        let network = NodeNetwork::new(
+            config.ip_address.into(),
+            config.adnl_keys.build_keystore()?,
+            config.adnl_options,
+            config.rldp_options,
+            config.dht_options,
+            config.neighbours_options,
+            config.overlay_shard_options,
+            global_config,
+        )
+        .await?;
         network.start().await?;
 
         let engine = Arc::new(Self {

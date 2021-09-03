@@ -19,6 +19,8 @@ pub struct NodeNetwork {
     dht: Arc<DhtNode>,
     overlay: Arc<OverlayNode>,
     rldp: Arc<RldpNode>,
+    neighbours_options: NeighboursOptions,
+    overlay_shard_options: OverlayShardOptions,
     masterchain_overlay_short_id: OverlayIdShort,
     masterchain_overlay_id: OverlayIdFull,
     overlays: Arc<FxDashMap<OverlayIdShort, Arc<OverlayClient>>>,
@@ -29,18 +31,28 @@ impl NodeNetwork {
     pub const TAG_DHT_KEY: usize = 1;
     pub const TAG_OVERLAY_KEY: usize = 2;
 
-    pub async fn new(config: AdnlNodeConfig, global_config: GlobalConfig) -> Result<Arc<Self>> {
+    #[allow(clippy::too_many_arguments)]
+    pub async fn new(
+        ip_address: AdnlAddressUdp,
+        keystore: AdnlKeystore,
+        adnl_options: AdnlNodeOptions,
+        rldp_options: RldpNodeOptions,
+        dht_options: DhtNodeOptions,
+        neighbours_options: NeighboursOptions,
+        overlay_shard_options: OverlayShardOptions,
+        global_config: GlobalConfig,
+    ) -> Result<Arc<Self>> {
         let masterchain_zero_state_id = global_config.zero_state;
 
-        let adnl = AdnlNode::with_config(config);
-        let dht = DhtNode::with_adnl_node(adnl.clone(), Self::TAG_DHT_KEY)?;
+        let adnl = AdnlNode::new(ip_address, keystore, adnl_options);
+        let dht = DhtNode::new(adnl.clone(), Self::TAG_DHT_KEY, dht_options)?;
 
-        let overlay = OverlayNode::with_adnl_node_and_zero_state(
+        let overlay = OverlayNode::new(
             adnl.clone(),
             masterchain_zero_state_id.file_hash.into(),
             Self::TAG_DHT_KEY,
         )?;
-        let rldp = RldpNode::with_adnl_node(adnl.clone(), vec![overlay.clone()]);
+        let rldp = RldpNode::new(adnl.clone(), vec![overlay.clone()], rldp_options);
 
         for peer in global_config.dht_nodes {
             dht.add_peer(peer)?;
@@ -63,6 +75,8 @@ impl NodeNetwork {
             dht,
             overlay,
             rldp,
+            neighbours_options,
+            overlay_shard_options,
             masterchain_overlay_short_id,
             masterchain_overlay_id,
             overlays: Arc::new(Default::default()),
@@ -139,7 +153,8 @@ impl NodeNetwork {
         overlay_full_id: OverlayIdFull,
         overlay_id: OverlayIdShort,
     ) -> Result<Arc<dyn FullNodeOverlayClient>> {
-        self.overlay.add_public_overlay(&overlay_id)?;
+        self.overlay
+            .add_public_overlay(&overlay_id, self.overlay_shard_options)?;
         let node = self.overlay.get_signed_node(&overlay_id)?;
 
         start_broadcasting_our_node(self.dht.clone(), overlay_full_id, node);
@@ -149,7 +164,13 @@ impl NodeNetwork {
             log::warn!("No nodes were found in overlay {}", &overlay_id);
         }
 
-        let neighbours = Neighbours::new(&self.dht, &self.overlay, &overlay_id, &peers);
+        let neighbours = Neighbours::new(
+            &self.dht,
+            &self.overlay,
+            &overlay_id,
+            &peers,
+            self.neighbours_options,
+        );
 
         let overlay_client = Arc::new(OverlayClient::new(
             self.overlay.clone(),
@@ -195,7 +216,7 @@ impl NodeNetwork {
                     log::warn!("Error find overlay nodes by dht: {}", e);
                 }
 
-                if overlay_client.neighbours().len() >= MAX_NEIGHBOURS {
+                if overlay_client.neighbours().len() >= network.neighbours_options.max_neighbours {
                     log::trace!("finish find overlay nodes.");
                     return;
                 }

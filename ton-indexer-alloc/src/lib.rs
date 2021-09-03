@@ -1,7 +1,5 @@
 use std::ffi::{c_void, CString};
 
-use libc::{c_uint, size_t, ssize_t};
-
 pub type Allocator = tikv_jemallocator::Jemalloc;
 
 pub const fn allocator() -> Allocator {
@@ -9,15 +7,17 @@ pub const fn allocator() -> Allocator {
 }
 
 /// Sets jemalloc config tuned for the indexer load
-pub fn apply_config() {
+///
+/// SAFETY: no
+pub unsafe fn apply_config() {
     log::info!("Applying jemalloc conf");
 
     set_jemalloc_param("opt.abort_conf", true);
-    set_jemalloc_param("opt.lg_extent_max_active_fit", 2 as size_t);
-    set_jemalloc_param("opt.narenas", 2 as c_uint);
-    set_jemalloc_param("opt.lg_tcache_max", 10 as size_t);
-    set_jemalloc_param("opt.muzzy_decay_ms", 100 as ssize_t);
-    set_jemalloc_param("opt.dirty_decay_ms", 100 as ssize_t);
+    set_jemalloc_param("opt.lg_extent_max_active_fit", 2_usize);
+    set_jemalloc_param("opt.narenas", 2_u32);
+    set_jemalloc_param("opt.lg_tcache_max", 10_usize);
+    set_jemalloc_param("opt.muzzy_decay_ms", 100_isize);
+    set_jemalloc_param("opt.dirty_decay_ms", 100_isize);
 
     log::info!("Done");
 }
