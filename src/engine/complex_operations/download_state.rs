@@ -3,6 +3,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+use tiny_adnl::utils::*;
 use tiny_adnl::Neighbour;
 use tokio::sync::{mpsc, oneshot};
 
@@ -126,6 +127,7 @@ struct Scheduler {
     current_offset: usize,
     finished: bool,
     got_last_part: Arc<AtomicBool>,
+    last_part_trigger: Trigger,
 }
 
 impl Scheduler {
@@ -140,6 +142,7 @@ impl Scheduler {
         let (response_tx, response_rx) = mpsc::channel(worker_count);
 
         let got_last_part = Arc::new(AtomicBool::new(false));
+        let (last_part_trigger, last_part_signal) = trigger();
 
         let ctx = Arc::new(DownloadContext {
             overlay,
@@ -150,6 +153,7 @@ impl Scheduler {
             response_tx,
             peer_attempt: AtomicU32::new(0),
             got_last_part: got_last_part.clone(),
+            last_part_signal,
         });
 
         let mut offset_txs = Vec::with_capacity(worker_count);
@@ -175,6 +179,7 @@ impl Scheduler {
             current_offset: 0,
             finished: false,
             got_last_part,
+            last_part_trigger,
         })
     }
 
@@ -201,6 +206,7 @@ impl Scheduler {
 
             if data.len() < self.max_size {
                 self.got_last_part.store(true, Ordering::Release);
+                self.last_part_trigger.trigger();
             }
 
             match self
@@ -265,6 +271,7 @@ struct DownloadContext {
     response_tx: ResponseTx,
     peer_attempt: AtomicU32,
     got_last_part: Arc<AtomicBool>,
+    last_part_signal: TriggerReceiver,
 }
 
 async fn download_packet_worker(ctx: Arc<DownloadContext>, mut offsets_rx: OffsetsRx) {
@@ -275,18 +282,23 @@ async fn download_packet_worker(ctx: Arc<DownloadContext>, mut offsets_rx: Offse
                 break 'tasks;
             }
 
-            match ctx
-                .overlay
-                .download_persistent_state_part(
-                    &ctx.block_id,
-                    &ctx.masterchain_block_id,
-                    offset,
-                    ctx.max_size,
-                    ctx.neighbour.clone(),
-                    ctx.peer_attempt.load(Ordering::Acquire),
-                )
-                .await
-            {
+            let recv_fut = ctx.overlay.download_persistent_state_part(
+                &ctx.block_id,
+                &ctx.masterchain_block_id,
+                offset,
+                ctx.max_size,
+                ctx.neighbour.clone(),
+                ctx.peer_attempt.load(Ordering::Acquire),
+            );
+
+            let result = tokio::select! {
+                data = recv_fut => data,
+                _ = ctx.last_part_signal.clone() => {
+                    continue;
+                }
+            };
+
+            match result {
                 Ok(part) => {
                     if ctx.response_tx.send((offset, Ok(part))).await.is_err() {
                         break 'tasks;

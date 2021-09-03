@@ -8,7 +8,8 @@ pub const fn allocator() -> Allocator {
 
 /// Sets jemalloc config tuned for the indexer load
 ///
-/// SAFETY: no
+/// # Safety
+/// no
 pub unsafe fn apply_config() {
     log::info!("Applying jemalloc conf");
 
