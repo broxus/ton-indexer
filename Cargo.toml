@@ -5,7 +5,7 @@ authors = ["Ivan Kalinin <i.kalinin@dexpa.io>"]
 edition = "2018"
 
 [workspace]
-members =["ton-indexer-alloc"]
+members = ["ton-indexer-alloc"]
 
 [[example]]
 name = "simple_node"
@@ -36,7 +36,7 @@ sysinfo = { version = "0.20.1", default-features = false }
 thiserror = "*"
 tokio = { version = "1.6", features = ["sync", "fs"] }
 
-rocksdb = { git = "https://github.com/rust-rocksdb/rust-rocksdb.git", features = ["multi-threaded-cf", "lz4", "jemalloc"], default-features = false }
+rocksdb = { git = "https://github.com/broxus/rust-rocksdb.git", features = ["multi-threaded-cf", "lz4", "jemalloc"], default-features = false }
 
 ton_api = { git = "https://github.com/broxus/ton-labs-tl.git", package = "ton_api", default-features = false }
 tiny-adnl = { git = "https://github.com/broxus/tiny-adnl.git" }
@@ -53,6 +53,8 @@ log4rs = "1.0"
 serde_json = "1.0"
 serde_yaml = "0.8"
 tokio = { version = "1.6", features = ["sync", "fs", "rt-multi-thread", "macros"] }
+
+ton-indexer-alloc = { path = "ton-indexer-alloc" }
 
 [features]
 default = []

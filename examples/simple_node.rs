@@ -11,6 +11,9 @@ use tiny_adnl::utils::*;
 use ton_indexer::utils::*;
 use ton_indexer::*;
 
+#[global_allocator]
+static GLOBAL: ton_indexer_alloc::Allocator = ton_indexer_alloc::allocator();
+
 #[derive(Clone, Debug, Clap)]
 pub struct Arguments {
     /// Generate default config

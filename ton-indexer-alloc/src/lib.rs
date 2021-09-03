@@ -1,97 +1,41 @@
-use std::ffi::CString;
+use std::ffi::{c_void, CString};
 
-/// Sets jemalloc config
-/// tuned for the indexer load
-pub fn apply_je_config() {
+use libc::{c_uint, size_t, ssize_t};
+
+pub type Allocator = tikv_jemallocator::Jemalloc;
+
+pub const fn allocator() -> Allocator {
+    tikv_jemallocator::Jemalloc
+}
+
+/// Sets jemalloc config tuned for the indexer load
+pub fn apply_config() {
     log::info!("Applying jemalloc conf");
-    use std::ffi::c_void;
-    use std::ptr::null_mut;
-    fn cstr(str: &str) -> CString {
-        CString::new(str).unwrap()
-    }
-    let res = unsafe {
-        jemalloc_sys::mallctl(
-            cstr("opt.abort_conf").as_ptr(),
-            1 as *mut c_void,
-            null_mut(),
-            null_mut(),
-            0,
-        )
-    };
-    if res != 0 {
-        log::error!("Abort fail: {}", errno::Errno(res));
-    }
-    let res = unsafe {
-        jemalloc_sys::mallctl(
-            cstr("opt.lg_extent_max_active_fit").as_ptr(),
-            2 as *mut c_void,
-            null_mut(),
-            null_mut(),
-            0,
-        )
-    };
-    if res != 0 {
-        log::error!("opt.lg_extent_max_active_fit fail: {}", errno::Errno(res));
-    }
-    let res = unsafe {
-        jemalloc_sys::mallctl(
-            cstr("opt.narenas").as_ptr(),
-            2 as *mut c_void,
-            null_mut(),
-            null_mut(),
-            0,
-        )
-    };
-    if res != 0 {
-        log::error!("opt.narenas fail: {}", errno::Errno(res));
-    }
-    let res = unsafe {
-        jemalloc_sys::mallctl(
-            cstr("opt.lg_tcache_max").as_ptr(),
-            10 as *mut c_void,
-            null_mut(),
-            null_mut(),
-            0,
-        )
-    };
-    if res != 0 {
-        log::error!("opt.lg_tcache_max fail: {}", errno::Errno(res));
-    }
-    let res = unsafe {
-        jemalloc_sys::mallctl(
-            cstr("opt.muzzy_decay_ms").as_ptr(),
-            (100_isize) as *mut c_void,
-            null_mut(),
-            null_mut(),
-            0,
-        )
-    };
-    if res != 0 {
-        log::error!("opt.muzzy_decay_ms fail: {}", errno::Errno(res));
-    }
-    let res = unsafe {
-        jemalloc_sys::mallctl(
-            cstr("opt.dirty_decay_ms").as_ptr(),
-            (100_isize) as *mut c_void,
-            null_mut(),
-            null_mut(),
-            0,
-        )
-    };
-    if res != 0 {
-        log::error!("opt.muzzy_decay_ms fail: {}", errno::Errno(res));
-    }
-    let res = unsafe {
-        jemalloc_sys::mallctl(
-            cstr("opt.tcache").as_ptr(),
-            std::ptr::null_mut::<c_void>(),
-            null_mut(),
-            null_mut(),
-            0,
-        )
-    };
-    if res != 0 {
-        log::error!("opt.tcache fail: {}", errno::Errno(res));
-    }
+
+    set_jemalloc_param("opt.abort_conf", true);
+    set_jemalloc_param("opt.lg_extent_max_active_fit", 2 as size_t);
+    set_jemalloc_param("opt.narenas", 2 as c_uint);
+    set_jemalloc_param("opt.lg_tcache_max", 10 as size_t);
+    set_jemalloc_param("opt.muzzy_decay_ms", 100 as ssize_t);
+    set_jemalloc_param("opt.dirty_decay_ms", 100 as ssize_t);
+
     log::info!("Done");
+}
+
+fn set_jemalloc_param<T>(name: &str, mut value: T) {
+    let name_buffer = CString::new(name).unwrap();
+
+    let res = unsafe {
+        tikv_jemalloc_sys::mallctl(
+            name_buffer.as_ptr(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            &mut value as *mut T as *mut c_void,
+            std::mem::size_of::<T>(),
+        )
+    };
+
+    if res != 0 {
+        log::error!("Failed to set {}: {}", name, errno::Errno(res));
+    }
 }
