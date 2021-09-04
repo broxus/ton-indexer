@@ -125,9 +125,8 @@ struct Scheduler {
     response_rx: ResponseRx,
     max_size: usize,
     current_offset: usize,
-    finished: bool,
-    got_last_part: Arc<AtomicBool>,
-    last_part_trigger: Trigger,
+    complete: Arc<AtomicBool>,
+    complete_trigger: Trigger,
 }
 
 impl Scheduler {
@@ -141,8 +140,8 @@ impl Scheduler {
     ) -> Result<Self> {
         let (response_tx, response_rx) = mpsc::channel(worker_count);
 
-        let got_last_part = Arc::new(AtomicBool::new(false));
-        let (last_part_trigger, last_part_signal) = trigger();
+        let complete = Arc::new(AtomicBool::new(false));
+        let (complete_trigger, complete_signal) = trigger();
 
         let ctx = Arc::new(DownloadContext {
             overlay,
@@ -152,8 +151,8 @@ impl Scheduler {
             max_size,
             response_tx,
             peer_attempt: AtomicU32::new(0),
-            got_last_part: got_last_part.clone(),
-            last_part_signal,
+            complete: complete.clone(),
+            complete_signal,
         });
 
         let mut offset_txs = Vec::with_capacity(worker_count);
@@ -177,14 +176,13 @@ impl Scheduler {
             response_rx,
             max_size,
             current_offset: 0,
-            finished: false,
-            got_last_part,
-            last_part_trigger,
+            complete,
+            complete_trigger,
         })
     }
 
     async fn wait_next_packet(&mut self) -> Result<Option<Vec<u8>>> {
-        if self.finished {
+        if self.complete.load(Ordering::Acquire) {
             return Ok(None);
         }
 
@@ -203,11 +201,6 @@ impl Scheduler {
                         .context("Response channel closed")
                 }
             };
-
-            if data.len() < self.max_size {
-                self.got_last_part.store(true, Ordering::Release);
-                self.last_part_trigger.trigger();
-            }
 
             match self
                 .pending_packets
@@ -243,7 +236,8 @@ impl Scheduler {
 
             if data.len() < self.max_size {
                 *packet = PacketStatus::Done;
-                self.finished = true;
+                self.complete.store(true, Ordering::Release);
+                self.complete_trigger.trigger();
             } else {
                 *offset += self.max_size * self.offset_txs.len();
                 self.offset_txs[worker_id]
@@ -270,15 +264,15 @@ struct DownloadContext {
     max_size: usize,
     response_tx: ResponseTx,
     peer_attempt: AtomicU32,
-    got_last_part: Arc<AtomicBool>,
-    last_part_signal: TriggerReceiver,
+    complete: Arc<AtomicBool>,
+    complete_signal: TriggerReceiver,
 }
 
 async fn download_packet_worker(ctx: Arc<DownloadContext>, mut offsets_rx: OffsetsRx) {
     'tasks: while let Some(offset) = offsets_rx.recv().await {
         let mut part_attempt = 0;
         loop {
-            if ctx.got_last_part.load(Ordering::Acquire) {
+            if ctx.complete.load(Ordering::Acquire) {
                 break 'tasks;
             }
 
@@ -293,7 +287,8 @@ async fn download_packet_worker(ctx: Arc<DownloadContext>, mut offsets_rx: Offse
 
             let result = tokio::select! {
                 data = recv_fut => data,
-                _ = ctx.last_part_signal.clone() => {
+                _ = ctx.complete_signal.clone() => {
+                    log::error!("Got last_part_signal: {}", offset);
                     continue;
                 }
             };
@@ -309,7 +304,7 @@ async fn download_packet_worker(ctx: Arc<DownloadContext>, mut offsets_rx: Offse
                     part_attempt += 1;
                     ctx.peer_attempt.fetch_add(1, Ordering::Release);
 
-                    if !ctx.got_last_part.load(Ordering::Acquire) {
+                    if !ctx.complete.load(Ordering::Acquire) {
                         log::error!("Failed to download persistent state part {}: {}", offset, e);
                     }
 

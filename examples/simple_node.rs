@@ -80,7 +80,7 @@ impl ton_indexer::Subscriber for LoggerSubscriber {
             return Ok(());
         }
 
-        if self.counter.fetch_add(1, Ordering::Relaxed) % 10 != 0 {
+        if self.counter.fetch_add(1, Ordering::Relaxed) % 500 != 0 {
             return Ok(());
         }
 

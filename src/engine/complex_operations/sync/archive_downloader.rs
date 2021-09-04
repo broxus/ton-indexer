@@ -157,16 +157,14 @@ async fn download_archive_worker(ctx: Arc<DownloadContext>, mut seqno_rx: SeqNoR
             let result = tokio::select! {
                 data = archive_fut => data,
                 _ = ctx.complete_signal.clone() => {
+                    log::error!("Received complete signal");
                     continue;
                 }
             };
 
             match result {
                 Ok(Some(data)) => break data,
-                Ok(None) => {
-                    log::warn!("Archive not found for {}", seqno);
-                    continue;
-                }
+                Ok(None) => continue,
                 Err(e) => {
                     log::warn!("Failed to download archive {}: {:?}", seqno, e);
                     continue;
