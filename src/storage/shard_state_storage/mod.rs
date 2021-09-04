@@ -18,6 +18,7 @@ use super::tree::*;
 
 use self::mapped_file::*;
 use self::parser::*;
+use std::collections::VecDeque;
 
 mod mapped_file;
 mod parser;
@@ -734,7 +735,6 @@ impl DynamicBocDb {
 
     pub fn store_dynamic_boc(&self, root: ton_types::Cell) -> Result<usize> {
         let mut transaction = FxHashMap::default();
-
         let written_count = self.prepare_tree_of_cells(root, &mut transaction)?;
         let cf = self.cell_db.db.get_cf()?;
         let db = self.cell_db.db.raw_db_handle();
@@ -775,20 +775,26 @@ impl DynamicBocDb {
         cell: ton_types::Cell,
         transaction: &mut FxHashMap<ton_types::UInt256, Vec<u8>>,
     ) -> Result<usize> {
-        // TODO: rewrite using DFS
-
-        let cell_id = cell.hash(ton_types::MAX_LEVEL);
+        let mut current = cell;
+        let mut stack = VecDeque::new();
+        let cell_id = current.hash(ton_types::MAX_LEVEL);
         if self.cell_db.contains(&cell_id)? || transaction.contains_key(&cell_id) {
             return Ok(0);
         }
-
-        transaction.insert(cell_id, StorageCell::serialize(&*cell)?);
-
         let mut count = 1;
-        for i in 0..cell.references_count() {
-            count += self.prepare_tree_of_cells(cell.reference(i)?, transaction)?;
+        transaction.insert(cell_id, StorageCell::serialize(&*current)?);
+        stack.push_back(current);
+        while !stack.is_empty() {
+            current = stack.pop_back().expect("It's not empty");
+            let ref_count = current.references_count();
+            for idx in 0..ref_count {
+                count += 1;
+                let cell = current.reference(idx)?;
+                let cell_id = cell.hash(ton_types::MAX_LEVEL);
+                transaction.insert(cell_id, StorageCell::serialize(&*cell)?);
+                stack.push_back(cell);
+            }
         }
-
         Ok(count)
     }
 }
