@@ -786,8 +786,6 @@ impl DynamicBocDb {
         let mut stack = VecDeque::with_capacity(16);
         stack.push_back(cell);
 
-        let mut max = stack.len();
-
         while let Some(current) = stack.pop_back() {
             for i in 0..current.references_count() {
                 let cell = current.reference(i)?;
@@ -800,10 +798,6 @@ impl DynamicBocDb {
                 count += 1;
                 transaction.insert(cell.repr_hash(), StorageCell::serialize(&*cell)?);
                 stack.push_back(cell);
-
-                if stack.len() > max {
-                    max = stack.len();
-                }
             }
         }
 
