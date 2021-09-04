@@ -775,26 +775,38 @@ impl DynamicBocDb {
         cell: ton_types::Cell,
         transaction: &mut FxHashMap<ton_types::UInt256, Vec<u8>>,
     ) -> Result<usize> {
-        let mut current = cell;
-        let mut stack = VecDeque::new();
-        let cell_id = current.hash(ton_types::MAX_LEVEL);
+        let cell_id = cell.repr_hash();
         if self.cell_db.contains(&cell_id)? || transaction.contains_key(&cell_id) {
             return Ok(0);
         }
+
         let mut count = 1;
-        transaction.insert(cell_id, StorageCell::serialize(&*current)?);
-        stack.push_back(current);
-        while !stack.is_empty() {
-            current = stack.pop_back().expect("It's not empty");
-            let ref_count = current.references_count();
-            for idx in 0..ref_count {
+        transaction.insert(cell_id, StorageCell::serialize(&*cell)?);
+
+        let mut stack = VecDeque::with_capacity(16);
+        stack.push_back(cell);
+
+        let mut max = stack.len();
+
+        while let Some(current) = stack.pop_back() {
+            for i in 0..current.references_count() {
+                let cell = current.reference(i)?;
+                let cell_id = cell.repr_hash();
+
+                if self.cell_db.contains(&cell_id)? || transaction.contains_key(&cell_id) {
+                    continue;
+                }
+
                 count += 1;
-                let cell = current.reference(idx)?;
-                let cell_id = cell.hash(ton_types::MAX_LEVEL);
-                transaction.insert(cell_id, StorageCell::serialize(&*cell)?);
+                transaction.insert(cell.repr_hash(), StorageCell::serialize(&*cell)?);
                 stack.push_back(cell);
+
+                if stack.len() > max {
+                    max = stack.len();
+                }
             }
         }
+
         Ok(count)
     }
 }
