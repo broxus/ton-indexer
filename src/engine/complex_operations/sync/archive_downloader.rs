@@ -1,5 +1,6 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use tiny_adnl::utils::*;
@@ -164,7 +165,10 @@ async fn download_archive_worker(ctx: Arc<DownloadContext>, mut seqno_rx: SeqNoR
 
             match result {
                 Ok(Some(data)) => break data,
-                Ok(None) => continue,
+                Ok(None) => {
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    continue;
+                }
                 Err(e) => {
                     log::warn!("Failed to download archive {}: {:?}", seqno, e);
                     continue;
@@ -198,7 +202,7 @@ async fn download_archive(
             Ok(Some(data))
         }
         Ok(None) => {
-            log::info!("sync: No archive found for block {}", mc_seq_no);
+            log::trace!("sync: No archive found for block {}", mc_seq_no);
             Ok(None)
         }
         e => e,
