@@ -1,13 +1,16 @@
-use std::io::Write;
+use std::io::{Read, Write};
 use std::sync::Arc;
 
 use anyhow::Result;
 use parking_lot::RwLock;
+use rocksdb::IteratorMode;
 use ton_api::ton;
+use ton_types::ByteOrderRead;
+
+use crate::utils::*;
 
 use super::block_handle::*;
 use super::{columns, StoredValue, Tree};
-use crate::utils::*;
 
 pub struct BlockIndexDb {
     lt_desc_db: RwLock<LtDescDb>,
@@ -207,6 +210,74 @@ impl BlockIndexDb {
 
         Ok(())
     }
+
+    fn lt_db_iterator(&self) -> Result<impl Iterator<Item = (LtDbKeyOwned, LtDbEntry)> + '_> {
+        let cf = self.lt_db.db.get_cf()?;
+        let iterator = self
+            .lt_db
+            .db
+            .raw_db_handle()
+            .iterator_cf(&cf, IteratorMode::Start);
+        Ok(iterator.filter_map(|(k, v)| {
+            let mut slice = k.as_ref();
+            let key = match LtDbKeyOwned::deserialize(&mut slice) {
+                Ok(a) => a,
+                Err(e) => {
+                    log::error!("Failed deserializng LtDbKeyOwned: {:?}", e);
+                    return None;
+                }
+            };
+            let value: LtDbEntry = match bincode::deserialize(&v) {
+                Ok(a) => a,
+                Err(e) => {
+                    log::error!("Failed deserializng LtDbEntry: {:?}", e);
+                    return None;
+                }
+            };
+            Some((key, value))
+        }))
+    }
+
+    /// `older_then` - block utime
+    pub fn get_blocks_older_then(
+        &self,
+        older_then: u32,
+    ) -> Result<impl Iterator<Item = (LtDbKeyOwned, LtDbEntry)> + '_> {
+        Ok(self
+            .lt_db_iterator()?
+            .filter(move |(_, v)| v.gen_utime < older_then))
+    }
+
+    pub fn gc<'a>(&self, ids: impl Iterator<Item = &'a ton_block::BlockIdExt>) -> Result<()> {
+        let lt_desc_lock = self.lt_desc_db.write();
+        let lt_desc_cf = lt_desc_lock.db.get_cf()?;
+        let ldtb_cf = self.lt_db.db.get_cf()?;
+        let mut lt_db_tx = rocksdb::WriteBatch::default();
+        let mut lt_desc_tx = rocksdb::WriteBatch::default();
+
+        for id in ids {
+            let lt_desc_key = id.shard_id.to_vec()?;
+            let index = match lt_desc_lock.try_load_lt_desc(&lt_desc_key)? {
+                Some(desc) => match id.seq_no.cmp(&desc.last_seq_no) {
+                    std::cmp::Ordering::Equal => return Ok(()),
+                    std::cmp::Ordering::Greater => desc.last_index + 1,
+                    std::cmp::Ordering::Less => {
+                        return Err(BlockIndexDbError::AscendingOrderRequired.into())
+                    }
+                },
+                None => 1,
+            };
+            let ltdb_key = LtDbKey {
+                shard_ident: id.shard(),
+                index,
+            };
+            lt_db_tx.delete_cf(&ldtb_cf, ltdb_key.to_vec()?);
+            lt_desc_tx.delete_cf(&lt_desc_cf, lt_desc_key);
+        }
+        lt_desc_lock.db.raw_db_handle().write(lt_desc_tx)?;
+        self.lt_db.db.raw_db_handle().write(lt_db_tx)?;
+        Ok(())
+    }
 }
 
 struct LtDb {
@@ -227,9 +298,23 @@ impl LtDb {
     }
 }
 
+#[derive(Debug)]
 struct LtDbKey<'a> {
     shard_ident: &'a ton_block::ShardIdent,
     index: u32,
+}
+
+pub struct LtDbKeyOwned {
+    pub shard_ident: ton_block::ShardIdent,
+    pub index: u32,
+}
+
+impl LtDbKeyOwned {
+    fn deserialize<R: Read>(reader: &mut R) -> Result<Self> {
+        let shard_ident = ton_block::ShardIdent::deserialize(reader)?;
+        let index = reader.read_le_u32()?;
+        Ok(Self { shard_ident, index })
+    }
 }
 
 impl<'a> LtDbKey<'a> {
@@ -247,10 +332,10 @@ impl<'a> LtDbKey<'a> {
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
-struct LtDbEntry {
-    block_id_ext: ton::ton_node::blockidext::BlockIdExt,
-    gen_lt: u64,
-    gen_utime: u32,
+pub struct LtDbEntry {
+    pub block_id_ext: ton::ton_node::blockidext::BlockIdExt,
+    pub gen_lt: u64,
+    pub gen_utime: u32,
 }
 
 struct LtDescDb {
@@ -289,4 +374,22 @@ enum BlockIndexDbError {
     LtDbEntryNotFound,
     #[error("Block not found")]
     BlockNotFound,
+}
+
+#[cfg(test)]
+mod test {
+    use super::{LtDbKey, LtDbKeyOwned};
+
+    #[test]
+    fn serde() {
+        let key = LtDbKey {
+            shard_ident: &Default::default(),
+            index: 13,
+        };
+        let mut bytes = key.to_vec().unwrap();
+        let mut bytes = std::io::Cursor::new(bytes);
+        let got = LtDbKeyOwned::deserialize(&mut bytes).unwrap();
+        assert_eq!(&got.shard_ident, key.shard_ident);
+        assert_eq!(got.index, key.index);
+    }
 }

@@ -9,6 +9,7 @@ use ton_api::ton;
 
 use crate::storage::*;
 use crate::utils::*;
+use std::collections::HashSet;
 
 pub struct Db {
     block_cache: Cache,
@@ -99,8 +100,8 @@ impl Db {
                 opts.set_max_background_jobs((num_cpus::get() as i32) / 2);
                 opts.increase_parallelism(num_cpus::get() as i32);
                 // debug
-                opts.enable_statistics();
-                opts.set_stats_dump_period_sec(300);
+                // opts.enable_statistics();
+                // opts.set_stats_dump_period_sec(300);
             })
             .column::<columns::BlockHandles>()
             .column::<columns::ShardStateDb>()
@@ -502,6 +503,45 @@ impl Db {
     pub fn background_sync_store(&self) -> &BackgroundSyncMetaStore {
         &self.background_sync_meta_store
     }
+
+    pub fn garbage_collect(&self, gc_type: GcType) -> Result<usize> {
+        match gc_type {
+            GcType::KeepLastNBlocks(_) => {
+                anyhow::bail!("todo!")
+            }
+            GcType::KeepNotOlderThen(seconds) => {
+                let now = tiny_adnl::utils::now() as u32;
+                let old_age = now - seconds;
+                let old_blocks: HashSet<_> = self
+                    .block_index_db
+                    .get_blocks_older_then(old_age)?
+                    .map(|x| x.1.block_id_ext)
+                    .filter_map(|x| -> Option<ton_block::BlockIdExt> {
+                        let shard_ident =
+                            ton_block::ShardIdent::with_tagged_prefix(x.workchain, x.shard as u64)
+                                .ok()?; //todo is it right conversion?
+                        Some(ton_block::BlockIdExt::with_params(
+                            shard_ident,
+                            x.seqno as u32,
+                            ton_types::UInt256::from(x.root_hash.0),
+                            ton_types::UInt256::from(x.file_hash.0),
+                        ))
+                    })
+                    .collect();
+                let (total, key_blocks) =
+                    self.block_handle_storage.drop_handles(old_blocks.iter())?;
+                let old_blocks: Vec<_> = old_blocks.difference(&key_blocks).collect();
+                self.block_index_db.gc(old_blocks.iter().copied())?;
+                self.archive_manager.gc(old_blocks.iter().copied())?;
+                Ok(total)
+            }
+        }
+    }
+}
+
+pub enum GcType {
+    KeepLastNBlocks(u32),
+    KeepNotOlderThen(u32),
 }
 
 #[inline]

@@ -34,13 +34,13 @@ pub mod columns {
 
     use super::Column;
 
-    pub struct ArchiveManagerDb;
-
+    /// Maps block root hash to block meta
     pub struct BlockHandles;
     impl Column for BlockHandles {
         const NAME: &'static str = "block_handles";
     }
 
+    pub struct ArchiveManagerDb;
     impl Column for ArchiveManagerDb {
         const NAME: &'static str = "archive";
 
@@ -68,11 +68,13 @@ pub mod columns {
         const NAME: &'static str = "node_state";
     }
 
+    /// Maps shard id to last_seq_no + last_lt + last_utime
     pub struct LtDesc;
     impl Column for LtDesc {
         const NAME: &'static str = "lt_desc";
     }
 
+    /// Maps ShardIdent to lt + utime + BlockIdExt
     pub struct Lt;
     impl Column for Lt {
         const NAME: &'static str = "lt";

@@ -874,6 +874,10 @@ impl Engine {
             downloader,
         })
     }
+
+    pub fn gc(&self, gc_type: GcType) -> Result<usize> {
+        self.db.garbage_collect(gc_type)
+    }
 }
 
 #[derive(thiserror::Error, Debug)]

@@ -388,6 +388,7 @@ async fn download_archives(
         prev_key_block_id: &mut ton_block::BlockIdExt,
         last_mc_seq_no: &mut u32,
     ) -> Result<bool> {
+        //todo store block maps in db
         let maps = parse_archive(archive)?;
         for (id, entry) in &maps.blocks {
             let (block, proof) = entry.get_data()?;

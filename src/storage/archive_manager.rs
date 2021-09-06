@@ -30,7 +30,7 @@ impl ArchiveManager {
     where
         I: Borrow<ton_block::BlockIdExt> + Hash,
     {
-        self.read_temp_file(id).is_ok()
+        self.read_block_data(id).is_ok()
     }
 
     pub async fn get_file<I>(
@@ -48,10 +48,10 @@ impl ArchiveManager {
             }
         };
 
-        self.read_temp_file(id)
+        self.read_block_data(id)
     }
 
-    fn read_temp_file<I>(&self, id: &PackageEntryId<I>) -> Result<DBPinnableSlice<'_>>
+    fn read_block_data<I>(&self, id: &PackageEntryId<I>) -> Result<DBPinnableSlice<'_>>
     where
         I: Borrow<ton_block::BlockIdExt> + Hash,
     {
@@ -59,6 +59,21 @@ impl ArchiveManager {
             Some(a) => Ok(a),
             None => Err(ArchiveManagerError::InvalidFileData.into()),
         }
+    }
+
+    pub fn gc<'a>(&'a self, ids: impl Iterator<Item = &'a ton_block::BlockIdExt>) -> Result<()> {
+        let cf = self.db.get_cf()?;
+        let mut tx = rocksdb::WriteBatch::default();
+        for id in ids {
+            let id1 = PackageEntryId::Block(id).to_vec()?;
+            let id2 = PackageEntryId::Proof(id).to_vec()?;
+            let id3 = PackageEntryId::ProofLink(id).to_vec()?;
+            tx.delete_cf(&cf, id1);
+            tx.delete_cf(&cf, id2);
+            tx.delete_cf(&cf, id3);
+        }
+        self.db.raw_db_handle().write(tx)?;
+        Ok(())
     }
 }
 
