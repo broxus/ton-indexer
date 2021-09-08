@@ -1,10 +1,10 @@
 use std::net::{IpAddr, SocketAddrV4};
-use std::path::PathBuf;
+use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use clap::{Clap, IntoApp};
+use argh::FromArgs;
 use serde::{Deserialize, Serialize};
 use tiny_adnl::utils::*;
 
@@ -14,24 +14,25 @@ use ton_indexer::*;
 #[global_allocator]
 static GLOBAL: ton_indexer::alloc::Allocator = ton_indexer::alloc::allocator();
 
-#[derive(Clone, Debug, Clap)]
+#[derive(Debug, PartialEq, FromArgs)]
+#[argh(description = "")]
 pub struct Arguments {
-    /// Generate default config
-    #[clap(long)]
-    pub gen_config: Option<PathBuf>,
+    /// generate default config
+    #[argh(option)]
+    pub gen_config: Option<String>,
 
-    /// Path to config
-    #[clap(short, long, conflicts_with = "gen-config", requires = "global-config")]
-    pub config: Option<PathBuf>,
+    /// path to config
+    #[argh(option, short = 'c')]
+    pub config: Option<String>,
 
-    /// Path to the global config with zerostate and static dht nodes
-    #[clap(long)]
-    pub global_config: Option<PathBuf>,
+    /// path to the global config with zerostate and static dht nodes
+    #[argh(option)]
+    pub global_config: Option<String>,
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let args: Arguments = Arguments::parse();
+    let args: Arguments = argh::from_env();
 
     match (args.gen_config, args.config, args.global_config) {
         (Some(new_config_path), _, _) => generate_config(new_config_path)
@@ -47,7 +48,10 @@ async fn main() -> Result<()> {
                 std::process::exit(1);
             }
         }
-        _ => Arguments::into_app().print_help()?,
+        _ => {
+            eprintln!("unknown parameters");
+            std::process::exit(1);
+        }
     }
 
     Ok(())
@@ -150,7 +154,7 @@ fn default_logger_settings() -> serde_yaml::Value {
 
 async fn generate_config<T>(path: T) -> Result<()>
 where
-    T: AsRef<std::path::Path>,
+    T: AsRef<Path>,
 {
     use std::io::Write;
 
@@ -160,16 +164,22 @@ where
     Ok(())
 }
 
-fn read_config(path: PathBuf) -> Result<Config> {
+fn read_config<T>(path: T) -> Result<Config>
+where
+    T: AsRef<Path>,
+{
     let mut config = config::Config::new();
-    config.merge(config::File::from(path).format(config::FileFormat::Yaml))?;
+    config.merge(config::File::from(path.as_ref()).format(config::FileFormat::Yaml))?;
     config.merge(config::Environment::new())?;
 
     let config: Config = config.try_into()?;
     Ok(config)
 }
 
-fn read_global_config(path: PathBuf) -> Result<ton_indexer::GlobalConfig> {
+fn read_global_config<T>(path: T) -> Result<ton_indexer::GlobalConfig>
+where
+    T: AsRef<Path>,
+{
     let file = std::fs::File::open(path)?;
     let reader = std::io::BufReader::new(file);
     let config = serde_json::from_reader(reader)?;
