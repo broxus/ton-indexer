@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -48,6 +48,7 @@ pub trait Subscriber: Send + Sync {
 }
 
 pub struct Engine {
+    is_working: AtomicBool,
     db: Arc<Db>,
     subscribers: Vec<Arc<dyn Subscriber>>,
     network: Arc<NodeNetwork>,
@@ -63,6 +64,12 @@ pub struct Engine {
     block_applying_operations: OperationsPool<ton_block::BlockIdExt, ()>,
     next_block_applying_operations: OperationsPool<ton_block::BlockIdExt, ton_block::BlockIdExt>,
     download_block_operations: OperationsPool<ton_block::BlockIdExt, (BlockStuff, BlockProofStuff)>,
+}
+
+impl Drop for Engine {
+    fn drop(&mut self) {
+        self.shutdown();
+    }
 }
 
 impl Engine {
@@ -103,6 +110,7 @@ impl Engine {
         network.start().await?;
 
         let engine = Arc::new(Self {
+            is_working: AtomicBool::new(true),
             db,
             subscribers,
             network,
@@ -207,6 +215,16 @@ impl Engine {
 
         // Engine started
         Ok(())
+    }
+
+    /// Initiates shutdown
+    pub fn shutdown(&self) {
+        self.is_working.store(false, Ordering::Release);
+        self.network.shutdown();
+    }
+
+    pub fn is_working(&self) -> bool {
+        self.is_working.load(Ordering::Acquire)
     }
 
     pub fn get_memory_usage_stats(&self) -> Result<RocksdbStats> {

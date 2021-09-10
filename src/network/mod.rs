@@ -1,4 +1,5 @@
 use std::convert::TryFrom;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -25,6 +26,13 @@ pub struct NodeNetwork {
     masterchain_overlay_id: OverlayIdFull,
     overlays: Arc<FxDashMap<OverlayIdShort, Arc<OverlayClient>>>,
     overlay_awaiters: OperationsPool<OverlayIdShort, Arc<dyn FullNodeOverlayClient>>,
+    working_state: Arc<WorkingState>,
+}
+
+impl Drop for NodeNetwork {
+    fn drop(&mut self) {
+        self.shutdown();
+    }
 }
 
 impl NodeNetwork {
@@ -42,6 +50,8 @@ impl NodeNetwork {
         overlay_shard_options: OverlayShardOptions,
         global_config: GlobalConfig,
     ) -> Result<Arc<Self>> {
+        let working_state = Arc::new(WorkingState::new());
+
         let masterchain_zero_state_id = global_config.zero_state;
 
         let adnl = AdnlNode::new(ip_address, keystore, adnl_options);
@@ -65,10 +75,10 @@ impl NodeNetwork {
         let masterchain_overlay_short_id = masterchain_overlay_id.compute_short_id()?;
 
         let dht_key = adnl.key_by_tag(Self::TAG_DHT_KEY)?;
-        start_broadcasting_our_ip(dht.clone(), dht_key);
+        start_broadcasting_our_ip(working_state.clone(), dht.clone(), dht_key);
 
         let overlay_key = adnl.key_by_tag(Self::TAG_OVERLAY_KEY)?;
-        start_broadcasting_our_ip(dht.clone(), overlay_key);
+        start_broadcasting_our_ip(working_state.clone(), dht.clone(), overlay_key);
 
         let node_network = Arc::new(NodeNetwork {
             adnl,
@@ -81,6 +91,7 @@ impl NodeNetwork {
             masterchain_overlay_id,
             overlays: Arc::new(Default::default()),
             overlay_awaiters: OperationsPool::new("overlay_operations"),
+            working_state,
         });
 
         Ok(node_network)
@@ -103,6 +114,11 @@ impl NodeNetwork {
             .await?;
 
         Ok(overlay)
+    }
+
+    pub fn shutdown(&self) {
+        self.adnl.shutdown();
+        self.working_state.shutdown();
     }
 
     pub fn add_subscriber(
@@ -157,7 +173,12 @@ impl NodeNetwork {
             .add_public_overlay(&overlay_id, self.overlay_shard_options)?;
         let node = self.overlay.get_signed_node(&overlay_id)?;
 
-        start_broadcasting_our_node(self.dht.clone(), overlay_full_id, node);
+        start_broadcasting_our_node(
+            self.working_state.clone(),
+            self.dht.clone(),
+            overlay_full_id,
+            node,
+        );
 
         let peers = self.update_overlay_peers(&overlay_id, &mut None).await?;
         if peers.is_empty() {
@@ -186,6 +207,7 @@ impl NodeNetwork {
         self.start_updating_peers(&overlay_client);
 
         start_processing_peers(
+            self.working_state.clone(),
             neighbours,
             self.dht.clone(),
             self.overlay.clone(),
@@ -256,56 +278,108 @@ impl NodeNetwork {
     }
 }
 
-fn start_broadcasting_our_ip(dht: Arc<DhtNode>, key: Arc<StoredAdnlNodeKey>) {
+struct WorkingState {
+    working: AtomicBool,
+    signal: TriggerReceiver,
+    trigger: Trigger,
+}
+
+impl WorkingState {
+    fn new() -> Self {
+        let (trigger, signal) = trigger();
+        Self {
+            working: AtomicBool::new(true),
+            signal,
+            trigger,
+        }
+    }
+
+    fn shutdown(&self) {
+        self.working.store(false, Ordering::Release);
+        self.trigger.trigger();
+    }
+
+    fn is_working(&self) -> bool {
+        self.working.load(Ordering::Acquire)
+    }
+
+    /// Returns true if stopped
+    async fn wait_or_complete(&self, duration: Duration) -> bool {
+        tokio::select! {
+            _ = tokio::time::sleep(duration) => false,
+            _ = self.signal.clone() => true,
+        }
+    }
+}
+
+fn start_broadcasting_our_ip(
+    working_state: Arc<WorkingState>,
+    dht: Arc<DhtNode>,
+    key: Arc<StoredAdnlNodeKey>,
+) {
     const IP_BROADCASTING_INTERVAL: u64 = 500; // Seconds
+    let interval = Duration::from_secs(IP_BROADCASTING_INTERVAL);
 
     tokio::spawn(async move {
-        loop {
+        while working_state.is_working() {
             if let Err(e) = dht.store_ip_address(&key).await {
                 log::warn!("store ip address is ERROR: {}", e)
             }
 
-            tokio::time::sleep(Duration::from_secs(IP_BROADCASTING_INTERVAL)).await;
+            if working_state.wait_or_complete(interval).await {
+                break;
+            }
         }
+        log::warn!("Stopped broadcasting our ip");
     });
 }
 
 fn start_broadcasting_our_node(
+    working_state: Arc<WorkingState>,
     dht: Arc<DhtNode>,
     overlay_full_id: OverlayIdFull,
     overlay_node: ton::overlay::node::Node,
 ) {
     const NODE_BROADCASTING_INTERVAL: u64 = 500; // Seconds
+    let interval = Duration::from_secs(NODE_BROADCASTING_INTERVAL);
 
     tokio::spawn(async move {
-        loop {
+        while working_state.is_working() {
             let result = dht
                 .store_overlay_node(&overlay_full_id, &overlay_node)
                 .await;
 
             log::info!("overlay_store status: {:?}", result);
 
-            tokio::time::sleep(Duration::from_secs(NODE_BROADCASTING_INTERVAL)).await;
+            if working_state.wait_or_complete(interval).await {
+                break;
+            }
         }
+        log::warn!("Stopped broadcasting our node");
     });
 }
 
 fn start_processing_peers(
+    working_state: Arc<WorkingState>,
     neighbours: Arc<Neighbours>,
     dht: Arc<DhtNode>,
     overlay: Arc<OverlayNode>,
     overlay_id: OverlayIdShort,
 ) {
     const PEERS_PROCESSING_INTERVAL: u64 = 1; // Seconds
+    let interval = Duration::from_secs(PEERS_PROCESSING_INTERVAL);
 
     tokio::spawn(async move {
-        loop {
+        while working_state.is_working() {
             if let Err(e) = process_overlay_peers(&neighbours, &dht, &overlay, &overlay_id).await {
                 log::warn!("add_overlay_peers: {}", e);
             };
 
-            tokio::time::sleep(Duration::from_secs(PEERS_PROCESSING_INTERVAL)).await;
+            if working_state.wait_or_complete(interval).await {
+                break;
+            }
         }
+        log::warn!("Stopped processing peers");
     });
 }
 
