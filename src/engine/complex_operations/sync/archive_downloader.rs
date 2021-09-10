@@ -163,7 +163,7 @@ async fn download_archive_worker(ctx: Arc<DownloadContext>, mut seqno_rx: SeqNoR
             let result = tokio::select! {
                 data = archive_fut => data,
                 _ = ctx.complete_signal.clone() => {
-                    log::error!("Received complete signal");
+                    log::trace!("Received complete signal");
                     continue;
                 }
             };
