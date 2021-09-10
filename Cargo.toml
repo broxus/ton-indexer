@@ -48,7 +48,7 @@ nekoton-utils = { git = "https://github.com/broxus/nekoton.git" }
 ton-indexer-alloc = { path = "ton-indexer-alloc" }
 
 [dev-dependencies]
-clap = "3.0.0-beta.2"
+argh = "0.1"
 config = { version = "0.11", default-features = false, features = ["yaml"] }
 external-ip = "4.1"
 log4rs = "1.0"

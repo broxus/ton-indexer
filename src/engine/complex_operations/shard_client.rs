@@ -12,7 +12,7 @@ pub async fn walk_masterchain_blocks(
     engine: &Arc<Engine>,
     mut mc_block_id: ton_block::BlockIdExt,
 ) -> Result<()> {
-    loop {
+    while engine.is_working() {
         log::info!("walk_masterchain_blocks: {}", mc_block_id);
         mc_block_id = match load_next_masterchain_block(engine, &mc_block_id).await {
             Ok(id) => id,
@@ -22,6 +22,7 @@ pub async fn walk_masterchain_blocks(
             }
         }
     }
+    Ok(())
 }
 
 pub async fn walk_shard_blocks(
@@ -34,7 +35,7 @@ pub async fn walk_shard_blocks(
         .load_block_handle(&mc_block_id)?
         .ok_or(ShardClientError::ShardchainBlockHandleNotFound)?;
 
-    loop {
+    while engine.is_working() {
         log::info!("walk_shard_blocks: {}", handle.id());
         let (next_handle, next_block) = engine.wait_next_applied_mc_block(&handle, None).await?;
         handle = next_handle;
@@ -49,6 +50,7 @@ pub async fn walk_shard_blocks(
             }
         });
     }
+    Ok(())
 }
 
 async fn load_next_masterchain_block(

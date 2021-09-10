@@ -148,6 +148,11 @@ struct DownloadContext {
 
 async fn download_archive_worker(ctx: Arc<DownloadContext>, mut seqno_rx: SeqNoRx) {
     'tasks: while let Some(seqno) = seqno_rx.recv().await {
+        log::info!(
+            "sync: Start downloading archive for masterchain block {}",
+            seqno
+        );
+
         let data = loop {
             if ctx.complete.load(Ordering::Acquire) {
                 break 'tasks;
@@ -158,7 +163,7 @@ async fn download_archive_worker(ctx: Arc<DownloadContext>, mut seqno_rx: SeqNoR
             let result = tokio::select! {
                 data = archive_fut => data,
                 _ = ctx.complete_signal.clone() => {
-                    log::error!("Received complete signal");
+                    log::trace!("Received complete signal");
                     continue;
                 }
             };
@@ -187,11 +192,6 @@ async fn download_archive(
     active_peers: &Arc<ActivePeers>,
     mc_seq_no: u32,
 ) -> Result<Option<Vec<u8>>> {
-    log::info!(
-        "sync: Start downloading archive for masterchain block {}",
-        mc_seq_no
-    );
-
     match engine.download_archive(mc_seq_no, active_peers).await {
         Ok(Some(data)) => {
             log::info!(
