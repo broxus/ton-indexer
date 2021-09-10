@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::sync::{Arc, Weak};
 
 use anyhow::Result;
@@ -8,7 +9,6 @@ use crate::storage::{columns, StoredValue};
 use super::block_handle::*;
 use super::block_meta::*;
 use super::tree::*;
-use std::collections::HashSet;
 
 pub struct BlockHandleStorage {
     cache: Arc<FxDashMap<ton_block::BlockIdExt, Weak<BlockHandle>>>,
@@ -72,13 +72,11 @@ impl BlockHandleStorage {
     }
 
     /// returns number of dropped blocks and set of key blocks
-    pub fn drop_handles<'a>(
+    pub fn drop_handles_data<'a>(
         &self,
         ids: impl Iterator<Item = &'a ton_block::BlockIdExt>,
     ) -> Result<(usize, HashSet<ton_block::BlockIdExt>)> {
         let mut total = 0;
-        let mut tx = rocksdb::WriteBatch::default();
-        let cf = self.db.get_cf()?;
         let mut key_blocks = HashSet::new();
         for id in ids {
             let h = match self.load_handle(id)? {
@@ -89,12 +87,12 @@ impl BlockHandleStorage {
                 key_blocks.insert(id.clone());
                 continue;
             }
+            if h.meta().has_data() {
+                h.meta().set_has_data();
+            }
             drop(h);
-            self.cache.remove(id);
-            tx.delete_cf(&cf, id.root_hash.as_slice());
             total += 1;
         }
-        self.db.raw_db_handle().write(tx)?;
         Ok((total, key_blocks))
     }
 }

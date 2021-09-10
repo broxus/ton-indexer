@@ -243,6 +243,7 @@ impl BlockIndexDb {
         &self,
         older_then: u32,
     ) -> Result<impl Iterator<Item = (LtDbKeyOwned, LtDbEntry)> + '_> {
+        log::info!("Full len: {}", self.lt_db_iterator()?.count());
         Ok(self
             .lt_db_iterator()?
             .filter(move |(_, v)| v.gen_utime < older_then))

@@ -1,6 +1,5 @@
 pub use crate::config::*;
-pub use crate::engine::{Engine, EngineStatus, Subscriber};
-
+pub use crate::engine::{Engine, EngineStatus, GcType, Subscriber};
 mod config;
 mod engine;
 mod network;

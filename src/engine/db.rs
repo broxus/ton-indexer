@@ -1,6 +1,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use anyhow::Context;
 use anyhow::Result;
 use rlimit::Resource;
 use rocksdb::perf::MemoryUsageStats;
@@ -9,6 +10,7 @@ use ton_api::ton;
 
 use crate::storage::*;
 use crate::utils::*;
+use crate::GcType;
 use std::collections::HashSet;
 
 pub struct Db {
@@ -115,7 +117,8 @@ impl Db {
             .column::<columns::Next2>()
             .column::<columns::ArchiveManagerDb>()
             .column::<columns::BackgroundSyncMeta>()
-            .build()?;
+            .build()
+            .context("Failed building db")?;
 
         let block_handle_storage = BlockHandleStorage::with_db(Tree::new(db.clone())?);
         let shard_state_storage = ShardStateStorage::with_db(
@@ -204,9 +207,9 @@ impl Db {
 
         let archive_id = PackageEntryId::Block(handle.id());
         let mut already_existed = true;
-        if !handle.meta().has_data() || !self.archive_manager.has_file(&archive_id) {
+        if !handle.meta().has_data() || !self.archive_manager.has_file(&archive_id).await {
             let _lock = handle.block_file_lock().write().await;
-            if !handle.meta().has_data() || !self.archive_manager.has_file(&archive_id) {
+            if !handle.meta().has_data() || !self.archive_manager.has_file(&archive_id).await {
                 self.archive_manager
                     .add_file(&archive_id, block.data())
                     .await?;
@@ -235,7 +238,6 @@ impl Db {
         self.archive_manager
             .get_file(handle, &PackageEntryId::Block(handle.id()))
             .await
-            .map(|x| x.to_vec())
     }
 
     pub async fn store_block_proof(
@@ -264,9 +266,12 @@ impl Db {
         let mut already_existed = true;
         if proof.is_link() {
             let archive_id = PackageEntryId::ProofLink(block_id);
-            if !handle.meta().has_proof_link() || !self.archive_manager.has_file(&archive_id) {
+            if !handle.meta().has_proof_link() || !self.archive_manager.has_file(&archive_id).await
+            {
                 let _lock = handle.proof_file_lock().write().await;
-                if !handle.meta().has_proof_link() || !self.archive_manager.has_file(&archive_id) {
+                if !handle.meta().has_proof_link()
+                    || !self.archive_manager.has_file(&archive_id).await
+                {
                     self.archive_manager
                         .add_file(&archive_id, proof.data())
                         .await?;
@@ -278,9 +283,9 @@ impl Db {
             }
         } else {
             let archive_id = PackageEntryId::Proof(block_id);
-            if !handle.meta().has_proof() || !self.archive_manager.has_file(&archive_id) {
+            if !handle.meta().has_proof() || !self.archive_manager.has_file(&archive_id).await {
                 let _lock = handle.proof_file_lock().write().await;
-                if !handle.meta().has_proof() || !self.archive_manager.has_file(&archive_id) {
+                if !handle.meta().has_proof() || !self.archive_manager.has_file(&archive_id).await {
                     self.archive_manager
                         .add_file(&archive_id, proof.data())
                         .await?;
@@ -328,10 +333,7 @@ impl Db {
             return Err(DbError::BlockProofNotFound.into());
         }
 
-        self.archive_manager
-            .get_file(handle, &archive_id)
-            .await
-            .map(|x| x.to_vec())
+        self.archive_manager.get_file(handle, &archive_id).await
     }
 
     pub async fn store_shard_state(
@@ -504,44 +506,33 @@ impl Db {
         &self.background_sync_meta_store
     }
 
-    pub fn garbage_collect(&self, gc_type: GcType) -> Result<usize> {
+    pub async fn garbage_collect(&self, gc_type: GcType) -> Result<usize> {
         match gc_type {
             GcType::KeepLastNBlocks(_) => {
                 anyhow::bail!("todo!")
             }
             GcType::KeepNotOlderThen(seconds) => {
-                let now = tiny_adnl::utils::now() as u32;
-                let old_age = now - seconds;
+                let now = tiny_adnl::utils::now();
+                let old_age = now as u32 - seconds;
+                log::info!("Pruning block older then {}", old_age);
                 let old_blocks: HashSet<_> = self
                     .block_index_db
                     .get_blocks_older_then(old_age)?
                     .map(|x| x.1.block_id_ext)
-                    .filter_map(|x| -> Option<ton_block::BlockIdExt> {
-                        let shard_ident =
-                            ton_block::ShardIdent::with_tagged_prefix(x.workchain, x.shard as u64)
-                                .ok()?; //todo is it right conversion?
-                        Some(ton_block::BlockIdExt::with_params(
-                            shard_ident,
-                            x.seqno as u32,
-                            ton_types::UInt256::from(x.root_hash.0),
-                            ton_types::UInt256::from(x.file_hash.0),
-                        ))
-                    })
+                    .map(|x| convert_block_id_ext_api2blk(&x).unwrap())
                     .collect();
-                let (total, key_blocks) =
-                    self.block_handle_storage.drop_handles(old_blocks.iter())?;
+                log::info!("Block to prune: {}", old_blocks.len());
+                let (total, key_blocks) = self
+                    .block_handle_storage
+                    .drop_handles_data(old_blocks.iter())?;
+                log::info!("Meta collect took: {}", tiny_adnl::utils::now() - now);
                 let old_blocks: Vec<_> = old_blocks.difference(&key_blocks).collect();
-                self.block_index_db.gc(old_blocks.iter().copied())?;
-                self.archive_manager.gc(old_blocks.iter().copied())?;
+                self.archive_manager.gc(old_blocks.iter().copied()).await?;
+                log::info!("Archive gc took: {}", tiny_adnl::utils::now() - now);
                 Ok(total)
             }
         }
     }
-}
-
-pub enum GcType {
-    KeepLastNBlocks(u32),
-    KeepNotOlderThen(u32),
 }
 
 #[inline]

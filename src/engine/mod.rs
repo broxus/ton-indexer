@@ -56,6 +56,7 @@ pub struct Engine {
     last_known_mc_block_seqno: AtomicU32,
     last_known_key_block_seqno: AtomicU32,
 
+    parallel_tasks: usize,
     shard_state_cache_enabled: bool,
     shard_states_cache: ShardStateCache,
 
@@ -79,7 +80,12 @@ impl Engine {
             config.max_db_memory_usage,
         )
         .await?;
-
+        // let gced = db
+        //     .garbage_collect(GcType::KeepNotOlderThen(86400))
+        //     .await
+        //     .unwrap();
+        // log::info!("Gced {}", gced);
+        // std::process::exit(0);
         let zero_state_id = global_config.zero_state.clone();
 
         let mut init_mc_block_id = zero_state_id.clone();
@@ -110,6 +116,7 @@ impl Engine {
             init_mc_block_id,
             last_known_mc_block_seqno: AtomicU32::new(0),
             last_known_key_block_seqno: AtomicU32::new(0),
+            parallel_tasks: config.parallel_downloads,
             shard_state_cache_enabled,
             shard_states_cache: ShardStateCache::new(120),
             shard_states_operations: OperationsPool::new("shard_states_operations"),
@@ -875,9 +882,15 @@ impl Engine {
         })
     }
 
-    pub fn gc(&self, gc_type: GcType) -> Result<usize> {
-        self.db.garbage_collect(gc_type)
+    pub async fn gc(&self, gc_type: GcType) -> Result<usize> {
+        self.db.garbage_collect(gc_type).await
     }
+}
+
+#[derive(Debug)]
+pub enum GcType {
+    KeepLastNBlocks(u32),
+    KeepNotOlderThen(u32),
 }
 
 #[derive(thiserror::Error, Debug)]

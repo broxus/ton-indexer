@@ -27,6 +27,9 @@ pub struct NodeConfig {
     pub max_db_memory_usage: usize,
 
     #[serde(default)]
+    pub parallel_downloads: usize,
+
+    #[serde(default)]
     pub adnl_options: AdnlNodeOptions,
     #[serde(default)]
     pub rldp_options: RldpNodeOptions,
@@ -48,6 +51,7 @@ impl Default for NodeConfig {
             shard_state_cache_enabled: false,
             old_blocks_policy: Default::default(),
             max_db_memory_usage: default_max_db_memory_usage(),
+            parallel_downloads: 16,
             adnl_options: Default::default(),
             rldp_options: Default::default(),
             dht_options: Default::default(),

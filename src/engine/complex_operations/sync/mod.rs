@@ -4,22 +4,21 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 
-use self::archive_downloader::ArchiveDownloader;
 use crate::engine::Engine;
 use crate::storage::*;
 use crate::utils::*;
 
-mod archive_downloader;
+use self::archive_downloader::ArchiveDownloader;
 
-const SYNC_CONCURRENCY: usize = 8;
-const BACKGROUND_SYNC_CONCURRENCY: usize = 16;
+mod archive_downloader;
 
 pub async fn sync(engine: &Arc<Engine>) -> Result<()> {
     log::info!("Started sync");
 
     let active_peers = Arc::new(ActivePeers::default());
 
-    let mut downloader = ArchiveDownloader::new(engine.clone(), active_peers, SYNC_CONCURRENCY);
+    let mut downloader =
+        ArchiveDownloader::new(engine.clone(), active_peers, engine.parallel_tasks);
 
     'outer: while !engine.is_synced().await? {
         let last_mc_block_id = {
@@ -434,7 +433,7 @@ async fn download_archives(
     let mut last_mc_seqno = low_seqno;
 
     let mut downloader =
-        ArchiveDownloader::new(engine.clone(), active_peers, BACKGROUND_SYNC_CONCURRENCY);
+        ArchiveDownloader::new(engine.clone(), active_peers, engine.parallel_tasks);
 
     while last_mc_seqno < high_seqno {
         let next_mc_seq_no = last_mc_seqno + 1;
