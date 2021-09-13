@@ -92,7 +92,7 @@ impl FullNodeOverlayClient for OverlayClient {
                     block: convert_block_id_ext_blk2api(block_id),
                     masterchain_block: convert_block_id_ext_blk2api(masterchain_block_id),
                 }),
-                None,
+                Some(5),
                 Some(TIMEOUT_PREPARE),
                 Some(active_peers),
             )
@@ -391,9 +391,9 @@ impl FullNodeOverlayClient for OverlayClient {
                 ton::rpc::ton_node::GetArchiveInfo {
                     masterchain_seqno: masterchain_seqno as i32,
                 },
-                None,
+                Some(5),
                 Some(TIMEOUT_PREPARE),
-                None,
+                Some(active_peers),
             )
             .await?;
 
@@ -446,7 +446,7 @@ impl FullNodeOverlayClient for OverlayClient {
                         part_attempt
                     );
 
-                    if part_attempt > 10 {
+                    if part_attempt > 2 {
                         active_peers.remove(neighbour.peer_id());
                         return Err(anyhow!(
                             "Failed to download archive after {} attempts: {}",
@@ -475,4 +475,4 @@ impl FullNodeOverlayClient for OverlayClient {
     }
 }
 
-const TIMEOUT_PREPARE: u64 = 6000; // Milliseconds
+const TIMEOUT_PREPARE: u64 = 1000; // Milliseconds

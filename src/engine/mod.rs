@@ -16,6 +16,7 @@ use self::complex_operations::*;
 use self::db::*;
 use self::downloader::*;
 use self::node_state::*;
+use std::num::NonZeroUsize;
 
 pub mod complex_operations;
 mod db;
@@ -57,7 +58,7 @@ pub struct Engine {
     last_known_mc_block_seqno: AtomicU32,
     last_known_key_block_seqno: AtomicU32,
 
-    parallel_tasks: usize,
+    parallel_tasks: NonZeroUsize,
     shard_state_cache_enabled: bool,
     shard_states_cache: ShardStateCache,
 

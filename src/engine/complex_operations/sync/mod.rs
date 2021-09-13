@@ -1,5 +1,5 @@
 use std::borrow::Cow;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
@@ -8,7 +8,12 @@ use crate::engine::Engine;
 use crate::storage::*;
 use crate::utils::*;
 
-use self::archive_downloader::ArchiveDownloader;
+use crate::engine::complex_operations::sync::archive_downloader::{
+    download_archive_or_die, start_download, ARCHIVE_SLICE,
+};
+use futures::{Stream, StreamExt};
+use std::option::Option::Some;
+use ton_block::BlockIdExt;
 
 mod archive_downloader;
 
@@ -16,9 +21,6 @@ pub async fn sync(engine: &Arc<Engine>) -> Result<()> {
     log::info!("Started sync");
 
     let active_peers = Arc::new(ActivePeers::default());
-
-    let mut downloader =
-        ArchiveDownloader::new(engine.clone(), active_peers, engine.parallel_tasks);
 
     'outer: while !engine.is_synced().await? {
         let last_mc_block_id = {
@@ -42,7 +44,8 @@ pub async fn sync(engine: &Arc<Engine>) -> Result<()> {
 
         let next_mc_seq_no = last_mc_block_id.seq_no + 1;
 
-        let data = downloader.wait_next_archive(next_mc_seq_no).await?;
+        let data =
+            download_archive_or_die(engine.clone(), active_peers.clone(), next_mc_seq_no).await;
         match apply(engine, &last_mc_block_id, next_mc_seq_no, data).await {
             Ok(()) => continue 'outer,
             Err(e) => {
@@ -380,13 +383,17 @@ async fn download_archives(
     high_seqno: u32,
     mut prev_key_block_id: ton_block::BlockIdExt,
 ) -> Result<()> {
+    enum SyncStatus {
+        Done,
+        InProgress { downloaded: Vec<u32> },
+    }
     async fn save_archive(
         engine: &Arc<Engine>,
         archive: Vec<u8>,
         high_seqno: u32,
         prev_key_block_id: &mut ton_block::BlockIdExt,
         last_mc_seq_no: &mut u32,
-    ) -> Result<bool> {
+    ) -> Result<SyncStatus> {
         //todo store block maps in db
         let maps = parse_archive(archive)?;
         for (id, entry) in &maps.blocks {
@@ -406,56 +413,106 @@ async fn download_archives(
                 *prev_key_block_id = id.clone();
             }
         }
+        let ids: Vec<_> = maps.mc_block_ids.values().collect();
 
-        Ok(if let Some(max_id) = maps.mc_block_ids.values().max() {
+        let max = ids.iter().max();
+        Ok(if let Some(max_id) = max {
             engine
                 .db
                 .background_sync_store()
                 .store_low_key_block(max_id)?;
             log::info!(
                 "Background sync: Saved archive from {} to {}",
-                maps.mc_block_ids
-                    .values()
-                    .min()
-                    .map(|id| id.seq_no)
-                    .unwrap_or_default(),
+                ids.iter().min().map(|id| id.seq_no).unwrap_or_default(),
                 max_id.seq_no
             );
 
             *last_mc_seq_no = max_id.seq_no;
-            max_id.seq_no >= high_seqno
+            if max_id.seq_no >= high_seqno {
+                SyncStatus::Done
+            } else {
+                SyncStatus::InProgress {
+                    downloaded: ids.iter().map(|x| x.seq_no).collect(),
+                }
+            }
         } else {
-            false
+            SyncStatus::InProgress {
+                downloaded: Default::default(),
+            }
         })
     }
 
     let active_peers = Arc::new(ActivePeers::default());
     let mut last_mc_seqno = low_seqno;
 
-    let mut downloader =
-        ArchiveDownloader::new(engine.clone(), active_peers, engine.parallel_tasks);
-
-    while last_mc_seqno < high_seqno {
-        let next_mc_seq_no = last_mc_seqno + 1;
-
-        let data = downloader.wait_next_archive(next_mc_seq_no).await?;
-        if save_archive(
+    let mut downloader = start_download(
+        engine.clone(),
+        active_peers.clone(),
+        ARCHIVE_SLICE,
+        low_seqno,
+        high_seqno,
+        engine.parallel_tasks,
+    );
+    let mut last_saved = Vec::new();
+    while let Some(data) = downloader.next().await {
+        let res = save_archive(
             engine,
             data,
             high_seqno,
             &mut prev_key_block_id,
             &mut last_mc_seqno,
         )
-        .await
-        .context("Failed saving archive")?
-        {
-            return Ok(());
+        .await?;
+        match res {
+            SyncStatus::Done => return Ok(()),
+            SyncStatus::InProgress { downloaded } => {
+                let current_saved_id = match downloaded.iter().min() {
+                    Some(a) => *a,
+                    None => continue,
+                };
+                let last_saved_id = match last_saved.iter().max() {
+                    Some(a) => *a,
+                    None => {
+                        last_saved = downloaded;
+                        continue;
+                    }
+                };
+                if current_saved_id - last_saved_id > 1 {
+                    log::warn!(
+                        "Found gaps. Last: {}. Current: {}",
+                        last_saved_id,
+                        current_saved_id
+                    );
+                    last_saved = downloaded;
+                    let saved: Vec<_> = start_download(
+                        engine.clone(),
+                        active_peers.clone(),
+                        1,
+                        last_saved_id,
+                        current_saved_id,
+                        engine.parallel_tasks,
+                    )
+                    .collect()
+                    .await;
+                    for arch in saved {
+                        save_archive(
+                            &engine,
+                            arch,
+                            high_seqno,
+                            &mut prev_key_block_id,
+                            &mut last_mc_seqno,
+                        )
+                        .await?;
+                    }
+                }
+            }
         }
     }
-
     Ok(())
 }
 
+fn gaps_handler(gap_start: u32, gap_end: u32, engine: Arc<Engine>, active_peers: Arc<ActivePeers>) {
+}
 #[derive(thiserror::Error, Debug)]
 enum SyncError {
     #[error("Empty archive package")]

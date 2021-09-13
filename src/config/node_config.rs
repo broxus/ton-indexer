@@ -5,6 +5,7 @@ use anyhow::Result;
 use nekoton_utils::*;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
+use std::num::NonZeroUsize;
 use sysinfo::SystemExt;
 use tiny_adnl::*;
 
@@ -26,8 +27,7 @@ pub struct NodeConfig {
     #[serde(default = "default_max_db_memory_usage")]
     pub max_db_memory_usage: usize,
 
-    #[serde(default)]
-    pub parallel_downloads: usize,
+    pub parallel_downloads: NonZeroUsize,
 
     #[serde(default)]
     pub adnl_options: AdnlNodeOptions,
@@ -43,20 +43,22 @@ pub struct NodeConfig {
 
 impl Default for NodeConfig {
     fn default() -> Self {
-        Self {
-            ip_address: SocketAddrV4::new(std::net::Ipv4Addr::LOCALHOST, 30303),
-            adnl_keys: Default::default(),
-            rocks_db_path: default_rocksdb_path(),
-            file_db_path: default_file_path(),
-            shard_state_cache_enabled: false,
-            old_blocks_policy: Default::default(),
-            max_db_memory_usage: default_max_db_memory_usage(),
-            parallel_downloads: 16,
-            adnl_options: Default::default(),
-            rldp_options: Default::default(),
-            dht_options: Default::default(),
-            neighbours_options: Default::default(),
-            overlay_shard_options: Default::default(),
+        unsafe {
+            Self {
+                ip_address: SocketAddrV4::new(std::net::Ipv4Addr::LOCALHOST, 30303),
+                adnl_keys: Default::default(),
+                rocks_db_path: default_rocksdb_path(),
+                file_db_path: default_file_path(),
+                shard_state_cache_enabled: false,
+                old_blocks_policy: Default::default(),
+                max_db_memory_usage: default_max_db_memory_usage(),
+                parallel_downloads: NonZeroUsize::new_unchecked(16),
+                adnl_options: Default::default(),
+                rldp_options: Default::default(),
+                dht_options: Default::default(),
+                neighbours_options: Default::default(),
+                overlay_shard_options: Default::default(),
+            }
         }
     }
 }
