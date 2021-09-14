@@ -13,6 +13,7 @@ use crate::engine::complex_operations::sync::archive_downloader::{
 use crate::engine::Engine;
 use crate::storage::*;
 use crate::utils::*;
+use std::sync::atomic::Ordering;
 
 mod archive_downloader;
 
@@ -20,31 +21,33 @@ pub async fn sync(engine: &Arc<Engine>) -> Result<()> {
     log::info!("Started sync");
 
     let active_peers = Arc::new(ActivePeers::default());
-    let mut archives = start_download(
+    let last_key_block = engine.last_known_key_block_seqno.load(Ordering::Acquire);
+    let archives = start_download(
         engine.clone(),
         active_peers.clone(),
         ARCHIVE_SLICE,
         engine.load_last_applied_mc_block_id().await?.seq_no,
-        engine.load_shards_client_mc_block_id().await?.seq_no,
+        last_key_block,
     )
-    .await
-    .context("To small interval")?;
-    while let Some(archive) = archives.next().await {
-        let mc_block_id = engine.load_last_applied_mc_block_id().await?;
-        match import_package(engine, archive, &mc_block_id).await {
-            Ok(()) => continue,
-            Err(e) => {
-                log::error!(
-                    "sync: Failed to apply queued archive for block {}: {:?}",
-                    mc_block_id.seq_no,
-                    e
-                );
+    .await;
+    if let Some(mut archives) = archives {
+        while let Some(archive) = archives.next().await {
+            let mc_block_id = engine.load_last_applied_mc_block_id().await?;
+            match import_package(engine, archive, &mc_block_id).await {
+                Ok(()) => continue,
+                Err(e) => {
+                    log::error!(
+                        "sync: Failed to apply queued archive for block {}: {:?}",
+                        mc_block_id.seq_no,
+                        e
+                    );
+                }
             }
+            log::info!(
+                "sync: Imported archive package for block {}",
+                mc_block_id.seq_no
+            );
         }
-        log::info!(
-            "sync: Imported archive package for block {}",
-            mc_block_id.seq_no
-        );
     }
 
     'outer: while !engine.is_synced().await? {
