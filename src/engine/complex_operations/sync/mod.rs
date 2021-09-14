@@ -1,5 +1,6 @@
 use std::borrow::Cow;
 use std::collections::BTreeMap;
+use std::collections::HashSet;
 use std::option::Option::Some;
 use std::sync::Arc;
 
@@ -7,7 +8,7 @@ use anyhow::{Context, Result};
 use futures::StreamExt;
 
 use crate::engine::complex_operations::sync::archive_downloader::{
-    download_archive_or_die, start_download, ArchiveStatus, ARCHIVE_SLICE,
+    download_archive_or_die, start_download, ARCHIVE_SLICE,
 };
 use crate::engine::Engine;
 use crate::storage::*;
@@ -19,6 +20,32 @@ pub async fn sync(engine: &Arc<Engine>) -> Result<()> {
     log::info!("Started sync");
 
     let active_peers = Arc::new(ActivePeers::default());
+    let mut archives = start_download(
+        engine.clone(),
+        active_peers.clone(),
+        ARCHIVE_SLICE,
+        engine.load_last_applied_mc_block_id().await?.seq_no,
+        engine.load_shards_client_mc_block_id().await?.seq_no,
+    )
+    .await
+    .context("To small interval")?;
+    while let Some(archive) = archives.next().await {
+        let mc_block_id = engine.load_last_applied_mc_block_id().await?;
+        match import_package(engine, archive, &mc_block_id).await {
+            Ok(()) => continue,
+            Err(e) => {
+                log::error!(
+                    "sync: Failed to apply queued archive for block {}: {:?}",
+                    mc_block_id.seq_no,
+                    e
+                );
+            }
+        }
+        log::info!(
+            "sync: Imported archive package for block {}",
+            mc_block_id.seq_no
+        );
+    }
 
     'outer: while !engine.is_synced().await? {
         let last_mc_block_id = {
@@ -306,12 +333,44 @@ pub struct BlockMaps {
     blocks: BTreeMap<ton_block::BlockIdExt, BlocksEntry>,
 }
 
+impl PartialEq for BlockMaps {
+    fn eq(&self, other: &Self) -> bool {
+        if self.mc_block_ids.is_empty() || other.mc_block_ids.is_empty() {
+            return false;
+        }
+        //checked upper
+        self.lowest_id().unwrap() == other.lowest_id().unwrap()
+    }
+}
+
+impl Eq for BlockMaps {}
+
 impl BlockMaps {
     pub fn lowest_id(&self) -> Option<&ton_block::BlockIdExt> {
         self.mc_block_ids.iter().map(|x| x.1).min()
     }
     pub fn highest_id(&self) -> Option<&ton_block::BlockIdExt> {
         self.mc_block_ids.iter().map(|x| x.1).max()
+    }
+
+    pub fn is_contiguous(left: &Self, right: &Self) -> Option<bool> {
+        let left_blocks: HashSet<u32> = left.mc_block_ids.iter().map(|x| x.1.seq_no).collect();
+        let right_blocks: HashSet<u32> = left.mc_block_ids.iter().map(|x| x.1.seq_no).collect();
+        if left_blocks.intersection(&right_blocks).next().is_some() {
+            return Some(true);
+        }
+        let left_highest = left.highest_id()?.seq_no;
+        let right_lowest = right.lowest_id()?.seq_no;
+        if left_highest > right_lowest {
+            return None;
+        }
+        Some(left_highest - right_lowest < 1)
+    }
+
+    pub fn get_distance(left: &Self, right: &Self) -> Option<(u32, u32)> {
+        let left_highest = left.highest_id()?.seq_no;
+        let right_lowest = right.lowest_id()?.seq_no;
+        Some((left_highest, right_lowest))
     }
 }
 
@@ -394,7 +453,6 @@ async fn download_archives(
         peers: Arc::new(Default::default()),
         high_seqno,
         prev_key_block_id: &mut prev_key_block_id,
-        prev_saved_block_id: low_seqno,
     };
     let mut stream = start_download(
         engine.clone(),
@@ -402,47 +460,17 @@ async fn download_archives(
         ARCHIVE_SLICE,
         low_seqno,
         high_seqno,
-    );
+    )
+    .await
+    .context("To small bounds")?;
     while let Some(a) = stream.next().await {
-        let res = match a {
-            ArchiveStatus::Done { maps, seqno } => {
-                if maps.mc_block_ids.is_empty() {
-                    let maps = download_arch(engine.clone(), &context, seqno).await;
-                    save_archive(engine, maps, &mut context).await
-                } else {
-                    save_archive(engine, maps, &mut context).await
-                }?
-            }
-            ArchiveStatus::ParsingFailed(seqno) => {
-                let maps = download_arch(engine.clone(), &context, seqno).await;
-                save_archive(engine, maps, &mut context).await?
-            }
-        };
+        let res = save_archive(engine, a, &mut context).await?;
         if let SyncStatus::Done = res {
             return Ok(());
         }
     }
 
     Ok(())
-}
-
-async fn download_arch(
-    engine: Arc<Engine>,
-    context: &SaveContext<'_>,
-    seqno: u32,
-) -> Arc<BlockMaps> {
-    loop {
-        let arch = download_archive_or_die(engine.clone(), context.peers.clone(), seqno).await;
-        match parse_archive(arch) {
-            Ok(a) if !a.mc_block_ids.is_empty() => break a,
-            Err(e) => {
-                log::error!("Failed parsing archive: {}", e);
-            }
-            _ => {
-                log::error!("Empty archive {}", seqno);
-            }
-        };
-    }
 }
 
 enum SyncStatus {
@@ -455,7 +483,6 @@ struct SaveContext<'a> {
     peers: Arc<ActivePeers>,
     high_seqno: u32,
     prev_key_block_id: &'a mut ton_block::BlockIdExt,
-    prev_saved_block_id: u32,
 }
 
 #[async_recursion::async_recursion]
@@ -478,25 +505,6 @@ async fn save_archive(
         lowest_id,
         highest_id.seq_no
     );
-
-    if lowest_id.seq_no >= context.prev_saved_block_id
-        && (lowest_id.seq_no - context.prev_saved_block_id) > 1
-    {
-        return Ok(
-            if gaps_handler(
-                lowest_id.seq_no,
-                context.prev_saved_block_id,
-                engine.clone(),
-                context,
-            )
-            .await?
-            {
-                SyncStatus::Done
-            } else {
-                SyncStatus::InProgress
-            },
-        );
-    }
 
     for (id, entry) in &maps.blocks {
         let (block, proof) = entry.get_data()?;
@@ -528,7 +536,6 @@ async fn save_archive(
             .db
             .background_sync_store()
             .store_low_key_block(highest_id)?;
-        context.prev_saved_block_id = highest_id.seq_no;
         log::info!(
             "Background sync: Saved archive from {} to {}",
             lowest_id,
@@ -541,51 +548,6 @@ async fn save_archive(
             SyncStatus::InProgress
         }
     })
-}
-
-async fn gaps_handler(
-    gap_start: u32,
-    gap_end: u32,
-    engine: Arc<Engine>,
-    context: &mut SaveContext<'_>,
-) -> Result<bool> {
-    if gap_start > gap_end {
-        return Ok(false);
-    }
-    log::info!("Need to fill gap between {} and {}", gap_start, gap_end);
-    let mut archives: Vec<ArchiveStatus> = start_download(
-        engine.clone(),
-        context.peers.clone(),
-        (ARCHIVE_SLICE / 2) - 1,
-        gap_start,
-        gap_end,
-    )
-    .collect()
-    .await;
-    log::info!("Downloaded {} archives for gap handling", archives.len());
-    archives.dedup_by(|a, b| a == b);
-    log::info!("After dedup: {}", archives.len());
-    for arch in archives {
-        let res = match arch {
-            ArchiveStatus::Done { maps, seqno } => {
-                if maps.mc_block_ids.is_empty() {
-                    let maps = download_arch(engine.clone(), context, seqno).await;
-                    save_archive(&engine, maps, context).await?
-                } else {
-                    save_archive(&engine, maps, context).await?
-                }
-            }
-            ArchiveStatus::ParsingFailed(seqno) => {
-                let maps = download_arch(engine.clone(), context, seqno).await;
-                save_archive(&engine, maps, context).await?
-            }
-        };
-        match res {
-            SyncStatus::Done => return Ok(true),
-            _ => continue,
-        }
-    }
-    Ok(false)
 }
 
 #[derive(thiserror::Error, Debug)]
