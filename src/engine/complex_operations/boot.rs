@@ -174,7 +174,6 @@ async fn get_key_blocks(
                     handle.id(),
                     e
                 );
-                tokio::time::sleep(Duration::from_millis(10)).await;
                 continue;
             }
         };

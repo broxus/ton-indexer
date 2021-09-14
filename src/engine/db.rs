@@ -533,6 +533,10 @@ impl Db {
             }
         }
     }
+
+    pub fn key_blocks_meta_iterator(&self) -> Result<impl Iterator<Item = BlockMeta> + '_> {
+        self.block_handle_storage.key_blocks_iter()
+    }
 }
 
 #[inline]

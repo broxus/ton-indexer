@@ -13,7 +13,6 @@ use crate::engine::complex_operations::sync::archive_downloader::{
 use crate::engine::Engine;
 use crate::storage::*;
 use crate::utils::*;
-use std::sync::atomic::Ordering;
 
 mod archive_downloader;
 
@@ -21,13 +20,25 @@ pub async fn sync(engine: &Arc<Engine>) -> Result<()> {
     log::info!("Started sync");
 
     let active_peers = Arc::new(ActivePeers::default());
-    let last_key_block = engine.last_known_key_block_seqno.load(Ordering::Acquire);
+    let keyblock_seqno = engine
+        .db
+        .key_blocks_meta_iterator()?
+        .into_iter()
+        .max_by(|a, b| a.gen_utime().cmp(&b.gen_utime()))
+        .context("No key blocks")?
+        .masterchain_ref_seqno();
+    let last_applied = engine.load_last_applied_mc_block_id().await?.seq_no;
+    log::info!(
+        "Creating archives stream from {} to {}",
+        last_applied,
+        keyblock_seqno
+    );
     let archives = start_download(
         engine.clone(),
         active_peers.clone(),
         ARCHIVE_SLICE,
-        engine.load_last_applied_mc_block_id().await?.seq_no,
-        last_key_block,
+        last_applied,
+        keyblock_seqno,
     )
     .await;
     if let Some(mut archives) = archives {
