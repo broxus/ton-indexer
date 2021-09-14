@@ -1,17 +1,34 @@
-use std::fmt::Formatter;
-use std::num::NonZeroUsize;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
 
-use anyhow::{Context, Result};
-use futures::stream::{BoxStream, FuturesOrdered};
-use tiny_adnl::utils::*;
-use tokio::sync::mpsc;
+use anyhow::Result;
+use futures::{Stream, StreamExt};
 
 use crate::engine::Engine;
 use crate::utils::*;
-use futures::{Stream, StreamExt, TryStreamExt};
+
+use super::BlockMaps;
+
+pub enum ArchiveStatus {
+    Done { maps: Arc<BlockMaps>, seqno: u32 },
+    ParsingFailed(u32),
+}
+
+impl ArchiveStatus {
+    fn seqno(&self) -> u32 {
+        match self {
+            ArchiveStatus::ParsingFailed(a) => *a,
+            ArchiveStatus::Done { seqno, .. } => *seqno,
+        }
+    }
+}
+
+impl Eq for ArchiveStatus {}
+
+impl PartialEq for ArchiveStatus {
+    fn eq(&self, other: &Self) -> bool {
+        self.seqno() == other.seqno()
+    }
+}
 
 pub fn start_download(
     engine: Arc<Engine>,
@@ -19,13 +36,25 @@ pub fn start_download(
     step: u32,
     from: u32,
     to: u32,
-    num_workers: NonZeroUsize,
-) -> impl Stream<Item = Vec<u8>> {
+) -> impl Stream<Item = ArchiveStatus> {
+    let num_tasks = engine.parallel_tasks.get();
     futures::stream::iter((from..to).step_by(step as usize))
         .inspect(|x| log::info!("Downloading {} arch", x))
         .map(move |x| (x, engine.clone(), active_peers.clone()))
-        .map(|(x, engine, peers)| async move { download_archive_or_die(engine, peers, x).await })
-        .buffered(num_workers.get())
+        .map(|(x, engine, peers)| async move {(x, download_archive_or_die(engine, peers, x).await)
+        })
+        .buffered(num_tasks)
+        .map(|(seq_no, archive)| (seq_no, super::parse_archive(archive)))
+        .map(|(seq_no, archive)| match archive {
+            Ok(a) => ArchiveStatus::Done {
+                maps: a,
+                seqno: seq_no,
+            },
+            Err(e) => {
+                log::error!("Failed parsing archive {}. Downloading again: {}", e,seq_no);
+                ArchiveStatus::ParsingFailed(seq_no)
+            }
+        })
 }
 
 pub async fn download_archive_or_die(
@@ -39,7 +68,6 @@ pub async fn download_archive_or_die(
         match res {
             Ok(Some(a)) => return a,
             _ => {
-                tokio::time::sleep(Duration::from_secs(1)).await;
                 continue;
             }
         }
