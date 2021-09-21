@@ -4,11 +4,12 @@ use std::time::Duration;
 use anyhow::Result;
 use tiny_adnl::utils::*;
 
-use super::download_state::*;
 use crate::engine::node_state::*;
 use crate::engine::Engine;
 use crate::storage::*;
 use crate::utils::*;
+
+use super::download_state::*;
 
 #[derive(Debug, Clone)]
 pub struct BootData {
@@ -17,6 +18,7 @@ pub struct BootData {
 }
 
 pub async fn boot(engine: &Arc<Engine>) -> Result<BootData> {
+    log::info!("Starting boot");
     let last_mc_block_id = match LastMcBlockId::load_from_db(engine.db.as_ref()) {
         Ok(block_id) => {
             let last_mc_block_id = convert_block_id_ext_api2blk(&block_id.0)?;
@@ -56,13 +58,14 @@ pub async fn boot(engine: &Arc<Engine>) -> Result<BootData> {
 }
 
 async fn cold_boot(engine: &Arc<Engine>) -> Result<ton_block::BlockIdExt> {
+    log::info!("Starting cold boot");
     let boot_data = prepare_cold_boot_data(engine).await?;
     let key_blocks = get_key_blocks(engine, boot_data).await?;
     let last_key_block = choose_key_block(key_blocks)?;
 
     let block_id = last_key_block.id();
     download_start_blocks_and_states(engine, block_id).await?;
-
+    log::info!("Cold boot finished");
     Ok(block_id.clone())
 }
 
@@ -70,6 +73,7 @@ async fn warm_boot(
     engine: &Arc<Engine>,
     mut last_mc_block_id: ton_block::BlockIdExt,
 ) -> Result<ton_block::BlockIdExt> {
+    log::info!("Starting warm boot");
     let handle = engine
         .load_block_handle(&last_mc_block_id)?
         .ok_or(BootError::FailedToLoadInitialBlock)?;
@@ -84,7 +88,7 @@ async fn warm_boot(
             .master_block_id()
             .1
     }
-
+    log::info!("Warm boot finished");
     Ok(last_mc_block_id)
 }
 

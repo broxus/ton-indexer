@@ -115,7 +115,7 @@ impl Engine {
         )
         .await?;
         network.start().await?;
-
+        log::info!("Network started");
         let engine = Arc::new(Self {
             is_working: AtomicBool::new(true),
             db,
@@ -137,7 +137,7 @@ impl Engine {
         engine
             .get_full_node_overlay(ton_block::BASE_WORKCHAIN_ID, ton_block::SHARD_FULL)
             .await?;
-
+        log::info!("Overlay connected");
         Ok(engine)
     }
 
@@ -155,13 +155,11 @@ impl Engine {
             .network
             .compute_overlay_id(ton_block::BASE_WORKCHAIN_ID, ton_block::SHARD_FULL)?;
         self.network.add_subscriber(basechain_overlay_id, service);
-
         // Boot
         let BootData {
             last_mc_block_id,
             shards_client_mc_block_id,
         } = boot(self).await?;
-
         log::info!(
             "Initialized (last block: {}, shards client block id: {})",
             last_mc_block_id,
@@ -186,7 +184,6 @@ impl Engine {
                 background_sync(self, from_seqno).await?;
             }
         }
-
         // Synchronize
         if !self.is_synced().await? {
             sync(self).await?;
