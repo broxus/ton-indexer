@@ -40,6 +40,7 @@ pub mod columns {
         const NAME: &'static str = "block_handles";
     }
 
+    /// Maps BlockId to data
     pub struct ArchiveManagerDb;
     impl Column for ArchiveManagerDb {
         const NAME: &'static str = "archive";

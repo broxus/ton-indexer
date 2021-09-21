@@ -78,23 +78,25 @@ impl BlockHandleStorage {
         ids: impl Iterator<Item = &'a ton_block::BlockIdExt>,
     ) -> Result<(usize, HashSet<ton_block::BlockIdExt>)> {
         let mut total = 0;
-        let mut key_blocks = HashSet::new();
+        let mut untouched = HashSet::new();
         for id in ids {
             let h = match self.load_handle(id)? {
                 Some(a) => a,
                 None => continue,
             };
             if h.meta().is_key_block() {
-                key_blocks.insert(id.clone());
+                untouched.insert(id.clone());
                 continue;
             }
             if h.meta().has_data() {
                 h.meta().set_has_data();
+            } else {
+                untouched.insert(id.clone());
             }
             drop(h);
             total += 1;
         }
-        Ok((total, key_blocks))
+        Ok((total, untouched))
     }
 
     pub fn key_blocks_iter(&self) -> Result<impl Iterator<Item = BlockMeta> + '_> {

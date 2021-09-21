@@ -2,13 +2,14 @@ use std::borrow::Borrow;
 use std::hash::Hash;
 
 use anyhow::Result;
+use rocksdb::IteratorMode;
+use tokio::sync::RwLock;
 
 use crate::storage::columns::ArchiveManagerDb;
 use crate::storage::Tree;
 
 use super::block_handle::*;
 use super::package_entry_id::*;
-use tokio::sync::RwLock;
 
 pub struct ArchiveManager {
     db: RwLock<Tree<ArchiveManagerDb>>,
@@ -69,28 +70,21 @@ impl ArchiveManager {
         let lock = self.db.write().await;
         let cf = lock.get_cf()?;
         let mut tx = rocksdb::WriteBatch::default();
-        let mut tot = 0;
         for id in ids {
             let id1 = PackageEntryId::Block(id).to_vec()?;
             let id2 = PackageEntryId::Proof(id).to_vec()?;
             let id3 = PackageEntryId::ProofLink(id).to_vec()?;
-            if lock.contains_key(&id1)? {
-                tot += 1;
-            }
-            if lock.contains_key(&id2)? {
-                tot += 1;
-            }
-            if lock.contains_key(&id3)? {
-                tot += 1;
-            }
             tx.delete_cf(&cf, id1);
             tx.delete_cf(&cf, id2);
             tx.delete_cf(&cf, id3);
         }
-        log::warn!("Tot: {}", tot);
         let db = lock.raw_db_handle().clone();
         tokio::task::spawn_blocking(move || db.write(tx)).await??;
         Ok(())
+    }
+
+    pub async fn get_tot_size(&self) -> Result<usize> {
+        self.db.read().await.size()
     }
 }
 

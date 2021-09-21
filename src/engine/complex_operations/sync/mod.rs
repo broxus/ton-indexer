@@ -1,11 +1,13 @@
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::collections::HashSet;
+use std::hash::BuildHasherDefault;
 use std::option::Option::Some;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use futures::StreamExt;
+use tiny_adnl::utils::FxHashMap;
 
 use crate::engine::complex_operations::sync::archive_downloader::{
     download_archive_or_die, start_download, ARCHIVE_SLICE,
@@ -16,34 +18,60 @@ use crate::utils::*;
 
 mod archive_downloader;
 
+async fn last_applied_block(engine: &Engine) -> Result<ton_block::BlockIdExt> {
+    let last_mc_block_id = {
+        let mc_block_id = engine.load_last_applied_mc_block_id().await?;
+        let sc_block_id = engine.load_shards_client_mc_block_id().await?;
+        log::info!("sync: Last applied block id: {}", mc_block_id);
+        log::info!("sync: Last shards client block id: {}", sc_block_id);
+
+        match (mc_block_id, sc_block_id) {
+            (mc_block_id, sc_block_id) if mc_block_id.seq_no > sc_block_id.seq_no => sc_block_id,
+            (mc_block_id, _) => mc_block_id,
+        }
+    };
+    Ok(last_mc_block_id)
+}
+
 pub async fn sync(engine: &Arc<Engine>) -> Result<()> {
     log::info!("Started sync");
 
     let active_peers = Arc::new(ActivePeers::default());
-    let keyblock_seqno = engine
-        .db
-        .key_blocks_meta_iterator()?
-        .into_iter()
-        .max_by(|a, b| a.gen_utime().cmp(&b.gen_utime()))
-        .context("No key blocks")?
-        .masterchain_ref_seqno();
     let last_applied = engine.load_last_applied_mc_block_id().await?.seq_no;
+    let theoretical_high_seqno = u32::MAX;
     log::info!(
         "Creating archives stream from {} to {}",
         last_applied,
-        keyblock_seqno
+        theoretical_high_seqno
     );
     let archives = start_download(
         engine.clone(),
         active_peers.clone(),
         ARCHIVE_SLICE,
         last_applied,
-        keyblock_seqno,
+        theoretical_high_seqno,
     )
     .await;
     if let Some(mut archives) = archives {
+        log::info!("Starting fast sync");
+        let mut prev_step = std::time::Instant::now();
         while let Some(archive) = archives.next().await {
-            let mc_block_id = engine.load_last_applied_mc_block_id().await?;
+            log::info!(
+                "Time from prev step = {}",
+                (std::time::Instant::now() - prev_step).as_millis()
+            );
+            prev_step = std::time::Instant::now();
+            match archive.get_first_utime() {
+                Some(a) => {
+                    if tiny_adnl::utils::now() as u32 - a < 3600 {
+                        log::info!("Stopping fast sync");
+                        break;
+                    }
+                }
+                None => break,
+            }
+            let mc_block_id = last_applied_block(engine).await?;
+            let now = std::time::Instant::now();
             match import_package(engine, archive, &mc_block_id).await {
                 Ok(()) => continue,
                 Err(e) => {
@@ -55,12 +83,17 @@ pub async fn sync(engine: &Arc<Engine>) -> Result<()> {
                 }
             }
             log::info!(
-                "sync: Imported archive package for block {}",
-                mc_block_id.seq_no
+                "sync: Imported archive package for block {}. Took: {}",
+                mc_block_id.seq_no,
+                (std::time::Instant::now() - now).as_millis()
+            );
+            log::info!(
+                "Full cycle took: {}",
+                (std::time::Instant::now() - prev_step).as_millis()
             );
         }
     }
-
+    log::info!("Finished fast sync");
     'outer: while !engine.is_synced().await? {
         let last_mc_block_id = {
             let mc_block_id = engine.load_last_applied_mc_block_id().await?;
@@ -147,6 +180,11 @@ async fn import_mc_blocks(
         }
 
         if id.seq_no != last_mc_block_id.seq_no + 1 {
+            log::error!(
+                "Seqno: {}, expected: {}",
+                id.seq_no,
+                last_mc_block_id.seq_no + 1
+            );
             return Err(SyncError::BlocksSkippedInArchive.into());
         }
 
@@ -360,6 +398,64 @@ impl PartialEq for BlockMaps {
 impl Eq for BlockMaps {}
 
 impl BlockMaps {
+    pub fn get_first_utime(&self) -> Option<u32> {
+        for block in &self.blocks {
+            if let Some(a) = &block.1.block {
+                return Some(a.block().info.read_struct().ok()?.gen_utime().0);
+            }
+        }
+        None
+    }
+    pub fn is_valid(&self, archive_seqno: u32) -> Option<()> {
+        log::info!(
+            "BLOCKS IN MASTERCHAIN: {}. Total: {}",
+            self.mc_block_ids.len(),
+            self.blocks.len()
+        );
+        if self.mc_block_ids.is_empty() {
+            log::error!(
+                "Expected archive len: {}. Got: {}",
+                ARCHIVE_SLICE - 1,
+                self.mc_block_ids.len()
+            );
+            return None;
+        }
+        let left = self.lowest_id()?.seq_no;
+        let right = self.highest_id()?.seq_no;
+        let mc_blocks = self.mc_block_ids.iter().map(|x| x.1.seq_no);
+        for (expected, got) in (left..right).zip(mc_blocks) {
+            if expected != got {
+                log::error!("Bad mc blocks {}", archive_seqno);
+                return None;
+            }
+        }
+
+        let mut map =
+            FxHashMap::with_capacity_and_hasher(self.blocks.len(), BuildHasherDefault::default());
+        for (blk, _) in &self.blocks {
+            map.entry(blk.shard_id)
+                .or_insert_with(|| vec![])
+                .push(blk.seq_no);
+        }
+        for (shard, mut blocks) in map {
+            blocks.sort_unstable();
+            let mut block_seqnos = blocks.into_iter();
+            let mut prev = block_seqnos.next()?;
+            for seqno in block_seqnos {
+                if seqno != prev + 1 {
+                    log::error!(
+                        "Bad shard blocks {}. Prev: {}, block: {}",
+                        seqno,
+                        prev,
+                        seqno
+                    );
+                    return None;
+                }
+                prev = seqno;
+            }
+        }
+        Some(())
+    }
     pub fn lowest_id(&self) -> Option<&ton_block::BlockIdExt> {
         self.mc_block_ids.iter().map(|x| x.1).min()
     }
@@ -369,16 +465,14 @@ impl BlockMaps {
 
     pub fn is_contiguous(left: &Self, right: &Self) -> Option<bool> {
         let left_blocks: HashSet<u32> = left.mc_block_ids.iter().map(|x| x.1.seq_no).collect();
-        let right_blocks: HashSet<u32> = left.mc_block_ids.iter().map(|x| x.1.seq_no).collect();
+        let right_blocks: HashSet<u32> = right.mc_block_ids.iter().map(|x| x.1.seq_no).collect();
         if left_blocks.intersection(&right_blocks).next().is_some() {
+            log::info!("Intersects");
             return Some(true);
         }
         let left_highest = left.highest_id()?.seq_no;
         let right_lowest = right.lowest_id()?.seq_no;
-        if left_highest > right_lowest {
-            return None;
-        }
-        Some(left_highest - right_lowest < 1)
+        Some(right_lowest - left_highest <= 1)
     }
 
     pub fn get_distance(left: &Self, right: &Self) -> Option<(u32, u32)> {

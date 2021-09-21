@@ -527,6 +527,11 @@ impl Db {
                     .drop_handles_data(old_blocks.iter())?;
                 log::info!("Meta collect took: {}", tiny_adnl::utils::now() - now);
                 let old_blocks: Vec<_> = old_blocks.difference(&key_blocks).collect();
+                log::info!("Old blocks: {}", old_blocks.len());
+                log::info!(
+                    "BLocks size: {}",
+                    self.archive_manager.get_tot_size().await.unwrap()
+                );
                 self.archive_manager.gc(old_blocks.iter().copied()).await?;
                 log::info!("Archive gc took: {}", tiny_adnl::utils::now() - now);
                 Ok(total)

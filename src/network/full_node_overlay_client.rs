@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, Result};
 use tiny_adnl::utils::*;
 use tiny_adnl::{Neighbour, OverlayClient};
 use ton_api::ton::{self, TLObject};
@@ -386,19 +386,16 @@ impl FullNodeOverlayClient for OverlayClient {
         const CHUNK_SIZE: i32 = 1 << 21; // 2 MB
 
         // Prepare
-        let (archive_info, neighbour): (ton::ton_node::ArchiveInfo, _) = tokio::time::timeout(
-            Duration::from_secs(10),
-            self.send_adnl_query(
+        let (archive_info, neighbour): (ton::ton_node::ArchiveInfo, _) = self
+            .send_adnl_query(
                 ton::rpc::ton_node::GetArchiveInfo {
                     masterchain_seqno: masterchain_seqno as i32,
                 },
-                Some(5),
-                Some(TIMEOUT_ARCHIVE),
-                Some(active_peers),
-            ),
-        )
-        .await
-        .context("Timed out")??;
+                Some(2),
+                None,
+                None,
+            )
+            .await?;
 
         // Download
         let info = match archive_info {
@@ -414,9 +411,8 @@ impl FullNodeOverlayClient for OverlayClient {
         let mut part_attempt = 0;
         let mut peer_attempt = 0;
         loop {
-            match tokio::time::timeout(
-                Duration::from_secs(5),
-                self.send_rldp_query_raw(
+            match self
+                .send_rldp_query_raw(
                     neighbour.clone(),
                     &ton::rpc::ton_node::GetArchiveSlice {
                         archive_id: info.id,
@@ -424,11 +420,10 @@ impl FullNodeOverlayClient for OverlayClient {
                         max_size: CHUNK_SIZE,
                     },
                     peer_attempt,
-                ),
-            )
-            .await
+                )
+                .await
             {
-                Ok(Ok(mut chunk)) => {
+                Ok(mut chunk) => {
                     let chunk_len = chunk.len() as i32;
                     result.append(&mut chunk);
 
@@ -440,7 +435,7 @@ impl FullNodeOverlayClient for OverlayClient {
                     offset += chunk_len as i64;
                     part_attempt = 0;
                 }
-                Ok(Err(e)) => {
+                Err(e) => {
                     peer_attempt += 1;
                     part_attempt += 1;
                     log::error!(
@@ -451,29 +446,12 @@ impl FullNodeOverlayClient for OverlayClient {
                         part_attempt
                     );
 
-                    if part_attempt > 5 {
+                    if part_attempt > 2 {
                         active_peers.remove(neighbour.peer_id());
                         return Err(anyhow!(
                             "Failed to download archive after {} attempts: {}",
                             part_attempt,
                             e
-                        ));
-                    }
-                }
-                Err(_) => {
-                    peer_attempt += 1;
-                    part_attempt += 1;
-                    log::error!(
-                        "Failed to download archive: time out: {}, offset: {}, attempt: {}",
-                        info.id,
-                        offset,
-                        part_attempt
-                    );
-                    if part_attempt > 5 {
-                        active_peers.remove(neighbour.peer_id());
-                        return Err(anyhow!(
-                            "Failed to download archive after {} attempts: timeout",
-                            part_attempt,
                         ));
                     }
                 }
@@ -498,4 +476,4 @@ impl FullNodeOverlayClient for OverlayClient {
 }
 
 const TIMEOUT_PREPARE: u64 = 6000; // Milliseconds
-const TIMEOUT_ARCHIVE: u64 = 1000;
+const TIMEOUT_ARCHIVE: u64 = 3000;

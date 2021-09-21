@@ -1,14 +1,15 @@
 use std::sync::Arc;
 
 use anyhow::Result;
-use futures::{SinkExt, StreamExt};
+
+use futures::stream::BoxStream;
+use futures::{FutureExt, SinkExt, StreamExt};
 
 use crate::engine::Engine;
 use crate::utils::*;
 
 use super::parse_archive;
 use super::BlockMaps;
-use futures::stream::BoxStream;
 
 #[async_recursion::async_recursion]
 pub async fn start_download(
@@ -26,31 +27,46 @@ pub async fn start_download(
         .map(move |x| (x, engine.clone(), active_peers.clone()))
         .map(|(x, engine, peers)| async move { download_archive_maps(engine, peers, x).await })
         .buffered(num_tasks);
-    process_maps(stream.boxed(), num_tasks, map_engine, map_peers).await
+    process_maps(stream.boxed(), map_engine, map_peers).await
 }
 
 #[async_recursion::async_recursion]
 async fn process_maps(
     mut stream: BoxStream<'static, Arc<BlockMaps>>,
-    num_tasks: usize,
     engine: Arc<Engine>,
     peers: Arc<ActivePeers>,
 ) -> Option<BoxStream<'static, Arc<BlockMaps>>> {
-    let (mut tx, rx) = futures::channel::mpsc::channel(num_tasks);
-    let mut left: Arc<BlockMaps> = stream.next().await?;
+    let (mut tx, rx) = futures::channel::mpsc::channel(1);
+    let mut left: Arc<BlockMaps> = match stream.next().await {
+        Some(a) => a,
+        None => {
+            log::warn!("Stream is empty");
+            return None;
+        }
+    };
     tokio::spawn(async move {
         while let Some(map) = stream.next().await {
             let right: Arc<BlockMaps> = map;
             if BlockMaps::is_contiguous(&left, &right)
                 .expect("download_archive_maps produces non empty archives")
             {
-                tx.send(left).await.unwrap();
+                if let Err(e) = tx.send(left).await {
+                    log::error!("Failed sending: {}", e);
+                    break;
+                }
             } else {
                 let (start, stop) = BlockMaps::get_distance(&left, &right)
                     .expect("download_archive_maps produces non empty archives");
                 let archives = gaps_handler(start, stop, engine.clone(), peers.clone()).await;
                 for arch in archives {
-                    tx.send(arch).await.unwrap();
+                    if let Err(e) = tx.send(arch).await {
+                        log::error!("Failed sending: {}", e);
+                        return;
+                    }
+                }
+                if let Err(e) = tx.send(left).await {
+                    log::error!("Failed sending: {}", e);
+                    return;
                 }
             }
             left = right
@@ -67,6 +83,11 @@ async fn gaps_handler(
     peers: Arc<ActivePeers>,
 ) -> Vec<Arc<BlockMaps>> {
     if gap_start > gap_end {
+        log::error!(
+            "Someting fucked up: left: {}, right: {}",
+            gap_start,
+            gap_end
+        );
         return vec![];
     }
     log::info!("Need to fill gap between {} and {}", gap_start, gap_end);
@@ -96,9 +117,12 @@ pub async fn download_archive_maps(
     mc_seq_no: u32,
 ) -> Arc<BlockMaps> {
     loop {
+        let start = std::time::Instant::now();
         let arch = download_archive_or_die(engine.clone(), active_peers.clone(), mc_seq_no).await;
+        let took = std::time::Instant::now() - start;
+        log::info!("Download took: {}", took.as_millis());
         match parse_archive(arch) {
-            Ok(a) if !a.mc_block_ids.is_empty() => break a,
+            Ok(a) if a.is_valid(mc_seq_no).is_some() => break a,
             Err(e) => {
                 log::error!("Failed parsing archive: {}", e);
             }
