@@ -79,7 +79,6 @@ impl Db {
                 // 256
                 // all metatables size
                 opts.set_db_write_buffer_size(mem_limit);
-                // total 272
 
                 opts.set_block_based_table_factory(&block_factory);
 
@@ -87,9 +86,7 @@ impl Db {
                 opts.set_zstd_max_train_bytes(32 * 1024 * 1024);
                 opts.set_compression_type(DBCompressionType::Lz4);
                 // io
-                opts.set_use_direct_io_for_flush_and_compaction(true);
                 opts.set_recycle_log_file_num(32);
-                opts.set_use_direct_reads(true);
                 opts.set_max_open_files(limit as i32);
 
                 // cf
