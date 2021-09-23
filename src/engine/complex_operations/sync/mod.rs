@@ -38,7 +38,7 @@ pub async fn sync(engine: &Arc<Engine>) -> Result<()> {
             prev_step = std::time::Instant::now();
 
             match archive.get_first_utime() {
-                Some(first_utime) if first_utime + FAST_SYNC_THRESHOLD > now() as u32 => {}
+                Some(first_utime) if first_utime + FAST_SYNC_THRESHOLD <= now() as u32 => {}
                 _ => {
                     log::info!("Stopping fast sync");
                     break;
