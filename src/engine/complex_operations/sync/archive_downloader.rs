@@ -3,7 +3,7 @@ use std::sync::Arc;
 use anyhow::Result;
 
 use futures::stream::BoxStream;
-use futures::{FutureExt, SinkExt, StreamExt};
+use futures::{SinkExt, StreamExt};
 
 use crate::engine::Engine;
 use crate::utils::*;
@@ -11,7 +11,6 @@ use crate::utils::*;
 use super::parse_archive;
 use super::BlockMaps;
 
-#[async_recursion::async_recursion]
 pub async fn start_download(
     engine: Arc<Engine>,
     active_peers: Arc<ActivePeers>,
@@ -30,7 +29,6 @@ pub async fn start_download(
     process_maps(stream.boxed(), map_engine, map_peers).await
 }
 
-#[async_recursion::async_recursion]
 async fn process_maps(
     mut stream: BoxStream<'static, Arc<BlockMaps>>,
     engine: Arc<Engine>,
@@ -55,18 +53,19 @@ async fn process_maps(
                     break;
                 }
             } else {
-                let (start, stop) = BlockMaps::get_distance(&left, &right)
+                let (prev, next) = BlockMaps::get_distance(&left, &right)
                     .expect("download_archive_maps produces non empty archives");
-                let archives = gaps_handler(start, stop, engine.clone(), peers.clone()).await;
-                for arch in archives {
-                    if let Err(e) = tx.send(arch).await {
-                        log::error!("Failed sending: {}", e);
-                        return;
-                    }
-                }
+                let gaps = gaps_handler(prev, next, engine.clone(), peers.clone()).await;
+
                 if let Err(e) = tx.send(left).await {
                     log::error!("Failed sending: {}", e);
-                    return;
+                    break;
+                }
+                for arch in gaps {
+                    if let Err(e) = tx.send(arch).await {
+                        log::error!("Failed sending: {}", e);
+                        break;
+                    }
                 }
             }
             left = right
@@ -75,40 +74,20 @@ async fn process_maps(
     Some(rx.boxed())
 }
 
-#[async_recursion::async_recursion]
 async fn gaps_handler(
-    gap_start: u32,
-    gap_end: u32,
+    mut prev: u32,
+    next: u32,
     engine: Arc<Engine>,
     peers: Arc<ActivePeers>,
 ) -> Vec<Arc<BlockMaps>> {
-    if gap_start > gap_end {
-        log::error!(
-            "Someting fucked up: left: {}, right: {}",
-            gap_start,
-            gap_end
-        );
-        return vec![];
+    log::warn!("It's a gap. {}..{}", prev, next);
+    let mut arhives = vec![];
+    while next - prev > 1 {
+        let arch = download_archive_maps(engine.clone(), peers.clone(), prev + 1).await;
+        prev = arch.highest_id().unwrap().seq_no;
+        arhives.push(arch);
     }
-    log::info!("Need to fill gap between {} and {}", gap_start, gap_end);
-    let mut archives: Vec<Arc<BlockMaps>> = match start_download(
-        engine.clone(),
-        peers,
-        (ARCHIVE_SLICE / 2) - 1,
-        gap_start,
-        gap_end,
-    )
-    .await
-    {
-        Some(a) => a,
-        None => return vec![],
-    }
-    .collect()
-    .await;
-    log::info!("Downloaded {} archives for gap handling", archives.len());
-    archives.dedup_by(|a, b| a == b);
-    log::info!("After dedup: {}", archives.len());
-    archives
+    arhives
 }
 
 pub async fn download_archive_maps(

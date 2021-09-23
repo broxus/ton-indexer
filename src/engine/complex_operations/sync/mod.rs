@@ -8,9 +8,10 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use futures::StreamExt;
 use tiny_adnl::utils::FxHashMap;
+use ton_block::BlockIdExt;
 
 use crate::engine::complex_operations::sync::archive_downloader::{
-    download_archive_or_die, start_download, ARCHIVE_SLICE,
+    download_archive_maps, download_archive_or_die, start_download, ARCHIVE_SLICE,
 };
 use crate::engine::Engine;
 use crate::storage::*;
@@ -73,7 +74,13 @@ pub async fn sync(engine: &Arc<Engine>) -> Result<()> {
             let mc_block_id = last_applied_block(engine).await?;
             let now = std::time::Instant::now();
             match import_package(engine, archive, &mc_block_id).await {
-                Ok(()) => continue,
+                Ok(()) => {
+                    log::info!(
+                        "sync: Imported archive package for block {}. Took: {}",
+                        mc_block_id.seq_no,
+                        (std::time::Instant::now() - now).as_millis()
+                    );
+                }
                 Err(e) => {
                     log::error!(
                         "sync: Failed to apply queued archive for block {}: {:?}",
@@ -82,11 +89,7 @@ pub async fn sync(engine: &Arc<Engine>) -> Result<()> {
                     );
                 }
             }
-            log::info!(
-                "sync: Imported archive package for block {}. Took: {}",
-                mc_block_id.seq_no,
-                (std::time::Instant::now() - now).as_millis()
-            );
+
             log::info!(
                 "Full cycle took: {}",
                 (std::time::Instant::now() - prev_step).as_millis()
@@ -262,6 +265,7 @@ async fn import_shard_blocks(engine: &Arc<Engine>, maps: Arc<BlockMaps>) -> Resu
                             .await
                     }
                     None => {
+                        log::info!("Downloading sc block for {}", mc_seq_no);
                         engine
                             .download_and_apply_block(handle.id(), mc_seq_no, false, 0)
                             .await
@@ -422,6 +426,12 @@ impl BlockMaps {
         }
         let left = self.lowest_id()?.seq_no;
         let right = self.highest_id()?.seq_no;
+        log::info!(
+            "Archive_id: {}. Left: {}. Right: {}",
+            archive_seqno,
+            left,
+            right
+        );
         let mc_blocks = self.mc_block_ids.iter().map(|x| x.1.seq_no);
         for (expected, got) in (left..right).zip(mc_blocks) {
             if expected != got {
@@ -430,14 +440,13 @@ impl BlockMaps {
             }
         }
 
-        let mut map =
-            FxHashMap::with_capacity_and_hasher(self.blocks.len(), BuildHasherDefault::default());
-        for (blk, _) in &self.blocks {
+        let mut map = FxHashMap::with_capacity_and_hasher(16, BuildHasherDefault::default());
+        for blk in self.blocks.keys() {
             map.entry(blk.shard_id)
-                .or_insert_with(|| vec![])
+                .or_insert_with(Vec::new)
                 .push(blk.seq_no);
         }
-        for (shard, mut blocks) in map {
+        for (_, mut blocks) in map {
             blocks.sort_unstable();
             let mut block_seqnos = blocks.into_iter();
             let mut prev = block_seqnos.next()?;
@@ -519,28 +528,7 @@ pub async fn background_sync(engine: &Arc<Engine>, from_seqno: u32) -> Result<()
         None => from_seqno,
     };
 
-    let current_block = engine.load_last_applied_mc_block_id().await?;
-    let current_shard_state = engine.load_state(&current_block).await?;
-    let prev_blocks = &current_shard_state.shard_state_extra()?.prev_blocks;
-
-    let possible_ref_blk = prev_blocks
-        .get_prev_key_block(low)?
-        .context("No keyblock found")?;
-
-    let ref_blk = match possible_ref_blk.seq_no {
-        seqno if seqno < low => possible_ref_blk,
-        seqno if seqno == low => prev_blocks
-            .get_prev_key_block(seqno)?
-            .context("No keyblock found")?,
-        _ => anyhow::bail!("Failed to find previous key block"),
-    };
-
-    let prev_key_block = ton_block::BlockIdExt {
-        shard_id: ton_block::ShardIdent::masterchain(),
-        seq_no: ref_blk.seq_no,
-        root_hash: ref_blk.root_hash,
-        file_hash: ref_blk.file_hash,
-    };
+    let prev_key_block = engine.load_prev_key_block(low).await?;
 
     log::info!("Started background sync from {} to {}", low, high);
     download_archives(engine, low, high, prev_key_block)

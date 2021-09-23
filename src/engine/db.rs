@@ -207,9 +207,9 @@ impl Db {
 
         let archive_id = PackageEntryId::Block(handle.id());
         let mut already_existed = true;
-        if !handle.meta().has_data() || !self.archive_manager.has_file(&archive_id).await {
-            let _lock = handle.block_file_lock().write().await;
-            if !handle.meta().has_data() || !self.archive_manager.has_file(&archive_id).await {
+        if !handle.meta().has_data() || !self.archive_manager.has_data(&archive_id).await {
+            let _lock = handle.block_data_lock().write().await;
+            if !handle.meta().has_data() || !self.archive_manager.has_data(&archive_id).await {
                 self.archive_manager
                     .add_file(&archive_id, block.data())
                     .await?;
@@ -236,7 +236,7 @@ impl Db {
             return Err(DbError::BlockDataNotFound.into());
         }
         self.archive_manager
-            .get_file(handle, &PackageEntryId::Block(handle.id()))
+            .get_data(handle, &PackageEntryId::Block(handle.id()))
             .await
     }
 
@@ -266,11 +266,11 @@ impl Db {
         let mut already_existed = true;
         if proof.is_link() {
             let archive_id = PackageEntryId::ProofLink(block_id);
-            if !handle.meta().has_proof_link() || !self.archive_manager.has_file(&archive_id).await
+            if !handle.meta().has_proof_link() || !self.archive_manager.has_data(&archive_id).await
             {
-                let _lock = handle.proof_file_lock().write().await;
+                let _lock = handle.proof_data_lock().write().await;
                 if !handle.meta().has_proof_link()
-                    || !self.archive_manager.has_file(&archive_id).await
+                    || !self.archive_manager.has_data(&archive_id).await
                 {
                     self.archive_manager
                         .add_file(&archive_id, proof.data())
@@ -283,9 +283,9 @@ impl Db {
             }
         } else {
             let archive_id = PackageEntryId::Proof(block_id);
-            if !handle.meta().has_proof() || !self.archive_manager.has_file(&archive_id).await {
-                let _lock = handle.proof_file_lock().write().await;
-                if !handle.meta().has_proof() || !self.archive_manager.has_file(&archive_id).await {
+            if !handle.meta().has_proof() || !self.archive_manager.has_data(&archive_id).await {
+                let _lock = handle.proof_data_lock().write().await;
+                if !handle.meta().has_proof() || !self.archive_manager.has_data(&archive_id).await {
                     self.archive_manager
                         .add_file(&archive_id, proof.data())
                         .await?;
@@ -333,7 +333,7 @@ impl Db {
             return Err(DbError::BlockProofNotFound.into());
         }
 
-        self.archive_manager.get_file(handle, &archive_id).await
+        self.archive_manager.get_data(handle, &archive_id).await
     }
 
     pub async fn store_shard_state(

@@ -2,7 +2,6 @@ use std::borrow::Borrow;
 use std::hash::Hash;
 
 use anyhow::Result;
-use rocksdb::IteratorMode;
 use tokio::sync::RwLock;
 
 use crate::storage::columns::ArchiveManagerDb;
@@ -29,21 +28,21 @@ impl ArchiveManager {
         Ok(())
     }
 
-    pub async fn has_file<I>(&self, id: &PackageEntryId<I>) -> bool
+    pub async fn has_data<I>(&self, id: &PackageEntryId<I>) -> bool
     where
         I: Borrow<ton_block::BlockIdExt> + Hash,
     {
         self.read_block_data(id).await.is_ok()
     }
 
-    pub async fn get_file<I>(&self, handle: &BlockHandle, id: &PackageEntryId<I>) -> Result<Vec<u8>>
+    pub async fn get_data<I>(&self, handle: &BlockHandle, id: &PackageEntryId<I>) -> Result<Vec<u8>>
     where
         I: Borrow<ton_block::BlockIdExt> + Hash,
     {
         let _lock = match &id {
-            PackageEntryId::Block(_) => handle.block_file_lock().read().await,
+            PackageEntryId::Block(_) => handle.block_data_lock().read().await,
             PackageEntryId::Proof(_) | PackageEntryId::ProofLink(_) => {
-                handle.proof_file_lock().read().await
+                handle.proof_data_lock().read().await
             }
         };
 
