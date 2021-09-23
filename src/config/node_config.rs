@@ -9,32 +9,24 @@ use sysinfo::SystemExt;
 use tiny_adnl::*;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct NodeConfig {
     pub ip_address: SocketAddrV4,
-    #[serde(default)]
     pub adnl_keys: NodeKeys,
 
-    #[serde(default = "default_rocksdb_path")]
     pub rocks_db_path: PathBuf,
-    #[serde(default = "default_file_path")]
     pub file_db_path: PathBuf,
 
-    #[serde(default)]
     pub old_blocks_policy: OldBlocksPolicy,
-    #[serde(default)]
     pub shard_state_cache_enabled: bool,
-    #[serde(default = "default_max_db_memory_usage")]
     pub max_db_memory_usage: usize,
 
-    #[serde(default)]
+    pub parallel_archive_downloads: u32,
+
     pub adnl_options: AdnlNodeOptions,
-    #[serde(default)]
     pub rldp_options: RldpNodeOptions,
-    #[serde(default)]
     pub dht_options: DhtNodeOptions,
-    #[serde(default)]
     pub neighbours_options: NeighboursOptions,
-    #[serde(default)]
     pub overlay_shard_options: OverlayShardOptions,
 }
 
@@ -43,11 +35,12 @@ impl Default for NodeConfig {
         Self {
             ip_address: SocketAddrV4::new(std::net::Ipv4Addr::LOCALHOST, 30303),
             adnl_keys: Default::default(),
-            rocks_db_path: default_rocksdb_path(),
-            file_db_path: default_file_path(),
+            rocks_db_path: "db/rocksdb".into(),
+            file_db_path: "db/file".into(),
             shard_state_cache_enabled: false,
             old_blocks_policy: Default::default(),
             max_db_memory_usage: default_max_db_memory_usage(),
+            parallel_archive_downloads: 16,
             adnl_options: Default::default(),
             rldp_options: Default::default(),
             dht_options: Default::default(),
@@ -99,14 +92,6 @@ impl Default for OldBlocksPolicy {
     fn default() -> Self {
         Self::Ignore
     }
-}
-
-fn default_rocksdb_path() -> PathBuf {
-    "db/rocksdb".into()
-}
-
-fn default_file_path() -> PathBuf {
-    "db/file".into()
 }
 
 /// Third of all memory as suggested in docs

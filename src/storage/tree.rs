@@ -2,7 +2,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use rocksdb::{BoundColumnFamily, DBPinnableSlice, Options, ReadOptions, WriteOptions, DB};
+use rocksdb::{
+    BoundColumnFamily, DBPinnableSlice, IteratorMode, Options, ReadOptions, WriteOptions, DB,
+};
 
 pub trait Column {
     const NAME: &'static str;
@@ -142,5 +144,17 @@ where
 
     pub fn get_cf(&self) -> Result<Arc<BoundColumnFamily>> {
         self.db.cf_handle(T::NAME).context("No cf")
+    }
+
+    pub fn size(&self) -> Result<usize> {
+        let mut tot = 0;
+        let hd = self.get_cf()?;
+        self.raw_db_handle()
+            .iterator_cf(&hd, IteratorMode::Start)
+            .for_each(|(k, v)| {
+                tot += k.len();
+                tot += v.len();
+            });
+        Ok(tot)
     }
 }

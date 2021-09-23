@@ -1,7 +1,7 @@
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use tiny_adnl::utils::*;
 use ton_api::ton;
 
@@ -57,6 +57,7 @@ pub struct Engine {
     last_known_mc_block_seqno: AtomicU32,
     last_known_key_block_seqno: AtomicU32,
 
+    parallel_archive_downloads: u32,
     shard_state_cache_enabled: bool,
     shard_states_cache: ShardStateCache,
 
@@ -86,7 +87,12 @@ impl Engine {
             config.max_db_memory_usage,
         )
         .await?;
-
+        // let gced = db
+        //     .garbage_collect(GcType::KeepNotOlderThen(86400))
+        //     .await
+        //     .unwrap();
+        // log::info!("Gced {}", gced);
+        // std::process::exit(0);
         let zero_state_id = global_config.zero_state.clone();
 
         let mut init_mc_block_id = zero_state_id.clone();
@@ -108,7 +114,7 @@ impl Engine {
         )
         .await?;
         network.start().await?;
-
+        log::info!("Network started");
         let engine = Arc::new(Self {
             is_working: AtomicBool::new(true),
             db,
@@ -118,6 +124,7 @@ impl Engine {
             init_mc_block_id,
             last_known_mc_block_seqno: AtomicU32::new(0),
             last_known_key_block_seqno: AtomicU32::new(0),
+            parallel_archive_downloads: config.parallel_archive_downloads,
             shard_state_cache_enabled,
             shard_states_cache: ShardStateCache::new(120),
             shard_states_operations: OperationsPool::new("shard_states_operations"),
@@ -129,7 +136,7 @@ impl Engine {
         engine
             .get_full_node_overlay(ton_block::BASE_WORKCHAIN_ID, ton_block::SHARD_FULL)
             .await?;
-
+        log::info!("Overlay connected");
         Ok(engine)
     }
 
@@ -147,13 +154,11 @@ impl Engine {
             .network
             .compute_overlay_id(ton_block::BASE_WORKCHAIN_ID, ton_block::SHARD_FULL)?;
         self.network.add_subscriber(basechain_overlay_id, service);
-
         // Boot
         let BootData {
             last_mc_block_id,
             shards_client_mc_block_id,
         } = boot(self).await?;
-
         log::info!(
             "Initialized (last block: {}, shards client block id: {})",
             last_mc_block_id,
@@ -178,7 +183,6 @@ impl Engine {
                 background_sync(self, from_seqno).await?;
             }
         }
-
         // Synchronize
         if !self.is_synced().await? {
             sync(self).await?;
@@ -643,6 +647,32 @@ impl Engine {
         Ok(handle)
     }
 
+    async fn load_prev_key_block(&self, block_id: u32) -> Result<ton_block::BlockIdExt> {
+        let current_block = self.load_last_applied_mc_block_id().await?;
+        let current_shard_state = self.load_state(&current_block).await?;
+        let prev_blocks = &current_shard_state.shard_state_extra()?.prev_blocks;
+
+        let possible_ref_blk = prev_blocks
+            .get_prev_key_block(block_id)?
+            .context("No keyblock found")?;
+
+        let ref_blk = match possible_ref_blk.seq_no {
+            seqno if seqno < block_id => possible_ref_blk,
+            seqno if seqno == block_id => prev_blocks
+                .get_prev_key_block(seqno)?
+                .context("No keyblock found")?,
+            _ => anyhow::bail!("Failed to find previous key block"),
+        };
+
+        let prev_key_block = ton_block::BlockIdExt {
+            shard_id: ton_block::ShardIdent::masterchain(),
+            seq_no: ref_blk.seq_no,
+            root_hash: ref_blk.root_hash,
+            file_hash: ref_blk.file_hash,
+        };
+        Ok(prev_key_block)
+    }
+
     pub async fn is_synced(&self) -> Result<bool> {
         let shards_client_mc_block_id = self.load_shards_client_mc_block_id().await?;
         let last_applied_mc_block_id = self.load_last_applied_mc_block_id().await?;
@@ -892,6 +922,16 @@ impl Engine {
             downloader,
         })
     }
+
+    pub async fn gc(&self, gc_type: GcType) -> Result<usize> {
+        self.db.garbage_collect(gc_type).await
+    }
+}
+
+#[derive(Debug)]
+pub enum GcType {
+    KeepLastNBlocks(u32),
+    KeepNotOlderThen(u32),
 }
 
 #[derive(thiserror::Error, Debug)]

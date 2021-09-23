@@ -1,13 +1,13 @@
+use std::collections::HashSet;
 use std::sync::{Arc, Weak};
 
 use anyhow::Result;
 use tiny_adnl::utils::*;
 
-use crate::storage::{columns, StoredValue};
-
 use super::block_handle::*;
 use super::block_meta::*;
 use super::tree::*;
+use super::{columns, StoredValue};
 
 pub struct BlockHandleStorage {
     cache: Arc<FxDashMap<ton_block::BlockIdExt, Weak<BlockHandle>>>,
@@ -68,5 +68,32 @@ impl BlockHandleStorage {
 
         self.store_handle(&handle)?;
         Ok(Some(handle))
+    }
+
+    /// returns number of dropped blocks and set of key blocks
+    pub fn drop_handles_data<'a>(
+        &self,
+        ids: impl Iterator<Item = &'a ton_block::BlockIdExt>,
+    ) -> Result<(usize, HashSet<ton_block::BlockIdExt>)> {
+        let mut total = 0;
+        let mut untouched = HashSet::new();
+        for id in ids {
+            let h = match self.load_handle(id)? {
+                Some(a) => a,
+                None => continue,
+            };
+            if h.meta().is_key_block() {
+                untouched.insert(id.clone());
+                continue;
+            }
+            if h.meta().has_data() {
+                h.meta().set_has_data();
+            } else {
+                untouched.insert(id.clone());
+            }
+            drop(h);
+            total += 1;
+        }
+        Ok((total, untouched))
     }
 }

@@ -391,8 +391,8 @@ impl FullNodeOverlayClient for OverlayClient {
                 ton::rpc::ton_node::GetArchiveInfo {
                     masterchain_seqno: masterchain_seqno as i32,
                 },
-                None,
-                Some(TIMEOUT_PREPARE),
+                Some(2),
+                Some(TIMEOUT_ARCHIVE),
                 None,
             )
             .await?;
@@ -411,8 +411,9 @@ impl FullNodeOverlayClient for OverlayClient {
         let mut part_attempt = 0;
         let mut peer_attempt = 0;
         loop {
-            match self
-                .send_rldp_query_raw(
+            match tokio::time::timeout(
+                Duration::from_secs(10),
+                self.send_rldp_query_raw(
                     neighbour.clone(),
                     &ton::rpc::ton_node::GetArchiveSlice {
                         archive_id: info.id,
@@ -420,10 +421,11 @@ impl FullNodeOverlayClient for OverlayClient {
                         max_size: CHUNK_SIZE,
                     },
                     peer_attempt,
-                )
-                .await
+                ),
+            )
+            .await
             {
-                Ok(mut chunk) => {
+                Ok(Ok(mut chunk)) => {
                     let chunk_len = chunk.len() as i32;
                     result.append(&mut chunk);
 
@@ -435,7 +437,7 @@ impl FullNodeOverlayClient for OverlayClient {
                     offset += chunk_len as i64;
                     part_attempt = 0;
                 }
-                Err(e) => {
+                Ok(Err(e)) => {
                     peer_attempt += 1;
                     part_attempt += 1;
                     log::error!(
@@ -446,12 +448,23 @@ impl FullNodeOverlayClient for OverlayClient {
                         part_attempt
                     );
 
-                    if part_attempt > 10 {
+                    if part_attempt > 2 {
                         active_peers.remove(neighbour.peer_id());
                         return Err(anyhow!(
                             "Failed to download archive after {} attempts: {}",
                             part_attempt,
                             e
+                        ));
+                    }
+                }
+                Err(_) => {
+                    peer_attempt += 1;
+                    part_attempt += 1;
+                    if part_attempt > 2 {
+                        active_peers.remove(neighbour.peer_id());
+                        return Err(anyhow!(
+                            "Failed to download archive after {} attempts: timeout",
+                            part_attempt,
                         ));
                     }
                 }
@@ -476,3 +489,4 @@ impl FullNodeOverlayClient for OverlayClient {
 }
 
 const TIMEOUT_PREPARE: u64 = 6000; // Milliseconds
+const TIMEOUT_ARCHIVE: u64 = 3000;

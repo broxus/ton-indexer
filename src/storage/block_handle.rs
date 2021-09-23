@@ -9,8 +9,8 @@ use super::block_meta::BlockMeta;
 pub struct BlockHandle {
     id: ton_block::BlockIdExt,
     meta: BlockMeta,
-    block_file_lock: RwLock<()>,
-    proof_file_block: RwLock<()>,
+    block_data_lock: RwLock<()>,
+    proof_data_block: RwLock<()>,
     cache: Arc<FxDashMap<ton_block::BlockIdExt, Weak<BlockHandle>>>,
 }
 
@@ -23,8 +23,8 @@ impl BlockHandle {
         Self {
             id,
             meta,
-            block_file_lock: Default::default(),
-            proof_file_block: Default::default(),
+            block_data_lock: Default::default(),
+            proof_data_block: Default::default(),
             cache,
         }
     }
@@ -37,12 +37,12 @@ impl BlockHandle {
         &self.meta
     }
 
-    pub fn block_file_lock(&self) -> &RwLock<()> {
-        &self.block_file_lock
+    pub fn block_data_lock(&self) -> &RwLock<()> {
+        &self.block_data_lock
     }
 
-    pub fn proof_file_lock(&self) -> &RwLock<()> {
-        &self.proof_file_block
+    pub fn proof_data_lock(&self) -> &RwLock<()> {
+        &self.proof_data_block
     }
 
     pub fn has_proof_or_link(&self, is_link: &mut bool) -> bool {

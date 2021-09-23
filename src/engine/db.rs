@@ -1,6 +1,8 @@
+use std::collections::HashSet;
 use std::path::Path;
 use std::sync::Arc;
 
+use anyhow::Context;
 use anyhow::Result;
 use rlimit::Resource;
 use rocksdb::perf::MemoryUsageStats;
@@ -9,6 +11,7 @@ use ton_api::ton;
 
 use crate::storage::*;
 use crate::utils::*;
+use crate::GcType;
 
 pub struct Db {
     block_cache: Cache,
@@ -96,8 +99,8 @@ impl Db {
                 opts.set_max_background_jobs((num_cpus::get() as i32) / 2);
                 opts.increase_parallelism(num_cpus::get() as i32);
                 // debug
-                opts.enable_statistics();
-                opts.set_stats_dump_period_sec(300);
+                // opts.enable_statistics();
+                // opts.set_stats_dump_period_sec(300);
             })
             .column::<columns::BlockHandles>()
             .column::<columns::ShardStateDb>()
@@ -111,7 +114,8 @@ impl Db {
             .column::<columns::Next2>()
             .column::<columns::ArchiveManagerDb>()
             .column::<columns::BackgroundSyncMeta>()
-            .build()?;
+            .build()
+            .context("Failed building db")?;
 
         let block_handle_storage = BlockHandleStorage::with_db(Tree::new(db.clone())?);
         let shard_state_storage = ShardStateStorage::with_db(
@@ -200,9 +204,9 @@ impl Db {
 
         let archive_id = PackageEntryId::Block(handle.id());
         let mut already_existed = true;
-        if !handle.meta().has_data() || !self.archive_manager.has_file(&archive_id) {
-            let _lock = handle.block_file_lock().write().await;
-            if !handle.meta().has_data() || !self.archive_manager.has_file(&archive_id) {
+        if !handle.meta().has_data() || !self.archive_manager.has_data(&archive_id).await {
+            let _lock = handle.block_data_lock().write().await;
+            if !handle.meta().has_data() || !self.archive_manager.has_data(&archive_id).await {
                 self.archive_manager
                     .add_file(&archive_id, block.data())
                     .await?;
@@ -229,9 +233,8 @@ impl Db {
             return Err(DbError::BlockDataNotFound.into());
         }
         self.archive_manager
-            .get_file(handle, &PackageEntryId::Block(handle.id()))
+            .get_data(handle, &PackageEntryId::Block(handle.id()))
             .await
-            .map(|x| x.to_vec())
     }
 
     pub async fn store_block_proof(
@@ -260,9 +263,12 @@ impl Db {
         let mut already_existed = true;
         if proof.is_link() {
             let archive_id = PackageEntryId::ProofLink(block_id);
-            if !handle.meta().has_proof_link() || !self.archive_manager.has_file(&archive_id) {
-                let _lock = handle.proof_file_lock().write().await;
-                if !handle.meta().has_proof_link() || !self.archive_manager.has_file(&archive_id) {
+            if !handle.meta().has_proof_link() || !self.archive_manager.has_data(&archive_id).await
+            {
+                let _lock = handle.proof_data_lock().write().await;
+                if !handle.meta().has_proof_link()
+                    || !self.archive_manager.has_data(&archive_id).await
+                {
                     self.archive_manager
                         .add_file(&archive_id, proof.data())
                         .await?;
@@ -274,9 +280,9 @@ impl Db {
             }
         } else {
             let archive_id = PackageEntryId::Proof(block_id);
-            if !handle.meta().has_proof() || !self.archive_manager.has_file(&archive_id) {
-                let _lock = handle.proof_file_lock().write().await;
-                if !handle.meta().has_proof() || !self.archive_manager.has_file(&archive_id) {
+            if !handle.meta().has_proof() || !self.archive_manager.has_data(&archive_id).await {
+                let _lock = handle.proof_data_lock().write().await;
+                if !handle.meta().has_proof() || !self.archive_manager.has_data(&archive_id).await {
                     self.archive_manager
                         .add_file(&archive_id, proof.data())
                         .await?;
@@ -324,10 +330,7 @@ impl Db {
             return Err(DbError::BlockProofNotFound.into());
         }
 
-        self.archive_manager
-            .get_file(handle, &archive_id)
-            .await
-            .map(|x| x.to_vec())
+        self.archive_manager.get_data(handle, &archive_id).await
     }
 
     pub async fn store_shard_state(
@@ -498,6 +501,39 @@ impl Db {
 
     pub fn background_sync_store(&self) -> &BackgroundSyncMetaStore {
         &self.background_sync_meta_store
+    }
+
+    pub async fn garbage_collect(&self, gc_type: GcType) -> Result<usize> {
+        match gc_type {
+            GcType::KeepLastNBlocks(_) => {
+                anyhow::bail!("todo!")
+            }
+            GcType::KeepNotOlderThen(seconds) => {
+                let now = tiny_adnl::utils::now();
+                let old_age = now as u32 - seconds;
+                log::info!("Pruning block older then {}", old_age);
+                let old_blocks: HashSet<_> = self
+                    .block_index_db
+                    .get_blocks_older_then(old_age)?
+                    .map(|x| x.1.block_id_ext)
+                    .map(|x| convert_block_id_ext_api2blk(&x).unwrap())
+                    .collect();
+                log::info!("Block to prune: {}", old_blocks.len());
+                let (total, key_blocks) = self
+                    .block_handle_storage
+                    .drop_handles_data(old_blocks.iter())?;
+                log::info!("Meta collect took: {}", tiny_adnl::utils::now() - now);
+                let old_blocks: Vec<_> = old_blocks.difference(&key_blocks).collect();
+                log::info!("Old blocks: {}", old_blocks.len());
+                log::info!(
+                    "BLocks size: {}",
+                    self.archive_manager.get_tot_size().await.unwrap()
+                );
+                self.archive_manager.gc(old_blocks.iter().copied()).await?;
+                log::info!("Archive gc took: {}", tiny_adnl::utils::now() - now);
+                Ok(total)
+            }
+        }
     }
 }
 

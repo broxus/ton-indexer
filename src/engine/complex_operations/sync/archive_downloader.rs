@@ -1,188 +1,149 @@
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
 
-use anyhow::{Context, Result};
-use tiny_adnl::utils::*;
-use tokio::sync::mpsc;
+use anyhow::Result;
+use futures::channel::mpsc;
+use futures::{SinkExt, Stream, StreamExt};
 
+use super::block_maps::*;
 use crate::engine::Engine;
 use crate::utils::*;
 
-pub struct ArchiveDownloader {
-    ctx: Arc<DownloadContext>,
-    worker_count: usize,
-    seqno_txs: Vec<SeqNoTx>,
-    pending_archives: Vec<(u32, ArchiveStatus)>,
-    archives_rx: ArchivesRx,
-    complete_trigger: Trigger,
+pub async fn start_download<I>(
+    engine: &Arc<Engine>,
+    active_peers: &Arc<ActivePeers>,
+    step: u32,
+    range: I,
+) -> Option<impl Stream<Item = Arc<BlockMaps>>>
+where
+    I: IntoIterator<Item = u32> + Send + 'static,
+    <I as IntoIterator>::IntoIter: Send,
+{
+    let num_tasks = engine.parallel_archive_downloads;
+
+    let engine_clone = engine.clone();
+    let active_peers_clone = active_peers.clone();
+    let stream = futures::stream::iter(range.into_iter().step_by(step as usize))
+        .inspect(|x: &u32| log::info!("Downloading {} arch", x))
+        .map(move |x| (x, engine_clone.clone(), active_peers_clone.clone()))
+        .map(|(x, engine, peers)| async move { download_archive_maps(&engine, &peers, x).await })
+        .buffered(num_tasks as usize);
+
+    process_maps(stream, engine, active_peers).await
 }
 
-impl ArchiveDownloader {
-    pub fn new(engine: Arc<Engine>, active_peers: Arc<ActivePeers>, worker_count: usize) -> Self {
-        let (archives_tx, archives_rx) = mpsc::channel(worker_count);
-        let (complete_trigger, complete_signal) = trigger();
-
-        let ctx = Arc::new(DownloadContext {
-            engine,
-            active_peers,
-            archives_tx,
-            complete: Arc::new(AtomicBool::new(false)),
-            complete_signal,
-        });
-
-        Self {
-            ctx,
-            worker_count,
-            seqno_txs: Vec::with_capacity(worker_count),
-            pending_archives: Vec::with_capacity(worker_count),
-            archives_rx,
-            complete_trigger,
+async fn process_maps<S>(
+    mut stream: S,
+    engine: &Arc<Engine>,
+    active_peers: &Arc<ActivePeers>,
+) -> Option<impl Stream<Item = Arc<BlockMaps>>>
+where
+    S: Stream<Item = Arc<BlockMaps>> + Send + Unpin + 'static,
+{
+    let (mut tx, rx) = mpsc::channel(1);
+    let mut left: Arc<BlockMaps> = match stream.next().await {
+        Some(a) => a,
+        None => {
+            log::warn!("Archives stream is empty");
+            return None;
         }
-    }
+    };
 
-    pub async fn wait_next_archive(&mut self, seqno: u32) -> Result<Vec<u8>> {
-        if self.pending_archives.is_empty() {
-            self.start_workers(seqno).await?;
-        }
+    let engine = engine.clone();
+    let active_peers = active_peers.clone();
 
-        loop {
-            // log::info!("--- loop {}", QueueWrapper(&self.pending_archives));
-
-            if let Some(data) = self.find_next_downloaded_archive(seqno).await? {
-                return Ok(data);
-            }
-
-            let (received_seqno, data) = match self.archives_rx.recv().await {
-                Some((seqno, data)) => (seqno, data),
-                None => {
-                    return Err(ArchiveDownloaderError::ArchivesChannelClosed.into());
+    tokio::spawn(async move {
+        while let Some(right) = stream.next().await {
+            // Check if there are some gaps between two archives
+            if BlockMaps::is_contiguous(&left, &right) {
+                // Send previous archive
+                if tx.send(left).await.is_err() {
+                    log::error!("Archive stream closed");
+                    return;
                 }
-            };
+            } else {
+                // Find gaps
+                let (prev, next) = left
+                    .distance_to(&right)
+                    .expect("download_archive_maps produces non empty archives");
 
-            match self
-                .pending_archives
-                .iter_mut()
-                .find(|(seqno, _)| seqno == &received_seqno)
-            {
-                Some((_, status @ ArchiveStatus::Downloading)) => {
-                    *status = ArchiveStatus::Downloaded(data);
+                // Download gaps
+                let gaps = download_gaps(prev, next, &engine, &active_peers).await;
+
+                // Send previous archive
+                if tx.send(left).await.is_err() {
+                    log::error!("Archive stream closed");
+                    return;
                 }
-                Some(_) => {
-                    return Err(ArchiveDownloaderError::SchedulerError)
-                        .context("Received data for already delivered archive")
-                }
-                None => {
-                    return Err(ArchiveDownloaderError::SchedulerError).with_context(|| {
-                        format!("Slot not found for response seqno: {}", received_seqno)
-                    })
+
+                // Send archives for gaps
+                for arch in gaps {
+                    if tx.send(arch).await.is_err() {
+                        log::error!("Archive stream closed");
+                        return;
+                    }
                 }
             }
-        }
-    }
 
-    async fn find_next_downloaded_archive(
-        &mut self,
-        current_seqno: u32,
-    ) -> Result<Option<Vec<u8>>> {
-        for (worker_id, (seqno, status)) in self.pending_archives.iter_mut().enumerate() {
-            if seqno.saturating_sub(current_seqno) >= ARCHIVE_SLICE {
-                continue;
-            }
-
-            let data = match std::mem::replace(status, ArchiveStatus::Downloading) {
-                ArchiveStatus::Downloading => continue,
-                ArchiveStatus::Downloaded(data) => data,
-            };
-
-            *seqno = current_seqno + ARCHIVE_SLICE * self.seqno_txs.len() as u32;
-            self.seqno_txs[worker_id]
-                .send(*seqno)
-                .await
-                .context("Worker closed")?;
-
-            log::info!("--- Found archive for {}", current_seqno);
-            return Ok(Some(data));
+            left = right
         }
 
-        Ok(None)
-    }
-
-    async fn start_workers(&mut self, seqno: u32) -> Result<()> {
-        let mut next_seqno = seqno;
-        for _ in 0..self.worker_count {
-            let (seqno_tx, seqno_rx) = mpsc::channel(1);
-            tokio::spawn(download_archive_worker(self.ctx.clone(), seqno_rx));
-
-            self.pending_archives
-                .push((next_seqno, ArchiveStatus::Downloading));
-            self.seqno_txs.push(seqno_tx);
-
-            next_seqno += ARCHIVE_SLICE;
+        if tx.send(left).await.is_err() {
+            log::error!("Archive stream closed");
         }
+    });
 
-        next_seqno = seqno;
-        for tx in &self.seqno_txs {
-            tx.send(next_seqno).await?;
-            next_seqno += ARCHIVE_SLICE;
-        }
-
-        Ok(())
-    }
+    Some(rx)
 }
 
-impl Drop for ArchiveDownloader {
-    fn drop(&mut self) {
-        self.ctx.complete.store(true, Ordering::Release);
-        self.complete_trigger.trigger();
+async fn download_gaps(
+    mut prev: u32,
+    next: u32,
+    engine: &Arc<Engine>,
+    active_peers: &Arc<ActivePeers>,
+) -> Vec<Arc<BlockMaps>> {
+    log::warn!("Finding archive for the gap {}..{}", prev, next);
+
+    let mut arhives = Vec::with_capacity(1);
+    while prev + 1 < next {
+        let arch = download_archive_maps(engine, active_peers, prev + 1).await;
+        prev = arch.highest_id().unwrap().seq_no;
+        arhives.push(arch);
     }
+
+    arhives
 }
 
-struct DownloadContext {
-    engine: Arc<Engine>,
-    active_peers: Arc<ActivePeers>,
-    archives_tx: ArchivesTx,
-    complete: Arc<AtomicBool>,
-    complete_signal: TriggerReceiver,
-}
+pub async fn download_archive_maps(
+    engine: &Arc<Engine>,
+    active_peers: &Arc<ActivePeers>,
+    mc_seq_no: u32,
+) -> Arc<BlockMaps> {
+    loop {
+        let start = std::time::Instant::now();
+        let data = download_archive_or_die(engine, active_peers, mc_seq_no).await;
+        log::info!("Download took: {} ms", start.elapsed().as_millis());
 
-async fn download_archive_worker(ctx: Arc<DownloadContext>, mut seqno_rx: SeqNoRx) {
-    'tasks: while let Some(seqno) = seqno_rx.recv().await {
-        log::info!(
-            "sync: Start downloading archive for masterchain block {}",
-            seqno
-        );
-
-        let data = loop {
-            if ctx.complete.load(Ordering::Acquire) {
-                break 'tasks;
+        match parse_archive(data) {
+            Ok(map) if map.is_valid(mc_seq_no).is_some() => break map,
+            Err(e) => {
+                log::error!("Failed to parse archive: {:?}", e);
             }
-
-            let archive_fut = download_archive(&ctx.engine, &ctx.active_peers, seqno);
-
-            let result = tokio::select! {
-                data = archive_fut => data,
-                _ = ctx.complete_signal.clone() => {
-                    log::trace!("Received complete signal");
-                    continue;
-                }
-            };
-
-            match result {
-                Ok(Some(data)) => break data,
-                Ok(None) => {
-                    tokio::time::sleep(Duration::from_millis(100)).await;
-                    continue;
-                }
-                Err(e) => {
-                    log::warn!("Failed to download archive {}: {:?}", seqno, e);
-                    continue;
-                }
+            _ => {
+                log::error!("Empty archive {}", mc_seq_no);
             }
         };
+    }
+}
 
-        if ctx.archives_tx.send((seqno, data)).await.is_err() {
-            break 'tasks;
+pub async fn download_archive_or_die(
+    engine: &Arc<Engine>,
+    active_peers: &Arc<ActivePeers>,
+    mc_seq_no: u32,
+) -> Vec<u8> {
+    log::info!("Start downloading {}", mc_seq_no);
+    loop {
+        if let Ok(Some(data)) = download_archive(engine, active_peers, mc_seq_no).await {
+            break data;
         }
     }
 }
@@ -207,46 +168,4 @@ async fn download_archive(
         }
         e => e,
     }
-}
-
-const ARCHIVE_SLICE: u32 = 100;
-
-// struct QueueWrapper<'a>(&'a [(u32, ArchiveStatus)]);
-//
-// impl std::fmt::Display for QueueWrapper<'_> {
-//     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-//         f.write_str("[\n")?;
-//         for (seqno, item) in self.0 {
-//             match item {
-//                 ArchiveStatus::Downloading => {
-//                     f.write_fmt(format_args!("    ({}, downloading...),\n", seqno))?
-//                 }
-//                 ArchiveStatus::Downloaded(_) => {
-//                     f.write_fmt(format_args!("    ({}, downloaded)\n", seqno))?
-//                 }
-//             }
-//         }
-//         f.write_str("]")
-//     }
-// }
-
-enum ArchiveStatus {
-    Downloading,
-    Downloaded(Vec<u8>),
-}
-
-type ArchiveItem = (u32, Vec<u8>);
-
-type SeqNoRx = mpsc::Receiver<u32>;
-type SeqNoTx = mpsc::Sender<u32>;
-
-type ArchivesTx = mpsc::Sender<ArchiveItem>;
-type ArchivesRx = mpsc::Receiver<ArchiveItem>;
-
-#[derive(thiserror::Error, Debug)]
-enum ArchiveDownloaderError {
-    #[error("Archives channel closed")]
-    ArchivesChannelClosed,
-    #[error("Scheduler error")]
-    SchedulerError,
 }
