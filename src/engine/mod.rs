@@ -21,6 +21,7 @@ pub mod complex_operations;
 mod db;
 mod downloader;
 mod node_state;
+pub mod rpc_operations;
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum EngineStatus {
