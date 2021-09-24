@@ -16,6 +16,11 @@ pub trait RpcService: Send + Sync {
         &self,
         query: ton::rpc::ton_node::DownloadNextBlockFull,
     ) -> Result<ton::ton_node::DataFull>;
+
+    async fn download_block_full(
+        &self,
+        query: ton::rpc::ton_node::DownloadBlockFull,
+    ) -> Result<ton::ton_node::DataFull>;
 }
 
 #[async_trait::async_trait]
@@ -75,14 +80,15 @@ impl RpcService for Engine {
         &self,
         query: ton::rpc::ton_node::DownloadNextBlockFull,
     ) -> Result<ton::ton_node::DataFull> {
+        let db = &self.db;
         let prev_block_id = convert_block_id_ext_api2blk(&query.prev_block)?;
-        match self.load_block_handle(&prev_block_id)? {
-            Some(handle) if handle.meta().has_next1() => handle,
+
+        let next_block_id = match self.load_block_handle(&prev_block_id)? {
+            Some(handle) if handle.meta().has_next1() => {
+                db.load_block_connection(&prev_block_id, BlockConnection::Next1)?
+            }
             _ => return Ok(ton::ton_node::DataFull::TonNode_DataFullEmpty),
         };
-
-        let db = &self.db;
-        let next_block_id = db.load_block_connection(&prev_block_id, BlockConnection::Next1)?;
 
         let mut is_link = false;
         Ok(match self.load_block_handle(&next_block_id)? {
@@ -93,6 +99,36 @@ impl RpcService for Engine {
                 ton::ton_node::DataFull::TonNode_DataFull(Box::new(
                     ton::ton_node::datafull::DataFull {
                         id: convert_block_id_ext_blk2api(&next_block_id),
+                        proof: ton::bytes(proof),
+                        block: ton::bytes(block),
+                        is_link: if is_link {
+                            ton::Bool::BoolTrue
+                        } else {
+                            ton::Bool::BoolFalse
+                        },
+                    },
+                ))
+            }
+            _ => ton::ton_node::DataFull::TonNode_DataFullEmpty,
+        })
+    }
+
+    async fn download_block_full(
+        &self,
+        query: ton::rpc::ton_node::DownloadBlockFull,
+    ) -> Result<ton::ton_node::DataFull> {
+        let db = &self.db;
+        let block_id = convert_block_id_ext_api2blk(&query.block)?;
+
+        let mut is_link = false;
+        Ok(match self.load_block_handle(&block_id)? {
+            Some(handle) if handle.meta().has_data() && handle.has_proof_or_link(&mut is_link) => {
+                let block = db.load_block_data_raw(&handle).await?;
+                let proof = db.load_block_proof_raw(&handle, is_link).await?;
+
+                ton::ton_node::DataFull::TonNode_DataFull(Box::new(
+                    ton::ton_node::datafull::DataFull {
+                        id: convert_block_id_ext_blk2api(&block_id),
                         proof: ton::bytes(proof),
                         block: ton::bytes(block),
                         is_link: if is_link {

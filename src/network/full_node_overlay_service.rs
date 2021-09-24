@@ -95,7 +95,13 @@ where
         };
 
         let query = match query.downcast::<ton::rpc::ton_node::DownloadBlockFull>() {
-            Ok(_) => return answer(ton::ton_node::DataFull::TonNode_DataFullEmpty),
+            Ok(query) => {
+                return self
+                    .engine()?
+                    .download_block_full(query)
+                    .await
+                    .and_then(answer)
+            }
             Err(query) => query,
         };
 
