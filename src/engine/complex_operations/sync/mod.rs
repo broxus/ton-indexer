@@ -8,10 +8,9 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use futures::StreamExt;
 use tiny_adnl::utils::FxHashMap;
-use ton_block::BlockIdExt;
 
 use crate::engine::complex_operations::sync::archive_downloader::{
-    download_archive_maps, download_archive_or_die, start_download, ARCHIVE_SLICE,
+    download_archive_or_die, start_download, ARCHIVE_SLICE,
 };
 use crate::engine::Engine;
 use crate::storage::*;
@@ -581,7 +580,6 @@ struct SaveContext<'a> {
     prev_key_block_id: &'a mut ton_block::BlockIdExt,
 }
 
-#[async_recursion::async_recursion]
 async fn save_archive(
     engine: &Arc<Engine>,
     maps: Arc<BlockMaps>,

@@ -1,7 +1,7 @@
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use tiny_adnl::utils::*;
 use ton_api::ton;
 
@@ -66,6 +66,13 @@ pub struct Engine {
     block_applying_operations: OperationsPool<ton_block::BlockIdExt, ()>,
     next_block_applying_operations: OperationsPool<ton_block::BlockIdExt, ton_block::BlockIdExt>,
     download_block_operations: OperationsPool<ton_block::BlockIdExt, (BlockStuff, BlockProofStuff)>,
+    last_blocks: BlockCaches,
+}
+
+struct BlockCaches {
+    pub last_mc: LastMcBlockId,
+    pub init_block: InitMcBlockId,
+    pub shard_client_mc_block: ShardsClientMcBlockId,
 }
 
 impl Drop for Engine {
@@ -88,18 +95,13 @@ impl Engine {
             config.max_db_memory_usage,
         )
         .await?;
-        // let gced = db
-        //     .garbage_collect(GcType::KeepNotOlderThen(86400))
-        //     .await
-        //     .unwrap();
-        // log::info!("Gced {}", gced);
-        // std::process::exit(0);
         let zero_state_id = global_config.zero_state.clone();
 
         let mut init_mc_block_id = zero_state_id.clone();
-        if let Ok(block_id) = InitMcBlockId::load_from_db(db.as_ref()) {
-            if block_id.0.seqno > init_mc_block_id.seq_no as i32 {
-                init_mc_block_id = convert_block_id_ext_api2blk(&block_id.0)?;
+        let init_block = InitMcBlockId::new(db.clone());
+        if let Ok(block_id) = init_block.load_from_db() {
+            if block_id.seqno > init_mc_block_id.seq_no as i32 {
+                init_mc_block_id = convert_block_id_ext_api2blk(&block_id)?;
             }
         }
 
@@ -118,7 +120,7 @@ impl Engine {
         log::info!("Network started");
         let engine = Arc::new(Self {
             is_working: AtomicBool::new(true),
-            db,
+            db: db.clone(),
             subscribers,
             network,
             old_blocks_policy,
@@ -127,11 +129,16 @@ impl Engine {
             last_known_key_block_seqno: AtomicU32::new(0),
             parallel_tasks: config.parallel_downloads,
             shard_state_cache_enabled,
-            shard_states_cache: ShardStateCache::new(120),
+            shard_states_cache: ShardStateCache::new(3600),
             shard_states_operations: OperationsPool::new("shard_states_operations"),
             block_applying_operations: OperationsPool::new("block_applying_operations"),
             next_block_applying_operations: OperationsPool::new("next_block_applying_operations"),
             download_block_operations: OperationsPool::new("download_block_operations"),
+            last_blocks: BlockCaches {
+                last_mc: LastMcBlockId::new(db.clone()),
+                init_block,
+                shard_client_mc_block: ShardsClientMcBlockId::new(db.clone()),
+            },
         });
 
         engine
@@ -143,7 +150,7 @@ impl Engine {
 
     pub async fn start(self: &Arc<Self>) -> Result<()> {
         // Start full node overlay service
-        let service = FullNodeOverlayService::new();
+        let service = FullNodeOverlayService::new(self);
 
         let (_, masterchain_overlay_id) = self
             .network
@@ -252,8 +259,9 @@ impl Engine {
     }
 
     fn set_init_mc_block_id(&self, block_id: &ton_block::BlockIdExt) {
-        InitMcBlockId(convert_block_id_ext_blk2api(block_id))
-            .store_into_db(self.db.as_ref())
+        self.last_blocks
+            .init_block
+            .store_into_db(convert_block_id_ext_blk2api(block_id))
             .ok();
     }
 
@@ -431,7 +439,7 @@ impl Engine {
             .await
     }
 
-    fn load_block_handle(
+    pub(crate) fn load_block_handle(
         &self,
         block_id: &ton_block::BlockIdExt,
     ) -> Result<Option<Arc<BlockHandle>>> {
@@ -549,7 +557,6 @@ impl Engine {
                     }
                 });
             }
-
             if let Some(shard_state) = self
                 .shard_states_operations
                 .wait(block_id, timeout_ms, &has_state)
@@ -686,23 +693,26 @@ impl Engine {
     }
 
     pub async fn load_last_applied_mc_block_id(&self) -> Result<ton_block::BlockIdExt> {
-        convert_block_id_ext_api2blk(&LastMcBlockId::load_from_db(self.db.as_ref())?.0)
+        convert_block_id_ext_api2blk(&self.last_blocks.last_mc.load_from_db()?)
     }
 
     async fn store_last_applied_mc_block_id(&self, block_id: &ton_block::BlockIdExt) -> Result<()> {
-        LastMcBlockId(convert_block_id_ext_blk2api(block_id)).store_into_db(self.db.as_ref())
+        self.last_blocks
+            .last_mc
+            .store_into_db(convert_block_id_ext_blk2api(block_id))
     }
 
     pub async fn load_shards_client_mc_block_id(&self) -> Result<ton_block::BlockIdExt> {
-        convert_block_id_ext_api2blk(&ShardsClientMcBlockId::load_from_db(self.db.as_ref())?.0)
+        convert_block_id_ext_api2blk(&self.last_blocks.shard_client_mc_block.load_from_db()?)
     }
 
     async fn store_shards_client_mc_block_id(
         &self,
         block_id: &ton_block::BlockIdExt,
     ) -> Result<()> {
-        ShardsClientMcBlockId(convert_block_id_ext_blk2api(block_id))
-            .store_into_db(self.db.as_ref())
+        self.last_blocks
+            .shard_client_mc_block
+            .store_into_db(convert_block_id_ext_blk2api(block_id))
     }
 
     async fn download_and_apply_block(
@@ -900,6 +910,32 @@ impl Engine {
 
     pub async fn gc(&self, gc_type: GcType) -> Result<usize> {
         self.db.garbage_collect(gc_type).await
+    }
+
+    pub(crate) async fn load_prev_key_block(&self, block_id: u32) -> Result<ton_block::BlockIdExt> {
+        let current_block = self.load_last_applied_mc_block_id().await?;
+        let current_shard_state = self.load_state(&current_block).await?;
+        let prev_blocks = &current_shard_state.shard_state_extra()?.prev_blocks;
+
+        let possible_ref_blk = prev_blocks
+            .get_prev_key_block(block_id)?
+            .context("No keyblock found")?;
+
+        let ref_blk = match possible_ref_blk.seq_no {
+            seqno if seqno < block_id => possible_ref_blk,
+            seqno if seqno == block_id => prev_blocks
+                .get_prev_key_block(seqno)?
+                .context("No keyblock found")?,
+            _ => anyhow::bail!("Failed to find previous key block"),
+        };
+
+        let prev_key_block = ton_block::BlockIdExt {
+            shard_id: ton_block::ShardIdent::masterchain(),
+            seq_no: ref_blk.seq_no,
+            root_hash: ref_blk.root_hash,
+            file_hash: ref_blk.file_hash,
+        };
+        Ok(prev_key_block)
     }
 }
 

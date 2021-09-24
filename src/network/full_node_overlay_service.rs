@@ -1,17 +1,32 @@
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 
+use crate::Engine;
 use anyhow::Result;
 use tiny_adnl::utils::*;
 use tiny_adnl::{OverlaySubscriber, QueryAnswer, QueryConsumingResult};
 use ton_api::ton::{self, TLObject};
 use ton_api::{AnyBoxedSerialize, IntoBoxed};
 
-pub struct FullNodeOverlayService;
+pub struct FullNodeOverlayService {
+    engine: Weak<Engine>,
+}
 
 impl FullNodeOverlayService {
-    pub fn new() -> Arc<Self> {
-        Arc::new(Self)
+    pub fn new(engine: &Arc<Engine>) -> Arc<Self> {
+        Arc::new(Self {
+            engine: Arc::downgrade(engine),
+        })
     }
+}
+
+impl FullNodeOverlayService {
+    // async fn get_key_block_ids_handler(&self, prev: &ton_block::BlockIdExt) -> Result<()> {
+    //     let engine = self.engine.upgrade()?;
+    //     let current_shard_state = engine.load_state(&prev).await?;
+    //     let extra = current_shard_state.shard_state_extra()?;
+    //     let mut id = prev.seq_no;
+    //     while let Some(a) = extra.prev_blocks.get_next_key_block(id)? {}
+    // }
 }
 
 #[async_trait::async_trait]

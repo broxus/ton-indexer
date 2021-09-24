@@ -1,35 +1,52 @@
+use super::db::*;
 use anyhow::Result;
+use parking_lot::Mutex;
+use std::sync::Arc;
 use ton_api::ton;
 
-use super::db::*;
-
-pub trait NodeState: serde::Serialize + serde::de::DeserializeOwned {
-    fn get_key() -> &'static str;
-
-    fn load_from_db(db: &Db) -> Result<Self> {
-        let value = db.load_node_state(Self::get_key())?;
-        Ok(bincode::deserialize::<Self>(&value)?)
-    }
-
-    fn store_into_db(&self, db: &Db) -> Result<()> {
-        let value = bincode::serialize(self)?;
-        db.store_node_state(Self::get_key(), value)
-    }
-}
-
 macro_rules! define_node_state {
-    ($ident:ident, $inner:path) => {
-        #[derive(serde::Serialize, serde::Deserialize)]
-        pub struct $ident(pub $inner);
+    ($ident:ident) => {
+        pub struct $ident {
+            cache: Mutex<Option<ton::ton_node::blockidext::BlockIdExt>>,
+            db: Arc<Db>,
+        }
+        impl $ident {
+            pub fn new(db: Arc<Db>) -> Self {
+                Self {
+                    db,
+                    cache: Mutex::new(None),
+                }
+            }
 
-        impl NodeState for $ident {
             fn get_key() -> &'static str {
                 stringify!($ident)
+            }
+
+            pub fn load_from_db(&self) -> Result<ton::ton_node::blockidext::BlockIdExt> {
+                {
+                    let lock = self.cache.lock();
+                    if let Some(a) = &*lock {
+                        return Ok(a.clone());
+                    }
+                }
+                let value = self.db.load_node_state(Self::get_key())?;
+                let value = bincode::deserialize::<ton::ton_node::blockidext::BlockIdExt>(&value)?;
+                *self.cache.lock() = Some(value.clone());
+                Ok(value)
+            }
+            pub fn store_into_db(
+                &self,
+                value: ton::ton_node::blockidext::BlockIdExt,
+            ) -> Result<()> {
+                let bytes = bincode::serialize(&value)?;
+                self.db.store_node_state(Self::get_key(), bytes)?;
+                *self.cache.lock() = Some(value);
+                Ok(())
             }
         }
     };
 }
 
-define_node_state!(LastMcBlockId, ton::ton_node::blockidext::BlockIdExt);
-define_node_state!(InitMcBlockId, ton::ton_node::blockidext::BlockIdExt);
-define_node_state!(ShardsClientMcBlockId, ton::ton_node::blockidext::BlockIdExt);
+define_node_state!(LastMcBlockId);
+define_node_state!(InitMcBlockId);
+define_node_state!(ShardsClientMcBlockId);
