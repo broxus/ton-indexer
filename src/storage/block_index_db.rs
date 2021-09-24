@@ -7,10 +7,9 @@ use rocksdb::IteratorMode;
 use ton_api::ton;
 use ton_types::ByteOrderRead;
 
-use crate::utils::*;
-
 use super::block_handle::*;
 use super::{columns, StoredValue, Tree};
+use crate::utils::*;
 
 pub struct BlockIndexDb {
     lt_desc_db: RwLock<LtDescDb>,
@@ -248,37 +247,6 @@ impl BlockIndexDb {
             .lt_db_iterator()?
             .filter(move |(_, v)| v.gen_utime < older_then))
     }
-
-    pub fn gc<'a>(&self, ids: impl Iterator<Item = &'a ton_block::BlockIdExt>) -> Result<()> {
-        let lt_desc_lock = self.lt_desc_db.write();
-        let lt_desc_cf = lt_desc_lock.db.get_cf()?;
-        let ldtb_cf = self.lt_db.db.get_cf()?;
-        let mut lt_db_tx = rocksdb::WriteBatch::default();
-        let mut lt_desc_tx = rocksdb::WriteBatch::default();
-
-        for id in ids {
-            let lt_desc_key = id.shard_id.to_vec()?;
-            let index = match lt_desc_lock.try_load_lt_desc(&lt_desc_key)? {
-                Some(desc) => match id.seq_no.cmp(&desc.last_seq_no) {
-                    std::cmp::Ordering::Equal => return Ok(()),
-                    std::cmp::Ordering::Greater => desc.last_index + 1,
-                    std::cmp::Ordering::Less => {
-                        return Err(BlockIndexDbError::AscendingOrderRequired.into())
-                    }
-                },
-                None => 1,
-            };
-            let ltdb_key = LtDbKey {
-                shard_ident: id.shard(),
-                index,
-            };
-            lt_db_tx.delete_cf(&ldtb_cf, ltdb_key.to_vec()?);
-            lt_desc_tx.delete_cf(&lt_desc_cf, lt_desc_key);
-        }
-        lt_desc_lock.db.raw_db_handle().write(lt_desc_tx)?;
-        self.lt_db.db.raw_db_handle().write(lt_db_tx)?;
-        Ok(())
-    }
 }
 
 struct LtDb {
@@ -387,7 +355,7 @@ mod test {
             shard_ident: &Default::default(),
             index: 13,
         };
-        let mut bytes = key.to_vec().unwrap();
+        let bytes = key.to_vec().unwrap();
         let mut bytes = std::io::Cursor::new(bytes);
         let got = LtDbKeyOwned::deserialize(&mut bytes).unwrap();
         assert_eq!(&got.shard_ident, key.shard_ident);

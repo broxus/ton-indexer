@@ -92,7 +92,7 @@ impl FullNodeOverlayClient for OverlayClient {
                     block: convert_block_id_ext_blk2api(block_id),
                     masterchain_block: convert_block_id_ext_blk2api(masterchain_block_id),
                 }),
-                Some(5),
+                None,
                 Some(TIMEOUT_PREPARE),
                 Some(active_peers),
             )

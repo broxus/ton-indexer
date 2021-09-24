@@ -21,6 +21,7 @@ dashmap = "4.0"
 fdlimit = "0.2.1"
 futures = "0.3"
 hex = "0.4"
+itertools = "0.10.1"
 libc = "0.2"
 log = "0.4"
 num-traits = "0.2"
@@ -49,7 +50,6 @@ ton_types = { git = "https://github.com/broxus/ton-labs-types.git" }
 nekoton-utils = { git = "https://github.com/broxus/nekoton.git" }
 
 ton-indexer-alloc = { path = "ton-indexer-alloc" }
-itertools = "0.10.1"
 
 [dev-dependencies]
 argh = "0.1"

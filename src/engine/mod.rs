@@ -16,7 +16,6 @@ use self::complex_operations::*;
 use self::db::*;
 use self::downloader::*;
 use self::node_state::*;
-use std::num::NonZeroUsize;
 
 pub mod complex_operations;
 mod db;
@@ -58,7 +57,7 @@ pub struct Engine {
     last_known_mc_block_seqno: AtomicU32,
     last_known_key_block_seqno: AtomicU32,
 
-    parallel_tasks: NonZeroUsize,
+    parallel_archive_downloads: u32,
     shard_state_cache_enabled: bool,
     shard_states_cache: ShardStateCache,
 
@@ -127,7 +126,7 @@ impl Engine {
             init_mc_block_id,
             last_known_mc_block_seqno: AtomicU32::new(0),
             last_known_key_block_seqno: AtomicU32::new(0),
-            parallel_tasks: config.parallel_downloads,
+            parallel_archive_downloads: config.parallel_archive_downloads,
             shard_state_cache_enabled,
             shard_states_cache: ShardStateCache::new(3600),
             shard_states_operations: OperationsPool::new("shard_states_operations"),
@@ -653,6 +652,32 @@ impl Engine {
                 .create_or_load_block_handle(block_id, None, Some(state.state().gen_time()))?;
         self.store_state(&handle, state).await?;
         Ok(handle)
+    }
+
+    async fn load_prev_key_block(&self, block_id: u32) -> Result<ton_block::BlockIdExt> {
+        let current_block = self.load_last_applied_mc_block_id().await?;
+        let current_shard_state = self.load_state(&current_block).await?;
+        let prev_blocks = &current_shard_state.shard_state_extra()?.prev_blocks;
+
+        let possible_ref_blk = prev_blocks
+            .get_prev_key_block(block_id)?
+            .context("No keyblock found")?;
+
+        let ref_blk = match possible_ref_blk.seq_no {
+            seqno if seqno < block_id => possible_ref_blk,
+            seqno if seqno == block_id => prev_blocks
+                .get_prev_key_block(seqno)?
+                .context("No keyblock found")?,
+            _ => anyhow::bail!("Failed to find previous key block"),
+        };
+
+        let prev_key_block = ton_block::BlockIdExt {
+            shard_id: ton_block::ShardIdent::masterchain(),
+            seq_no: ref_blk.seq_no,
+            root_hash: ref_blk.root_hash,
+            file_hash: ref_blk.file_hash,
+        };
+        Ok(prev_key_block)
     }
 
     pub async fn is_synced(&self) -> Result<bool> {

@@ -4,12 +4,10 @@ use std::sync::{Arc, Weak};
 use anyhow::Result;
 use tiny_adnl::utils::*;
 
-use crate::storage::{columns, StoredValue};
-
 use super::block_handle::*;
 use super::block_meta::*;
 use super::tree::*;
-use rocksdb::IteratorMode;
+use super::{columns, StoredValue};
 
 pub struct BlockHandleStorage {
     cache: Arc<FxDashMap<ton_block::BlockIdExt, Weak<BlockHandle>>>,
@@ -97,17 +95,5 @@ impl BlockHandleStorage {
             total += 1;
         }
         Ok((total, untouched))
-    }
-
-    pub fn key_blocks_iter(&self) -> Result<impl Iterator<Item = BlockMeta> + '_> {
-        let handle = self.db.get_cf()?;
-        let raw_db = self.db.raw_db_handle();
-        Ok(raw_db
-            .iterator_cf(&handle, IteratorMode::Start)
-            .filter_map(|(_, v)| {
-                let meta = BlockMeta::deserialize(&mut std::io::Cursor::new(v)).ok()?;
-                Some(meta)
-            })
-            .filter(|x| x.is_key_block()))
     }
 }
