@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 
 use anyhow::Result;
 use tiny_adnl::utils::*;
@@ -6,11 +6,77 @@ use tiny_adnl::{OverlaySubscriber, QueryAnswer, QueryConsumingResult};
 use ton_api::ton::{self, TLObject};
 use ton_api::{AnyBoxedSerialize, IntoBoxed};
 
-pub struct FullNodeOverlayService;
+use crate::engine::Engine;
+use crate::utils::*;
+
+pub struct FullNodeOverlayService {
+    engine: Weak<Engine>,
+}
 
 impl FullNodeOverlayService {
-    pub fn new() -> Arc<Self> {
-        Arc::new(Self)
+    pub fn new(engine: &Arc<Engine>) -> Arc<Self> {
+        Arc::new(Self {
+            engine: Arc::downgrade(engine),
+        })
+    }
+
+    fn engine(&self) -> Result<Arc<Engine>, FullNodeOverlayServiceError> {
+        self.engine
+            .upgrade()
+            .ok_or(FullNodeOverlayServiceError::EngineDropped)
+    }
+}
+
+impl Engine {
+    async fn get_next_key_block_ids(
+        &self,
+        query: ton::rpc::ton_node::GetNextKeyBlockIds,
+    ) -> Result<ton::ton_node::KeyBlocks> {
+        const NEXT_KEY_BLOCKS_LIMIT: i32 = 8;
+
+        let limit = std::cmp::min(query.max_size, NEXT_KEY_BLOCKS_LIMIT) as usize;
+
+        let get_next_key_block_ids = || async move {
+            let last_mc_block_id = self.load_last_applied_mc_block_id().await?;
+            let last_mc_state = self.load_state(&last_mc_block_id).await?;
+            let prev_blocks = &last_mc_state.shard_state_extra()?.prev_blocks;
+
+            let start_block_id = convert_block_id_ext_api2blk(&query.block)?;
+
+            if query.block.seqno != 0 {
+                prev_blocks.check_key_block(&start_block_id, Some(true))?;
+            }
+
+            let mut ids = Vec::with_capacity(limit);
+
+            let mut seq_no = start_block_id.seq_no;
+            while let Some(id) = prev_blocks.get_next_key_block(seq_no + 1)? {
+                seq_no = id.seq_no;
+
+                ids.push(convert_block_id_ext_blk2api(&id.master_block_id().1));
+                if ids.len() >= limit {
+                    break;
+                }
+            }
+
+            Result::<_, anyhow::Error>::Ok(ids)
+        };
+
+        let (incomplete, error, blocks) = match get_next_key_block_ids().await {
+            Ok(ids) => (ids.len() < limit, false, ids),
+            Err(e) => {
+                log::warn!("get_next_key_block_ids failed: {:?}", e);
+                (false, true, Vec::new())
+            }
+        };
+
+        Ok(ton::ton_node::KeyBlocks::TonNode_KeyBlocks(Box::new(
+            ton::ton_node::keyblocks::KeyBlocks {
+                blocks: blocks.into(),
+                incomplete: incomplete.into(),
+                error: error.into(),
+            },
+        )))
     }
 }
 
@@ -55,11 +121,12 @@ impl OverlaySubscriber for FullNodeOverlayService {
         };
 
         let query = match query.downcast::<ton::rpc::ton_node::GetNextKeyBlockIds>() {
-            Ok(_) => {
-                // TODO: save key blocks somewhere and return them in this query
-                return answer(ton::ton_node::KeyBlocks::TonNode_KeyBlocks(
-                    Default::default(),
-                ));
+            Ok(query) => {
+                return self
+                    .engine()?
+                    .get_next_key_block_ids(query)
+                    .await
+                    .and_then(answer);
             }
             Err(query) => query,
         };
@@ -105,4 +172,10 @@ where
     T::Boxed: AnyBoxedSerialize,
 {
     answer(data.into_boxed())
+}
+
+#[derive(thiserror::Error, Debug)]
+enum FullNodeOverlayServiceError {
+    #[error("Engine is already dropped")]
+    EngineDropped,
 }

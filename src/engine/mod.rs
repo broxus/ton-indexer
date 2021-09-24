@@ -142,7 +142,7 @@ impl Engine {
 
     pub async fn start(self: &Arc<Self>) -> Result<()> {
         // Start full node overlay service
-        let service = FullNodeOverlayService::new();
+        let service = FullNodeOverlayService::new(self);
 
         let (_, masterchain_overlay_id) = self
             .network
