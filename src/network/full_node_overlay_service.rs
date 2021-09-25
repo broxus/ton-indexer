@@ -1,3 +1,4 @@
+use std::future::Future;
 use std::sync::{Arc, Weak};
 
 use anyhow::Result;
@@ -22,11 +23,32 @@ where
         })
     }
 
-    fn engine(&self) -> Result<Arc<T>, FullNodeOverlayServiceError> {
-        self.engine
-            .upgrade()
-            .ok_or(FullNodeOverlayServiceError::EngineDropped)
+    async fn answer<Q, F, R>(
+        &self,
+        query: TLObject,
+        handler: fn(Arc<T>, Q) -> F,
+        into_answer: fn(R) -> Result<QueryConsumingResult>,
+    ) -> ProcessedQuery
+    where
+        F: Future<Output = Result<R>>,
+        Q: AnyBoxedSerialize,
+        R: Send,
+    {
+        let query = match query.downcast::<Q>() {
+            Ok(query) => query,
+            Err(query) => return ProcessedQuery::Rejected(query),
+        };
+
+        ProcessedQuery::Accepted(match self.engine.upgrade() {
+            Some(engine) => handler(engine, query).await.and_then(into_answer),
+            None => Err(FullNodeOverlayServiceError::EngineDropped.into()),
+        })
     }
+}
+
+enum ProcessedQuery {
+    Accepted(Result<QueryConsumingResult>),
+    Rejected(TLObject),
 }
 
 #[async_trait::async_trait]
@@ -38,74 +60,48 @@ where
         &self,
         _local_id: &AdnlNodeIdShort,
         _peer_id: &AdnlNodeIdShort,
-        query: TLObject,
+        mut query: TLObject,
     ) -> Result<QueryConsumingResult> {
         //log::info!("Got query: {:?}", query);
 
-        let query = match query.downcast::<ton::rpc::ton_node::GetNextBlockDescription>() {
-            Ok(_) => return answer(ton::ton_node::BlockDescription::TonNode_BlockDescriptionEmpty),
-            Err(query) => query,
+        macro_rules! select_query {
+            ($($handler:ident => $into_answer:ident),*,) => {
+                $(query = match self.answer(query, RpcService::$handler, $into_answer).await {
+                    ProcessedQuery::Accepted(result) => return result,
+                    ProcessedQuery::Rejected(query) => query,
+                });*;
+            };
+        }
+
+        select_query! {
+            get_next_block_description => answer,
+            prepare_block_proof => answer,
+            prepare_key_block_proof => answer,
+            prepare_block => answer,
         };
 
-        let query = match query.downcast::<ton::rpc::ton_node::PrepareBlockProof>() {
-            Ok(_) => return answer(ton::ton_node::PreparedProof::TonNode_PreparedProofEmpty),
-            Err(query) => query,
-        };
-
-        let query = match query.downcast::<ton::rpc::ton_node::PrepareKeyBlockProof>() {
-            Ok(_) => return answer(ton::ton_node::PreparedProof::TonNode_PreparedProofEmpty),
-            Err(query) => query,
-        };
-
-        let query = match query.downcast::<ton::rpc::ton_node::PrepareBlock>() {
-            Ok(_) => return answer(ton::ton_node::Prepared::TonNode_NotFound),
-            Err(query) => query,
-        };
-
-        let query = match query.downcast::<ton::rpc::ton_node::PreparePersistentState>() {
+        query = match query.downcast::<ton::rpc::ton_node::PreparePersistentState>() {
             Ok(_) => return answer(ton::ton_node::PreparedState::TonNode_NotFoundState),
             Err(query) => query,
         };
 
-        let query = match query.downcast::<ton::rpc::ton_node::PrepareZeroState>() {
+        query = match query.downcast::<ton::rpc::ton_node::PrepareZeroState>() {
             Ok(_) => return answer(ton::ton_node::PreparedState::TonNode_NotFoundState),
             Err(query) => query,
         };
 
-        let query = match query.downcast::<ton::rpc::ton_node::GetNextKeyBlockIds>() {
-            Ok(query) => {
-                return self
-                    .engine()?
-                    .get_next_key_block_ids(query)
-                    .await
-                    .and_then(answer);
-            }
-            Err(query) => query,
+        select_query! {
+            get_next_key_block_ids => answer,
+            download_next_block_full => answer,
+            download_block_full => answer,
+            download_block => answer_raw,
+            download_block_proof => answer_raw,
+            download_key_block_proof => answer_raw,
+            download_block_proof_link => answer_raw,
+            download_key_block_proof_link => answer_raw,
         };
 
-        let query = match query.downcast::<ton::rpc::ton_node::DownloadNextBlockFull>() {
-            Ok(query) => {
-                return self
-                    .engine()?
-                    .download_next_block_full(query)
-                    .await
-                    .and_then(answer)
-            }
-            Err(query) => query,
-        };
-
-        let query = match query.downcast::<ton::rpc::ton_node::DownloadBlockFull>() {
-            Ok(query) => {
-                return self
-                    .engine()?
-                    .download_block_full(query)
-                    .await
-                    .and_then(answer)
-            }
-            Err(query) => query,
-        };
-
-        let query = match query.downcast::<ton::rpc::ton_node::GetArchiveInfo>() {
+        query = match query.downcast::<ton::rpc::ton_node::GetArchiveInfo>() {
             Ok(_) => return answer(ton::ton_node::ArchiveInfo::TonNode_ArchiveNotFound),
             Err(query) => query,
         };
@@ -129,6 +125,10 @@ fn answer<T: AnyBoxedSerialize>(data: T) -> Result<QueryConsumingResult> {
     Ok(QueryConsumingResult::Consumed(Some(QueryAnswer::Object(
         TLObject::new(data),
     ))))
+}
+
+fn answer_raw(data: Vec<u8>) -> Result<QueryConsumingResult> {
+    Ok(QueryConsumingResult::Consumed(Some(QueryAnswer::Raw(data))))
 }
 
 fn answer_boxed<T: IntoBoxed>(data: T) -> Result<QueryConsumingResult>
