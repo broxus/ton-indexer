@@ -104,7 +104,8 @@ impl Db {
             })
             .column::<columns::BlockHandles>()
             .column::<columns::ShardStateDb>()
-            .column::<columns::CellDb>()
+            .column::<columns::CellDb<0>>()
+            .column::<columns::CellDb<1>>()
             .column::<columns::NodeState>()
             .column::<columns::LtDesc>()
             .column::<columns::Lt>()
@@ -119,6 +120,7 @@ impl Db {
 
         let block_handle_storage = BlockHandleStorage::with_db(Tree::new(db.clone())?);
         let shard_state_storage = ShardStateStorage::with_db(
+            Tree::new(db.clone())?,
             Tree::new(db.clone())?,
             Tree::new(db.clone())?,
             &file_db_path,

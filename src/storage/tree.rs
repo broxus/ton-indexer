@@ -105,6 +105,7 @@ where
         Ok(self.db.get_pinned_cf_opt(&cf, key, &self.read_config)?)
     }
 
+    #[inline]
     pub fn insert<K, V>(&self, key: K, value: V) -> Result<()>
     where
         K: AsRef<[u8]>,
