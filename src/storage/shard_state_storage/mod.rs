@@ -61,17 +61,18 @@ impl ShardStateStorage {
     ) -> Result<()> {
         let state = self.state.read().await;
 
-        let cell_id = &root.repr_hash();
-        let boc_db = state.active_boc_db.load(Ordering::Acquire);
-        match boc_db {
-            0 => state.dynamic_boc_db_0.acquire().store_dynamic_boc(root)?,
-            1 => state.dynamic_boc_db_1.acquire().store_dynamic_boc(root)?,
-            _ => return Err(ShardStateStorageError::UnknownBocDb.into()),
-        };
+        let cell_id = root.repr_hash();
+
+        let boc_db = state.active_boc_db()?;
+        boc_db.acquire().store_dynamic_boc(root)?;
 
         state.shard_state_db.insert(
             block_id.to_vec()?,
-            ShardStateValueView { cell_id, boc_db }.to_vec(),
+            ShardStateValueView {
+                cell_id: &cell_id,
+                boc_db_id: boc_db.id,
+            }
+            .to_vec(),
         )
     }
 
@@ -80,14 +81,11 @@ impl ShardStateStorage {
         let shard_state = state.shard_state_db.get(block_id.to_vec()?)?;
         match shard_state {
             Some(root) => {
-                let OwnedShardStateValue { cell_id, boc_db } =
+                let OwnedShardStateValue { cell_id, boc_db_id } =
                     OwnedShardStateValue::from_bytes(root)?;
 
-                let cell = match boc_db {
-                    0 => state.dynamic_boc_db_0.db.load_cell(cell_id)?,
-                    1 => state.dynamic_boc_db_1.db.load_cell(cell_id)?,
-                    _ => return Err(ShardStateStorageError::UnknownBocDb.into()),
-                };
+                let boc_db = state.boc_db(boc_db_id)?;
+                let cell = boc_db.db.load_cell(cell_id)?;
                 Ok(ton_types::Cell::with_cell_impl_arc(cell))
             }
             None => Err(ShardStateStorageError::NotFound.into()),
@@ -113,7 +111,7 @@ impl ShardStateStorage {
 
 struct OwnedShardStateValue {
     cell_id: UInt256,
-    boc_db: u8,
+    boc_db_id: u8,
 }
 
 impl OwnedShardStateValue {
@@ -122,25 +120,27 @@ impl OwnedShardStateValue {
         T: AsRef<[u8]>,
     {
         let data = data.as_ref();
-        let (cell_id, boc_db) = match data.len() {
-            32 => (UInt256::from_be_bytes(data), 0),
-            33 => (UInt256::from_be_bytes(&data[..32]), data[32]),
+        let (cell_id, boc_db_id) = match data {
+            data if data.len() == 32 => (UInt256::from_be_bytes(data), 0),
+            [data @ .., boc_db_id] if data.len() == 32 => {
+                (UInt256::from_be_bytes(data), *boc_db_id)
+            }
             _ => return Err(ShardStateStorageError::UnknownBocDb.into()),
         };
-        Ok(Self { cell_id, boc_db })
+        Ok(Self { cell_id, boc_db_id })
     }
 }
 
 struct ShardStateValueView<'a> {
     cell_id: &'a UInt256,
-    boc_db: u8,
+    boc_db_id: u8,
 }
 
 impl ShardStateValueView<'_> {
     fn to_vec(&self) -> SmallVec<[u8; 33]> {
         let mut result = SmallVec::with_capacity(33);
         result.extend_from_slice(self.cell_id.as_slice());
-        result.push(self.boc_db);
+        result.push(self.boc_db_id);
         result
     }
 }
@@ -150,6 +150,20 @@ struct ShardStateStorageState {
     active_boc_db: AtomicU8,
     dynamic_boc_db_0: DynamicBocDbHandle,
     dynamic_boc_db_1: DynamicBocDbHandle,
+}
+
+impl ShardStateStorageState {
+    fn active_boc_db(&self) -> Result<&DynamicBocDbHandle, ShardStateStorageError> {
+        self.boc_db(self.active_boc_db.load(Ordering::Acquire))
+    }
+
+    fn boc_db(&self, id: u8) -> Result<&DynamicBocDbHandle, ShardStateStorageError> {
+        match id {
+            0 => Ok(&self.dynamic_boc_db_0),
+            1 => Ok(&self.dynamic_boc_db_1),
+            _ => Err(ShardStateStorageError::UnknownBocDb),
+        }
+    }
 }
 
 pub struct ShardStateReplaceTransaction<'a> {
@@ -252,12 +266,7 @@ impl<'a> ShardStateReplaceTransaction<'a> {
         let cells_file = ctx.create_mapped_cells_file().await?;
 
         tokio::task::block_in_place(|| {
-            let active_boc_db = self.state.active_boc_db.load(Ordering::Acquire);
-            let cell_db = match active_boc_db {
-                0 => &self.state.dynamic_boc_db_0.db.cell_db,
-                1 => &self.state.dynamic_boc_db_1.db.cell_db,
-                _ => return Err(ShardStateStorageError::UnknownBocDb.into()),
-            };
+            let cell_db = &self.state.active_boc_db()?.db.cell_db;
 
             let mut tail = [0; 4];
             let mut entries_buffer = EntriesBuffer::new();
@@ -347,14 +356,10 @@ impl<'a> ShardStateReplaceTransaction<'a> {
             // Load stored shard state
             match self.state.shard_state_db.get(block_id_key)? {
                 Some(root) => {
-                    let OwnedShardStateValue { cell_id, boc_db } =
+                    let OwnedShardStateValue { cell_id, boc_db_id } =
                         OwnedShardStateValue::from_bytes(root)?;
-                    let cell = match boc_db {
-                        0 => self.state.dynamic_boc_db_0.db.load_cell(cell_id)?,
-                        1 => self.state.dynamic_boc_db_1.db.load_cell(cell_id)?,
-                        _ => return Err(ShardStateStorageError::UnknownBocDb.into()),
-                    };
 
+                    let cell = self.state.boc_db(boc_db_id)?.db.load_cell(cell_id)?;
                     Ok(Arc::new(ShardStateStuff::new(
                         block_id,
                         ton_types::Cell::with_cell_impl_arc(cell),
@@ -786,6 +791,7 @@ impl<'a> HashesEntry<'a> {
 }
 
 struct DynamicBocDbHandle {
+    id: u8,
     db: DynamicBocDb,
     writer_count: AtomicU32,
 }
@@ -796,6 +802,7 @@ impl DynamicBocDbHandle {
         columns::CellDb<N>: Column,
     {
         Self {
+            id: N,
             db: DynamicBocDb::with_db(db),
             writer_count: AtomicU32::new(0),
         }

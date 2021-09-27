@@ -20,6 +20,7 @@ use self::node_state::*;
 pub mod complex_operations;
 mod db;
 mod downloader;
+mod gc_state;
 mod node_state;
 pub mod rpc_operations;
 
