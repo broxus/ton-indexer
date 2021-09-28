@@ -20,7 +20,7 @@ pub async fn sync(engine: &Arc<Engine>) -> Result<()> {
     log::info!("Started sync");
 
     let active_peers = Arc::new(ActivePeers::default());
-    let last_applied = engine.load_last_applied_mc_block_id().await?.seq_no;
+    let last_applied = engine.load_last_applied_mc_block_id()?.seq_no;
 
     log::info!("Creating archives stream from {}", last_applied);
     let archives_stream =
@@ -44,7 +44,7 @@ pub async fn sync(engine: &Arc<Engine>) -> Result<()> {
                     break;
                 }
             }
-            let mc_block_id = engine.last_applied_block().await?;
+            let mc_block_id = engine.last_applied_block()?;
 
             let now = std::time::Instant::now();
             match import_package(engine, archive, &mc_block_id).await {
@@ -69,8 +69,8 @@ pub async fn sync(engine: &Arc<Engine>) -> Result<()> {
     }
     log::info!("Finished fast sync");
 
-    while !engine.is_synced().await? {
-        let last_mc_block_id = engine.last_applied_block().await?;
+    while !engine.is_synced()? {
+        let last_mc_block_id = engine.last_applied_block()?;
 
         log::info!(
             "sync: Start iteration for last masterchain block id: {}",
@@ -176,7 +176,7 @@ async fn import_shard_blocks(engine: &Arc<Engine>, maps: Arc<BlockMaps>) -> Resu
         }
     }
 
-    let mut last_applied_mc_block_id = engine.load_shards_client_mc_block_id().await?;
+    let mut last_applied_mc_block_id = engine.load_shards_client_mc_block_id()?;
     for mc_block_id in maps.mc_block_ids.values() {
         let mc_seq_no = mc_block_id.seq_no;
         if mc_seq_no <= last_applied_mc_block_id.seq_no {
@@ -236,7 +236,7 @@ async fn import_shard_blocks(engine: &Arc<Engine>, maps: Arc<BlockMaps>) -> Resu
             .find(|item| item.is_err())
             .unwrap_or(Ok(()))?;
 
-        engine.store_shards_client_mc_block_id(mc_block_id).await?;
+        engine.store_shards_client_mc_block_id(mc_block_id)?;
         last_applied_mc_block_id = mc_block_id.clone();
     }
 
@@ -422,9 +422,9 @@ async fn save_archive(
 }
 
 impl Engine {
-    async fn last_applied_block(&self) -> Result<ton_block::BlockIdExt> {
-        let mc_block_id = self.load_last_applied_mc_block_id().await?;
-        let sc_block_id = self.load_shards_client_mc_block_id().await?;
+    fn last_applied_block(&self) -> Result<ton_block::BlockIdExt> {
+        let mc_block_id = self.load_last_applied_mc_block_id()?;
+        let sc_block_id = self.load_shards_client_mc_block_id()?;
         log::info!("sync: Last applied block id: {}", mc_block_id);
         log::info!("sync: Last shards client block id: {}", sc_block_id);
 

@@ -3,7 +3,8 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use rocksdb::{
-    BoundColumnFamily, DBPinnableSlice, IteratorMode, Options, ReadOptions, WriteOptions, DB,
+    BoundColumnFamily, DBIterator, DBPinnableSlice, IteratorMode, Options, ReadOptions,
+    WriteOptions, DB,
 };
 
 pub trait Column {
@@ -157,5 +158,14 @@ where
                 tot += v.len();
             });
         Ok(tot)
+    }
+
+    pub fn iterator(&'_ self, mode: IteratorMode) -> Result<DBIterator> {
+        let cf = self.get_cf()?;
+
+        let mut read_config = Default::default();
+        T::read_options(&mut read_config);
+
+        Ok(self.db.iterator_cf_opt(&cf, read_config, mode))
     }
 }

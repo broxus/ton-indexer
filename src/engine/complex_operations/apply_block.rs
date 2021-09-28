@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use futures::future::{BoxFuture, FutureExt};
 
 use crate::engine::db::BlockConnection;
@@ -44,18 +44,23 @@ pub fn apply_block<'a>(
                 .await?;
 
             if block.id().is_masterchain() {
-                engine.store_last_applied_mc_block_id(block.id()).await?;
+                engine.store_last_applied_mc_block_id(block.id())?;
                 // TODO: update shard blocks
 
-                engine.set_applied(handle, mc_seq_no).await?;
+                engine.set_applied(handle, mc_seq_no)?;
 
                 let id = handle.id().clone();
                 engine
                     .next_block_applying_operations
                     .do_or_wait(&prev1_id, None, async move { Ok(id) })
                     .await?;
+
+                engine
+                    .advance_states_gc_state(&engine.load_shards_client_mc_block_id()?)
+                    .await
+                    .context("Failed to advance GC state")?;
             } else {
-                engine.set_applied(handle, mc_seq_no).await?;
+                engine.set_applied(handle, mc_seq_no)?;
             }
         }
 

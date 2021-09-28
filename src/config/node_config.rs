@@ -17,6 +17,8 @@ pub struct NodeConfig {
     pub rocks_db_path: PathBuf,
     pub file_db_path: PathBuf,
 
+    pub state_gc_interval_ms: u64,
+
     pub old_blocks_policy: OldBlocksPolicy,
     pub shard_state_cache_enabled: bool,
     pub max_db_memory_usage: usize,
@@ -37,8 +39,9 @@ impl Default for NodeConfig {
             adnl_keys: Default::default(),
             rocks_db_path: "db/rocksdb".into(),
             file_db_path: "db/file".into(),
-            shard_state_cache_enabled: false,
+            state_gc_interval_ms: 0,
             old_blocks_policy: Default::default(),
+            shard_state_cache_enabled: false,
             max_db_memory_usage: default_max_db_memory_usage(),
             parallel_archive_downloads: 16,
             adnl_options: Default::default(),

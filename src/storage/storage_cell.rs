@@ -2,7 +2,9 @@ use std::io::Write;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
+use anyhow::Result;
 use parking_lot::RwLock;
+use smallvec::SmallVec;
 use ton_types::{ByteOrderRead, CellImpl};
 
 use super::shard_state_storage::DynamicBocDb;
@@ -20,7 +22,7 @@ impl StorageCell {
         self.hash(ton_types::MAX_LEVEL as usize)
     }
 
-    pub fn deserialize(boc_db: DynamicBocDb, data: &[u8]) -> anyhow::Result<Self> {
+    pub fn deserialize(boc_db: DynamicBocDb, data: &[u8]) -> Result<Self> {
         let mut reader = std::io::Cursor::new(data);
 
         let cell_data = ton_types::CellData::deserialize(&mut reader)?;
@@ -49,13 +51,12 @@ impl StorageCell {
         })
     }
 
-    #[allow(unused)]
-    pub fn deserialize_references(data: &[u8]) -> anyhow::Result<Vec<StorageCellReference>> {
+    pub fn deserialize_references(data: &[u8]) -> Result<SmallVec<[StorageCellReference; 4]>> {
         let mut reader = std::io::Cursor::new(data);
 
         let _cell_data = ton_types::CellData::deserialize(&mut reader)?;
         let references_count = reader.read_byte()?;
-        let mut references = Vec::with_capacity(references_count as usize);
+        let mut references = SmallVec::with_capacity(references_count as usize);
 
         for _ in 0..references_count {
             let hash = ton_types::UInt256::from(reader.read_u256()?);
@@ -64,10 +65,10 @@ impl StorageCell {
         Ok(references)
     }
 
-    pub fn serialize(cell: &dyn CellImpl) -> anyhow::Result<Vec<u8>> {
+    pub fn serialize(cell: &dyn CellImpl) -> Result<SmallVec<[u8; 512]>> {
         let references_count = cell.references_count() as u8;
 
-        let mut data = Vec::new();
+        let mut data = SmallVec::new();
         cell.cell_data().serialize(&mut data)?;
         data.write_all(&[references_count])?;
 
@@ -81,7 +82,7 @@ impl StorageCell {
         Ok(data)
     }
 
-    fn reference(&self, index: usize) -> anyhow::Result<Arc<StorageCell>> {
+    fn reference(&self, index: usize) -> Result<Arc<StorageCell>> {
         let hash = match &self.references.read().get(index) {
             Some(StorageCellReference::Unloaded(hash)) => *hash,
             Some(StorageCellReference::Loaded(cell)) => return Ok(cell.clone()),
@@ -112,7 +113,7 @@ impl CellImpl for StorageCell {
         self.references.read().len()
     }
 
-    fn reference(&self, index: usize) -> ton_types::Result<ton_types::Cell> {
+    fn reference(&self, index: usize) -> Result<ton_types::Cell> {
         Ok(ton_types::Cell::with_cell_impl_arc(
             self.reference(index)
                 .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?,
