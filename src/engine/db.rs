@@ -506,8 +506,14 @@ impl Db {
         &self.background_sync_meta_store
     }
 
-    pub fn start_states_gc(&self, resolver: Arc<dyn StatesGcResolver>, interval: Duration) {
-        self.shard_state_storage.start_gc(resolver, interval);
+    pub fn start_states_gc(
+        &self,
+        resolver: Arc<dyn StatesGcResolver>,
+        offset: Duration,
+        interval: Duration,
+    ) {
+        self.shard_state_storage
+            .start_gc(resolver, offset, interval);
     }
 
     pub async fn garbage_collect(&self, gc_type: BlocksGcType) -> Result<usize> {

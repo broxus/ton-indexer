@@ -106,21 +106,27 @@ impl ShardStateStorage {
         Ok((ShardStateReplaceTransaction::new(self.state.clone())?, ctx))
     }
 
-    pub fn start_gc(&self, resolver: Arc<dyn StatesGcResolver>, interval: Duration) {
+    pub fn start_gc(
+        &self,
+        resolver: Arc<dyn StatesGcResolver>,
+        offset: Duration,
+        interval: Duration,
+    ) {
         let state = Arc::downgrade(&self.state);
 
         tokio::spawn(async move {
+            tokio::time::sleep(offset).await;
             loop {
-                match state.upgrade() {
-                    Some(state) => {
-                        if let Err(e) = state.gc(&resolver).await {
-                            log::error!("Failed to GC state: {:?}", e);
-                        }
-                    }
+                tokio::time::sleep(interval).await;
+
+                let state = match state.upgrade() {
+                    Some(state) => state,
                     None => return,
                 };
 
-                tokio::time::sleep(interval).await;
+                if let Err(e) = state.gc(&resolver).await {
+                    log::error!("Failed to GC state: {:?}", e);
+                }
             }
         });
     }
