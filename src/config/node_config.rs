@@ -39,7 +39,7 @@ impl Default for NodeConfig {
             adnl_keys: Default::default(),
             rocks_db_path: "db/rocksdb".into(),
             file_db_path: "db/file".into(),
-            state_gc_interval_ms: 0,
+            state_gc_interval_ms: 900,
             old_blocks_policy: Default::default(),
             shard_state_cache_enabled: false,
             max_db_memory_usage: default_max_db_memory_usage(),
