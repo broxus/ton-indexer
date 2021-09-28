@@ -12,7 +12,7 @@ use super::shard_state_storage::DynamicBocDb;
 pub struct StorageCell {
     boc_db: DynamicBocDb,
     cell_data: ton_types::CellData,
-    references: RwLock<Vec<StorageCellReference>>,
+    references: RwLock<SmallVec<[StorageCellReference; 4]>>,
     tree_bits_count: Arc<AtomicU64>,
     tree_cell_count: Arc<AtomicU64>,
 }
@@ -27,7 +27,7 @@ impl StorageCell {
 
         let cell_data = ton_types::CellData::deserialize(&mut reader)?;
         let references_count = reader.read_byte()?;
-        let mut references = Vec::with_capacity(references_count as usize);
+        let mut references = SmallVec::with_capacity(references_count as usize);
 
         for _ in 0..references_count {
             let hash = ton_types::UInt256::from(reader.read_u256()?);

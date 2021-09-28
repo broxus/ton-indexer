@@ -124,7 +124,7 @@ impl Engine {
         let states_gc_resolver = Arc::new(DefaultStateGcResolver::default());
         db.start_states_gc(
             states_gc_resolver.clone(),
-            Duration::from_secs(config.state_gc_interval_ms),
+            Duration::from_secs(config.state_gc_interval_sec),
         );
 
         let engine = Arc::new(Self {

@@ -1,7 +1,6 @@
 use std::collections::VecDeque;
 use std::convert::TryInto;
 use std::io::Write;
-use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, AtomicU8, Ordering};
 use std::sync::{Arc, Weak};
@@ -13,7 +12,6 @@ use sha2::Sha256;
 use smallvec::SmallVec;
 use tiny_adnl::utils::*;
 use tokio::fs::File;
-use tokio::sync::{RwLock, RwLockWriteGuard};
 use ton_types::UInt256;
 
 use self::mapped_file::*;
@@ -28,7 +26,7 @@ mod parser;
 
 pub struct ShardStateStorage {
     downloads_dir: Arc<PathBuf>,
-    state: Arc<RwLock<ShardStateStorageState>>,
+    state: Arc<ShardStateStorageState>,
 }
 
 impl ShardStateStorage {
@@ -45,12 +43,12 @@ impl ShardStateStorage {
         tokio::fs::create_dir_all(downloads_dir.as_ref()).await?;
 
         Ok(Self {
-            state: Arc::new(RwLock::new(ShardStateStorageState {
+            state: Arc::new(ShardStateStorageState {
                 shard_state_db,
                 active_boc_db: AtomicU8::new(0),
-                dynamic_boc_db_0: DynamicBocDbHandle::new(cell_db),
-                dynamic_boc_db_1: DynamicBocDbHandle::new(cell_db_additional),
-            })),
+                dynamic_boc_db_0: Arc::new(DynamicBocDbHandle::new(cell_db)),
+                dynamic_boc_db_1: Arc::new(DynamicBocDbHandle::new(cell_db_additional)),
+            }),
             downloads_dir,
         })
     }
@@ -60,14 +58,15 @@ impl ShardStateStorage {
         block_id: &ton_block::BlockIdExt,
         root: ton_types::Cell,
     ) -> Result<()> {
-        let state = self.state.read().await;
-
         let cell_id = root.repr_hash();
 
-        let boc_db = state.active_boc_db()?;
-        boc_db.acquire().store_dynamic_boc(root)?;
+        let boc_db = self.state.active_boc_db()?;
+        boc_db.begin_write();
+        let result = boc_db.db.store_dynamic_boc(root);
+        boc_db.end_write();
+        result?;
 
-        state.shard_state_db.insert(
+        self.state.shard_state_db.insert(
             block_id.to_vec()?,
             ShardStateValueView {
                 cell_id: &cell_id,
@@ -78,14 +77,13 @@ impl ShardStateStorage {
     }
 
     pub async fn load_state(&self, block_id: &ton_block::BlockIdExt) -> Result<ton_types::Cell> {
-        let state = self.state.read().await;
-        let shard_state = state.shard_state_db.get(block_id.to_vec()?)?;
+        let shard_state = self.state.shard_state_db.get(block_id.to_vec()?)?;
         match shard_state {
             Some(root) => {
                 let OwnedShardStateValue { cell_id, boc_db_id } =
                     OwnedShardStateValue::from_bytes(root)?;
 
-                let boc_db = state.boc_db(boc_db_id)?;
+                let boc_db = self.state.boc_db(boc_db_id)?;
                 let cell = boc_db.db.load_cell(cell_id)?;
                 Ok(ton_types::Cell::with_cell_impl_arc(cell))
             }
@@ -97,16 +95,15 @@ impl ShardStateStorage {
         &'_ self,
         block_id: &ton_block::BlockIdExt,
         clear_db: bool,
-    ) -> Result<(ShardStateReplaceTransaction<'_>, FilesContext)> {
-        let state = self.state.write().await;
+    ) -> Result<(ShardStateReplaceTransaction, FilesContext)> {
         if clear_db {
-            state.shard_state_db.clear()?;
-            state.dynamic_boc_db_0.db.clear()?;
-            state.dynamic_boc_db_1.db.clear()?;
+            self.state.shard_state_db.clear()?;
+            self.state.dynamic_boc_db_0.db.clear()?;
+            self.state.dynamic_boc_db_1.db.clear()?;
         }
 
         let ctx = FilesContext::new(self.downloads_dir.as_ref(), block_id).await?;
-        Ok((ShardStateReplaceTransaction::new(state).await?, ctx))
+        Ok((ShardStateReplaceTransaction::new(self.state.clone())?, ctx))
     }
 
     pub fn start_gc(&self, resolver: Arc<dyn StatesGcResolver>, interval: Duration) {
@@ -116,7 +113,6 @@ impl ShardStateStorage {
             loop {
                 match state.upgrade() {
                     Some(state) => {
-                        let state = state.read().await;
                         if let Err(e) = state.gc(&resolver).await {
                             log::error!("Failed to GC state: {:?}", e);
                         }
@@ -173,16 +169,16 @@ impl ShardStateValueView<'_> {
 struct ShardStateStorageState {
     shard_state_db: Tree<columns::ShardStateDb>,
     active_boc_db: AtomicU8,
-    dynamic_boc_db_0: DynamicBocDbHandle,
-    dynamic_boc_db_1: DynamicBocDbHandle,
+    dynamic_boc_db_0: Arc<DynamicBocDbHandle>,
+    dynamic_boc_db_1: Arc<DynamicBocDbHandle>,
 }
 
 impl ShardStateStorageState {
-    fn active_boc_db(&self) -> Result<&DynamicBocDbHandle, ShardStateStorageError> {
+    fn active_boc_db(&self) -> Result<&Arc<DynamicBocDbHandle>, ShardStateStorageError> {
         self.boc_db(self.active_boc_db.load(Ordering::Acquire))
     }
 
-    fn boc_db(&self, id: u8) -> Result<&DynamicBocDbHandle, ShardStateStorageError> {
+    fn boc_db(&self, id: u8) -> Result<&Arc<DynamicBocDbHandle>, ShardStateStorageError> {
         match id {
             0 => Ok(&self.dynamic_boc_db_0),
             1 => Ok(&self.dynamic_boc_db_1),
@@ -190,36 +186,58 @@ impl ShardStateStorageState {
         }
     }
 
-    async fn gc(&self, resolver: &Arc<dyn StatesGcResolver>) -> Result<()> {
+    async fn gc(self: &Arc<Self>, resolver: &Arc<dyn StatesGcResolver>) -> Result<()> {
         let active_boc_db = self.active_boc_db.load(Ordering::Acquire);
         let inactive_boc_db = match active_boc_db {
-            0 => &self.dynamic_boc_db_1,
-            1 => &self.dynamic_boc_db_0,
+            0 => self.dynamic_boc_db_1.clone(),
+            1 => self.dynamic_boc_db_0.clone(),
             _ => return Err(ShardStateStorageError::UnknownBocDb.into()),
         };
+
+        log::info!("shard GC: Starting GC for boc db {}", inactive_boc_db.id);
 
         let start = Instant::now();
         while inactive_boc_db.writer_count.load(Ordering::Acquire) > 0 {
             tokio::time::sleep(Duration::from_secs(1)).await;
             let time = start.elapsed().as_millis();
-            if time > 1000 {
+            if time > 2000 {
                 log::warn!("Waiting writers for {} ms", time);
             }
         }
-        log::info!("Waiting writers took {} ms", start.elapsed().as_millis());
+        log::info!(
+            "shard GC: Waiting writers took {} ms",
+            start.elapsed().as_millis()
+        );
 
         let start = Instant::now();
-        let StateMarkup { marked, to_sweep } =
-            tokio::task::block_in_place(|| self.mark(inactive_boc_db, resolver))
-                .context("Failed to mark roots")?;
-        log::info!("Marking roots took {} ms", start.elapsed().as_millis());
+        let StateMarkup { marked, to_sweep } = {
+            let state = self.clone();
+            let inactive_boc_db = inactive_boc_db.clone();
+            let resolver = resolver.clone();
+            tokio::task::spawn_blocking(move || state.mark(inactive_boc_db, resolver))
+                .await?
+                .context("Failed to mark roots")?
+        };
+
+        log::info!(
+            "shard GC: Marking roots took {} ms. Marked: {}. To sweep: {}",
+            start.elapsed().as_millis(),
+            marked.len(),
+            to_sweep.len()
+        );
 
         let start = Instant::now();
         if !to_sweep.is_empty() {
-            tokio::task::block_in_place(|| self.sweep(inactive_boc_db, marked, to_sweep))
+            let state = self.clone();
+            let inactive_boc_db = inactive_boc_db.clone();
+            tokio::task::spawn_blocking(move || state.sweep(inactive_boc_db, marked, to_sweep))
+                .await?
                 .context("Failed to sweep cells")?;
         }
-        log::info!("Sweeping roots took {} ms", start.elapsed().as_millis());
+        log::info!(
+            "shard GC: Sweeping roots took {} ms",
+            start.elapsed().as_millis()
+        );
 
         self.active_boc_db
             .store(inactive_boc_db.id, Ordering::Release);
@@ -229,12 +247,13 @@ impl ShardStateStorageState {
 
     fn mark(
         &self,
-        dynamic_boc_db: &DynamicBocDbHandle,
-        resolver: &Arc<dyn StatesGcResolver>,
+        dynamic_boc_db: Arc<DynamicBocDbHandle>,
+        resolver: Arc<dyn StatesGcResolver>,
     ) -> Result<StateMarkup> {
         let mut to_sweep = Vec::new();
         let mut to_mark = Vec::new();
 
+        let start = Instant::now();
         for (key, value) in self.shard_state_db.iterator(rocksdb::IteratorMode::Start)? {
             let block_id = ton_block::BlockIdExt::from_slice(&key)?;
             let OwnedShardStateValue { cell_id, boc_db_id } =
@@ -250,6 +269,10 @@ impl ShardStateStorageState {
                 to_mark.push(cell_id);
             }
         }
+        log::info!(
+            "shard GC: Blocks iteration took {} ms",
+            start.elapsed().as_millis()
+        );
 
         let cell_db = &dynamic_boc_db.db.cell_db;
 
@@ -259,10 +282,8 @@ impl ShardStateStorageState {
             let mut stack = VecDeque::with_capacity(32);
             stack.push_back(cell_id);
 
-            while let Some(current) = stack.pop_back() {
-                let references = cell_db.load_references(&current)?;
-
-                for reference in references {
+            while let Some(cell_id) = stack.pop_back() {
+                for reference in cell_db.load_references(&cell_id)? {
                     let cell_id = reference.hash();
                     if marked.contains(&cell_id) {
                         continue;
@@ -287,7 +308,7 @@ impl ShardStateStorageState {
 
     fn sweep(
         &self,
-        dynamic_boc_db: &DynamicBocDbHandle,
+        dynamic_boc_db: Arc<DynamicBocDbHandle>,
         marked: FxHashSet<UInt256>,
         to_sweep: Vec<(ton_block::BlockIdExt, UInt256)>,
     ) -> Result<()> {
@@ -306,8 +327,8 @@ impl ShardStateStorageState {
             let mut stack = VecDeque::with_capacity(32);
             stack.push_back(cell_id);
 
-            while let Some(current) = stack.pop_back() {
-                let references = cell_db.load_references(&current)?;
+            while let Some(cell_id) = stack.pop_back() {
+                let references = cell_db.load_references(&cell_id)?;
 
                 for reference in references {
                     let cell_id = reference.hash();
@@ -315,6 +336,7 @@ impl ShardStateStorageState {
                         continue;
                     }
 
+                    batch.delete_cf(&cell_cf, cell_id.as_slice());
                     sweeped.insert(cell_id);
                     stack.push_back(cell_id);
                 }
@@ -337,19 +359,22 @@ struct StateMarkup {
     to_sweep: Vec<(ton_block::BlockIdExt, UInt256)>,
 }
 
-pub struct ShardStateReplaceTransaction<'a> {
-    state: RwLockWriteGuard<'a, ShardStateStorageState>,
+pub struct ShardStateReplaceTransaction {
+    state: Arc<ShardStateStorageState>,
+    cell_db: Arc<DynamicBocDbHandle>,
     reader: ShardStatePacketReader,
     boc_header: Option<BocHeader>,
     cells_read: usize,
 }
 
-impl<'a> ShardStateReplaceTransaction<'a> {
-    async fn new(
-        state: RwLockWriteGuard<'a, ShardStateStorageState>,
-    ) -> Result<ShardStateReplaceTransaction<'a>> {
+impl<'a> ShardStateReplaceTransaction {
+    fn new(state: Arc<ShardStateStorageState>) -> Result<Self> {
+        let cell_db = state.active_boc_db()?.clone();
+        cell_db.begin_write();
+
         Ok(Self {
             state,
+            cell_db,
             reader: ShardStatePacketReader::new(),
             boc_header: None,
             cells_read: 0,
@@ -437,8 +462,6 @@ impl<'a> ShardStateReplaceTransaction<'a> {
         let cells_file = ctx.create_mapped_cells_file().await?;
 
         tokio::task::block_in_place(|| {
-            let cell_db = &self.state.active_boc_db()?.db.cell_db;
-
             let mut tail = [0; 4];
             let mut entries_buffer = EntriesBuffer::new();
             let mut pruned_branches = FxHashMap::default();
@@ -497,7 +520,7 @@ impl<'a> ShardStateReplaceTransaction<'a> {
                         &mut pruned_branches,
                         &mut entries_buffer,
                         &mut output_buffer,
-                        cell_db,
+                        &self.cell_db.db.cell_db,
                     )?;
 
                     // SAFETY: `entries_buffer` is guaranteed to be in separate memory area
@@ -520,9 +543,14 @@ impl<'a> ShardStateReplaceTransaction<'a> {
 
             // Current entry contains root cell
             let current_entry = entries_buffer.split_children(&[]).0;
-            self.state
-                .shard_state_db
-                .insert(block_id_key.as_slice(), current_entry.as_reader().hash(3))?;
+            self.state.shard_state_db.insert(
+                block_id_key.as_slice(),
+                ShardStateValueView {
+                    cell_id: &UInt256::from_be_bytes(current_entry.as_reader().hash(3)),
+                    boc_db_id: self.cell_db.id,
+                }
+                .to_vec(),
+            )?;
 
             // Load stored shard state
             match self.state.shard_state_db.get(block_id_key)? {
@@ -716,6 +744,12 @@ impl<'a> ShardStateReplaceTransaction<'a> {
 
         // Done
         Ok(())
+    }
+}
+
+impl Drop for ShardStateReplaceTransaction {
+    fn drop(&mut self) {
+        self.cell_db.end_write();
     }
 }
 
@@ -979,27 +1013,12 @@ impl DynamicBocDbHandle {
         }
     }
 
-    fn acquire(&self) -> AcquiredDynamicBocDbHandle {
+    fn begin_write(&self) {
         self.writer_count.fetch_add(1, Ordering::Release);
-        AcquiredDynamicBocDbHandle { handle: self }
     }
-}
 
-struct AcquiredDynamicBocDbHandle<'a> {
-    handle: &'a DynamicBocDbHandle,
-}
-
-impl Deref for AcquiredDynamicBocDbHandle<'_> {
-    type Target = DynamicBocDb;
-
-    fn deref(&self) -> &Self::Target {
-        &self.handle.db
-    }
-}
-
-impl Drop for AcquiredDynamicBocDbHandle<'_> {
-    fn drop(&mut self) {
-        self.handle.writer_count.fetch_sub(1, Ordering::Release);
+    fn end_write(&self) {
+        self.writer_count.fetch_sub(1, Ordering::Release);
     }
 }
 

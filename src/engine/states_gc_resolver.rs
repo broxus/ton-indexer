@@ -42,6 +42,7 @@ impl Engine {
 
         let gc_state = &self.states_gc_resolver;
 
+        // Advance last processed block
         let seqno = mc_block_id.seq_no;
         let last_processed_seqno = gc_state
             .last_processed_seqno
@@ -50,20 +51,36 @@ impl Engine {
             return Ok(());
         }
 
+        // Load current state
         let mc_state = self.load_state(mc_block_id).await?;
         let new_min_ref_mc_seqno = mc_state.state().min_ref_mc_seqno();
-        let old_min_ref_mc_seqno = gc_state
-            .min_ref_mc_seqno
-            .fetch_max(new_min_ref_mc_seqno, Ordering::AcqRel);
 
+        // Pre-check min ref mc seqno
+        let old_min_ref_mc_seqno = gc_state.min_ref_mc_seqno.load(Ordering::Acquire);
         if new_min_ref_mc_seqno <= old_min_ref_mc_seqno {
             return Ok(());
         }
 
+        // Find min ref mc block
         let mc_prefix = ton_block::AccountIdPrefixFull::any_masterchain();
-        let handle = self.find_block_by_seq_no(&mc_prefix, new_min_ref_mc_seqno)?;
-        let min_mc_state = self.load_state(handle.id()).await?;
+        let handle = match self.find_block_by_seq_no(&mc_prefix, new_min_ref_mc_seqno) {
+            Ok(handle) => handle,
+            Err(e) => {
+                log::warn!("Cancelling GC advance: {:?}", e);
+                return Ok(());
+            }
+        };
 
+        // Update min ref mc and ensure that we have something to do
+        let old_min_ref_mc_seqno = gc_state
+            .min_ref_mc_seqno
+            .fetch_max(new_min_ref_mc_seqno, Ordering::AcqRel);
+        if new_min_ref_mc_seqno <= old_min_ref_mc_seqno {
+            return Ok(());
+        }
+
+        // Load top blocks from shards
+        let min_mc_state = self.load_state(handle.id()).await?;
         let shards = min_mc_state.shards()?;
 
         let mut current_shards = FxHashSet::with_capacity_and_hasher(16, Default::default());
@@ -87,6 +104,7 @@ impl Engine {
             })?;
         }
 
+        // Retain only existing shards
         gc_state
             .top_shard_seqno
             .retain(|item, _| current_shards.contains(item));
