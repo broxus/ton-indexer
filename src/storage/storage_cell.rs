@@ -65,10 +65,10 @@ impl StorageCell {
         Ok(references)
     }
 
-    pub fn serialize(cell: &dyn CellImpl) -> Result<SmallVec<[u8; 512]>> {
+    pub fn serialize(cell: &dyn CellImpl) -> Result<Vec<u8>> {
         let references_count = cell.references_count() as u8;
 
-        let mut data = SmallVec::new();
+        let mut data = SmallVec::<[u8; 512]>::with_capacity(512);
         cell.cell_data().serialize(&mut data)?;
         data.write_all(&[references_count])?;
 
@@ -79,7 +79,7 @@ impl StorageCell {
         data.write_all(&cell.tree_bits_count().to_le_bytes())?;
         data.write_all(&cell.tree_cell_count().to_le_bytes())?;
 
-        Ok(data)
+        Ok(data.as_slice().to_vec())
     }
 
     fn reference(&self, index: usize) -> Result<Arc<StorageCell>> {

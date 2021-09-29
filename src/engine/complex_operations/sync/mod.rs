@@ -26,13 +26,13 @@ pub async fn sync(engine: &Arc<Engine>) -> Result<()> {
     let archives_stream =
         start_download(engine, &active_peers, ARCHIVE_SLICE, last_applied..).await;
 
-    if let Some(mut archives_stream) = archives_stream {
-        log::info!("Starting fast sync");
+    if let Some((mut archives_stream, _trigger)) = archives_stream {
+        log::info!("sync: Starting fast sync");
         let mut prev_step = std::time::Instant::now();
 
         while let Some(archive) = archives_stream.next().await {
             log::info!(
-                "Time from prev step: {} ms",
+                "sync: Time from prev step: {} ms",
                 prev_step.elapsed().as_millis()
             );
             prev_step = std::time::Instant::now();
@@ -40,7 +40,7 @@ pub async fn sync(engine: &Arc<Engine>) -> Result<()> {
             match archive.get_first_utime() {
                 Some(first_utime) if first_utime + FAST_SYNC_THRESHOLD <= now() as u32 => {}
                 _ => {
-                    log::info!("Stopping fast sync");
+                    log::info!("sync: Stopping fast sync");
                     break;
                 }
             }
@@ -64,10 +64,13 @@ pub async fn sync(engine: &Arc<Engine>) -> Result<()> {
                 }
             }
 
-            log::info!("Full cycle took: {} ms", prev_step.elapsed().as_millis());
+            log::info!(
+                "sync: Full cycle took: {} ms",
+                prev_step.elapsed().as_millis()
+            );
         }
     }
-    log::info!("Finished fast sync");
+    log::info!("sync: Finished fast sync");
 
     while !engine.is_synced()? {
         let last_mc_block_id = engine.last_applied_block()?;
@@ -326,7 +329,7 @@ async fn download_archives(
         high_seqno,
         prev_key_block_id: &mut prev_key_block_id,
     };
-    let mut stream = start_download(
+    let (mut stream, _trigger) = start_download(
         engine,
         &context.peers,
         ARCHIVE_SLICE,

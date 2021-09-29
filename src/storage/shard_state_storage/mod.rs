@@ -200,7 +200,7 @@ impl ShardStateStorageState {
             _ => return Err(ShardStateStorageError::UnknownBocDb.into()),
         };
 
-        log::info!("shard GC: Starting GC for boc db {}", inactive_boc_db.id);
+        log::info!("shard GC: Starting GC for boc_db{}", inactive_boc_db.id);
 
         let start = Instant::now();
         while inactive_boc_db.writer_count.load(Ordering::Acquire) > 0 {
@@ -211,7 +211,8 @@ impl ShardStateStorageState {
             }
         }
         log::info!(
-            "shard GC: Waiting writers took {} ms",
+            "shard GC: Waiting writers in boc_db{} took {} ms",
+            inactive_boc_db.id,
             start.elapsed().as_millis()
         );
 
@@ -226,7 +227,8 @@ impl ShardStateStorageState {
         };
 
         log::info!(
-            "shard GC: Marking roots took {} ms. Marked: {}. To sweep: {}",
+            "shard GC: Marking roots in boc_db{} took {} ms. Marked: {}. To sweep: {}",
+            inactive_boc_db.id,
             start.elapsed().as_millis(),
             marked.len(),
             to_sweep.len()
@@ -241,7 +243,8 @@ impl ShardStateStorageState {
                 .context("Failed to sweep cells")?;
         }
         log::info!(
-            "shard GC: Sweeping roots took {} ms",
+            "shard GC: Sweeping roots in boc_db{} took {} ms",
+            inactive_boc_db.id,
             start.elapsed().as_millis()
         );
 
@@ -1085,7 +1088,7 @@ impl DynamicBocDb {
     fn prepare_tree_of_cells(
         &self,
         cell: ton_types::Cell,
-        transaction: &mut FxHashMap<ton_types::UInt256, SmallVec<[u8; 512]>>,
+        transaction: &mut FxHashMap<ton_types::UInt256, Vec<u8>>,
     ) -> Result<usize> {
         let cell_id = cell.repr_hash();
         if self.cell_db.contains(&cell_id)? || transaction.contains_key(&cell_id) {
