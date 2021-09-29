@@ -3,6 +3,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use futures::channel::mpsc;
 use futures::{SinkExt, Stream, StreamExt};
+use tiny_adnl::utils::*;
 
 use super::block_maps::*;
 use crate::engine::Engine;
@@ -13,28 +14,38 @@ pub async fn start_download<I>(
     active_peers: &Arc<ActivePeers>,
     step: u32,
     range: I,
-) -> Option<impl Stream<Item = Arc<BlockMaps>>>
+) -> Option<(impl Stream<Item = Arc<BlockMaps>>, TriggerOnDrop)>
 where
     I: IntoIterator<Item = u32> + Send + 'static,
     <I as IntoIterator>::IntoIter: Send,
 {
+    let (trigger, signal) = trigger_on_drop();
+
     let num_tasks = engine.parallel_archive_downloads;
 
     let engine_clone = engine.clone();
     let active_peers_clone = active_peers.clone();
+    let signal_clone = signal.clone();
     let stream = futures::stream::iter(range.into_iter().step_by(step as usize))
-        .inspect(|x: &u32| log::info!("Downloading {} arch", x))
-        .map(move |x| (x, engine_clone.clone(), active_peers_clone.clone()))
-        .map(|(x, engine, peers)| async move { download_archive_maps(&engine, &peers, x).await })
-        .buffered(num_tasks as usize);
+        .map(move |x| {
+            let engine = engine_clone.clone();
+            let active_peers = active_peers_clone.clone();
+            let signal = signal_clone.clone();
+            async move { download_archive_maps(&engine, &active_peers, &signal, x).await }
+        })
+        .buffered(num_tasks as usize)
+        .while_some();
 
-    process_maps(stream, engine, active_peers).await
+    process_maps(stream, engine, active_peers, signal)
+        .await
+        .map(|stream| (stream, trigger))
 }
 
 async fn process_maps<S>(
     mut stream: S,
     engine: &Arc<Engine>,
     active_peers: &Arc<ActivePeers>,
+    signal: TriggerReceiver,
 ) -> Option<impl Stream<Item = Arc<BlockMaps>>>
 where
     S: Stream<Item = Arc<BlockMaps>> + Send + Unpin + 'static,
@@ -67,7 +78,10 @@ where
                     .expect("download_archive_maps produces non empty archives");
 
                 // Download gaps
-                let gaps = download_gaps(prev, next, &engine, &active_peers).await;
+                let gaps = match download_gaps(prev, next, &engine, &active_peers, &signal).await {
+                    Some(gaps) => gaps,
+                    None => return,
+                };
 
                 // Send previous archive
                 if tx.send(left).await.is_err() {
@@ -96,35 +110,45 @@ where
 }
 
 async fn download_gaps(
-    mut prev: u32,
+    mut from: u32,
     next: u32,
     engine: &Arc<Engine>,
     active_peers: &Arc<ActivePeers>,
-) -> Vec<Arc<BlockMaps>> {
-    log::warn!("Finding archive for the gap {}..{}", prev, next);
+    signal: &TriggerReceiver,
+) -> Option<Vec<Arc<BlockMaps>>> {
+    log::warn!("Finding archive for the gap {}..{}", from, next);
 
     let mut arhives = Vec::with_capacity(1);
-    while prev + 1 < next {
-        let arch = download_archive_maps(engine, active_peers, prev + 1).await;
-        prev = arch.highest_id().unwrap().seq_no;
-        arhives.push(arch);
+    while from + 1 < next {
+        let archive = download_archive_maps(engine, active_peers, signal, from + 1).await?;
+
+        from = archive.highest_id().unwrap().seq_no;
+        arhives.push(archive);
     }
 
-    arhives
+    Some(arhives)
 }
 
 pub async fn download_archive_maps(
     engine: &Arc<Engine>,
     active_peers: &Arc<ActivePeers>,
+    signal: &TriggerReceiver,
     mc_seq_no: u32,
-) -> Arc<BlockMaps> {
+) -> Option<Arc<BlockMaps>> {
+    tokio::pin!(
+        let signal = signal.clone();
+    );
+
     loop {
         let start = std::time::Instant::now();
-        let data = download_archive_or_die(engine, active_peers, mc_seq_no).await;
+        let data = tokio::select! {
+            data = download_archive_or_die(engine, active_peers, mc_seq_no) => data,
+            _ = (&mut signal) => return None,
+        };
         log::info!("Download took: {} ms", start.elapsed().as_millis());
 
         match parse_archive(data) {
-            Ok(map) if map.is_valid(mc_seq_no).is_some() => break map,
+            Ok(map) if map.is_valid(mc_seq_no).is_some() => break Some(map),
             Err(e) => {
                 log::error!("Failed to parse archive: {:?}", e);
             }
@@ -140,7 +164,7 @@ pub async fn download_archive_or_die(
     active_peers: &Arc<ActivePeers>,
     mc_seq_no: u32,
 ) -> Vec<u8> {
-    log::info!("Start downloading {}", mc_seq_no);
+    log::info!("Downloading archive for block {}", mc_seq_no);
     loop {
         if let Ok(Some(data)) = download_archive(engine, active_peers, mc_seq_no).await {
             break data;

@@ -55,11 +55,18 @@ pub mod columns {
         const NAME: &'static str = "shard_state_db";
     }
 
-    pub struct CellDb;
-    impl Column for CellDb {
+    pub struct CellDb<const N: u8>;
+    impl Column for CellDb<0> {
         const NAME: &'static str = "cell_db";
 
         fn options(opts: &mut rocksdb::Options) {
+            opts.set_optimize_filters_for_hits(true);
+        }
+    }
+    impl Column for CellDb<1> {
+        const NAME: &'static str = "cell_db_additional";
+
+        fn options(opts: &mut Options) {
             opts.set_optimize_filters_for_hits(true);
         }
     }

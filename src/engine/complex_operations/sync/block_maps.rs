@@ -92,7 +92,8 @@ impl BlockMaps {
 
     pub fn is_valid(&self, archive_seqno: u32) -> Option<()> {
         log::info!(
-            "BLOCKS IN MASTERCHAIN: {}. Total: {}",
+            "Archive {}. Blocks in masterchain: {}. Total: {}",
+            archive_seqno,
             self.mc_block_ids.len(),
             self.blocks.len()
         );
@@ -159,7 +160,6 @@ impl BlockMaps {
         let left_blocks: HashSet<u32> = left.mc_block_ids.iter().map(|x| x.1.seq_no).collect();
         let right_blocks: HashSet<u32> = right.mc_block_ids.iter().map(|x| x.1.seq_no).collect();
         if left_blocks.intersection(&right_blocks).next().is_some() {
-            log::info!("Intersects");
             return true;
         }
 

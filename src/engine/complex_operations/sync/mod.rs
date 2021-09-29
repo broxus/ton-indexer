@@ -20,19 +20,19 @@ pub async fn sync(engine: &Arc<Engine>) -> Result<()> {
     log::info!("Started sync");
 
     let active_peers = Arc::new(ActivePeers::default());
-    let last_applied = engine.load_last_applied_mc_block_id().await?.seq_no;
+    let last_applied = engine.load_last_applied_mc_block_id()?.seq_no;
 
     log::info!("Creating archives stream from {}", last_applied);
     let archives_stream =
         start_download(engine, &active_peers, ARCHIVE_SLICE, last_applied..).await;
 
-    if let Some(mut archives_stream) = archives_stream {
-        log::info!("Starting fast sync");
+    if let Some((mut archives_stream, _trigger)) = archives_stream {
+        log::info!("sync: Starting fast sync");
         let mut prev_step = std::time::Instant::now();
 
         while let Some(archive) = archives_stream.next().await {
             log::info!(
-                "Time from prev step: {} ms",
+                "sync: Time from prev step: {} ms",
                 prev_step.elapsed().as_millis()
             );
             prev_step = std::time::Instant::now();
@@ -40,11 +40,11 @@ pub async fn sync(engine: &Arc<Engine>) -> Result<()> {
             match archive.get_first_utime() {
                 Some(first_utime) if first_utime + FAST_SYNC_THRESHOLD <= now() as u32 => {}
                 _ => {
-                    log::info!("Stopping fast sync");
+                    log::info!("sync: Stopping fast sync");
                     break;
                 }
             }
-            let mc_block_id = engine.last_applied_block().await?;
+            let mc_block_id = engine.last_applied_block()?;
 
             let now = std::time::Instant::now();
             match import_package(engine, archive, &mc_block_id).await {
@@ -64,13 +64,16 @@ pub async fn sync(engine: &Arc<Engine>) -> Result<()> {
                 }
             }
 
-            log::info!("Full cycle took: {} ms", prev_step.elapsed().as_millis());
+            log::info!(
+                "sync: Full cycle took: {} ms",
+                prev_step.elapsed().as_millis()
+            );
         }
     }
-    log::info!("Finished fast sync");
+    log::info!("sync: Finished fast sync");
 
-    while !engine.is_synced().await? {
-        let last_mc_block_id = engine.last_applied_block().await?;
+    while !engine.is_synced()? {
+        let last_mc_block_id = engine.last_applied_block()?;
 
         log::info!(
             "sync: Start iteration for last masterchain block id: {}",
@@ -176,7 +179,7 @@ async fn import_shard_blocks(engine: &Arc<Engine>, maps: Arc<BlockMaps>) -> Resu
         }
     }
 
-    let mut last_applied_mc_block_id = engine.load_shards_client_mc_block_id().await?;
+    let mut last_applied_mc_block_id = engine.load_shards_client_mc_block_id()?;
     for mc_block_id in maps.mc_block_ids.values() {
         let mc_seq_no = mc_block_id.seq_no;
         if mc_seq_no <= last_applied_mc_block_id.seq_no {
@@ -236,7 +239,7 @@ async fn import_shard_blocks(engine: &Arc<Engine>, maps: Arc<BlockMaps>) -> Resu
             .find(|item| item.is_err())
             .unwrap_or(Ok(()))?;
 
-        engine.store_shards_client_mc_block_id(mc_block_id).await?;
+        engine.store_shards_client_mc_block_id(mc_block_id)?;
         last_applied_mc_block_id = mc_block_id.clone();
     }
 
@@ -326,7 +329,7 @@ async fn download_archives(
         high_seqno,
         prev_key_block_id: &mut prev_key_block_id,
     };
-    let mut stream = start_download(
+    let (mut stream, _trigger) = start_download(
         engine,
         &context.peers,
         ARCHIVE_SLICE,
@@ -422,9 +425,9 @@ async fn save_archive(
 }
 
 impl Engine {
-    async fn last_applied_block(&self) -> Result<ton_block::BlockIdExt> {
-        let mc_block_id = self.load_last_applied_mc_block_id().await?;
-        let sc_block_id = self.load_shards_client_mc_block_id().await?;
+    fn last_applied_block(&self) -> Result<ton_block::BlockIdExt> {
+        let mc_block_id = self.load_last_applied_mc_block_id()?;
+        let sc_block_id = self.load_shards_client_mc_block_id()?;
         log::info!("sync: Last applied block id: {}", mc_block_id);
         log::info!("sync: Last shards client block id: {}", sc_block_id);
 

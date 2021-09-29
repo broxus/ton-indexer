@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::Context;
 use anyhow::Result;
@@ -11,7 +12,7 @@ use ton_api::ton;
 
 use crate::storage::*;
 use crate::utils::*;
-use crate::GcType;
+use crate::BlocksGcType;
 
 pub struct Db {
     block_cache: Cache,
@@ -104,7 +105,8 @@ impl Db {
             })
             .column::<columns::BlockHandles>()
             .column::<columns::ShardStateDb>()
-            .column::<columns::CellDb>()
+            .column::<columns::CellDb<0>>()
+            .column::<columns::CellDb<1>>()
             .column::<columns::NodeState>()
             .column::<columns::LtDesc>()
             .column::<columns::Lt>()
@@ -119,6 +121,7 @@ impl Db {
 
         let block_handle_storage = BlockHandleStorage::with_db(Tree::new(db.clone())?);
         let shard_state_storage = ShardStateStorage::with_db(
+            Tree::new(db.clone())?,
             Tree::new(db.clone())?,
             Tree::new(db.clone())?,
             &file_db_path,
@@ -503,12 +506,22 @@ impl Db {
         &self.background_sync_meta_store
     }
 
-    pub async fn garbage_collect(&self, gc_type: GcType) -> Result<usize> {
+    pub fn start_states_gc(
+        &self,
+        resolver: Arc<dyn StatesGcResolver>,
+        offset: Duration,
+        interval: Duration,
+    ) {
+        self.shard_state_storage
+            .start_gc(resolver, offset, interval);
+    }
+
+    pub async fn garbage_collect(&self, gc_type: BlocksGcType) -> Result<usize> {
         match gc_type {
-            GcType::KeepLastNBlocks(_) => {
+            BlocksGcType::KeepLastNBlocks(_) => {
                 anyhow::bail!("todo!")
             }
-            GcType::KeepNotOlderThen(seconds) => {
+            BlocksGcType::KeepNotOlderThen(seconds) => {
                 let now = tiny_adnl::utils::now();
                 let old_age = now as u32 - seconds;
                 log::info!("Pruning block older then {}", old_age);

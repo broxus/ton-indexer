@@ -175,7 +175,7 @@ impl RpcService for Engine {
         let limit = std::cmp::min(query.max_size, NEXT_KEY_BLOCKS_LIMIT) as usize;
 
         let get_next_key_block_ids = || async move {
-            let last_mc_block_id = self.load_last_applied_mc_block_id().await?;
+            let last_mc_block_id = self.load_last_applied_mc_block_id()?;
             let last_mc_state = self.load_state(&last_mc_block_id).await?;
             let prev_blocks = &last_mc_state.shard_state_extra()?.prev_blocks;
 
