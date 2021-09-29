@@ -27,7 +27,6 @@ where
     let active_peers_clone = active_peers.clone();
     let signal_clone = signal.clone();
     let stream = futures::stream::iter(range.into_iter().step_by(step as usize))
-        .inspect(|x: &u32| log::info!("Downloading archive for block {}", x))
         .map(move |x| {
             let engine = engine_clone.clone();
             let active_peers = active_peers_clone.clone();
@@ -165,7 +164,7 @@ pub async fn download_archive_or_die(
     active_peers: &Arc<ActivePeers>,
     mc_seq_no: u32,
 ) -> Vec<u8> {
-    log::info!("Start downloading {}", mc_seq_no);
+    log::info!("Downloading archive for block {}", mc_seq_no);
     loop {
         if let Ok(Some(data)) = download_archive(engine, active_peers, mc_seq_no).await {
             break data;

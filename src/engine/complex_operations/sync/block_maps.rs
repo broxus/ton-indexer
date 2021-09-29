@@ -92,7 +92,8 @@ impl BlockMaps {
 
     pub fn is_valid(&self, archive_seqno: u32) -> Option<()> {
         log::info!(
-            "BLOCKS IN MASTERCHAIN: {}. Total: {}",
+            "Archive {}. Blocks in masterchain: {}. Total: {}",
+            archive_seqno,
             self.mc_block_ids.len(),
             self.blocks.len()
         );
