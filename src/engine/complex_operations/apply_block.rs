@@ -55,10 +55,12 @@ pub fn apply_block<'a>(
                     .do_or_wait(&prev1_id, None, async move { Ok(id) })
                     .await?;
 
-                engine
-                    .advance_states_gc_state(&engine.load_shards_client_mc_block_id()?)
-                    .await
-                    .context("Failed to advance GC state")?;
+                if let Some(resolver) = &engine.states_gc_resolver {
+                    resolver
+                        .advance(&engine, &engine.load_shards_client_mc_block_id()?)
+                        .await
+                        .context("Failed to advance GC state")?;
+                }
             } else {
                 engine.set_applied(handle, mc_seq_no)?;
             }

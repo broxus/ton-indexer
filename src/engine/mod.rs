@@ -54,7 +54,7 @@ pub trait Subscriber: Send + Sync {
 pub struct Engine {
     is_working: AtomicBool,
     db: Arc<Db>,
-    states_gc_resolver: Arc<DefaultStateGcResolver>,
+    states_gc_resolver: Option<Arc<DefaultStateGcResolver>>,
     subscribers: Vec<Arc<dyn Subscriber>>,
     network: Arc<NodeNetwork>,
     old_blocks_policy: OldBlocksPolicy,
@@ -121,12 +121,18 @@ impl Engine {
         network.start().await?;
         log::info!("Network started");
 
-        let states_gc_resolver = Arc::new(DefaultStateGcResolver::default());
-        db.start_states_gc(
-            states_gc_resolver.clone(),
-            Duration::from_secs(config.state_gc_offset_sec),
-            Duration::from_secs(config.state_gc_interval_sec),
-        );
+        let states_gc_resolver = match config.state_gc_options {
+            Some(options) => {
+                let resolver = Arc::new(DefaultStateGcResolver::default());
+                db.start_states_gc(
+                    resolver.clone(),
+                    Duration::from_secs(options.offset_sec),
+                    Duration::from_secs(options.interval_sec),
+                );
+                Some(resolver)
+            }
+            None => None,
+        };
 
         let engine = Arc::new(Self {
             is_working: AtomicBool::new(true),

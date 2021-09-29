@@ -17,8 +17,7 @@ pub struct NodeConfig {
     pub rocks_db_path: PathBuf,
     pub file_db_path: PathBuf,
 
-    pub state_gc_offset_sec: u64,
-    pub state_gc_interval_sec: u64,
+    pub state_gc_options: Option<StateGcOptions>,
 
     pub old_blocks_policy: OldBlocksPolicy,
     pub shard_state_cache_enabled: bool,
@@ -40,8 +39,7 @@ impl Default for NodeConfig {
             adnl_keys: Default::default(),
             rocks_db_path: "db/rocksdb".into(),
             file_db_path: "db/file".into(),
-            state_gc_offset_sec: rand::thread_rng().gen_range(0..900),
-            state_gc_interval_sec: 900,
+            state_gc_options: None,
             old_blocks_policy: Default::default(),
             shard_state_cache_enabled: false,
             max_db_memory_usage: default_max_db_memory_usage(),
@@ -96,6 +94,24 @@ pub enum OldBlocksPolicy {
 impl Default for OldBlocksPolicy {
     fn default() -> Self {
         Self::Ignore
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct StateGcOptions {
+    /// Default: rand[0,900)
+    pub offset_sec: u64,
+    /// Default: 900
+    pub interval_sec: u64,
+}
+
+impl Default for StateGcOptions {
+    fn default() -> Self {
+        Self {
+            offset_sec: rand::thread_rng().gen_range(0..900),
+            interval_sec: 900,
+        }
     }
 }
 
