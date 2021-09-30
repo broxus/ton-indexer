@@ -1,3 +1,10 @@
+/// This file is a modified copy of the file from https://github.com/tonlabs/ton-labs-node
+///
+/// Changes:
+/// - replaced old `failure` crate with `anyhow`
+/// - replaced verbose `lockfree` crate with `dashmap`
+/// - allowed advance for nonexisting min_ref_mc_seqno
+///
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use anyhow::Result;

@@ -1,3 +1,10 @@
+/// This file is a modified copy of the file from https://github.com/tonlabs/ton-labs-node
+///
+/// Changes:
+/// - replaced old `failure` crate with `anyhow`
+/// - greatly improved sync speed
+/// - added sync from old blocks
+///
 use std::borrow::Cow;
 use std::sync::Arc;
 

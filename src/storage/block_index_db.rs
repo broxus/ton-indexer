@@ -1,3 +1,8 @@
+/// This file is a modified copy of the file from https://github.com/tonlabs/ton-labs-node
+///
+/// Changes:
+/// - replaced old `failure` crate with `anyhow`
+///
 use std::io::{Read, Write};
 use std::sync::Arc;
 

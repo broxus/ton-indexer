@@ -1,5 +1,8 @@
 ## TON Indexer
 
+This project is a simplified, refactored and optimized version of [ton-labs-node](https://github.com/tonlabs/ton-labs-node) 
+and would not have been implemented without their gigantic work of reverse engineering the original С++ node.
+
 ### Run examples
 
 1. Create config `config.yaml`

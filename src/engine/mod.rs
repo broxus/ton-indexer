@@ -1,3 +1,10 @@
+/// This file is a modified copy of the file from https://github.com/tonlabs/ton-labs-node
+///
+/// Changes:
+/// - replaced old `failure` crate with `anyhow`
+/// - removed validator stuff
+/// - slightly changed application of blocks
+///
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::Duration;

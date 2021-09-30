@@ -1,3 +1,9 @@
+/// This file is a modified copy of the file from https://github.com/tonlabs/ton-labs-node
+///
+/// Changes:
+/// - replaced old `failure` crate with `anyhow`
+/// - slightly changed serialization for more optimal allocations
+///
 use std::io::Write;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;

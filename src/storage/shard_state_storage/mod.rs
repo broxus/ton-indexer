@@ -1,3 +1,10 @@
+/// This file is a modified copy of the file from https://github.com/tonlabs/ton-labs-node
+///
+/// Changes:
+/// - replaced old `failure` crate with `anyhow`
+/// - rewritten initial state processing logic using files and stream processing
+/// - replaced recursions with dfs to prevent stack overflow
+///
 use std::collections::VecDeque;
 use std::convert::TryInto;
 use std::io::Write;

@@ -1,3 +1,10 @@
+/// This file is a modified copy of the file from https://github.com/tonlabs/ton-labs-node
+///
+/// Changes:
+/// - replaced old `failure` crate with `anyhow`
+/// - replaced file storage with direct rocksdb storage
+/// - removed all temporary unused code
+///
 use std::borrow::Borrow;
 use std::hash::Hash;
 
@@ -20,6 +27,7 @@ impl ArchiveManager {
             db: RwLock::new(db),
         }
     }
+
     pub async fn add_file<I>(&self, id: &PackageEntryId<I>, data: &[u8]) -> Result<()>
     where
         I: Borrow<ton_block::BlockIdExt> + Hash,
