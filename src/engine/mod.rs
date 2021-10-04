@@ -936,32 +936,6 @@ impl Engine {
     pub async fn gc(&self, gc_type: GcType) -> Result<usize> {
         self.db.garbage_collect(gc_type).await
     }
-
-    pub(crate) async fn load_prev_key_block(&self, block_id: u32) -> Result<ton_block::BlockIdExt> {
-        let current_block = self.load_last_applied_mc_block_id().await?;
-        let current_shard_state = self.load_state(&current_block).await?;
-        let prev_blocks = &current_shard_state.shard_state_extra()?.prev_blocks;
-
-        let possible_ref_blk = prev_blocks
-            .get_prev_key_block(block_id)?
-            .context("No keyblock found")?;
-
-        let ref_blk = match possible_ref_blk.seq_no {
-            seqno if seqno < block_id => possible_ref_blk,
-            seqno if seqno == block_id => prev_blocks
-                .get_prev_key_block(seqno)?
-                .context("No keyblock found")?,
-            _ => anyhow::bail!("Failed to find previous key block"),
-        };
-
-        let prev_key_block = ton_block::BlockIdExt {
-            shard_id: ton_block::ShardIdent::masterchain(),
-            seq_no: ref_blk.seq_no,
-            root_hash: ref_blk.root_hash,
-            file_hash: ref_blk.file_hash,
-        };
-        Ok(prev_key_block)
-    }
 }
 
 #[derive(Debug)]

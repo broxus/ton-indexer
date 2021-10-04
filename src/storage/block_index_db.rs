@@ -3,7 +3,6 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use parking_lot::RwLock;
-use rocksdb::IteratorMode;
 use ton_api::ton;
 use ton_types::ByteOrderRead;
 
@@ -211,12 +210,7 @@ impl BlockIndexDb {
     }
 
     fn lt_db_iterator(&self) -> Result<impl Iterator<Item = (LtDbKeyOwned, LtDbEntry)> + '_> {
-        let cf = self.lt_db.db.get_cf()?;
-        let iterator = self
-            .lt_db
-            .db
-            .raw_db_handle()
-            .iterator_cf(&cf, IteratorMode::Start);
+        let iterator = self.lt_db.db.iterator()?;
         Ok(iterator.filter_map(|(k, v)| {
             let mut slice = k.as_ref();
             let key = match LtDbKeyOwned::deserialize(&mut slice) {

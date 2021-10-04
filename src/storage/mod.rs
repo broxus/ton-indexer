@@ -1,6 +1,8 @@
 use std::io::{Read, Write};
 
+use crate::storage::PackageMetaEntry;
 use anyhow::Result;
+use rocksdb::MergeOperands;
 use smallvec::SmallVec;
 use ton_types::ByteOrderRead;
 
@@ -30,9 +32,29 @@ mod storage_cell;
 mod tree;
 
 pub mod columns {
+    use crate::storage::{archive_data_merge, archive_meta_merge};
     use rocksdb::Options;
 
     use super::Column;
+
+    pub struct ArchiveStorage;
+
+    impl Column for ArchiveStorage {
+        const NAME: &'static str = "ArchiveStorage";
+        fn options(opts: &mut Options) {
+            opts.set_merge_operator_associative("ArchiveStorage", archive_data_merge);
+        }
+    }
+
+    /// Maps `ArchiveId` to package state
+    pub struct PackageMeta;
+
+    impl Column for PackageMeta {
+        const NAME: &'static str = "PackageIndex";
+        fn options(opts: &mut Options) {
+            opts.set_merge_operator_associative("ArchiveMetaMerge", archive_meta_merge);
+        }
+    }
 
     /// Maps block root hash to block meta
     pub struct BlockHandles;
@@ -106,6 +128,44 @@ pub mod columns {
     impl Column for BackgroundSyncMeta {
         const NAME: &'static str = "background_sync_meta";
     }
+}
+
+fn archive_data_merge(
+    _new_key: &[u8],
+    existing_val: Option<&[u8]>,
+    operands: &mut MergeOperands,
+) -> Option<Vec<u8>> {
+    let mut result = if let Some(val) = existing_val {
+        val.to_vec()
+    } else {
+        PackageMut::new().as_bytes().to_vec()
+    };
+    result.reserve(operands.size_hint().0 * 1024);
+    for v in operands {
+        result.extend_from_slice(v);
+    }
+    Some(result)
+}
+
+fn archive_meta_merge(
+    _new_key: &[u8],
+    existing_val: Option<&[u8]>,
+    mut operands: &mut MergeOperands,
+) -> Option<Vec<u8>> {
+    let mut result: PackageMetaEntry = if let Some(val) = existing_val {
+        bincode::deserialize(val).ok()?
+    } else {
+        let val = operands.next()?;
+        bincode::deserialize(val).ok()?
+    };
+
+    for _ in operands {
+        result.num_blobs += 1;
+    }
+    if result.num_blobs == 100 {
+        result.finalized = true;
+    }
+    bincode::serialize(&result).ok()
 }
 
 pub trait StoredValue {

@@ -58,7 +58,6 @@ pub fn parse_archive(data: Vec<u8>) -> Result<Arc<BlockMaps>> {
             }
         }
     }
-
     Ok(Arc::new(maps))
 }
 

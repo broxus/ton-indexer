@@ -20,7 +20,7 @@ impl ArchiveManager {
             db: RwLock::new(db),
         }
     }
-    pub async fn add_file<I>(&self, id: &PackageEntryId<I>, data: &[u8]) -> Result<()>
+    pub async fn add_block<I>(&self, id: &PackageEntryId<I>, data: &[u8]) -> Result<()>
     where
         I: Borrow<ton_block::BlockIdExt> + Hash,
     {

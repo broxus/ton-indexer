@@ -208,7 +208,7 @@ impl Db {
             let _lock = handle.block_data_lock().write().await;
             if !handle.meta().has_data() || !self.archive_manager.has_data(&archive_id).await {
                 self.archive_manager
-                    .add_file(&archive_id, block.data())
+                    .add_block(&archive_id, block.data())
                     .await?;
                 if handle.meta().set_has_data() {
                     self.block_handle_storage.store_handle(&handle)?;
@@ -270,7 +270,7 @@ impl Db {
                     || !self.archive_manager.has_data(&archive_id).await
                 {
                     self.archive_manager
-                        .add_file(&archive_id, proof.data())
+                        .add_block(&archive_id, proof.data())
                         .await?;
                     if handle.meta().set_has_proof_link() {
                         self.block_handle_storage.store_handle(&handle)?;
@@ -284,7 +284,7 @@ impl Db {
                 let _lock = handle.proof_data_lock().write().await;
                 if !handle.meta().has_proof() || !self.archive_manager.has_data(&archive_id).await {
                     self.archive_manager
-                        .add_file(&archive_id, proof.data())
+                        .add_block(&archive_id, proof.data())
                         .await?;
                     if handle.meta().set_has_proof() {
                         self.block_handle_storage.store_handle(&handle)?;

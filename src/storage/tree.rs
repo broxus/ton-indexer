@@ -75,8 +75,6 @@ pub struct Tree<T> {
     _column: std::marker::PhantomData<T>,
 }
 
-/// Note. get_cf Usually took p999 511ns,
-/// So we are not storing it in any way
 impl<T> Tree<T>
 where
     T: Column,
@@ -142,19 +140,35 @@ where
         &self.db
     }
 
+    /// Note. get_cf Usually took p999 511ns,
+    /// So we are not storing it in any way
     pub fn get_cf(&self) -> Result<Arc<BoundColumnFamily>> {
         self.db.cf_handle(T::NAME).context("No cf")
     }
 
+    pub fn iterator(&self) -> Result<impl Iterator<Item = (Box<[u8]>, Box<[u8]>)> + '_> {
+        let cf = self.get_cf()?;
+        Ok(self.db.iterator_cf(&cf, IteratorMode::Start))
+    }
+
+    /// NOTE. Set merge operator handler in options before using it.
+    pub fn merge<K, V>(&self, k: K, v: V) -> Result<()>
+    where
+        K: AsRef<[u8]>,
+        V: AsRef<[u8]>,
+    {
+        // todo Type safety?
+        let cf = self.get_cf()?;
+        self.db.merge_cf(&cf, k, v)?;
+        Ok(())
+    }
+
     pub fn size(&self) -> Result<usize> {
         let mut tot = 0;
-        let hd = self.get_cf()?;
-        self.raw_db_handle()
-            .iterator_cf(&hd, IteratorMode::Start)
-            .for_each(|(k, v)| {
-                tot += k.len();
-                tot += v.len();
-            });
+        self.iterator()?.for_each(|(k, v)| {
+            tot += k.len();
+            tot += v.len();
+        });
         Ok(tot)
     }
 }

@@ -134,7 +134,13 @@ impl BlockMeta {
     pub fn is_applied(&self) -> bool {
         self.test_flag(BLOCK_META_FLAG_IS_APPLIED)
     }
+    pub fn set_is_archived(&self) -> bool {
+        self.set_flag(BLOCK_META_FLAG_MOVED_TO_ARCHIVE)
+    }
 
+    pub fn is_archived(&self) -> bool {
+        self.test_flag(BLOCK_META_FLAG_MOVED_TO_ARCHIVE)
+    }
     pub fn is_key_block(&self) -> bool {
         self.test_flag(BLOCK_META_FLAG_IS_KEY_BLOCK)
     }
@@ -196,6 +202,6 @@ const BLOCK_META_FLAG_HAS_PREV_2: u64 = 1 << (32 + 9);
 const BLOCK_META_FLAG_IS_APPLIED: u64 = 1 << (32 + 10);
 const BLOCK_META_FLAG_IS_KEY_BLOCK: u64 = 1 << (32 + 11);
 // skip flag 12 (?)
-// const BLOCK_META_FLAG_MOVED_TO_ARCHIVE: u64 = 1 << (32 + 13);
+const BLOCK_META_FLAG_MOVED_TO_ARCHIVE: u64 = 1 << (32 + 13);
 // const BLOCK_META_FLAG_INDEXED: u64 = 1 << (32 + 14);
 // skip flag 15 (?)
