@@ -56,6 +56,16 @@ pub trait Subscriber: Send + Sync {
         let _unused_by_default = shard_state;
         Ok(())
     }
+
+    async fn process_archive_block(
+        &self,
+        block: &BlockStuff,
+        block_proof: Option<&BlockProofStuff>,
+    ) -> Result<()> {
+        let _unused_by_default = block;
+        let _unused_by_default = block_proof;
+        Ok(())
+    }
 }
 
 pub struct Engine {
@@ -876,6 +886,31 @@ impl Engine {
         } else {
             for subscriber in &self.subscribers {
                 subscriber.process_block(block, None, shard_state).await?;
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn notify_subscribers_with_archive_block(
+        &self,
+        handle: &Arc<BlockHandle>,
+        block: &BlockStuff,
+        block_proof: &BlockProofStuff,
+    ) -> Result<()> {
+        if self.subscribers.is_empty() {
+            return Ok(());
+        }
+
+        if handle.id().shard().is_masterchain() {
+            for subscriber in &self.subscribers {
+                subscriber
+                    .process_archive_block(block, Some(block_proof))
+                    .await?;
+            }
+        } else {
+            for subscriber in &self.subscribers {
+                subscriber.process_archive_block(block, None).await?;
             }
         }
 

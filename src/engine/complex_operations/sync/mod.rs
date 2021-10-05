@@ -403,6 +403,12 @@ async fn save_archive(
                 let handle = save_block(engine, id, block, proof, Some(context.prev_key_block_id))
                     .await
                     .context("Failed saving block")?;
+
+                engine
+                    .notify_subscribers_with_archive_block(&handle, block, proof)
+                    .await
+                    .context("Failed to process archive block")?;
+
                 handle.meta().is_key_block()
             }
         };

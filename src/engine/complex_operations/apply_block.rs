@@ -63,7 +63,7 @@ pub fn apply_block<'a>(
 
                 if let Some(resolver) = &engine.states_gc_resolver {
                     resolver
-                        .advance(&engine, &engine.load_shards_client_mc_block_id()?)
+                        .advance(engine, &engine.load_shards_client_mc_block_id()?)
                         .await
                         .context("Failed to advance GC state")?;
                 }
