@@ -70,6 +70,10 @@ impl BlockProofStuff {
         Ok((ton_block::Block::construct_from(&mut cell.into())?, hash))
     }
 
+    pub fn proof(&self) -> &ton_block::BlockProof {
+        &self.proof
+    }
+
     pub fn is_link(&self) -> bool {
         self.is_link
     }
