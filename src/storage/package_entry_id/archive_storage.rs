@@ -98,7 +98,22 @@ impl ArchiveStorage {
         Ok(ArchivePair { id, archive: arch })
     }
 
-    pub fn get_archive() {}
+    pub fn get_archive_slice(
+        &self,
+        id: ArchiveId,
+        limit: usize,
+        offset: usize,
+    ) -> Result<Option<Vec<u8>>> {
+        let slice = self.db.get(id.as_bytes())?;
+        match slice {
+            None => Ok(None),
+            Some(slice) => {
+                anyhow::ensure!(offset >= slice.len(), "Offset > total slice len");
+                let real_offset = std::cmp::min(limit + offset, slice.len());
+                Ok(Some(slice.as_ref()[limit..real_offset].to_vec()))
+            }
+        }
+    }
 }
 
 struct ArchivePair {
