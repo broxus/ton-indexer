@@ -2,10 +2,9 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
+pub use rocksdb::perf::MemoryUsageStats;
 use tiny_adnl::utils::*;
 use ton_api::ton;
-
-pub use rocksdb::perf::MemoryUsageStats;
 
 use crate::config::*;
 use crate::network::*;
@@ -445,7 +444,7 @@ impl Engine {
         self.db.load_block_handle(block_id)
     }
 
-    fn find_block_by_seq_no(
+    pub(crate) fn find_block_by_seq_no(
         &self,
         account_prefix: &ton_block::AccountIdPrefixFull,
         seq_no: u32,

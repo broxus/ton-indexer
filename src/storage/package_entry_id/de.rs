@@ -7,7 +7,7 @@ use anyhow::Result;
 use ton_types::UInt256;
 
 use super::super::StoredValue;
-use crate::storage::BlockHandle;
+
 use smallvec::SmallVec;
 
 #[derive(Debug, Hash, Eq, PartialEq)]

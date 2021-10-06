@@ -1,13 +1,19 @@
+use std::cmp::Ordering;
+use std::convert::TryInto;
+use std::hash::{Hash, Hasher};
+use std::sync::Arc;
+
 use anyhow::Result;
 use nekoton_utils::TrustMe;
-use std::collections::BTreeMap;
-
-use crate::storage::{columns, Column, Tree};
 use serde::{Deserialize, Serialize};
-use std::convert::TryInto;
+use smallvec::SmallVec;
+
+use crate::storage::{columns, Tree};
+use crate::Engine;
 
 pub struct PackageMetaStorage {
     pub(super) db: Tree<columns::PackageMeta>,
+    engine: Arc<Engine>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy)]
@@ -17,10 +23,16 @@ pub enum ArchiveId {
 }
 
 impl ArchiveId {
-    pub fn as_bytes(&self) -> Result<SmallVec<[u8; 8]>> {
+    pub fn as_bytes(&self) -> SmallVec<[u8; 8]> {
         let mut buf = SmallVec::with_capacity(8);
-        bincode::serialize_into(&mut buf, &self)?;
-        Ok(buf)
+        bincode::serialize_into(&mut buf, &self).trust_me();
+        buf
+    }
+}
+
+impl From<ArchiveId> for u64 {
+    fn from(id: ArchiveId) -> Self {
+        u64::from_le_bytes(id.as_bytes().into_inner().trust_me())
     }
 }
 
@@ -64,26 +76,22 @@ impl PackageMetaEntry {
 }
 
 impl PackageMetaStorage {
-    pub fn with_db(db: Tree<columns::PackageMeta>) -> Result<Self> {
-        Ok(Self { db })
+    pub fn with_db(db: Tree<columns::PackageMeta>, engine: Arc<Engine>) -> Result<Self> {
+        Ok(Self { db, engine })
     }
 
     pub fn update(&self, id: ArchiveId, state: &PackageMetaEntry) -> Result<()> {
-        let key = id.as_bytes()?;
+        let key = id.as_bytes();
         let value = bincode::serialize(state).trust_me();
         self.db.insert(key, value)
     }
 
     pub fn get_state(&self, id: ArchiveId) -> Result<Option<PackageMetaEntry>> {
-        let data = self.db.get(id.as_bytes()?)?;
+        let data = self.db.get(id.as_bytes())?;
         Ok(match data {
             Some(a) => Some(bincode::deserialize(a.as_ref())?),
             None => None,
         })
-    }
-
-    pub fn get_closest(&self, id: ArchiveId) -> Result<Option<PackageMetaEntry>> {
-        self.get_state(id)
     }
 
     pub fn iter(
@@ -106,12 +114,10 @@ impl PackageMetaStorage {
                 Ok(PackageId::for_key_block(seq_no / KEY_ARCHIVE_PACKAGE_SIZE))
             }
             ArchiveId::Regular(seq_no) => {
-                let meta = self
-                    .get_closest(ArchiveId::Regular(seq_no))?
-                    .ok_or_else(|| {
-                        log::error!(target: "storage", "Package not found for seq_no: {}", seq_no);
-                        anyhow::anyhow!("Package not found for seq_no: {}", seq_no)
-                    })?;
+                let meta = self.get_state(ArchiveId::Regular(seq_no))?.ok_or_else(|| {
+                    log::error!(target: "storage", "Package not found for seq_no: {}", seq_no);
+                    anyhow::anyhow!("Package not found for seq_no: {}", seq_no)
+                })?;
 
                 Ok(PackageId {
                     id: seq_no,
@@ -134,20 +140,36 @@ impl PackageMetaStorage {
                 PackageId::for_block(mc_seq_no)
             }
         } else {
-            let mut package_id =
-                PackageId::for_block(mc_seq_no - (mc_seq_no % ARCHIVE_SLICE_SIZE as u32));
-            package_id
+            PackageId::for_block(mc_seq_no - (mc_seq_no % ARCHIVE_SLICE_SIZE as u32))
         }
+    }
+    /// calculates archive id for `FullNodeOverlayService`
+    pub async fn get_archive_id(&self, mc_seq_no: u32) -> Option<u64> {
+        let archive_id = if is_key_block(&self.engine, mc_seq_no).await.ok()? {
+            ArchiveId::Key(mc_seq_no)
+        } else {
+            ArchiveId::Regular(mc_seq_no)
+        };
+        self.get_state(archive_id).ok()??;
+        Some(archive_id.into())
     }
 }
 
-use smallvec::SmallVec;
-use std::cmp::Ordering;
-use std::hash::{Hash, Hasher};
+async fn is_key_block(engine: &Engine, mc_seq_no: u32) -> Result<bool> {
+    engine
+        .find_block_by_seq_no(
+            &ton_block::AccountIdPrefixFull::any_masterchain(),
+            mc_seq_no,
+        )
+        .map(|x| x.meta().is_key_block())
+}
 
 pub const ARCHIVE_SIZE: u32 = 100_000;
+pub const ARCHIVE_PACKAGE_SIZE: u32 = 100;
+
 pub const KEY_ARCHIVE_SIZE: u32 = 10_000_000;
 pub const KEY_ARCHIVE_PACKAGE_SIZE: u32 = 200_000;
+
 pub const ARCHIVE_SLICE_SIZE: u32 = 20_000;
 
 #[derive(
@@ -156,6 +178,22 @@ pub const ARCHIVE_SLICE_SIZE: u32 = 20_000;
 pub enum PackageType {
     Blocks,
     KeyBlocks,
+}
+
+impl PackageType {
+    fn blobs(&self) -> Option<u16> {
+        match self {
+            PackageType::Blocks => Some(100),
+            PackageType::KeyBlocks => None,
+        }
+    }
+
+    fn slice_len(&self) -> u32 {
+        match self {
+            PackageType::Blocks => ARCHIVE_PACKAGE_SIZE,
+            PackageType::KeyBlocks => KEY_ARCHIVE_PACKAGE_SIZE,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Eq, serde::Serialize, serde::Deserialize)]

@@ -34,55 +34,46 @@ impl ArchiveStorage {
         let archive_cf = self.db.get_cf()?;
         let meta_cf = self.index.db.get_cf()?;
         let handle_cf = self.block_handles.get_cf()?;
+        // Separate keyblock archive
         if is_keyblock {
             let package = self.index.calculate_package_id(id, true, is_keyblock);
             let archive_id = ArchiveId::Key(id);
             let initial_package_meta =
                 self.index
-                    .get_closest(ArchiveId::Key(id))?
-                    .unwrap_or(PackageMetaEntry::with_data(
-                        false,
-                        false,
-                        0,
-                        PackageType::KeyBlocks,
-                    ));
+                    .get_state(ArchiveId::Key(id))?
+                    .unwrap_or_else(|| {
+                        PackageMetaEntry::with_data(false, false, 0, PackageType::KeyBlocks)
+                    });
             let data = self.prepare_archive_data(&package, block, data)?;
             batch.merge_cf(&archive_cf, data.id, data.archive.as_bytes());
             batch.merge_cf(
                 &meta_cf,
-                archive_id.as_bytes()?,
+                archive_id.as_bytes(),
                 initial_package_meta.as_bytes()?,
             );
 
-            let mut meta = block.meta();
+            let meta = block.meta();
             meta.set_is_archived(); // todo should check i  is archived before?
             batch.put_cf(&handle_cf, block.id().root_hash(), meta.to_vec()?);
         };
         let package = self.index.calculate_package_id(id, false, is_keyblock);
 
         let archive_id = ArchiveId::Key(id);
-        let initial_package_meta =
-            self.index
-                .get_closest(ArchiveId::Key(id))?
-                .unwrap_or(PackageMetaEntry::with_data(
-                    false,
-                    false,
-                    0,
-                    PackageType::KeyBlocks,
-                ));
+        let initial_package_meta = self
+            .index
+            .get_state(ArchiveId::Key(id))?
+            .unwrap_or_else(|| {
+                PackageMetaEntry::with_data(false, false, 0, PackageType::KeyBlocks)
+            });
         let data = self.prepare_archive_data(&package, block, data)?;
         batch.merge_cf(&archive_cf, data.id, data.archive.as_bytes());
         batch.merge_cf(
             &meta_cf,
-            archive_id.as_bytes()?,
+            archive_id.as_bytes(),
             initial_package_meta.as_bytes()?,
         );
 
-        let mut meta = block.meta();
-        meta.set_is_archived(); // todo should check i  is archived before?
-        batch.put_cf(&handle_cf, block.id().root_hash(), meta.to_vec()?);
-
-        let mut meta = block.meta();
+        let meta = block.meta();
         meta.set_is_archived(); // todo should check is archived
         batch.put_cf(&handle_cf, block.id().root_hash(), meta.to_vec()?);
         self.db.raw_db_handle().write(batch)?;
@@ -106,6 +97,8 @@ impl ArchiveStorage {
         };
         Ok(ArchivePair { id, archive: arch })
     }
+
+    pub fn get_archive() {}
 }
 
 struct ArchivePair {
