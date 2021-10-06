@@ -1,5 +1,13 @@
+/// This file is a modified copy of the file from https://github.com/tonlabs/ton-labs-node
+///
+/// Changes:
+/// - replaced old `failure` crate with `anyhow`
+/// - removed validator stuff
+/// - slightly changed application of blocks
+///
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 pub use rocksdb::perf::MemoryUsageStats;
@@ -15,11 +23,14 @@ use self::complex_operations::*;
 use self::db::*;
 use self::downloader::*;
 use self::node_state::*;
+use self::states_gc_resolver::*;
 
 pub mod complex_operations;
 mod db;
 mod downloader;
 mod node_state;
+pub mod rpc_operations;
+mod states_gc_resolver;
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum EngineStatus {
@@ -44,11 +55,22 @@ pub trait Subscriber: Send + Sync {
         let _unused_by_default = shard_state;
         Ok(())
     }
+
+    async fn process_archive_block(
+        &self,
+        block: &BlockStuff,
+        block_proof: Option<&BlockProofStuff>,
+    ) -> Result<()> {
+        let _unused_by_default = block;
+        let _unused_by_default = block_proof;
+        Ok(())
+    }
 }
 
 pub struct Engine {
     is_working: AtomicBool,
     db: Arc<Db>,
+    states_gc_resolver: Option<Arc<DefaultStateGcResolver>>,
     subscribers: Vec<Arc<dyn Subscriber>>,
     network: Arc<NodeNetwork>,
     old_blocks_policy: OldBlocksPolicy,
@@ -116,6 +138,20 @@ impl Engine {
         .await?;
         network.start().await?;
         log::info!("Network started");
+
+        let states_gc_resolver = match config.state_gc_options {
+            Some(options) => {
+                let resolver = Arc::new(DefaultStateGcResolver::default());
+                db.start_states_gc(
+                    resolver.clone(),
+                    Duration::from_secs(options.offset_sec),
+                    Duration::from_secs(options.interval_sec),
+                );
+                Some(resolver)
+            }
+            None => None,
+        };
+
         let engine = Arc::new(Self {
             is_working: AtomicBool::new(true),
             db: db.clone(),
@@ -190,7 +226,7 @@ impl Engine {
             }
         }
         // Synchronize
-        if !self.is_synced().await? {
+        if !self.is_synced()? {
             sync(self).await?;
         }
         log::info!("Synced!");
@@ -198,8 +234,8 @@ impl Engine {
         self.notify_subscribers_with_status(EngineStatus::Synced)
             .await;
 
-        let last_mc_block_id = self.load_last_applied_mc_block_id().await?;
-        let shards_client_mc_block_id = self.load_shards_client_mc_block_id().await?;
+        let last_mc_block_id = self.load_last_applied_mc_block_id()?;
+        let shards_client_mc_block_id = self.load_shards_client_mc_block_id()?;
 
         // Start walking through the blocks
         tokio::spawn({
@@ -654,7 +690,7 @@ impl Engine {
     }
 
     async fn load_prev_key_block(&self, block_id: u32) -> Result<ton_block::BlockIdExt> {
-        let current_block = self.load_last_applied_mc_block_id().await?;
+        let current_block = self.load_last_applied_mc_block_id()?;
         let current_shard_state = self.load_state(&current_block).await?;
         let prev_blocks = &current_shard_state.shard_state_extra()?.prev_blocks;
 
@@ -679,9 +715,9 @@ impl Engine {
         Ok(prev_key_block)
     }
 
-    pub async fn is_synced(&self) -> Result<bool> {
-        let shards_client_mc_block_id = self.load_shards_client_mc_block_id().await?;
-        let last_applied_mc_block_id = self.load_last_applied_mc_block_id().await?;
+    pub fn is_synced(&self) -> Result<bool> {
+        let shards_client_mc_block_id = self.load_shards_client_mc_block_id()?;
+        let last_applied_mc_block_id = self.load_last_applied_mc_block_id()?;
         if shards_client_mc_block_id.seq_no + MAX_BLOCK_APPLIER_DEPTH
             < last_applied_mc_block_id.seq_no
         {
@@ -707,7 +743,7 @@ impl Engine {
         Ok(false)
     }
 
-    async fn set_applied(&self, handle: &Arc<BlockHandle>, mc_seq_no: u32) -> Result<bool> {
+    fn set_applied(&self, handle: &Arc<BlockHandle>, mc_seq_no: u32) -> Result<bool> {
         if handle.meta().is_applied() {
             return Ok(false);
         }
@@ -867,6 +903,31 @@ impl Engine {
         Ok(())
     }
 
+    async fn notify_subscribers_with_archive_block(
+        &self,
+        handle: &Arc<BlockHandle>,
+        block: &BlockStuff,
+        block_proof: &BlockProofStuff,
+    ) -> Result<()> {
+        if self.subscribers.is_empty() {
+            return Ok(());
+        }
+
+        if handle.id().shard().is_masterchain() {
+            for subscriber in &self.subscribers {
+                subscriber
+                    .process_archive_block(block, Some(block_proof))
+                    .await?;
+            }
+        } else {
+            for subscriber in &self.subscribers {
+                subscriber.process_archive_block(block, None).await?;
+            }
+        }
+
+        Ok(())
+    }
+
     async fn check_block_proof(&self, block_proof: &BlockProofStuff) -> Result<()> {
         if block_proof.is_link() {
             block_proof.check_proof_link()?;
@@ -932,13 +993,13 @@ impl Engine {
         })
     }
 
-    pub async fn gc(&self, gc_type: GcType) -> Result<usize> {
+    pub async fn gc(&self, gc_type: BlocksGcType) -> Result<usize> {
         self.db.garbage_collect(gc_type).await
     }
 }
 
 #[derive(Debug)]
-pub enum GcType {
+pub enum BlocksGcType {
     KeepLastNBlocks(u32),
     KeepNotOlderThen(u32),
 }

@@ -1,3 +1,9 @@
+/// This file is a modified copy of the file from https://github.com/tonlabs/ton-labs-node
+///
+/// Changes:
+/// - replaced old `failure` crate with `anyhow`
+/// - simplified boot
+///
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -27,9 +33,7 @@ pub async fn boot(engine: &Arc<Engine>) -> Result<BootData> {
             log::warn!("Failed to load last masterchain block id: {}", e);
             let last_mc_block_id = cold_boot(engine).await?;
 
-            engine
-                .store_last_applied_mc_block_id(&last_mc_block_id)
-                .await?;
+            engine.store_last_applied_mc_block_id(&last_mc_block_id)?;
 
             engine
                 .db
@@ -43,9 +47,7 @@ pub async fn boot(engine: &Arc<Engine>) -> Result<BootData> {
     let shards_client_mc_block_id = match engine.last_blocks.shard_client_mc_block.load_from_db() {
         Ok(block_id) => convert_block_id_ext_api2blk(&block_id)?,
         Err(_) => {
-            engine
-                .store_shards_client_mc_block_id(&last_mc_block_id)
-                .await?;
+            engine.store_shards_client_mc_block_id(&last_mc_block_id)?;
             last_mc_block_id.clone()
         }
     };
@@ -352,7 +354,7 @@ pub async fn download_zero_state(
         match engine.download_zerostate(block_id, None).await {
             Ok(state) => {
                 let handle = engine.store_zerostate(block_id, &state).await?;
-                engine.set_applied(&handle, 0).await?;
+                engine.set_applied(&handle, 0)?;
                 return Ok((handle, state));
             }
             Err(e) => {
@@ -447,9 +449,7 @@ async fn download_block_and_state(
         engine.store_state(&handle, &shard_state).await?;
     }
 
-    engine
-        .set_applied(&handle, masterchain_block_id.seq_no)
-        .await?;
+    engine.set_applied(&handle, masterchain_block_id.seq_no)?;
     Ok((handle, block))
 }
 

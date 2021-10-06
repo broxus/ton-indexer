@@ -1,3 +1,10 @@
+/// This file is a modified copy of the file from https://github.com/tonlabs/ton-labs-node
+///
+/// Changes:
+/// - replaced old `failure` crate with `anyhow`
+/// - moved all flags here from block handle
+/// - removed temporary unused flags
+///
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicU64, Ordering};
 

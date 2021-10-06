@@ -1,3 +1,10 @@
+/// This file is a modified copy of the file from https://github.com/tonlabs/ton-labs-node
+///
+/// Changes:
+/// - replaced old `failure` crate with `anyhow`
+/// - removed unused package entry ids
+/// - optimized serialization/deserialization
+///
 use std::borrow::Borrow;
 use std::hash::Hash;
 use std::io::Write;

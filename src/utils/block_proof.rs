@@ -1,3 +1,8 @@
+/// This file is a modified copy of the file from https://github.com/tonlabs/ton-labs-node
+///
+/// Changes:
+/// - replaced old `failure` crate with `anyhow`
+///
 use anyhow::{anyhow, Result};
 use ton_block::Deserializable;
 use ton_types::{Cell, HashmapType};
@@ -63,6 +68,10 @@ impl BlockProofStuff {
         let cell = self.virtualize_block_root()?;
         let hash = ton_api::ton::int256(cell.repr_hash().as_slice().to_owned());
         Ok((ton_block::Block::construct_from(&mut cell.into())?, hash))
+    }
+
+    pub fn proof(&self) -> &ton_block::BlockProof {
+        &self.proof
     }
 
     pub fn is_link(&self) -> bool {

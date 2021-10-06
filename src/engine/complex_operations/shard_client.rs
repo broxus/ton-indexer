@@ -1,3 +1,9 @@
+/// This file is a modified copy of the file from https://github.com/tonlabs/ton-labs-node
+///
+/// Changes:
+/// - replaced old `failure` crate with `anyhow`
+/// - simplified block walking
+///
 use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
@@ -134,9 +140,7 @@ async fn load_shard_blocks(
         .find(|item| item.is_err())
         .unwrap_or(Ok(()))?;
 
-    engine
-        .store_shards_client_mc_block_id(masterchain_block.id())
-        .await?;
+    engine.store_shards_client_mc_block_id(masterchain_block.id())?;
 
     std::mem::drop(permit);
     Ok(())
@@ -161,7 +165,7 @@ pub async fn process_block_broadcast(
     let block_info = proof.virtualize_block()?.0.read_info()?;
 
     let prev_key_block_seqno = block_info.prev_key_block_seqno();
-    let last_applied_mc_block_id = engine.load_last_applied_mc_block_id().await?;
+    let last_applied_mc_block_id = engine.load_last_applied_mc_block_id()?;
     if prev_key_block_seqno > last_applied_mc_block_id.seq_no {
         return Ok(());
     }
@@ -204,7 +208,7 @@ pub async fn process_block_broadcast(
             .and_then(|info| info.read_master_ref())?
             .ok_or(ShardClientError::InvalidBlockExtra)?;
 
-        let shards_client_mc_block_id = engine.load_shards_client_mc_block_id().await?;
+        let shards_client_mc_block_id = engine.load_shards_client_mc_block_id()?;
         if shards_client_mc_block_id.seq_no + 8 >= master_ref.master.seq_no {
             engine
                 .apply_block_ext(&handle, &block, shards_client_mc_block_id.seq_no, true, 0)

@@ -1,3 +1,9 @@
+/// This file is a modified copy of the file from https://github.com/tonlabs/ton-labs-node
+///
+/// Changes:
+/// - replaced old `failure` crate with `anyhow`
+/// - simplified storing
+///
 use std::collections::HashSet;
 use std::sync::{Arc, Weak};
 
@@ -12,13 +18,15 @@ use super::{columns, StoredValue};
 pub struct BlockHandleStorage {
     cache: Arc<FxDashMap<ton_block::BlockIdExt, Weak<BlockHandle>>>,
     db: Tree<columns::BlockHandles>,
+    key_blocks: Tree<columns::KeyBlocks>,
 }
 
 impl BlockHandleStorage {
-    pub fn with_db(db: Tree<columns::BlockHandles>) -> Self {
+    pub fn with_db(db: Tree<columns::BlockHandles>, key_blocks: Tree<columns::KeyBlocks>) -> Self {
         Self {
             cache: Arc::new(Default::default()),
             db,
+            key_blocks,
         }
     }
 
@@ -45,9 +53,41 @@ impl BlockHandleStorage {
     }
 
     pub fn store_handle(&self, handle: &Arc<BlockHandle>) -> Result<()> {
+        let id = handle.id();
+
         self.db
-            .insert(handle.id().root_hash.as_slice(), handle.meta().to_vec()?)?;
+            .insert(id.root_hash.as_slice(), handle.meta().to_vec()?)?;
+
+        if handle.meta().is_key_block() {
+            self.key_blocks
+                .insert(id.seq_no.to_be_bytes(), id.to_vec()?)?;
+        }
+
         Ok(())
+    }
+
+    pub fn find_key_block(&self, seq_no: u32) -> Result<Option<ton_block::BlockIdExt>> {
+        self.key_blocks
+            .get(seq_no.to_be_bytes())?
+            .map(|id| ton_block::BlockIdExt::from_slice(&id))
+            .transpose()
+    }
+
+    pub fn find_key_block_handle(&self, seq_no: u32) -> Result<Option<Arc<BlockHandle>>> {
+        match self.find_key_block(seq_no)? {
+            Some(block_id) => self.load_handle(&block_id),
+            None => Ok(None),
+        }
+    }
+
+    pub fn key_block_iterator(&self, since: Option<u32>) -> Result<KeyBlocksIterator> {
+        let mut iterator = KeyBlocksIterator {
+            raw_iterator: self.key_blocks.raw_iterator()?,
+        };
+        if let Some(seq_no) = since {
+            iterator.seek(seq_no);
+        }
+        Ok(iterator)
     }
 
     pub fn create_handle(
@@ -95,5 +135,25 @@ impl BlockHandleStorage {
             total += 1;
         }
         Ok((total, untouched))
+    }
+}
+
+pub struct KeyBlocksIterator<'a> {
+    raw_iterator: rocksdb::DBRawIterator<'a>,
+}
+
+impl KeyBlocksIterator<'_> {
+    pub fn seek(&mut self, seq_no: u32) {
+        self.raw_iterator.seek(seq_no.to_be_bytes());
+    }
+}
+
+impl Iterator for KeyBlocksIterator<'_> {
+    type Item = Result<ton_block::BlockIdExt>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.raw_iterator
+            .value()
+            .map(|value| ton_block::BlockIdExt::from_slice(value))
     }
 }

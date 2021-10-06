@@ -1,6 +1,13 @@
+/// This file is a modified copy of the file from https://github.com/tonlabs/ton-labs-node
+///
+/// Changes:
+/// - replaced old `failure` crate with `anyhow`
+/// - slightly changed db structure
+///
 use std::collections::HashSet;
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::Context;
 use anyhow::Result;
@@ -11,7 +18,7 @@ use ton_api::ton;
 
 use crate::storage::*;
 use crate::utils::*;
-use crate::GcType;
+use crate::BlocksGcType;
 
 pub struct Db {
     block_cache: Cache,
@@ -103,8 +110,10 @@ impl Db {
                 // opts.set_stats_dump_period_sec(300);
             })
             .column::<columns::BlockHandles>()
+            .column::<columns::KeyBlocks>()
             .column::<columns::ShardStateDb>()
-            .column::<columns::CellDb>()
+            .column::<columns::CellDb<0>>()
+            .column::<columns::CellDb<1>>()
             .column::<columns::NodeState>()
             .column::<columns::LtDesc>()
             .column::<columns::Lt>()
@@ -117,8 +126,10 @@ impl Db {
             .build()
             .context("Failed building db")?;
 
-        let block_handle_storage = BlockHandleStorage::with_db(Tree::new(db.clone())?);
+        let block_handle_storage =
+            BlockHandleStorage::with_db(Tree::new(db.clone())?, Tree::new(db.clone())?);
         let shard_state_storage = ShardStateStorage::with_db(
+            Tree::new(db.clone())?,
             Tree::new(db.clone())?,
             Tree::new(db.clone())?,
             &file_db_path,
@@ -197,6 +208,20 @@ impl Db {
         block_id: &ton_block::BlockIdExt,
     ) -> Result<Option<Arc<BlockHandle>>> {
         self.block_handle_storage.load_handle(block_id)
+    }
+
+    #[allow(unused)]
+    pub fn find_key_block(&self, seq_no: u32) -> Result<Option<ton_block::BlockIdExt>> {
+        self.block_handle_storage.find_key_block(seq_no)
+    }
+
+    #[allow(unused)]
+    pub fn find_key_block_handle(&self, seq_no: u32) -> Result<Option<Arc<BlockHandle>>> {
+        self.block_handle_storage.find_key_block_handle(seq_no)
+    }
+
+    pub fn key_block_iterator(&self, since: Option<u32>) -> Result<KeyBlocksIterator<'_>> {
+        self.block_handle_storage.key_block_iterator(since)
     }
 
     pub async fn store_block_data(&self, block: &BlockStuff) -> Result<StoreBlockResult> {
@@ -503,12 +528,22 @@ impl Db {
         &self.background_sync_meta_store
     }
 
-    pub async fn garbage_collect(&self, gc_type: GcType) -> Result<usize> {
+    pub fn start_states_gc(
+        &self,
+        resolver: Arc<dyn StatesGcResolver>,
+        offset: Duration,
+        interval: Duration,
+    ) {
+        self.shard_state_storage
+            .start_gc(resolver, offset, interval);
+    }
+
+    pub async fn garbage_collect(&self, gc_type: BlocksGcType) -> Result<usize> {
         match gc_type {
-            GcType::KeepLastNBlocks(_) => {
+            BlocksGcType::KeepLastNBlocks(_) => {
                 anyhow::bail!("todo!")
             }
-            GcType::KeepNotOlderThen(seconds) => {
+            BlocksGcType::KeepNotOlderThen(seconds) => {
                 let now = tiny_adnl::utils::now();
                 let old_age = now as u32 - seconds;
                 log::info!("Pruning block older then {}", old_age);
