@@ -215,13 +215,13 @@ impl BlockIndexDb {
     }
 
     fn lt_db_iterator(&self) -> Result<impl Iterator<Item = (LtDbKeyOwned, LtDbEntry)> + '_> {
-        let iterator = self.lt_db.db.iterator()?;
+        let iterator = self.lt_db.db.iterator(rocksdb::IteratorMode::Start)?;
         Ok(iterator.filter_map(|(k, v)| {
             let mut slice = k.as_ref();
             let key = match LtDbKeyOwned::deserialize(&mut slice) {
                 Ok(a) => a,
                 Err(e) => {
-                    log::error!("Failed deserializng LtDbKeyOwned: {:?}", e);
+                    log::error!("Failed to deserialize LtDbKeyOwned: {:?}", e);
                     return None;
                 }
             };

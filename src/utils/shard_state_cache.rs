@@ -3,7 +3,6 @@
 /// Changes:
 /// - replaced verbose `lockfree` crate with `dashmap`
 ///
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 

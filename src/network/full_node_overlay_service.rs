@@ -7,7 +7,6 @@
 use std::future::Future;
 use std::sync::{Arc, Weak};
 
-use crate::Engine;
 use anyhow::Result;
 use tiny_adnl::utils::*;
 use tiny_adnl::{OverlaySubscriber, QueryAnswer, QueryConsumingResult};

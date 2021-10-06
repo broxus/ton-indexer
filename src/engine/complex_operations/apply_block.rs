@@ -36,16 +36,12 @@ pub fn apply_block<'a>(
         let (prev1_id, prev2_id) = block.construct_prev_id()?;
         ensure_prev_blocks_downloaded(engine, &prev1_id, &prev2_id, mc_seq_no, pre_apply, depth)
             .await?;
-        let start = std::time::Instant::now();
+
         let shard_state = if handle.meta().has_state() {
             engine.load_state(handle.id()).await?
         } else {
             compute_and_store_shard_state(engine, handle, block, &prev1_id, &prev2_id).await?
         };
-        // log::info!(
-        //     "compute_and_store_shard_state: {}",
-        //     start.elapsed().as_millis()
-        // );
 
         if !pre_apply {
             update_block_connections(engine, handle, &prev1_id, &prev2_id)?;

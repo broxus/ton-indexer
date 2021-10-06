@@ -148,18 +148,13 @@ where
         self.db.cf_handle(T::NAME).context("No cf")
     }
 
-    pub fn iterator(&self) -> Result<impl Iterator<Item = (Box<[u8]>, Box<[u8]>)> + '_> {
-        let cf = self.get_cf()?;
-        Ok(self.db.iterator_cf(&cf, IteratorMode::Start))
-    }
-
     /// NOTE. Set merge operator handler in options before using it.
     pub fn merge<K, V>(&self, k: K, v: V) -> Result<()>
     where
         K: AsRef<[u8]>,
         V: AsRef<[u8]>,
     {
-        // todo Type safety?
+        // TODO: type safety?
         let cf = self.get_cf()?;
         self.db.merge_cf(&cf, k, v)?;
         Ok(())
@@ -167,10 +162,11 @@ where
 
     pub fn size(&self) -> Result<usize> {
         let mut tot = 0;
-        self.iterator()?.for_each(|(k, v)| {
-            tot += k.len();
-            tot += v.len();
-        });
+        self.iterator(rocksdb::IteratorMode::Start)?
+            .for_each(|(k, v)| {
+                tot += k.len();
+                tot += v.len();
+            });
         Ok(tot)
     }
 

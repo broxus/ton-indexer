@@ -97,7 +97,7 @@ impl PackageMetaStorage {
     pub fn iter(
         db: &Tree<columns::PackageMeta>,
     ) -> Result<impl Iterator<Item = (u32, PackageMetaEntry)> + '_> {
-        let iter = db.iterator()?;
+        let iter = db.iterator(rocksdb::IteratorMode::Start)?;
         Ok(
             iter.filter_map(|(k, v)| -> Option<(u32, PackageMetaEntry)> {
                 let k: [u8; 4] = k.as_ref().try_into().ok()?;

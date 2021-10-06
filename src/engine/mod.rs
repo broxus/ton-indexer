@@ -155,6 +155,7 @@ impl Engine {
         let engine = Arc::new(Self {
             is_working: AtomicBool::new(true),
             db: db.clone(),
+            states_gc_resolver,
             subscribers,
             network,
             old_blocks_policy,
@@ -752,24 +753,21 @@ impl Engine {
         self.db.store_block_applied(handle)
     }
 
-    pub async fn load_last_applied_mc_block_id(&self) -> Result<ton_block::BlockIdExt> {
+    pub fn load_last_applied_mc_block_id(&self) -> Result<ton_block::BlockIdExt> {
         convert_block_id_ext_api2blk(&self.last_blocks.last_mc.load_from_db()?)
     }
 
-    async fn store_last_applied_mc_block_id(&self, block_id: &ton_block::BlockIdExt) -> Result<()> {
+    fn store_last_applied_mc_block_id(&self, block_id: &ton_block::BlockIdExt) -> Result<()> {
         self.last_blocks
             .last_mc
             .store_into_db(convert_block_id_ext_blk2api(block_id))
     }
 
-    pub async fn load_shards_client_mc_block_id(&self) -> Result<ton_block::BlockIdExt> {
+    pub fn load_shards_client_mc_block_id(&self) -> Result<ton_block::BlockIdExt> {
         convert_block_id_ext_api2blk(&self.last_blocks.shard_client_mc_block.load_from_db()?)
     }
 
-    async fn store_shards_client_mc_block_id(
-        &self,
-        block_id: &ton_block::BlockIdExt,
-    ) -> Result<()> {
+    fn store_shards_client_mc_block_id(&self, block_id: &ton_block::BlockIdExt) -> Result<()> {
         self.last_blocks
             .shard_client_mc_block
             .store_into_db(convert_block_id_ext_blk2api(block_id))
