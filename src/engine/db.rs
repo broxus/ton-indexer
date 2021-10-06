@@ -110,6 +110,7 @@ impl Db {
                 // opts.set_stats_dump_period_sec(300);
             })
             .column::<columns::BlockHandles>()
+            .column::<columns::KeyBlocks>()
             .column::<columns::ShardStateDb>()
             .column::<columns::CellDb<0>>()
             .column::<columns::CellDb<1>>()
@@ -125,7 +126,8 @@ impl Db {
             .build()
             .context("Failed building db")?;
 
-        let block_handle_storage = BlockHandleStorage::with_db(Tree::new(db.clone())?);
+        let block_handle_storage =
+            BlockHandleStorage::with_db(Tree::new(db.clone())?, Tree::new(db.clone())?);
         let shard_state_storage = ShardStateStorage::with_db(
             Tree::new(db.clone())?,
             Tree::new(db.clone())?,
@@ -206,6 +208,20 @@ impl Db {
         block_id: &ton_block::BlockIdExt,
     ) -> Result<Option<Arc<BlockHandle>>> {
         self.block_handle_storage.load_handle(block_id)
+    }
+
+    #[allow(unused)]
+    pub fn find_key_block(&self, seq_no: u32) -> Result<Option<ton_block::BlockIdExt>> {
+        self.block_handle_storage.find_key_block(seq_no)
+    }
+
+    #[allow(unused)]
+    pub fn find_key_block_handle(&self, seq_no: u32) -> Result<Option<Arc<BlockHandle>>> {
+        self.block_handle_storage.find_key_block_handle(seq_no)
+    }
+
+    pub fn key_block_iterator(&self, since: Option<u32>) -> Result<KeyBlocksIterator<'_>> {
+        self.block_handle_storage.key_block_iterator(since)
     }
 
     pub async fn store_block_data(&self, block: &BlockStuff) -> Result<StoreBlockResult> {
