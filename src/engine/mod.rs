@@ -489,10 +489,6 @@ impl Engine {
         self.db.find_block_by_seq_no(account_prefix, seq_no)
     }
 
-    pub(crate) fn find_key_block_id(&self, seq_no: u32) -> Result<Option<ton_block::BlockIdExt>> {
-        self.db.find_key_block(seq_no)
-    }
-
     #[allow(unused)]
     fn find_block_by_utime(
         &self,
@@ -748,12 +744,13 @@ impl Engine {
         Ok(false)
     }
 
-    fn set_applied(&self, handle: &Arc<BlockHandle>, mc_seq_no: u32) -> Result<bool> {
+    async fn set_applied(&self, handle: &Arc<BlockHandle>, mc_seq_no: u32) -> Result<bool> {
         if handle.meta().is_applied() {
             return Ok(false);
         }
         self.db.assign_mc_ref_seq_no(handle, mc_seq_no)?;
         self.db.index_handle(handle)?;
+        self.db.archive_block(handle).await?;
         self.db.store_block_applied(handle)
     }
 

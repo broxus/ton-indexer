@@ -488,12 +488,8 @@ impl Db {
         }
     }
 
-    pub fn archive_block(&self, handle: &Arc<BlockHandle>) -> Result<()> {
-        if handle.meta().is_archived() {
-            return Ok(());
-        }
-
-        Ok(())
+    pub async fn archive_block(&self, handle: &Arc<BlockHandle>) -> Result<()> {
+        self.archive_manager.move_into_archive(handle).await
     }
 
     pub fn store_node_state(&self, key: &'static str, value: Vec<u8>) -> Result<()> {

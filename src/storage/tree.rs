@@ -148,18 +148,6 @@ where
         self.db.cf_handle(T::NAME).context("No cf")
     }
 
-    /// NOTE. Set merge operator handler in options before using it.
-    pub fn merge<K, V>(&self, k: K, v: V) -> Result<()>
-    where
-        K: AsRef<[u8]>,
-        V: AsRef<[u8]>,
-    {
-        // TODO: type safety?
-        let cf = self.get_cf()?;
-        self.db.merge_cf(&cf, k, v)?;
-        Ok(())
-    }
-
     pub fn size(&self) -> Result<usize> {
         let mut tot = 0;
         self.iterator(rocksdb::IteratorMode::Start)?

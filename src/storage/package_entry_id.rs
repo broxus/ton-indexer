@@ -66,14 +66,6 @@ where
 
         Ok(result)
     }
-
-    pub fn as_block_id(&self) -> &ton_block::BlockIdExt {
-        match self {
-            PackageEntryId::Block(a) => a.borrow(),
-            PackageEntryId::Proof(a) => a.borrow(),
-            PackageEntryId::ProofLink(a) => a.borrow(),
-        }
-    }
 }
 
 pub trait GetFileName {

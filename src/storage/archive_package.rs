@@ -1,6 +1,20 @@
+use std::io::Write;
+
 use anyhow::Result;
 
-use super::{ENTRY_HEADER_MAGIC, PKG_HEADER_MAGIC};
+pub fn make_empty_archive() -> Vec<u8> {
+    PKG_HEADER_MAGIC.to_le_bytes().to_vec()
+}
+
+pub fn make_archive_segment(filename: &str, data: &[u8]) -> Result<Vec<u8>, std::io::Error> {
+    let mut vec = Vec::with_capacity(2 + 2 + 4 + filename.len() + data.len());
+    vec.write_all(&ENTRY_HEADER_MAGIC.to_le_bytes())?;
+    vec.write_all(&(filename.len() as u16).to_le_bytes())?;
+    vec.write_all(&(data.len() as u32).to_le_bytes())?;
+    vec.write_all(filename.as_bytes())?;
+    vec.write_all(data)?;
+    Ok(vec)
+}
 
 pub struct ArchivePackageViewReader<'a> {
     data: &'a [u8],
@@ -79,6 +93,9 @@ impl<'a> ArchivePackageEntryView<'a> {
         Ok(Some(Self { name, data }))
     }
 }
+
+const PKG_HEADER_MAGIC: u32 = 0xae8fdd01;
+const ENTRY_HEADER_MAGIC: u16 = 0x1e8b;
 
 #[derive(thiserror::Error, Debug)]
 enum ArchivePackageError {

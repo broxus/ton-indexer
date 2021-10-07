@@ -53,7 +53,7 @@ pub fn apply_block<'a>(
                 engine.store_last_applied_mc_block_id(block.id())?;
                 // TODO: update shard blocks
 
-                engine.set_applied(handle, mc_seq_no)?;
+                engine.set_applied(handle, mc_seq_no).await?;
 
                 let id = handle.id().clone();
                 engine
@@ -68,7 +68,7 @@ pub fn apply_block<'a>(
                         .context("Failed to advance GC state")?;
                 }
             } else {
-                engine.set_applied(handle, mc_seq_no)?;
+                engine.set_applied(handle, mc_seq_no).await?;
             }
         }
 

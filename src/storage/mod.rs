@@ -1,6 +1,7 @@
 use std::io::{Read, Write};
 
 use anyhow::Result;
+use nekoton_utils::TrustMe;
 use rocksdb::MergeOperands;
 use smallvec::SmallVec;
 use ton_types::ByteOrderRead;
@@ -144,18 +145,17 @@ pub mod columns {
 
 fn archive_data_merge(
     _new_key: &[u8],
-    existing_val: Option<&[u8]>,
+    current_value: Option<&[u8]>,
     operands: &mut MergeOperands,
 ) -> Option<Vec<u8>> {
-    let mut result = if let Some(val) = existing_val {
-        val.to_vec()
+    let mut result = if let Some(value) = current_value {
+        value.to_vec()
     } else {
-        PackageWriter::empty().as_bytes().to_vec()
+        make_empty_archive()
     };
 
-    result.reserve(operands.size_hint().0 * 1024);
-    for v in operands {
-        result.extend_from_slice(v);
+    for data in operands {
+        result.extend_from_slice(data);
     }
 
     Some(result)
@@ -163,18 +163,18 @@ fn archive_data_merge(
 
 fn archive_meta_merge(
     _: &[u8],
-    existing_val: Option<&[u8]>,
+    current_value: Option<&[u8]>,
     operands: &mut MergeOperands,
 ) -> Option<Vec<u8>> {
-    let mut entry: ArchiveMetaEntry = if let Some(value) = existing_val {
-        bincode::deserialize(value).ok()?
+    let mut entry: ArchiveMetaEntry = if let Some(value) = current_value {
+        bincode::deserialize(value).trust_me()
     } else {
         ArchiveMetaEntry::default()
     };
 
     entry.add_blobs(operands.size_hint().0);
 
-    bincode::serialize(&entry).ok()
+    Some(bincode::serialize(&entry).trust_me())
 }
 
 pub trait StoredValue {

@@ -10,14 +10,12 @@ use std::hash::Hash;
 use std::sync::Arc;
 
 use anyhow::Result;
-use nekoton_utils::*;
 use serde::{Deserialize, Serialize};
 
 use super::archive_package::*;
 use super::block_handle::*;
 use super::package_entry_id::*;
 use crate::storage::{columns, StoredValue, Tree};
-use crate::Engine;
 
 pub struct ArchiveManager {
     db: Tree<columns::ArchiveManagerDb>,
@@ -93,8 +91,46 @@ impl ArchiveManager {
         self.db.size()
     }
 
-    pub fn add_entry(&self, handle: &BlockHandle) -> Result<()> {
-        let data = &[]; // temp
+    pub async fn move_into_archive(&self, handle: &BlockHandle) -> Result<()> {
+        if handle.meta().is_archived() {
+            return Ok(());
+        }
+        if !handle.meta().set_is_moving_to_archive() {
+            return Ok(());
+        }
+
+        // Prepare data
+        let block_id = handle.id();
+
+        let has_data = handle.meta().has_data();
+        let mut is_link = false;
+        let has_proof = handle.has_proof_or_link(&mut is_link);
+
+        let block_data = if has_data {
+            let lock = handle.block_data_lock().write().await;
+
+            let entry_id = PackageEntryId::Block(block_id);
+            let data = self.make_archive_segment(&entry_id)?;
+
+            Some((lock, data))
+        } else {
+            None
+        };
+
+        let block_proof_data = if has_proof {
+            let lock = handle.proof_data_lock().write().await;
+
+            let entry_id = if is_link {
+                PackageEntryId::ProofLink(block_id)
+            } else {
+                PackageEntryId::Proof(block_id)
+            };
+            let data = self.make_archive_segment(&entry_id)?;
+
+            Some((lock, data))
+        } else {
+            None
+        };
 
         // Prepare cf
         let archive_cf = self.archive_storage.get_cf()?;
@@ -103,14 +139,22 @@ impl ArchiveManager {
 
         // Prepare archive
         let archive_id =
-            calculate_archive_id(handle.masterchain_ref_seqno(), handle.meta().is_key_block());
+            compute_archive_id(handle.masterchain_ref_seqno(), handle.meta().is_key_block());
         let archive_id_bytes = archive_id.to_be_bytes();
 
-        let archive_data = self.prepare_archive_data(&archive_id_bytes, handle, data)?;
-
+        // 0. Create transaction
         let mut batch = rocksdb::WriteBatch::default();
-        batch.merge_cf(&archive_cf, &archive_id_bytes, archive_data.as_bytes());
+        // 1. Append archive segment with block data
+        if let Some((_, data)) = &block_data {
+            batch.merge_cf(&archive_cf, &archive_id_bytes, data);
+        }
+        // 2. Append archive segment with block proof data
+        if let Some((_, data)) = &block_proof_data {
+            batch.merge_cf(&archive_cf, &archive_id_bytes, data);
+        }
+        // 3. Update archive meta (empty data to just trigger merge operator)
         batch.merge_cf(&meta_cf, &archive_id_bytes, &[]);
+        // 4. Update block handle meta
         if handle.meta().set_is_archived() {
             batch.put_cf(
                 &handle_cf,
@@ -118,15 +162,18 @@ impl ArchiveManager {
                 handle.meta().to_vec()?,
             );
         }
+        // 5. Execute transaction
         self.archive_storage.raw_db_handle().write(batch)?;
 
+        // TODO: remove block
+
+        // Done
         Ok(())
     }
 
     /// Calculates archive id for `FullNodeOverlayService`
-    pub fn get_archive_id(&self, engine: &Engine, mc_seq_no: u32) -> Result<u64> {
-        let is_key_block = engine.find_key_block_id(mc_seq_no)?.is_some();
-        let archive_id = calculate_archive_id(mc_seq_no, is_key_block);
+    pub fn get_archive_id(&self, mc_seq_no: u32, is_key_block: bool) -> Result<u64> {
+        let archive_id = compute_archive_id(mc_seq_no, is_key_block);
 
         let meta: ArchiveMetaEntry = match self.archive_meta.get(archive_id.to_be_bytes())? {
             Some(data) => bincode::deserialize(&data)?,
@@ -156,20 +203,14 @@ impl ArchiveManager {
         }
     }
 
-    fn prepare_archive_data(
-        &self,
-        id: &[u8],
-        block: &BlockHandle,
-        data: &[u8],
-    ) -> Result<PackageWriter> {
-        Ok(match self.archive_storage.get(id)? {
-            Some(archive) => {
-                let mut archive = PackageWriter::from_bytes(&archive);
-                archive.add_package_segment(&block.id().filename(), data);
-                archive
-            }
-            None => PackageWriter::with_segment(&block.id().filename(), data),
-        })
+    fn make_archive_segment<I>(&self, entry_id: &PackageEntryId<I>) -> Result<Vec<u8>>
+    where
+        I: Borrow<ton_block::BlockIdExt> + Hash,
+    {
+        match self.db.get(entry_id.to_vec()?)? {
+            Some(data) => make_archive_segment(&entry_id.filename(), &data).map_err(From::from),
+            None => Err(ArchiveManagerError::InvalidBlockData.into()),
+        }
     }
 }
 
@@ -181,25 +222,13 @@ pub struct ArchiveMetaEntry {
 }
 
 impl ArchiveMetaEntry {
-    pub fn with_data(deleted: bool, finalized: bool, num_blobs: u32) -> Self {
-        Self {
-            deleted,
-            finalized,
-            num_blobs,
-        }
-    }
-
     pub fn add_blobs(&mut self, count: usize) {
         self.num_blobs += count as u32;
         if self.num_blobs >= ARCHIVE_PACKAGE_SIZE {}
     }
-
-    pub fn to_vec(&self) -> Vec<u8> {
-        bincode::serialize(&self).trust_me()
-    }
 }
 
-fn calculate_archive_id(mc_seq_no: u32, key_block: bool) -> u64 {
+fn compute_archive_id(mc_seq_no: u32, key_block: bool) -> u64 {
     let seq_no = if key_block {
         mc_seq_no
     } else {
