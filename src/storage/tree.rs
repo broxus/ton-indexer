@@ -80,7 +80,7 @@ impl<T> Tree<T>
 where
     T: Column,
 {
-    pub fn new(db: Arc<DB>) -> Result<Self> {
+    pub fn new(db: &Arc<DB>) -> Result<Self> {
         // Check that tree exists
         db.cf_handle(T::NAME)
             .with_context(|| format!("No cf for {}", T::NAME))?;
@@ -92,7 +92,7 @@ where
         T::read_options(&mut read_config);
 
         Ok(Self {
-            db,
+            db: db.clone(),
             write_config,
             read_config,
             _column: Default::default(),

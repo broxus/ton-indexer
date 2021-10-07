@@ -13,30 +13,33 @@ impl PackageWriter {
         }
     }
 
-    pub fn with_data(name: &str, data: &[u8]) -> Self {
-        let mut pack = Self::new();
-        pack.add_package_segment(name, data);
-        pack
+    pub fn with_segment(name: &str, data: &[u8]) -> Self {
+        let mut buffer = BytesMut::with_capacity(4 + name.len() + data.len() + 8);
+        buffer.put_u32(PKG_HEADER_MAGIC);
+        write_package_segment(&mut buffer, name, data);
+        Self { buffer }
     }
 
-    pub fn new() -> Self {
-        let mut bytes = BytesMut::with_capacity(2 * 1024 * 1024);
-        bytes.put_u32(PKG_HEADER_MAGIC);
-        Self { buffer: bytes }
+    pub fn empty() -> Self {
+        let mut buffer = BytesMut::with_capacity(4);
+        buffer.put_u32(PKG_HEADER_MAGIC);
+        Self { buffer }
     }
 
     pub fn add_package_segment(&mut self, name: &str, data: &[u8]) {
-        let mut buf = BytesMut::with_capacity(name.len() + data.len() + 8);
-
-        buf.put_u16(ENTRY_HEADER_MAGIC);
-        buf.put_u16(name.len() as u16);
-        buf.put_u32(data.len() as u32);
-        buf.put_slice(name.as_bytes());
-        buf.put_slice(data);
-        self.buffer.extend_from_slice(buf.as_ref());
+        self.buffer.reserve(name.len() + data.len() + 8);
+        write_package_segment(&mut self.buffer, name, data);
     }
 
     pub fn as_bytes(&self) -> &[u8] {
         self.buffer.as_ref()
     }
+}
+
+fn write_package_segment(buffer: &mut BytesMut, name: &str, data: &[u8]) {
+    buffer.put_u16(ENTRY_HEADER_MAGIC);
+    buffer.put_u16(name.len() as u16);
+    buffer.put_u32(data.len() as u32);
+    buffer.put_slice(name.as_bytes());
+    buffer.put_slice(data);
 }

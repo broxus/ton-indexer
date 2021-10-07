@@ -109,6 +109,8 @@ impl Db {
                 // opts.enable_statistics();
                 // opts.set_stats_dump_period_sec(300);
             })
+            .column::<columns::ArchiveStorage>()
+            .column::<columns::ArchiveMeta>()
             .column::<columns::BlockHandles>()
             .column::<columns::KeyBlocks>()
             .column::<columns::ShardStateDb>()
@@ -126,19 +128,13 @@ impl Db {
             .build()
             .context("Failed building db")?;
 
-        let block_handle_storage =
-            BlockHandleStorage::with_db(Tree::new(db.clone())?, Tree::new(db.clone())?);
-        let shard_state_storage = ShardStateStorage::with_db(
-            Tree::new(db.clone())?,
-            Tree::new(db.clone())?,
-            Tree::new(db.clone())?,
-            &file_db_path,
-        )
-        .await?;
-        let node_state_storage = NodeStateStorage::with_db(Tree::new(db.clone())?);
-        let archive_manager = ArchiveManager::with_db(Tree::new(db.clone())?);
-        let block_index_db = BlockIndexDb::with_db(Tree::new(db.clone())?, Tree::new(db.clone())?);
-        let background_sync_meta = BackgroundSyncMetaStore::new(Tree::new(db.clone())?);
+        let block_handle_storage = BlockHandleStorage::with_db(&db)?;
+        let shard_state_storage = ShardStateStorage::with_db(&db, &file_db_path).await?;
+        let node_state_storage = NodeStateStorage::with_db(&db)?;
+        let archive_manager = ArchiveManager::with_db(&db)?;
+        let block_index_db = BlockIndexDb::with_db(&db)?;
+        let background_sync_meta_store = BackgroundSyncMetaStore::new(&db)?;
+
         Ok(Arc::new(Self {
             block_cache,
             uncompressed_block_cache,
@@ -147,11 +143,11 @@ impl Db {
             node_state_storage,
             archive_manager,
             block_index_db,
-            background_sync_meta_store: background_sync_meta,
-            prev1_block_db: Tree::new(db.clone())?,
-            prev2_block_db: Tree::new(db.clone())?,
-            next1_block_db: Tree::new(db.clone())?,
-            next2_block_db: Tree::new(db.clone())?,
+            background_sync_meta_store,
+            prev1_block_db: Tree::new(&db)?,
+            prev2_block_db: Tree::new(&db)?,
+            next1_block_db: Tree::new(&db)?,
+            next2_block_db: Tree::new(&db)?,
             _db: db,
         }))
     }
@@ -229,12 +225,10 @@ impl Db {
 
         let archive_id = PackageEntryId::Block(handle.id());
         let mut already_existed = true;
-        if !handle.meta().has_data() || !self.archive_manager.has_data(&archive_id).await {
+        if !handle.meta().has_data() || !self.archive_manager.has_data(&archive_id)? {
             let _lock = handle.block_data_lock().write().await;
-            if !handle.meta().has_data() || !self.archive_manager.has_data(&archive_id).await {
-                self.archive_manager
-                    .add_block(&archive_id, block.data())
-                    .await?;
+            if !handle.meta().has_data() || !self.archive_manager.has_data(&archive_id)? {
+                self.archive_manager.add_data(&archive_id, block.data())?;
                 if handle.meta().set_has_data() {
                     self.block_handle_storage.store_handle(&handle)?;
                     already_existed = false;
@@ -288,15 +282,10 @@ impl Db {
         let mut already_existed = true;
         if proof.is_link() {
             let archive_id = PackageEntryId::ProofLink(block_id);
-            if !handle.meta().has_proof_link() || !self.archive_manager.has_data(&archive_id).await
-            {
+            if !handle.meta().has_proof_link() || !self.archive_manager.has_data(&archive_id)? {
                 let _lock = handle.proof_data_lock().write().await;
-                if !handle.meta().has_proof_link()
-                    || !self.archive_manager.has_data(&archive_id).await
-                {
-                    self.archive_manager
-                        .add_block(&archive_id, proof.data())
-                        .await?;
+                if !handle.meta().has_proof_link() || !self.archive_manager.has_data(&archive_id)? {
+                    self.archive_manager.add_data(&archive_id, proof.data())?;
                     if handle.meta().set_has_proof_link() {
                         self.block_handle_storage.store_handle(&handle)?;
                         already_existed = false;
@@ -305,12 +294,10 @@ impl Db {
             }
         } else {
             let archive_id = PackageEntryId::Proof(block_id);
-            if !handle.meta().has_proof() || !self.archive_manager.has_data(&archive_id).await {
+            if !handle.meta().has_proof() || !self.archive_manager.has_data(&archive_id)? {
                 let _lock = handle.proof_data_lock().write().await;
-                if !handle.meta().has_proof() || !self.archive_manager.has_data(&archive_id).await {
-                    self.archive_manager
-                        .add_block(&archive_id, proof.data())
-                        .await?;
+                if !handle.meta().has_proof() || !self.archive_manager.has_data(&archive_id)? {
+                    self.archive_manager.add_data(&archive_id, proof.data())?;
                     if handle.meta().set_has_proof() {
                         self.block_handle_storage.store_handle(&handle)?;
                         already_existed = false;
@@ -501,6 +488,14 @@ impl Db {
         }
     }
 
+    pub fn archive_block(&self, handle: &Arc<BlockHandle>) -> Result<()> {
+        if handle.meta().is_archived() {
+            return Ok(());
+        }
+
+        Ok(())
+    }
+
     pub fn store_node_state(&self, key: &'static str, value: Vec<u8>) -> Result<()> {
         self.node_state_storage.store(key, value)
     }
@@ -562,7 +557,7 @@ impl Db {
                 log::info!("Old blocks: {}", old_blocks.len());
                 log::info!(
                     "BLocks size: {}",
-                    self.archive_manager.get_tot_size().await.unwrap()
+                    self.archive_manager.get_total_size().await.unwrap()
                 );
                 self.archive_manager.gc(old_blocks.iter().copied()).await?;
                 log::info!("Archive gc took: {}", tiny_adnl::utils::now() - now);

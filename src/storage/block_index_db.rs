@@ -21,11 +21,11 @@ pub struct BlockIndexDb {
 }
 
 impl BlockIndexDb {
-    pub fn with_db(lt_desc_db: Tree<columns::LtDesc>, lt_db: Tree<columns::Lt>) -> Self {
-        Self {
-            lt_desc_db: RwLock::new(LtDescDb { db: lt_desc_db }),
-            lt_db: LtDb { db: lt_db },
-        }
+    pub fn with_db(db: &Arc<rocksdb::DB>) -> Result<Self> {
+        Ok(Self {
+            lt_desc_db: RwLock::new(LtDescDb { db: Tree::new(db)? }),
+            lt_db: LtDb { db: Tree::new(db)? },
+        })
     }
 
     pub fn get_block_by_seq_no(

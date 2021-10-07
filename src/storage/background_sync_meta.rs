@@ -1,18 +1,20 @@
+use std::sync::Arc;
+
 use anyhow::Result;
 use ton_block::BlockIdExt;
 
-use crate::storage::{StoredValue, Tree};
+use crate::storage::{columns, StoredValue, Tree};
 
 const LOW_ID: &str = "low";
 const HIGH_ID: &str = "high";
 
 pub struct BackgroundSyncMetaStore {
-    db: Tree<super::columns::BackgroundSyncMeta>,
+    db: Tree<columns::BackgroundSyncMeta>,
 }
 
 impl BackgroundSyncMetaStore {
-    pub fn new(db: Tree<super::columns::BackgroundSyncMeta>) -> Self {
-        Self { db }
+    pub fn new(db: &Arc<rocksdb::DB>) -> Result<Self> {
+        Ok(Self { db: Tree::new(db)? })
     }
 
     pub fn store_low_key_block(&self, id: &BlockIdExt) -> Result<()> {

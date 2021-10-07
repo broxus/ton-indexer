@@ -37,12 +37,7 @@ pub struct ShardStateStorage {
 }
 
 impl ShardStateStorage {
-    pub async fn with_db<P>(
-        shard_state_db: Tree<columns::ShardStateDb>,
-        cell_db: Tree<columns::CellDb<0>>,
-        cell_db_additional: Tree<columns::CellDb<1>>,
-        file_db_path: &P,
-    ) -> Result<Self>
+    pub async fn with_db<P>(db: &Arc<rocksdb::DB>, file_db_path: &P) -> Result<Self>
     where
         P: AsRef<Path>,
     {
@@ -51,10 +46,14 @@ impl ShardStateStorage {
 
         Ok(Self {
             state: Arc::new(ShardStateStorageState {
-                shard_state_db,
+                shard_state_db: Tree::new(db)?,
                 active_boc_db: AtomicU8::new(0),
-                dynamic_boc_db_0: Arc::new(DynamicBocDbHandle::new(cell_db)),
-                dynamic_boc_db_1: Arc::new(DynamicBocDbHandle::new(cell_db_additional)),
+                dynamic_boc_db_0: Arc::new(DynamicBocDbHandle::new(
+                    Tree::<columns::CellDb<0>>::new(db)?,
+                )),
+                dynamic_boc_db_1: Arc::new(DynamicBocDbHandle::new(
+                    Tree::<columns::CellDb<1>>::new(db)?,
+                )),
             }),
             downloads_dir,
         })

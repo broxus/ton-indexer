@@ -22,12 +22,12 @@ pub struct BlockHandleStorage {
 }
 
 impl BlockHandleStorage {
-    pub fn with_db(db: Tree<columns::BlockHandles>, key_blocks: Tree<columns::KeyBlocks>) -> Self {
-        Self {
+    pub fn with_db(db: &Arc<rocksdb::DB>) -> Result<Self> {
+        Ok(Self {
             cache: Arc::new(Default::default()),
-            db,
-            key_blocks,
-        }
+            db: Tree::new(db)?,
+            key_blocks: Tree::new(db)?,
+        })
     }
 
     pub fn load_handle(

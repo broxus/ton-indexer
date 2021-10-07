@@ -7,7 +7,6 @@ use ton_types::ByteOrderRead;
 
 pub use self::archive_manager::*;
 pub use self::archive_package::*;
-pub use self::archive_storage::*;
 pub use self::background_sync_meta::*;
 pub use self::block_handle::*;
 pub use self::block_handle_storage::*;
@@ -20,7 +19,6 @@ pub use self::tree::*;
 
 mod archive_manager;
 mod archive_package;
-mod archive_storage;
 mod background_sync_meta;
 mod block_handle;
 mod block_handle_storage;
@@ -49,9 +47,9 @@ pub mod columns {
     }
 
     /// Maps `ArchiveId` to package state
-    pub struct PackageMeta;
-    impl Column for PackageMeta {
-        const NAME: &'static str = "package_meta";
+    pub struct ArchiveMeta;
+    impl Column for ArchiveMeta {
+        const NAME: &'static str = "archive_meta";
 
         fn options(opts: &mut Options) {
             opts.set_merge_operator_associative("archive_meta_merge", archive_meta_merge);
@@ -152,12 +150,14 @@ fn archive_data_merge(
     let mut result = if let Some(val) = existing_val {
         val.to_vec()
     } else {
-        PackageWriter::new().as_bytes().to_vec()
+        PackageWriter::empty().as_bytes().to_vec()
     };
+
     result.reserve(operands.size_hint().0 * 1024);
     for v in operands {
         result.extend_from_slice(v);
     }
+
     Some(result)
 }
 
@@ -172,7 +172,7 @@ fn archive_meta_merge(
         ArchiveMetaEntry::default()
     };
 
-    entry.add_blobs(operands.count());
+    entry.add_blobs(operands.size_hint().0);
 
     bincode::serialize(&entry).ok()
 }
