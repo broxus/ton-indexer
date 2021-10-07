@@ -1,5 +1,7 @@
 use anyhow::Result;
 
+use super::{ENTRY_HEADER_MAGIC, PKG_HEADER_MAGIC};
+
 pub struct ArchivePackageViewReader<'a> {
     data: &'a [u8],
     offset: usize,
@@ -18,8 +20,6 @@ impl<'a> ArchivePackageViewReader<'a> {
 }
 
 fn read_package_header(buf: &[u8], offset: &mut usize) -> Result<()> {
-    const PKG_HEADER_MAGIC: u32 = 0xae8fdd01;
-
     if buf.len() < *offset + 4 {
         return Err(ArchivePackageError::UnexpectedArchiveEof.into());
     }
@@ -46,8 +46,6 @@ pub struct ArchivePackageEntryView<'a> {
 
 impl<'a> ArchivePackageEntryView<'a> {
     fn read_from_view(buf: &'a [u8], offset: &mut usize) -> Result<Option<Self>> {
-        const ENTRY_HEADER_MAGIC: u16 = 0x1e8b;
-
         if buf.len() < *offset + 8 {
             return Ok(None);
         }

@@ -489,6 +489,10 @@ impl Engine {
         self.db.find_block_by_seq_no(account_prefix, seq_no)
     }
 
+    pub(crate) fn find_key_block_id(&self, seq_no: u32) -> Result<Option<ton_block::BlockIdExt>> {
+        self.db.find_key_block(seq_no)
+    }
+
     #[allow(unused)]
     fn find_block_by_utime(
         &self,

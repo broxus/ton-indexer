@@ -11,11 +11,10 @@ use std::io::Write;
 use std::str::FromStr;
 
 use anyhow::Result;
+use smallvec::SmallVec;
 use ton_types::UInt256;
 
-use super::super::StoredValue;
-
-use smallvec::SmallVec;
+use super::StoredValue;
 
 #[derive(Debug, Hash, Eq, PartialEq)]
 pub enum PackageEntryId<I> {

@@ -1,6 +1,5 @@
 use std::io::{Read, Write};
 
-use crate::storage::PackageMetaEntry;
 use anyhow::Result;
 use rocksdb::MergeOperands;
 use smallvec::SmallVec;
@@ -8,6 +7,7 @@ use ton_types::ByteOrderRead;
 
 pub use self::archive_manager::*;
 pub use self::archive_package::*;
+pub use self::archive_storage::*;
 pub use self::background_sync_meta::*;
 pub use self::block_handle::*;
 pub use self::block_handle_storage::*;
@@ -20,6 +20,7 @@ pub use self::tree::*;
 
 mod archive_manager;
 mod archive_package;
+mod archive_storage;
 mod background_sync_meta;
 mod block_handle;
 mod block_handle_storage;
@@ -32,27 +33,28 @@ mod storage_cell;
 mod tree;
 
 pub mod columns {
-    use crate::storage::{archive_data_merge, archive_meta_merge};
     use rocksdb::Options;
+
+    use crate::storage::{archive_data_merge, archive_meta_merge};
 
     use super::Column;
 
     pub struct ArchiveStorage;
-
     impl Column for ArchiveStorage {
-        const NAME: &'static str = "ArchiveStorage";
+        const NAME: &'static str = "archive_storage";
+
         fn options(opts: &mut Options) {
-            opts.set_merge_operator_associative("ArchiveStorage", archive_data_merge);
+            opts.set_merge_operator_associative("archive_data_merge", archive_data_merge);
         }
     }
 
     /// Maps `ArchiveId` to package state
     pub struct PackageMeta;
-
     impl Column for PackageMeta {
-        const NAME: &'static str = "PackageIndex";
+        const NAME: &'static str = "package_meta";
+
         fn options(opts: &mut Options) {
-            opts.set_merge_operator_associative("ArchiveMetaMerge", archive_meta_merge);
+            opts.set_merge_operator_associative("archive_meta_merge", archive_meta_merge);
         }
     }
 
@@ -150,7 +152,7 @@ fn archive_data_merge(
     let mut result = if let Some(val) = existing_val {
         val.to_vec()
     } else {
-        PackageMut::new().as_bytes().to_vec()
+        PackageWriter::new().as_bytes().to_vec()
     };
     result.reserve(operands.size_hint().0 * 1024);
     for v in operands {
@@ -160,24 +162,19 @@ fn archive_data_merge(
 }
 
 fn archive_meta_merge(
-    _new_key: &[u8],
+    _: &[u8],
     existing_val: Option<&[u8]>,
-    mut operands: &mut MergeOperands,
+    operands: &mut MergeOperands,
 ) -> Option<Vec<u8>> {
-    let mut result: PackageMetaEntry = if let Some(val) = existing_val {
-        bincode::deserialize(val).ok()?
+    let mut entry: ArchiveMetaEntry = if let Some(value) = existing_val {
+        bincode::deserialize(value).ok()?
     } else {
-        let val = operands.next()?;
-        bincode::deserialize(val).ok()?
+        ArchiveMetaEntry::default()
     };
 
-    for _ in operands {
-        result.num_blobs += 1;
-    }
-    if result.num_blobs == 100 {
-        result.finalized = true;
-    }
-    bincode::serialize(&result).ok()
+    entry.add_blobs(operands.count());
+
+    bincode::serialize(&entry).ok()
 }
 
 pub trait StoredValue {
