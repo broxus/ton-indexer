@@ -1,7 +1,6 @@
 use std::io::{Read, Write};
 
 use anyhow::Result;
-use nekoton_utils::TrustMe;
 use rocksdb::MergeOperands;
 use smallvec::SmallVec;
 use ton_types::ByteOrderRead;
@@ -34,9 +33,7 @@ mod tree;
 pub mod columns {
     use rocksdb::Options;
 
-    use crate::storage::{archive_data_merge, archive_meta_merge};
-
-    use super::Column;
+    use super::{archive_data_merge, Column};
 
     pub struct ArchiveStorage;
     impl Column for ArchiveStorage {
@@ -44,16 +41,6 @@ pub mod columns {
 
         fn options(opts: &mut Options) {
             opts.set_merge_operator_associative("archive_data_merge", archive_data_merge);
-        }
-    }
-
-    /// Maps `ArchiveId` to package state
-    pub struct ArchiveMeta;
-    impl Column for ArchiveMeta {
-        const NAME: &'static str = "archive_meta";
-
-        fn options(opts: &mut Options) {
-            opts.set_merge_operator_associative("archive_meta_merge", archive_meta_merge);
         }
     }
 
@@ -144,37 +131,29 @@ pub mod columns {
 }
 
 fn archive_data_merge(
-    _new_key: &[u8],
+    new_key: &[u8],
     current_value: Option<&[u8]>,
     operands: &mut MergeOperands,
 ) -> Option<Vec<u8>> {
+    log::info!("QQQQQQ start: {}", hex::encode(new_key));
+
     let mut result = if let Some(value) = current_value {
         value.to_vec()
     } else {
         make_empty_archive()
     };
 
+    log::info!("QQQQQQ before, {}", result.len());
+
+    let mut num = 0;
     for data in operands {
+        num += 1;
         result.extend_from_slice(data);
     }
 
+    log::info!("QQQQQQ after, {} ({} operands)", result.len(), num);
+
     Some(result)
-}
-
-fn archive_meta_merge(
-    _: &[u8],
-    current_value: Option<&[u8]>,
-    operands: &mut MergeOperands,
-) -> Option<Vec<u8>> {
-    let mut entry: ArchiveMetaEntry = if let Some(value) = current_value {
-        bincode::deserialize(value).trust_me()
-    } else {
-        ArchiveMetaEntry::default()
-    };
-
-    entry.add_blobs(operands.size_hint().0);
-
-    Some(bincode::serialize(&entry).trust_me())
 }
 
 pub trait StoredValue {

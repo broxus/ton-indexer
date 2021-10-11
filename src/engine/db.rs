@@ -110,7 +110,6 @@ impl Db {
                 // opts.set_stats_dump_period_sec(300);
             })
             .column::<columns::ArchiveStorage>()
-            .column::<columns::ArchiveMeta>()
             .column::<columns::BlockHandles>()
             .column::<columns::KeyBlocks>()
             .column::<columns::ShardStateDb>()

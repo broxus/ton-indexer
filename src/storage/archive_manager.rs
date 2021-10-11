@@ -6,11 +6,11 @@
 /// - removed all temporary unused code
 ///
 use std::borrow::Borrow;
+use std::convert::TryInto;
 use std::hash::Hash;
 use std::sync::Arc;
 
 use anyhow::Result;
-use serde::{Deserialize, Serialize};
 
 use super::archive_package::*;
 use super::block_handle::*;
@@ -18,19 +18,19 @@ use super::package_entry_id::*;
 use crate::storage::{columns, StoredValue, Tree};
 
 pub struct ArchiveManager {
-    db: Tree<columns::ArchiveManagerDb>,
+    db: Arc<rocksdb::DB>,
+    blocks: Tree<columns::ArchiveManagerDb>,
     archive_storage: Tree<columns::ArchiveStorage>,
     block_handles: Tree<columns::BlockHandles>,
-    archive_meta: Tree<columns::ArchiveMeta>,
 }
 
 impl ArchiveManager {
     pub fn with_db(db: &Arc<rocksdb::DB>) -> Result<Self> {
         Ok(Self {
-            db: Tree::new(db)?,
+            db: db.clone(),
+            blocks: Tree::new(db)?,
             archive_storage: Tree::new(db)?,
             block_handles: Tree::new(db)?,
-            archive_meta: Tree::new(db)?,
         })
     }
 
@@ -38,7 +38,7 @@ impl ArchiveManager {
     where
         I: Borrow<ton_block::BlockIdExt> + Hash,
     {
-        self.db.insert(id.to_vec()?, data)?;
+        self.blocks.insert(id.to_vec()?, data)?;
         Ok(())
     }
 
@@ -46,7 +46,7 @@ impl ArchiveManager {
     where
         I: Borrow<ton_block::BlockIdExt> + Hash,
     {
-        self.db.contains_key(id.to_vec()?)
+        self.blocks.contains_key(id.to_vec()?)
     }
 
     pub async fn get_data<I>(&self, handle: &BlockHandle, id: &PackageEntryId<I>) -> Result<Vec<u8>>
@@ -60,7 +60,7 @@ impl ArchiveManager {
             }
         };
 
-        match self.db.get(id.to_vec()?)? {
+        match self.blocks.get(id.to_vec()?)? {
             Some(a) => Ok(a.to_vec()),
             None => Err(ArchiveManagerError::InvalidBlockData.into()),
         }
@@ -70,8 +70,8 @@ impl ArchiveManager {
         &'a self,
         ids: impl Iterator<Item = &'a ton_block::BlockIdExt>,
     ) -> Result<()> {
-        let cf = self.db.get_cf()?;
-        let raw_db = self.db.raw_db_handle().clone();
+        let cf = self.blocks.get_cf()?;
+        let raw_db = self.blocks.raw_db_handle().clone();
 
         let mut tx = rocksdb::WriteBatch::default();
         for id in ids {
@@ -88,7 +88,7 @@ impl ArchiveManager {
     }
 
     pub async fn get_total_size(&self) -> Result<usize> {
-        self.db.size()
+        self.blocks.size()
     }
 
     pub async fn move_into_archive(&self, handle: &BlockHandle) -> Result<()> {
@@ -133,28 +133,31 @@ impl ArchiveManager {
         };
 
         // Prepare cf
-        let archive_cf = self.archive_storage.get_cf()?;
+        let storage_cf = self.archive_storage.get_cf()?;
         let handle_cf = self.block_handles.get_cf()?;
-        let meta_cf = self.archive_meta.get_cf()?;
 
         // Prepare archive
-        let archive_id =
-            compute_archive_id(handle.masterchain_ref_seqno(), handle.meta().is_key_block());
+        let ref_seqno = handle.masterchain_ref_seqno();
+
+        let mut archive_id =
+            self.compute_archive_id(&storage_cf, ref_seqno, handle.meta().is_key_block())?;
+        if (ref_seqno as u64).saturating_sub(archive_id) > (ARCHIVE_PACKAGE_SIZE as u64) {
+            archive_id = ref_seqno as u64;
+        }
+
         let archive_id_bytes = archive_id.to_be_bytes();
 
         // 0. Create transaction
         let mut batch = rocksdb::WriteBatch::default();
         // 1. Append archive segment with block data
         if let Some((_, data)) = &block_data {
-            batch.merge_cf(&archive_cf, &archive_id_bytes, data);
+            batch.merge_cf(&storage_cf, &archive_id_bytes, data);
         }
         // 2. Append archive segment with block proof data
         if let Some((_, data)) = &block_proof_data {
-            batch.merge_cf(&archive_cf, &archive_id_bytes, data);
+            batch.merge_cf(&storage_cf, &archive_id_bytes, data);
         }
-        // 3. Update archive meta (empty data to just trigger merge operator)
-        batch.merge_cf(&meta_cf, &archive_id_bytes, &[]);
-        // 4. Update block handle meta
+        // 3. Update block handle meta
         if handle.meta().set_is_archived() {
             batch.put_cf(
                 &handle_cf,
@@ -169,22 +172,6 @@ impl ArchiveManager {
 
         // Done
         Ok(())
-    }
-
-    /// Calculates archive id for `FullNodeOverlayService`
-    pub fn get_archive_id(&self, mc_seq_no: u32, is_key_block: bool) -> Result<u64> {
-        let archive_id = compute_archive_id(mc_seq_no, is_key_block);
-
-        let meta: ArchiveMetaEntry = match self.archive_meta.get(archive_id.to_be_bytes())? {
-            Some(data) => bincode::deserialize(&data)?,
-            None => return Err(ArchiveManagerError::ArchiveMetaNotFound.into()),
-        };
-
-        if meta.finalized {
-            Ok(archive_id)
-        } else {
-            Err(ArchiveManagerError::ArchiveNotFinalized.into())
-        }
     }
 
     pub fn get_archive_slice(
@@ -203,38 +190,39 @@ impl ArchiveManager {
         }
     }
 
+    fn compute_archive_id(
+        &self,
+        storage_cf: &Arc<rocksdb::BoundColumnFamily<'_>>,
+        mc_seq_no: u32,
+        is_key_block: bool,
+    ) -> Result<u64> {
+        if is_key_block {
+            return Ok(mc_seq_no as u64);
+        }
+
+        let mut archive_id = (mc_seq_no - mc_seq_no % ARCHIVE_SLICE_SIZE) as u64;
+
+        let mut iterator = self.db.raw_iterator_cf(storage_cf);
+        iterator.seek_for_prev(&(mc_seq_no as u64).to_be_bytes());
+        if let Some(prev_id) = iterator.key() {
+            let prev_id = u64::from_be_bytes(prev_id.try_into()?);
+            if archive_id < prev_id {
+                archive_id = prev_id;
+            }
+        }
+
+        Ok(archive_id)
+    }
+
     fn make_archive_segment<I>(&self, entry_id: &PackageEntryId<I>) -> Result<Vec<u8>>
     where
         I: Borrow<ton_block::BlockIdExt> + Hash,
     {
-        match self.db.get(entry_id.to_vec()?)? {
+        match self.blocks.get(entry_id.to_vec()?)? {
             Some(data) => make_archive_segment(&entry_id.filename(), &data).map_err(From::from),
             None => Err(ArchiveManagerError::InvalidBlockData.into()),
         }
     }
-}
-
-#[derive(Default, Copy, Clone, Serialize, Deserialize)]
-pub struct ArchiveMetaEntry {
-    pub deleted: bool,
-    pub finalized: bool,
-    pub num_blobs: u32,
-}
-
-impl ArchiveMetaEntry {
-    pub fn add_blobs(&mut self, count: usize) {
-        self.num_blobs += count as u32;
-        if self.num_blobs >= ARCHIVE_PACKAGE_SIZE {}
-    }
-}
-
-fn compute_archive_id(mc_seq_no: u32, key_block: bool) -> u64 {
-    let seq_no = if key_block {
-        mc_seq_no
-    } else {
-        mc_seq_no - (mc_seq_no % ARCHIVE_SLICE_SIZE as u32)
-    };
-    seq_no as u64
 }
 
 pub const ARCHIVE_PACKAGE_SIZE: u32 = 100;
@@ -248,6 +236,4 @@ enum ArchiveManagerError {
     InvalidOffset,
     #[error("Archive meta not found")]
     ArchiveMetaNotFound,
-    #[error("Archive not finalized")]
-    ArchiveNotFinalized,
 }
