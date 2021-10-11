@@ -141,7 +141,7 @@ impl ArchiveManager {
 
         let mut archive_id =
             self.compute_archive_id(&storage_cf, ref_seqno, handle.meta().is_key_block())?;
-        if (ref_seqno as u64).saturating_sub(archive_id) > (ARCHIVE_PACKAGE_SIZE as u64) {
+        if (ref_seqno as u64).saturating_sub(archive_id) >= (ARCHIVE_PACKAGE_SIZE as u64) {
             archive_id = ref_seqno as u64;
         }
 
