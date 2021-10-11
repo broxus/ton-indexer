@@ -37,37 +37,61 @@ pub async fn sync(engine: &Arc<Engine>) -> Result<()> {
         log::info!("sync: Starting fast sync");
         let mut prev_step = std::time::Instant::now();
 
-        while let Some(archive) = archives_stream.next().await {
+        while let Some(mut archive) = archives_stream.next().await {
             log::info!(
                 "sync: Time from prev step: {} ms",
                 prev_step.elapsed().as_millis()
             );
             prev_step = std::time::Instant::now();
 
-            match archive.get_first_utime() {
-                Some(first_utime) if first_utime + FAST_SYNC_THRESHOLD <= now() as u32 => {}
-                _ => {
-                    log::info!("sync: Stopping fast sync");
-                    break;
-                }
-            }
             let mc_block_id = engine.last_applied_block()?;
 
-            let now = std::time::Instant::now();
-            match import_package(engine, archive, &mc_block_id).await {
-                Ok(()) => {
-                    log::info!(
-                        "sync: Imported archive package for block {}. Took: {} ms",
-                        mc_block_id.seq_no,
-                        now.elapsed().as_millis()
-                    );
+            let mut first_utime = archive.get_first_utime();
+            let import_start = std::time::Instant::now();
+
+            'import_loop: loop {
+                match import_package(engine, archive, &mc_block_id).await {
+                    Ok(()) => {
+                        log::info!(
+                            "sync: Imported archive package for block {}. Took: {} ms",
+                            mc_block_id.seq_no,
+                            import_start.elapsed().as_millis()
+                        );
+                        break 'import_loop;
+                    }
+                    Err(e) => {
+                        log::error!(
+                            "sync: Failed to apply queued archive for block {}: {:?}",
+                            mc_block_id.seq_no,
+                            e
+                        );
+                    }
                 }
-                Err(e) => {
-                    log::error!(
-                        "sync: Failed to apply queued archive for block {}: {:?}",
-                        mc_block_id.seq_no,
-                        e
-                    );
+
+                loop {
+                    log::info!("sync: Force downloading archive");
+                    let data =
+                        download_archive_or_die(engine, &active_peers, mc_block_id.seq_no).await;
+
+                    match parse_archive(data) {
+                        Ok(parsed) => {
+                            log::info!(
+                                "sync: Parsed {} masterchain blocks, {} blocks total",
+                                parsed.mc_block_ids.len(),
+                                parsed.blocks.len()
+                            );
+                            first_utime = parsed.get_first_utime();
+                            archive = parsed;
+                            break;
+                        }
+                        Err(e) => {
+                            log::error!(
+                                "sync: Failed to parse archive for block {}: {:?}",
+                                mc_block_id.seq_no,
+                                e
+                            );
+                        }
+                    }
                 }
             }
 
@@ -75,6 +99,14 @@ pub async fn sync(engine: &Arc<Engine>) -> Result<()> {
                 "sync: Full cycle took: {} ms",
                 prev_step.elapsed().as_millis()
             );
+
+            match first_utime {
+                Some(first_utime) if first_utime + FAST_SYNC_THRESHOLD <= now() as u32 => {}
+                _ => {
+                    log::info!("sync: Stopping fast sync");
+                    break;
+                }
+            }
         }
     }
     log::info!("sync: Finished fast sync");
