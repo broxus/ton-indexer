@@ -105,11 +105,8 @@ where
             download_key_block_proof => answer_raw,
             download_block_proof_link => answer_raw,
             download_key_block_proof_link => answer_raw,
-        };
-
-        query = match query.downcast::<ton::rpc::ton_node::GetArchiveInfo>() {
-            Ok(_) => return answer(ton::ton_node::ArchiveInfo::TonNode_ArchiveNotFound),
-            Err(query) => query,
+            get_archive_info => answer,
+            get_archive_slice => answer_raw,
         };
 
         if query

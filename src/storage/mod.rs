@@ -131,27 +131,19 @@ pub mod columns {
 }
 
 fn archive_data_merge(
-    new_key: &[u8],
+    _: &[u8],
     current_value: Option<&[u8]>,
     operands: &mut MergeOperands,
 ) -> Option<Vec<u8>> {
-    log::info!("QQQQQQ start: {}", hex::encode(new_key));
-
     let mut result = if let Some(value) = current_value {
         value.to_vec()
     } else {
         make_empty_archive()
     };
 
-    log::info!("QQQQQQ before, {}", result.len());
-
-    let mut num = 0;
     for data in operands {
-        num += 1;
         result.extend_from_slice(data);
     }
-
-    log::info!("QQQQQQ after, {} ({} operands)", result.len(), num);
 
     Some(result)
 }

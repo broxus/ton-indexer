@@ -73,6 +73,16 @@ pub trait RpcService: Send + Sync {
         self: Arc<Self>,
         query: ton::rpc::ton_node::DownloadKeyBlockProofLink,
     ) -> Result<Vec<u8>>;
+
+    async fn get_archive_info(
+        self: Arc<Self>,
+        query: ton::rpc::ton_node::GetArchiveInfo,
+    ) -> Result<ton::ton_node::ArchiveInfo>;
+
+    async fn get_archive_slice(
+        self: Arc<Self>,
+        query: ton::rpc::ton_node::GetArchiveSlice,
+    ) -> Result<Vec<u8>>;
 }
 
 impl Engine {
@@ -338,6 +348,49 @@ impl RpcService for Engine {
         self.download_block_proof_internal(&convert_block_id_ext_api2blk(&query.block)?, true)
             .await
     }
+
+    async fn get_archive_info(
+        self: Arc<Self>,
+        query: ton::rpc::ton_node::GetArchiveInfo,
+    ) -> Result<ton::ton_node::ArchiveInfo> {
+        let mc_seq_no = query.masterchain_seqno as u32;
+
+        let last_applied_mc_block = self.load_last_applied_mc_block_id()?;
+        if mc_seq_no > last_applied_mc_block.seq_no {
+            return Ok(ton::ton_node::ArchiveInfo::TonNode_ArchiveNotFound);
+        }
+
+        let shards_client_mc_block_id = self.load_shards_client_mc_block_id()?;
+        if mc_seq_no > shards_client_mc_block_id.seq_no {
+            return Ok(ton::ton_node::ArchiveInfo::TonNode_ArchiveNotFound);
+        }
+
+        let result = self.db.get_archive_id(mc_seq_no).map(|id| match id {
+            Some(id) => ton::ton_node::ArchiveInfo::TonNode_ArchiveInfo(Box::new(
+                ton::ton_node::archiveinfo::ArchiveInfo { id: id as i64 },
+            )),
+            None => ton::ton_node::ArchiveInfo::TonNode_ArchiveNotFound,
+        });
+
+        log::warn!("REQUESTED ARCHIVE FOR BLOCK {}: {:?}", mc_seq_no, result);
+        result
+    }
+
+    async fn get_archive_slice(
+        self: Arc<Self>,
+        query: ton::rpc::ton_node::GetArchiveSlice,
+    ) -> Result<Vec<u8>> {
+        Ok(
+            match self.db.get_archive_slice(
+                query.archive_id as u64,
+                query.offset as usize,
+                query.max_size as usize,
+            )? {
+                Some(data) => data,
+                None => return Err(RpcServiceError::ArchiveNotFound.into()),
+            },
+        )
+    }
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -356,4 +409,6 @@ enum RpcServiceError {
     InvalidRootHash,
     #[error("Invalid file hash")]
     InvalidFileHash,
+    #[error("Archive not found")]
+    ArchiveNotFound,
 }

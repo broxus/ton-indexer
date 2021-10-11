@@ -514,6 +514,19 @@ impl Db {
         Ok(())
     }
 
+    pub fn get_archive_id(&self, mc_seq_no: u32) -> Result<Option<u64>> {
+        self.archive_manager.get_archive_id(mc_seq_no)
+    }
+
+    pub fn get_archive_slice(
+        &self,
+        id: u64,
+        offset: usize,
+        limit: usize,
+    ) -> Result<Option<Vec<u8>>> {
+        self.archive_manager.get_archive_slice(id, offset, limit)
+    }
+
     pub fn background_sync_store(&self) -> &BackgroundSyncMetaStore {
         &self.background_sync_meta_store
     }

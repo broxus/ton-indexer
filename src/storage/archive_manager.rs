@@ -166,12 +166,24 @@ impl ArchiveManager {
             );
         }
         // 5. Execute transaction
-        self.archive_storage.raw_db_handle().write(batch)?;
+        self.db.write(batch)?;
 
         // TODO: remove block
 
         // Done
         Ok(())
+    }
+
+    pub fn get_archive_id(&self, mc_seq_no: u32) -> Result<Option<u64>> {
+        let storage_cf = self.archive_storage.get_cf()?;
+
+        let mut iterator = self.db.raw_iterator_cf(&storage_cf);
+        iterator.seek_for_prev(&(mc_seq_no as u64).to_be_bytes());
+        Ok(if let Some(prev_id) = iterator.key() {
+            Some(u64::from_be_bytes(prev_id.try_into()?))
+        } else {
+            None
+        })
     }
 
     pub fn get_archive_slice(
@@ -234,6 +246,4 @@ enum ArchiveManagerError {
     InvalidBlockData,
     #[error("Offset is outside of the archive slice")]
     InvalidOffset,
-    #[error("Archive meta not found")]
-    ArchiveMetaNotFound,
 }
