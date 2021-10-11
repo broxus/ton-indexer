@@ -10,7 +10,7 @@ use std::convert::TryInto;
 use std::hash::Hash;
 use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 
 use super::archive_package::*;
 use super::block_handle::*;
@@ -26,12 +26,58 @@ pub struct ArchiveManager {
 
 impl ArchiveManager {
     pub fn with_db(db: &Arc<rocksdb::DB>) -> Result<Self> {
-        Ok(Self {
+        let manager = Self {
             db: db.clone(),
             blocks: Tree::new(db)?,
             archive_storage: Tree::new(db)?,
             block_handles: Tree::new(db)?,
-        })
+        };
+
+        manager.self_check()?;
+
+        Ok(manager)
+    }
+
+    fn self_check(&self) -> Result<()> {
+        let storage_cf = self.archive_storage.get_cf()?;
+        let mut iter = self.db.raw_iterator_cf(&storage_cf);
+        iter.seek_to_first();
+
+        while let (Some(key), value) = (iter.key(), iter.value()) {
+            let archive_id = u64::from_be_bytes(
+                key.try_into()
+                    .with_context(|| format!("Invalid archive key: {}", hex::encode(key)))?,
+            );
+
+            let read = |value: &[u8]| -> Result<()> {
+                let mut reader = ArchivePackageViewReader::new(value)?;
+
+                let mut index = 0;
+                while reader
+                    .read_next()
+                    .with_context(|| {
+                        format!(
+                            "Failed to read entry in archive {}. Index: {}",
+                            archive_id, index
+                        )
+                    })?
+                    .is_some()
+                {
+                    index += 1;
+                }
+
+                Ok(())
+            };
+
+            if let Some(Err(e)) = value.map(read) {
+                log::error!("Failed to read archive {}: {:?}", archive_id, e)
+            }
+
+            iter.next();
+        }
+
+        log::info!("Selfcheck complete");
+        Ok(())
     }
 
     pub fn add_data<I>(&self, id: &PackageEntryId<I>, data: &[u8]) -> Result<()>

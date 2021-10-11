@@ -80,9 +80,11 @@ impl NodeNetwork {
         let masterchain_overlay_short_id = masterchain_overlay_id.compute_short_id()?;
 
         let dht_key = adnl.key_by_tag(Self::TAG_DHT_KEY)?;
+        log::info!("DHT adnl id: {}", dht_key.id());
         start_broadcasting_our_ip(working_state.clone(), dht.clone(), dht_key);
 
         let overlay_key = adnl.key_by_tag(Self::TAG_OVERLAY_KEY)?;
+        log::info!("Overlay adnl id: {}", overlay_key.id());
         start_broadcasting_our_ip(working_state.clone(), dht.clone(), overlay_key);
 
         let node_network = Arc::new(NodeNetwork {

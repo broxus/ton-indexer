@@ -133,15 +133,15 @@ pub mod columns {
 fn archive_data_merge(
     _: &[u8],
     current_value: Option<&[u8]>,
-    operands: &mut MergeOperands,
+    operands: &MergeOperands,
 ) -> Option<Vec<u8>> {
-    let mut result = if let Some(value) = current_value {
-        value.to_vec()
-    } else {
-        make_empty_archive()
-    };
+    let total_len: usize = operands.iter().map(|data| data.len()).sum();
+    let mut result = Vec::with_capacity(ARCHIVE_PREFIX.len() + total_len);
+
+    result.extend_from_slice(current_value.unwrap_or(&ARCHIVE_PREFIX));
 
     for data in operands {
+        let data = data.strip_prefix(&ARCHIVE_PREFIX).unwrap_or(data);
         result.extend_from_slice(data);
     }
 

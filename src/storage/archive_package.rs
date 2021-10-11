@@ -2,9 +2,7 @@ use std::io::Write;
 
 use anyhow::Result;
 
-pub fn make_empty_archive() -> Vec<u8> {
-    PKG_HEADER_MAGIC.to_le_bytes().to_vec()
-}
+pub const ARCHIVE_PREFIX: [u8; 4] = PKG_HEADER_MAGIC.to_le_bytes();
 
 pub fn make_archive_segment(filename: &str, data: &[u8]) -> Result<Vec<u8>, std::io::Error> {
     let mut vec = Vec::with_capacity(2 + 2 + 4 + filename.len() + data.len());
