@@ -32,10 +32,11 @@ pub fn apply_block<'a>(
         if handle.id() != block.id() {
             return Err(ApplyBlockError::BlockIdMismatch.into());
         }
-
+        prf::profile_start!(prev);
         let (prev1_id, prev2_id) = block.construct_prev_id()?;
         ensure_prev_blocks_downloaded(engine, &prev1_id, &prev2_id, mc_seq_no, pre_apply, depth)
             .await?;
+        prf::profile_elapsed!(prev, "ensure_prev_blocks_downloaded");
 
         let shard_state = if handle.meta().has_state() {
             engine.load_state(handle.id()).await?
@@ -50,7 +51,10 @@ pub fn apply_block<'a>(
                 .await?;
 
             if block.id().is_masterchain() {
+                prf::profile_start!(store_last_applied_mc_block_id);
                 engine.store_last_applied_mc_block_id(block.id())?;
+                prf::profile_elapsed!(store_last_applied_mc_block_id);
+
                 // TODO: update shard blocks
 
                 engine.set_applied(handle, mc_seq_no).await?;
@@ -114,10 +118,11 @@ fn update_block_connections(
     prev2_id: &Option<ton_block::BlockIdExt>,
 ) -> Result<()> {
     let db = &engine.db;
-
+    prf::profile_start!(t);
     let prev1_handle = engine
         .load_block_handle(prev1_id)?
         .ok_or(ApplyBlockError::Prev1BlockHandleNotFound)?;
+    prf::profile_elapsed!(t, "prev1_handle");
 
     match prev2_id {
         Some(prev2_id) => {
@@ -158,18 +163,23 @@ async fn compute_and_store_shard_state(
             if prev1_id.shard().is_masterchain() {
                 return Err(ApplyBlockError::InvalidMasterchainBlockSequence.into());
             }
-
+            prf::profile_start!(prev_shard_state_root_left);
             let left = engine
                 .wait_state(prev1_id, None, true)
                 .await?
                 .root_cell()
                 .clone();
+            prf::profile_elapsed!(prev_shard_state_root_left);
+            prf::profile_start!(prev_shard_state_root_right);
             let right = engine
                 .wait_state(prev2_id, None, true)
                 .await?
                 .root_cell()
                 .clone();
-            ShardStateStuff::construct_split_root(left, right)?
+            prf::profile_elapsed!(prev_shard_state_root_right);
+            let res = ShardStateStuff::construct_split_root(left, right)?;
+            prf::profile_elapsed!(prev_shard_state_root_left, "construct_split_root");
+            res
         }
         None => engine
             .wait_state(prev1_id, None, true)
@@ -178,13 +188,18 @@ async fn compute_and_store_shard_state(
             .clone(),
     };
 
+    prf::profile_start!(merkle_update_time);
     let merkle_update = block.block().read_state_update()?;
+    prf::profile_elapsed!(merkle_update_time);
 
     let shard_state = tokio::task::spawn_blocking({
         let block_id = block.id().clone();
         move || -> Result<Arc<ShardStateStuff>> {
             let shard_state_root = merkle_update.apply_for(&prev_shard_state_root)?;
-            Ok(Arc::new(ShardStateStuff::new(block_id, shard_state_root)?))
+            prf::profile_start!(t);
+            let a = Ok(Arc::new(ShardStateStuff::new(block_id, shard_state_root)?));
+            prf::profile_elapsed!(t, "ShardStateStuff::new");
+            a
         }
     })
     .await??;

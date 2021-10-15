@@ -12,11 +12,12 @@ use anyhow::{Context, Result};
 use futures::StreamExt;
 use tiny_adnl::utils::*;
 
-use self::archive_downloader::*;
-use self::block_maps::*;
 use crate::engine::Engine;
 use crate::storage::*;
 use crate::utils::*;
+
+use self::archive_downloader::*;
+use self::block_maps::*;
 
 mod archive_downloader;
 mod block_maps;
@@ -296,7 +297,6 @@ async fn save_block(
         block_proof.check_proof_link()?;
     } else {
         let (virt_block, virt_block_info) = block_proof.pre_check_block_proof()?;
-
         let handle = match prev_key_block_id {
             Some(block_id) => engine
                 .db
@@ -311,7 +311,6 @@ async fn save_block(
                     .find_block_by_seq_no(&masterchain_prefix, prev_key_block_seqno)?
             }
         };
-
         let prev_key_block_proof = engine.load_block_proof(&handle, false).await?;
 
         check_with_prev_key_block_proof(
@@ -378,7 +377,9 @@ async fn download_archives(
     .context("To small bounds")?;
 
     while let Some(a) = stream.next().await {
+        prf::profile_start!(t);
         let res = save_archive(engine, a, &mut context).await?;
+        prf::profile_elapsed!(t, "save_archive");
         if let SyncStatus::Done = res {
             return Ok(());
         }
@@ -432,9 +433,11 @@ async fn save_archive(
                 }
             }
             None => {
+                prf::profile_start!(r);
                 let handle = save_block(engine, id, block, proof, Some(context.prev_key_block_id))
                     .await
                     .context("Failed saving block")?;
+                prf::profile_elapsed!(r, "block_save");
 
                 engine
                     .notify_subscribers_with_archive_block(&handle, block, proof)
