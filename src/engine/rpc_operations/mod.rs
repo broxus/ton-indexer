@@ -365,15 +365,12 @@ impl RpcService for Engine {
             return Ok(ton::ton_node::ArchiveInfo::TonNode_ArchiveNotFound);
         }
 
-        let result = self.db.get_archive_id(mc_seq_no).map(|id| match id {
+        self.db.get_archive_id(mc_seq_no).map(|id| match id {
             Some(id) => ton::ton_node::ArchiveInfo::TonNode_ArchiveInfo(Box::new(
                 ton::ton_node::archiveinfo::ArchiveInfo { id: id as i64 },
             )),
             None => ton::ton_node::ArchiveInfo::TonNode_ArchiveNotFound,
-        });
-
-        log::warn!("REQUESTED ARCHIVE FOR BLOCK {}: {:?}", mc_seq_no, result);
-        result
+        })
     }
 
     async fn get_archive_slice(

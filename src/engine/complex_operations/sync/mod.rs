@@ -12,12 +12,12 @@ use anyhow::{Context, Result};
 use futures::StreamExt;
 use tiny_adnl::utils::*;
 
-use crate::engine::Engine;
-use crate::storage::*;
-use crate::utils::*;
-
 use self::archive_downloader::*;
 use self::block_maps::*;
+use crate::engine::Engine;
+use crate::profile;
+use crate::storage::*;
+use crate::utils::*;
 
 mod archive_downloader;
 mod block_maps;
@@ -215,8 +215,8 @@ async fn import_shard_blocks(engine: &Arc<Engine>, maps: Arc<BlockMaps>) -> Resu
         if !id.shard_id.is_masterchain() {
             let (block, block_proof) = entry.get_data()?;
 
-            crate::prf::span!(
-                "IMPORT SHARD BLOCK",
+            profile::span!(
+                "save_shard_block",
                 save_block(engine, id, block, block_proof, None).await?
             );
         }
@@ -380,7 +380,10 @@ async fn download_archives(
     .context("To small bounds")?;
 
     while let Some(a) = stream.next().await {
-        let res = crate::prf::span!("save_archive", save_archive(engine, a, &mut context).await?);
+        let res = profile::span!(
+            "save_background_sync_archive",
+            save_archive(engine, a, &mut context).await?
+        );
 
         if let SyncStatus::Done = res {
             return Ok(());
@@ -435,8 +438,8 @@ async fn save_archive(
                 }
             }
             None => {
-                let handle = crate::prf::span!(
-                    "block_save",
+                let handle = profile::span!(
+                    "save_background_sync_block",
                     save_block(engine, id, block, proof, Some(context.prev_key_block_id))
                         .await
                         .context("Failed saving block")?

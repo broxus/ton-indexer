@@ -3,13 +3,13 @@ use std::path::Path;
 
 use bincode::Options;
 use byteorder::{LittleEndian, WriteBytesExt};
-use crossbeam::channel::Sender;
+use crossbeam_channel::Sender;
 use serde::{Deserialize, Serialize};
 
 pub static mut COLLECTOR: Collector = Collector { tx: None };
 
 pub fn init<P: AsRef<Path>>(logs: P) -> std::io::Result<()> {
-    let (tx, rx) = crossbeam::channel::unbounded();
+    let (tx, rx) = crossbeam_channel::unbounded();
     let out_file = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -77,87 +77,75 @@ impl Record {
 }
 
 #[cfg(feature = "active")]
-mod macros {
-    #[macro_export]
-    macro_rules! span {
-        ($name:tt, $expr:expr) => {{
-            let __time = ::std::time::Instant::now();
-            let __res = $expr;
-            // SAFETY: yes
-            unsafe {
-                $crate::COLLECTOR.add_record($crate::Record::new(
-                    &__time,
-                    None,
-                    $crate::span!(@expand_id $name),
-                    module_path!(),
-                ));
-            }
-            __res
-        }};
+#[macro_export]
+macro_rules! span {
+    ($name:tt, $expr:expr) => {{
+        let __time = ::std::time::Instant::now();
+        let __res = $expr;
+        // SAFETY: yes
+        unsafe {
+            $crate::COLLECTOR.add_record($crate::Record::new(
+                &__time,
+                None,
+                $crate::span!(@expand_id $name),
+                module_path!(),
+            ));
+        }
+        __res
+    }};
 
-        (@expand_id $id:literal) => { $id };
-        (@expand_id $id:ident) => { stringify!($id) };
-    }
+    (@expand_id $id:literal) => { $id };
+    (@expand_id $id:ident) => { stringify!($id) };
+}
 
-    #[macro_export]
-    macro_rules! start {
-        ($name:ident) => {
-            let $name = ::std::time::Instant::now();
-        };
-    }
+#[cfg(feature = "active")]
+#[macro_export]
+macro_rules! start {
+    ($name:ident) => {
+        let $name = ::std::time::Instant::now();
+    };
+}
 
-    #[macro_export]
-    macro_rules! tick {
-        ($name:ident$( => $id:literal)?$(, x = $x:expr)?) => {
-            // SAFETY: yes
-            unsafe {
-                $crate::COLLECTOR.add_record($crate::Record::new(
-                    &$name,
-                    $crate::tick!(@expand_x $($x)?),
-                    $crate::tick!(@expand_id $name $($id)?),
-                    module_path!(),
-                ));
-            }
-        };
+#[cfg(feature = "active")]
+#[macro_export]
+macro_rules! tick {
+    ($name:ident$( => $id:literal)?$(, x = $x:expr)?) => {
+        // SAFETY: yes
+        unsafe {
+            $crate::COLLECTOR.add_record($crate::Record::new(
+                &$name,
+                $crate::tick!(@expand_x $($x)?),
+                $crate::tick!(@expand_id $name $($id)?),
+                module_path!(),
+            ));
+        }
+    };
 
-        (@expand_x $x:expr) => { Some(From::from($x)) };
-        (@expand_x) => { None };
+    (@expand_x $x:expr) => { Some(From::from($x)) };
+    (@expand_x) => { None };
 
-        (@expand_id $name:ident $id:literal) => { $id };
-        (@expand_id $name:ident) => { stringify!($id) };
-    }
+    (@expand_id $name:ident $id:literal) => { $id };
+    (@expand_id $name:ident) => { stringify!($id) };
 }
 
 #[cfg(not(feature = "active"))]
-mod macros {
-    #[macro_export]
-    macro_rules! span {
-        ($name:tt, $expr:expr) => {
-            $expr
-        };
-    }
-
-    #[macro_export]
-    macro_rules! start {
-        ($name:ident) => {};
-    }
-
-    #[macro_export]
-    macro_rules! tick {
-        ($name:ident$( => $id:literal)?$(, x = $x:expr)?) => {};
-    }
+#[macro_export]
+macro_rules! span {
+    ($name:tt, $expr:expr) => {
+        $expr
+    };
 }
 
+#[cfg(not(feature = "active"))]
 #[macro_export]
-macro_rules! log_record {
-    ($time:expr, $context:expr, $path:expr) => {
-        ::log::trace!(
-            "#PERF#{{\"took\":{},\"context\":\"{}\",\"path\":\"{}\"}}#PERF#",
-            $time.elapsed().as_nanos(),
-            $context,
-            $path
-        )
-    };
+macro_rules! start {
+    ($name:ident) => {};
+}
+
+#[cfg(not(feature = "active"))]
+#[macro_export]
+macro_rules! tick {
+    ($name:ident$( => $id:literal)?$(, x = $x:expr)?) => {};
 }
 
 #[cfg(test)]
@@ -165,8 +153,6 @@ mod test {
     use std::time::Duration;
 
     use log::LevelFilter;
-
-    use crate::log_record;
 
     use super::*;
 

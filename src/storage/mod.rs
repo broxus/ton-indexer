@@ -74,7 +74,7 @@ pub mod columns {
     impl Column for CellDb<0> {
         const NAME: &'static str = "cell_db";
 
-        fn options(opts: &mut rocksdb::Options) {
+        fn options(opts: &mut Options) {
             opts.set_optimize_filters_for_hits(true);
         }
     }

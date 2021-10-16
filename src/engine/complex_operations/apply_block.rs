@@ -11,6 +11,7 @@ use futures::future::{BoxFuture, FutureExt};
 
 use crate::engine::db::BlockConnection;
 use crate::engine::Engine;
+use crate::profile;
 use crate::storage::*;
 use crate::utils::*;
 
@@ -32,11 +33,16 @@ pub fn apply_block<'a>(
         if handle.id() != block.id() {
             return Err(ApplyBlockError::BlockIdMismatch.into());
         }
-        crate::prf::start!(prev);
-        let (prev1_id, prev2_id) = block.construct_prev_id()?;
-        ensure_prev_blocks_downloaded(engine, &prev1_id, &prev2_id, mc_seq_no, pre_apply, depth)
+
+        let (prev1_id, prev2_id) = profile::span!("ensure_prev_blocks_downloaded", {
+            let (prev1_id, prev2_id) = block.construct_prev_id()?;
+
+            ensure_prev_blocks_downloaded(
+                engine, &prev1_id, &prev2_id, mc_seq_no, pre_apply, depth,
+            )
             .await?;
-        crate::prf::tick!(prev => "ensure_prev_blocks_downloaded");
+            (prev1_id, prev2_id)
+        });
 
         let shard_state = if handle.meta().has_state() {
             engine.load_state(handle.id()).await?
@@ -51,9 +57,10 @@ pub fn apply_block<'a>(
                 .await?;
 
             if block.id().is_masterchain() {
-                crate::prf::start!(store_last_applied_mc_block_id);
-                engine.store_last_applied_mc_block_id(block.id())?;
-                crate::prf::tick!(store_last_applied_mc_block_id);
+                profile::span!(
+                    "store_last_applied_mc_block_id",
+                    engine.store_last_applied_mc_block_id(block.id())?
+                );
 
                 // TODO: update shard blocks
 
@@ -118,11 +125,12 @@ fn update_block_connections(
     prev2_id: &Option<ton_block::BlockIdExt>,
 ) -> Result<()> {
     let db = &engine.db;
-    crate::prf::start!(t);
-    let prev1_handle = engine
-        .load_block_handle(prev1_id)?
-        .ok_or(ApplyBlockError::Prev1BlockHandleNotFound)?;
-    crate::prf::tick!(t => "prev1_handle");
+    let prev1_handle = profile::span!(
+        "load_prev1_handle",
+        engine
+            .load_block_handle(prev1_id)?
+            .ok_or(ApplyBlockError::Prev1BlockHandleNotFound)?
+    );
 
     match prev2_id {
         Some(prev2_id) => {
@@ -164,23 +172,25 @@ async fn compute_and_store_shard_state(
                 return Err(ApplyBlockError::InvalidMasterchainBlockSequence.into());
             }
 
-            crate::prf::start!(prev_shard_state_root_left);
-            let left = engine
-                .wait_state(prev1_id, None, true)
-                .await?
-                .root_cell()
-                .clone();
-            crate::prf::tick!(prev_shard_state_root_left);
+            let left = profile::span!(
+                "wait_prev_shard_state_root_left",
+                engine
+                    .wait_state(prev1_id, None, true)
+                    .await?
+                    .root_cell()
+                    .clone()
+            );
 
-            crate::prf::start!(prev_shard_state_root_right);
-            let right = engine
-                .wait_state(prev2_id, None, true)
-                .await?
-                .root_cell()
-                .clone();
-            crate::prf::tick!(prev_shard_state_root_right);
+            let right = profile::span!(
+                "wait_prev_shard_state_root_right",
+                engine
+                    .wait_state(prev2_id, None, true)
+                    .await?
+                    .root_cell()
+                    .clone()
+            );
 
-            crate::prf::span!(
+            profile::span!(
                 "construct_split_root",
                 ShardStateStuff::construct_split_root(left, right)?
             )
@@ -192,17 +202,18 @@ async fn compute_and_store_shard_state(
             .clone(),
     };
 
-    crate::prf::start!(merkle_update_time);
-    let merkle_update = block.block().read_state_update()?;
-    crate::prf::tick!(merkle_update_time);
+    let merkle_update = profile::span!(
+        "make_state_merkle_update",
+        block.block().read_state_update()?
+    );
 
     let shard_state = tokio::task::spawn_blocking({
         let block_id = block.id().clone();
         move || -> Result<Arc<ShardStateStuff>> {
             let shard_state_root = merkle_update.apply_for(&prev_shard_state_root)?;
 
-            crate::prf::span!(
-                "ShardStateStuff::new",
+            profile::span!(
+                "make_shard_state_stuff",
                 Ok(Arc::new(ShardStateStuff::new(block_id, shard_state_root)?))
             )
         }
