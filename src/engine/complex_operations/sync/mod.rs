@@ -164,7 +164,6 @@ async fn import_package(
 
     import_mc_blocks(engine, maps.clone(), last_mc_block_id).await?;
     import_shard_blocks(engine, maps).await?;
-
     Ok(())
 }
 
@@ -215,7 +214,11 @@ async fn import_shard_blocks(engine: &Arc<Engine>, maps: Arc<BlockMaps>) -> Resu
     for (id, entry) in &maps.blocks {
         if !id.shard_id.is_masterchain() {
             let (block, block_proof) = entry.get_data()?;
-            save_block(engine, id, block, block_proof, None).await?;
+
+            crate::prf::span!(
+                "IMPORT SHARD BLOCK",
+                save_block(engine, id, block, block_proof, None).await?
+            );
         }
     }
 
@@ -377,9 +380,8 @@ async fn download_archives(
     .context("To small bounds")?;
 
     while let Some(a) = stream.next().await {
-        prf::profile_start!(t);
-        let res = save_archive(engine, a, &mut context).await?;
-        prf::profile_elapsed!(t, "save_archive");
+        let res = crate::prf::span!("save_archive", save_archive(engine, a, &mut context).await?);
+
         if let SyncStatus::Done = res {
             return Ok(());
         }
@@ -433,11 +435,12 @@ async fn save_archive(
                 }
             }
             None => {
-                prf::profile_start!(r);
-                let handle = save_block(engine, id, block, proof, Some(context.prev_key_block_id))
-                    .await
-                    .context("Failed saving block")?;
-                prf::profile_elapsed!(r, "block_save");
+                let handle = crate::prf::span!(
+                    "block_save",
+                    save_block(engine, id, block, proof, Some(context.prev_key_block_id))
+                        .await
+                        .context("Failed saving block")?
+                );
 
                 engine
                     .notify_subscribers_with_archive_block(&handle, block, proof)

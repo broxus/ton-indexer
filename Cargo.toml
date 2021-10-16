@@ -50,7 +50,7 @@ ton_types = { git = "https://github.com/broxus/ton-labs-types.git" }
 nekoton-utils = { git = "https://github.com/broxus/nekoton.git" }
 
 ton-indexer-alloc = { path = "ton-indexer-alloc" }
-prf = { path = "ton-indexer-profile", package="ton-indexer-profile" }
+ton-indexer-profile = { path = "ton-indexer-profile" }
 
 [dev-dependencies]
 argh = "0.1"
@@ -64,4 +64,4 @@ tokio = { version = "1.6", features = ["sync", "fs", "rt-multi-thread", "macros"
 [features]
 default = []
 asm = ["sha2/asm", "ed25519-dalek/asm", "ton_types/asm", "ton_block/asm", "tiny-adnl/asm"]
-profile = ["prf/active"]
+profile = ["ton-indexer-profile/active"]
