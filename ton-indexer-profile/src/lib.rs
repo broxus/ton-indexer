@@ -17,14 +17,11 @@ pub fn init<P: AsRef<Path>>(logs: P) -> std::io::Result<()> {
 
     std::thread::spawn(|| {
         let mut writer = std::io::BufWriter::new(out_file);
-        let options = bincode::DefaultOptions::new().with_varint_encoding();
+        let options = bincode::options();
         let mut buffer = Vec::with_capacity(1024);
         for record in rx {
             buffer.clear();
             options.serialize_into(&mut buffer, &record).unwrap();
-            if let Err(e) = writer.write_u16::<LittleEndian>(buffer.len() as u16) {
-                log::error!("Failed saving profile: {}", e);
-            }
             if let Err(e) = writer.write_all(&buffer) {
                 log::error!("Failed saving profile: {}", e);
             }

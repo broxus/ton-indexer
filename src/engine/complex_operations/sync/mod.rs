@@ -12,12 +12,13 @@ use anyhow::{Context, Result};
 use futures::StreamExt;
 use tiny_adnl::utils::*;
 
-use self::archive_downloader::*;
-use self::block_maps::*;
 use crate::engine::Engine;
 use crate::profile;
 use crate::storage::*;
 use crate::utils::*;
+
+use self::archive_downloader::*;
+use self::block_maps::*;
 
 mod archive_downloader;
 mod block_maps;
@@ -68,7 +69,6 @@ pub async fn sync(engine: &Arc<Engine>) -> Result<()> {
                         );
                     }
                 }
-
                 loop {
                     log::info!("sync: Force downloading archive");
                     let data =
@@ -161,9 +161,14 @@ async fn import_package(
     if maps.mc_block_ids.is_empty() {
         return Err(SyncError::EmptyArchivePackage.into());
     }
-
+    profile::start!(t);
     import_mc_blocks(engine, maps.clone(), last_mc_block_id).await?;
-    import_shard_blocks(engine, maps).await?;
+    profile::tick!(t =>"import_mc_blocks");
+    profile::span!(
+        "import_shard_blocks",
+        import_shard_blocks(engine, maps).await?
+    );
+    profile::tick!(t =>"import_package");
     Ok(())
 }
 
