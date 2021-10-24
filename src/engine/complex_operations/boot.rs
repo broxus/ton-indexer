@@ -455,16 +455,6 @@ async fn download_block_and_state(
     Ok((handle, block))
 }
 
-fn is_persistent_state(block_utime: u32, prev_utime: u32) -> bool {
-    block_utime / (1 << 17) != prev_utime / (1 << 17)
-}
-
-fn persistent_state_ttl(utime: u32) -> u32 {
-    let x = utime / (1 << 17);
-    let b = x.trailing_zeros();
-    utime + ((1 << 18) << b)
-}
-
 const KEY_BLOCK_UTIME_STEP: i32 = 86400;
 const INTITAL_SYNC_TIME_SECONDS: i32 = 300;
 

@@ -13,6 +13,7 @@ use super::block_handle::*;
 use super::block_meta::*;
 use super::tree::*;
 use super::{columns, StoredValue};
+use crate::utils::*;
 
 pub struct BlockHandleStorage {
     cache: Arc<FxDashMap<ton_block::BlockIdExt, Weak<BlockHandle>>>,
@@ -60,18 +61,74 @@ impl BlockHandleStorage {
         Ok(())
     }
 
-    pub fn find_key_block(&self, seq_no: u32) -> Result<Option<ton_block::BlockIdExt>> {
-        self.key_blocks
-            .get(seq_no.to_be_bytes())?
-            .map(|id| ton_block::BlockIdExt::from_slice(&id))
+    pub fn find_prev_key_block(&self, seq_no: u32) -> Result<Option<ton_block::BlockIdExt>> {
+        if seq_no == 0 {
+            return Ok(None);
+        }
+
+        // Create iterator and move it to the previous key block before the specified
+        let mut iter = self.key_blocks.raw_iterator()?;
+        iter.seek_for_prev((seq_no - 1u32).to_be_bytes());
+
+        // Load key block from current iterator value
+        iter.value()
+            .map(ton_block::BlockIdExt::from_slice)
             .transpose()
     }
 
-    pub fn find_key_block_handle(&self, seq_no: u32) -> Result<Option<Arc<BlockHandle>>> {
-        match self.find_key_block(seq_no)? {
-            Some(block_id) => self.load_handle(&block_id),
-            None => Ok(None),
+    pub fn find_prev_persistent_key_block(
+        &self,
+        seq_no: u32,
+    ) -> Result<Option<ton_block::BlockIdExt>> {
+        if seq_no == 0 {
+            return Ok(None);
         }
+
+        // Create iterator and move it to the previous key block before the specified
+        let mut iter = self.key_blocks.raw_iterator()?;
+        iter.seek_for_prev((seq_no - 1u32).to_be_bytes());
+
+        // Loads key block from current iterator value and moves it backward
+        let mut get_key_block = move || -> Result<Option<(ton_block::BlockIdExt, u32)>> {
+            // Load key block id
+            let key_block_id = match iter
+                .value()
+                .map(ton_block::BlockIdExt::from_slice)
+                .transpose()?
+            {
+                Some(prev_key_block) => prev_key_block,
+                None => return Ok(None),
+            };
+
+            // Load block handle for this id
+            let handle = self.load_handle(&key_block_id)?.ok_or_else(|| {
+                BlockHandleStorageError::KeyBlockHandleNotFound(key_block_id.seq_no)
+            })?;
+
+            // Move iterator backward
+            iter.prev();
+
+            // Done
+            Ok(Some((key_block_id, handle.meta().gen_utime())))
+        };
+
+        // Load previous key block
+        let mut key_block = match get_key_block()? {
+            Some(id) => id,
+            None => return Ok(None),
+        };
+
+        // Load previous key blocks and check if the `key_block` is for persistent state
+        while let Some(prev_key_block) = get_key_block()? {
+            if is_persistent_state(key_block.1, prev_key_block.1) {
+                // Found
+                return Ok(Some(key_block.0));
+            }
+            key_block = prev_key_block;
+        }
+
+        // Not found
+        Ok(None)
     }
 
     pub fn key_block_iterator(&self, since: Option<u32>) -> Result<KeyBlocksIterator> {
@@ -134,4 +191,10 @@ impl Iterator for KeyBlocksIterator<'_> {
         self.raw_iterator.next();
         Some(value)
     }
+}
+
+#[derive(thiserror::Error, Debug)]
+enum BlockHandleStorageError {
+    #[error("Key block handle not found: {}", .0)]
+    KeyBlockHandleNotFound(u32),
 }
