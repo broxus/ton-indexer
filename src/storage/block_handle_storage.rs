@@ -4,7 +4,6 @@
 /// - replaced old `failure` crate with `anyhow`
 /// - simplified storing
 ///
-use std::collections::HashSet;
 use std::sync::{Arc, Weak};
 
 use anyhow::Result;
@@ -58,11 +57,6 @@ impl BlockHandleStorage {
         self.db
             .insert(id.root_hash.as_slice(), handle.meta().to_vec()?)?;
 
-        if handle.meta().is_key_block() {
-            self.key_blocks
-                .insert(id.seq_no.to_be_bytes(), id.to_vec()?)?;
-        }
-
         Ok(())
     }
 
@@ -86,6 +80,8 @@ impl BlockHandleStorage {
         };
         if let Some(seq_no) = since {
             iterator.seek(seq_no);
+        } else {
+            iterator.raw_iterator.seek_to_first();
         }
         Ok(iterator)
     }
@@ -107,34 +103,13 @@ impl BlockHandleStorage {
         };
 
         self.store_handle(&handle)?;
-        Ok(Some(handle))
-    }
 
-    /// returns number of dropped blocks and set of key blocks
-    pub fn drop_handles_data<'a>(
-        &self,
-        ids: impl Iterator<Item = &'a ton_block::BlockIdExt>,
-    ) -> Result<(usize, HashSet<ton_block::BlockIdExt>)> {
-        let mut total = 0;
-        let mut untouched = HashSet::new();
-        for id in ids {
-            let h = match self.load_handle(id)? {
-                Some(a) => a,
-                None => continue,
-            };
-            if h.meta().is_key_block() {
-                untouched.insert(id.clone());
-                continue;
-            }
-            if h.meta().has_data() {
-                h.meta().set_has_data();
-            } else {
-                untouched.insert(id.clone());
-            }
-            drop(h);
-            total += 1;
+        if handle.meta().is_key_block() {
+            self.key_blocks
+                .insert(handle.id().seq_no.to_be_bytes(), handle.id().to_vec()?)?;
         }
-        Ok((total, untouched))
+
+        Ok(Some(handle))
     }
 }
 
@@ -152,8 +127,11 @@ impl Iterator for KeyBlocksIterator<'_> {
     type Item = Result<ton_block::BlockIdExt>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.raw_iterator
+        let value = self
+            .raw_iterator
             .value()
-            .map(|value| ton_block::BlockIdExt::from_slice(value))
+            .map(|value| ton_block::BlockIdExt::from_slice(value))?;
+        self.raw_iterator.next();
+        Some(value)
     }
 }

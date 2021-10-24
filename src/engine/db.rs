@@ -4,7 +4,6 @@
 /// - replaced old `failure` crate with `anyhow`
 /// - slightly changed db structure
 ///
-use std::collections::HashSet;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
@@ -203,16 +202,6 @@ impl Db {
         block_id: &ton_block::BlockIdExt,
     ) -> Result<Option<Arc<BlockHandle>>> {
         self.block_handle_storage.load_handle(block_id)
-    }
-
-    #[allow(unused)]
-    pub fn find_key_block(&self, seq_no: u32) -> Result<Option<ton_block::BlockIdExt>> {
-        self.block_handle_storage.find_key_block(seq_no)
-    }
-
-    #[allow(unused)]
-    pub fn find_key_block_handle(&self, seq_no: u32) -> Result<Option<Arc<BlockHandle>>> {
-        self.block_handle_storage.find_key_block_handle(seq_no)
     }
 
     pub fn key_block_iterator(&self, since: Option<u32>) -> Result<KeyBlocksIterator<'_>> {
@@ -542,36 +531,37 @@ impl Db {
     }
 
     pub async fn garbage_collect(&self, gc_type: BlocksGcType) -> Result<usize> {
-        match gc_type {
-            BlocksGcType::KeepLastNBlocks(_) => {
-                anyhow::bail!("todo!")
-            }
-            BlocksGcType::KeepNotOlderThen(seconds) => {
-                let now = tiny_adnl::utils::now();
-                let old_age = now as u32 - seconds;
-                log::info!("Pruning block older then {}", old_age);
-                let old_blocks: HashSet<_> = self
-                    .block_index_db
-                    .get_blocks_older_then(old_age)?
-                    .map(|x| x.1.block_id_ext)
-                    .map(|x| convert_block_id_ext_api2blk(&x).unwrap())
-                    .collect();
-                log::info!("Block to prune: {}", old_blocks.len());
-                let (total, key_blocks) = self
-                    .block_handle_storage
-                    .drop_handles_data(old_blocks.iter())?;
-                log::info!("Meta collect took: {}", tiny_adnl::utils::now() - now);
-                let old_blocks: Vec<_> = old_blocks.difference(&key_blocks).collect();
-                log::info!("Old blocks: {}", old_blocks.len());
-                log::info!(
-                    "BLocks size: {}",
-                    self.archive_manager.get_total_size().await.unwrap()
-                );
-                self.archive_manager.gc(old_blocks.iter().copied()).await?;
-                log::info!("Archive gc took: {}", tiny_adnl::utils::now() - now);
-                Ok(total)
-            }
-        }
+        // match gc_type {
+        //     BlocksGcType::KeepLastNBlocks(_) => {
+        //         anyhow::bail!("todo!")
+        //     }
+        //     BlocksGcType::KeepNotOlderThen(seconds) => {
+        //         let now = tiny_adnl::utils::now();
+        //         let old_age = now as u32 - seconds;
+        //         log::info!("Pruning block older then {}", old_age);
+        //         let old_blocks: HashSet<_> = self
+        //             .block_index_db
+        //             .get_blocks_older_then(old_age)?
+        //             .map(|x| x.1.block_id_ext)
+        //             .map(|x| convert_block_id_ext_api2blk(&x).unwrap())
+        //             .collect();
+        //         log::info!("Block to prune: {}", old_blocks.len());
+        //         let (total, key_blocks) = self
+        //             .block_handle_storage
+        //             .drop_handles_data(old_blocks.iter())?;
+        //         log::info!("Meta collect took: {}", tiny_adnl::utils::now() - now);
+        //         let old_blocks: Vec<_> = old_blocks.difference(&key_blocks).collect();
+        //         log::info!("Old blocks: {}", old_blocks.len());
+        //         log::info!(
+        //             "BLocks size: {}",
+        //             self.archive_manager.get_total_size().await.unwrap()
+        //         );
+        //         self.archive_manager.gc(old_blocks.iter().copied()).await?;
+        //         log::info!("Archive gc took: {}", tiny_adnl::utils::now() - now);
+        //         Ok(total)
+        //     }
+        // }
+        Ok(0)
     }
 }
 

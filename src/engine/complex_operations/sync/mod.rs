@@ -29,7 +29,7 @@ pub async fn sync(engine: &Arc<Engine>) -> Result<()> {
     log::info!("Started sync");
 
     let active_peers = Arc::new(ActivePeers::default());
-    let last_applied = engine.load_last_applied_mc_block_id()?.seq_no;
+    let last_applied = engine.last_applied_block()?.seq_no;
 
     log::info!("Creating archives stream from {}", last_applied);
     let archives_stream =

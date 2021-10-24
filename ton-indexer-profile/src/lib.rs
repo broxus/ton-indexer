@@ -2,7 +2,6 @@ use std::io::Write;
 use std::path::Path;
 
 use bincode::Options;
-use byteorder::{LittleEndian, WriteBytesExt};
 use crossbeam_channel::Sender;
 use serde::{Deserialize, Serialize};
 

@@ -177,21 +177,21 @@ impl BlockIndexDb {
 
         let lt_desc_db = self.lt_desc_db.write();
 
-        let index = match lt_desc_db.try_load_lt_desc(&lt_desc_key)? {
+        let (first_index, last_index) = match lt_desc_db.try_load_lt_desc(&lt_desc_key)? {
             Some(desc) => match handle.id().seq_no.cmp(&desc.last_seq_no) {
                 std::cmp::Ordering::Equal => return Ok(()),
-                std::cmp::Ordering::Greater => desc.last_index + 1,
+                std::cmp::Ordering::Greater => (desc.first_index, desc.last_index + 1),
                 std::cmp::Ordering::Less => {
                     return Err(BlockIndexDbError::AscendingOrderRequired.into())
                 }
             },
-            None => 1,
+            None => (1, 1),
         };
 
         self.lt_db.store(
             LtDbKey {
                 shard_ident: handle.id().shard(),
-                index,
+                index: last_index,
             },
             &LtDbEntry {
                 block_id_ext: convert_block_id_ext_blk2api(handle.id()),
@@ -203,8 +203,8 @@ impl BlockIndexDb {
         lt_desc_db.store_lt_desc(
             &lt_desc_key,
             &LtDesc {
-                first_index: 1,
-                last_index: index,
+                first_index,
+                last_index,
                 last_seq_no: handle.id().seq_no,
                 last_lt: handle.meta().gen_lt(),
                 last_utime: handle.meta().gen_utime(),

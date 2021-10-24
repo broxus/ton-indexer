@@ -74,6 +74,7 @@ pub struct Engine {
     subscribers: Vec<Arc<dyn Subscriber>>,
     network: Arc<NodeNetwork>,
     old_blocks_policy: OldBlocksPolicy,
+    archives_enabled: bool,
     init_mc_block_id: ton_block::BlockIdExt,
     last_known_mc_block_seqno: AtomicU32,
     last_known_key_block_seqno: AtomicU32,
@@ -159,6 +160,7 @@ impl Engine {
             subscribers,
             network,
             old_blocks_policy,
+            archives_enabled: config.archives_enabled,
             init_mc_block_id,
             last_known_mc_block_seqno: AtomicU32::new(0),
             last_known_key_block_seqno: AtomicU32::new(0),
@@ -750,7 +752,9 @@ impl Engine {
         }
         self.db.assign_mc_ref_seq_no(handle, mc_seq_no)?;
         self.db.index_handle(handle)?;
-        self.db.archive_block(handle).await?;
+        if self.archives_enabled {
+            self.db.archive_block(handle).await?;
+        }
         self.db.store_block_applied(handle)
     }
 
@@ -999,8 +1003,8 @@ impl Engine {
 
 #[derive(Debug)]
 pub enum BlocksGcType {
-    KeepLastNBlocks(u32),
-    KeepNotOlderThen(u32),
+    BeforePreviousKeyBlock,
+    BeforePreviousPersistentState,
 }
 
 #[derive(thiserror::Error, Debug)]
