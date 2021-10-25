@@ -435,6 +435,11 @@ async fn save_archive(
 
         let is_key_block = match engine.load_block_handle(block.id())? {
             Some(handle) => {
+                engine
+                    .notify_subscribers_with_archive_block(&handle, block, proof)
+                    .await
+                    .context("Failed to process archive block")?;
+
                 if handle.meta().is_key_block() {
                     true
                 } else {
