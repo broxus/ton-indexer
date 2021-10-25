@@ -433,38 +433,22 @@ async fn save_archive(
     for (id, entry) in &maps.blocks {
         let (block, proof) = entry.get_data()?;
 
-        let is_key_block = match engine.load_block_handle(block.id())? {
-            Some(handle) => {
-                engine
-                    .notify_subscribers_with_archive_block(&handle, block, proof)
+        let handle = match engine.load_block_handle(block.id())? {
+            Some(handle) => handle,
+            None => profile::span!(
+                "save_background_sync_block",
+                save_block(engine, id, block, proof, Some(context.prev_key_block_id))
                     .await
-                    .context("Failed to process archive block")?;
-
-                if handle.meta().is_key_block() {
-                    true
-                } else {
-                    // block already saved
-                    continue;
-                }
-            }
-            None => {
-                let handle = profile::span!(
-                    "save_background_sync_block",
-                    save_block(engine, id, block, proof, Some(context.prev_key_block_id))
-                        .await
-                        .context("Failed saving block")?
-                );
-
-                engine
-                    .notify_subscribers_with_archive_block(&handle, block, proof)
-                    .await
-                    .context("Failed to process archive block")?;
-
-                handle.meta().is_key_block()
-            }
+                    .context("Failed saving block")?
+            ),
         };
 
-        if is_key_block {
+        engine
+            .notify_subscribers_with_archive_block(&handle, block, proof)
+            .await
+            .context("Failed to process archive block")?;
+
+        if handle.meta().is_key_block() {
             *context.prev_key_block_id = id.clone();
         }
     }
