@@ -18,6 +18,7 @@ pub struct NodeConfig {
     pub file_db_path: PathBuf,
 
     pub state_gc_options: Option<StateGcOptions>,
+    pub blocks_gc_options: Option<BlocksGcOptions>,
     pub archives_enabled: bool,
 
     pub old_blocks_policy: OldBlocksPolicy,
@@ -41,6 +42,7 @@ impl Default for NodeConfig {
             rocks_db_path: "db/rocksdb".into(),
             file_db_path: "db/file".into(),
             state_gc_options: None,
+            blocks_gc_options: None,
             archives_enabled: false,
             old_blocks_policy: Default::default(),
             shard_state_cache_enabled: false,
@@ -115,6 +117,36 @@ impl Default for StateGcOptions {
             interval_sec: 900,
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct BlocksGcOptions {
+    /// Blocks GC type
+    /// - `beforePreviousKeyBlock` - on each new key block delete all blocks before the previous one
+    /// - `beforePreviousPersistentState` - on each new key block delete all blocks before the
+    ///   previous key block with persistent state
+    #[serde(rename = "type")]
+    pub ty: BlocksGcType,
+
+    /// Whether to enable blocks GC during sync. Default: true
+    pub enable_for_sync: bool,
+}
+
+impl Default for BlocksGcOptions {
+    fn default() -> Self {
+        Self {
+            ty: BlocksGcType::BeforePreviousPersistentState,
+            enable_for_sync: true,
+        }
+    }
+}
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum BlocksGcType {
+    BeforePreviousKeyBlock,
+    BeforePreviousPersistentState,
 }
 
 /// Third of all memory as suggested in docs

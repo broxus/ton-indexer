@@ -11,6 +11,7 @@ use std::hash::Hash;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
+use tiny_adnl::utils::*;
 
 use super::archive_package::*;
 use super::block_handle::*;
@@ -22,6 +23,7 @@ pub struct ArchiveManager {
     blocks: Tree<columns::ArchiveManagerDb>,
     archive_storage: Tree<columns::ArchiveStorage>,
     block_handles: Tree<columns::BlockHandles>,
+    key_blocks: Tree<columns::KeyBlocks>,
 }
 
 impl ArchiveManager {
@@ -31,6 +33,7 @@ impl ArchiveManager {
             blocks: Tree::new(db)?,
             archive_storage: Tree::new(db)?,
             block_handles: Tree::new(db)?,
+            key_blocks: Tree::new(db)?,
         };
 
         manager.self_check()?;
@@ -57,7 +60,7 @@ impl ArchiveManager {
                     .read_next()
                     .with_context(|| {
                         format!(
-                            "Failed to read entry in archive {}. Index: {}",
+                            "Failed to read archive entry {}. Index: {}",
                             archive_id, index
                         )
                     })?
@@ -112,29 +115,53 @@ impl ArchiveManager {
         }
     }
 
-    pub async fn gc<'a>(
-        &'a self,
-        ids: impl Iterator<Item = &'a ton_block::BlockIdExt>,
-    ) -> Result<()> {
-        let cf = self.blocks.get_cf()?;
-        let raw_db = self.blocks.raw_db_handle().clone();
+    pub async fn gc(&self, top_blocks: &FxHashMap<ton_block::ShardIdent, u32>) -> Result<()> {
+        let (raw_db, batch) = {
+            // Cache cfs before loop
+            let blocks_cf = self.blocks.get_cf()?;
+            let key_blocks_cf = self.key_blocks.get_cf()?;
+            let raw_db = self.blocks.raw_db_handle().clone();
 
-        let mut tx = rocksdb::WriteBatch::default();
-        for id in ids {
-            let id1 = PackageEntryId::Block(id).to_vec()?;
-            let id2 = PackageEntryId::Proof(id).to_vec()?;
-            let id3 = PackageEntryId::ProofLink(id).to_vec()?;
-            tx.delete_cf(&cf, id1);
-            tx.delete_cf(&cf, id2);
-            tx.delete_cf(&cf, id3);
-        }
+            // Create batch
+            let mut batch = rocksdb::WriteBatch::default();
 
-        tokio::task::spawn_blocking(move || raw_db.write(tx)).await??;
+            // Iterate all entries and find expired items
+            let blocks_iter = self.blocks.iterator(rocksdb::IteratorMode::Start)?;
+            for (key, _) in blocks_iter {
+                // Read only prefix with shard ident and seqno
+                let prefix = PackageEntryIdPrefix::from_slice(key.as_ref())?;
+                match top_blocks.get(&prefix.shard_ident) {
+                    Some(top_seq_no) if &prefix.seq_no < top_seq_no => { /* gc block */ }
+                    // Skip blocks with seq.no. >= top seq.no.
+                    _ => continue,
+                };
+
+                // Additionally check whether this item is a key block
+                if prefix.shard_ident.is_masterchain()
+                    && raw_db
+                        .get_pinned_cf_opt(
+                            &key_blocks_cf,
+                            prefix.seq_no.to_be_bytes(),
+                            self.key_blocks.read_config(),
+                        )?
+                        .is_some()
+                {
+                    // Don't remove key blocks
+                    continue;
+                }
+
+                // Add item to the batch
+                batch.delete_cf(&blocks_cf, key);
+            }
+
+            (raw_db, batch)
+        };
+
+        // Apply batch
+        tokio::task::spawn_blocking(move || raw_db.write(batch)).await??;
+
+        // Done
         Ok(())
-    }
-
-    pub async fn get_total_size(&self) -> Result<usize> {
-        self.blocks.size()
     }
 
     pub async fn move_into_archive(&self, handle: &BlockHandle) -> Result<()> {

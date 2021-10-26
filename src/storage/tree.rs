@@ -99,6 +99,11 @@ where
         })
     }
 
+    #[inline]
+    pub fn read_config(&self) -> &ReadOptions {
+        &self.read_config
+    }
+
     pub fn get<K: AsRef<[u8]>>(&self, key: K) -> Result<Option<DBPinnableSlice>> {
         let cf = self.get_cf()?;
         Ok(self.db.get_pinned_cf_opt(&cf, key, &self.read_config)?)
@@ -146,16 +151,6 @@ where
     /// So we are not storing it in any way
     pub fn get_cf(&self) -> Result<Arc<BoundColumnFamily>> {
         self.db.cf_handle(T::NAME).context("No cf")
-    }
-
-    pub fn size(&self) -> Result<usize> {
-        let mut tot = 0;
-        self.iterator(rocksdb::IteratorMode::Start)?
-            .for_each(|(k, v)| {
-                tot += k.len();
-                tot += v.len();
-            });
-        Ok(tot)
     }
 
     pub fn iterator(&'_ self, mode: IteratorMode) -> Result<DBIterator> {

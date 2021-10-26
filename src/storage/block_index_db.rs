@@ -3,13 +3,12 @@
 /// Changes:
 /// - replaced old `failure` crate with `anyhow`
 ///
-use std::io::{Read, Write};
+use std::io::Write;
 use std::sync::Arc;
 
 use anyhow::Result;
 use parking_lot::RwLock;
 use ton_api::ton;
-use ton_types::ByteOrderRead;
 
 use super::block_handle::*;
 use super::{columns, StoredValue, Tree};
@@ -213,39 +212,6 @@ impl BlockIndexDb {
 
         Ok(())
     }
-
-    fn lt_db_iterator(&self) -> Result<impl Iterator<Item = (LtDbKeyOwned, LtDbEntry)> + '_> {
-        let iterator = self.lt_db.db.iterator(rocksdb::IteratorMode::Start)?;
-        Ok(iterator.filter_map(|(k, v)| {
-            let mut slice = k.as_ref();
-            let key = match LtDbKeyOwned::deserialize(&mut slice) {
-                Ok(a) => a,
-                Err(e) => {
-                    log::error!("Failed to deserialize LtDbKeyOwned: {:?}", e);
-                    return None;
-                }
-            };
-            let value: LtDbEntry = match bincode::deserialize(&v) {
-                Ok(a) => a,
-                Err(e) => {
-                    log::error!("Failed deserializng LtDbEntry: {:?}", e);
-                    return None;
-                }
-            };
-            Some((key, value))
-        }))
-    }
-
-    /// `older_then` - block utime
-    pub fn get_blocks_older_then(
-        &self,
-        older_then: u32,
-    ) -> Result<impl Iterator<Item = (LtDbKeyOwned, LtDbEntry)> + '_> {
-        log::info!("Full len: {}", self.lt_db_iterator()?.count());
-        Ok(self
-            .lt_db_iterator()?
-            .filter(move |(_, v)| v.gen_utime < older_then))
-    }
 }
 
 struct LtDb {
@@ -270,19 +236,6 @@ impl LtDb {
 struct LtDbKey<'a> {
     shard_ident: &'a ton_block::ShardIdent,
     index: u32,
-}
-
-pub struct LtDbKeyOwned {
-    pub shard_ident: ton_block::ShardIdent,
-    pub index: u32,
-}
-
-impl LtDbKeyOwned {
-    fn deserialize<R: Read>(reader: &mut R) -> Result<Self> {
-        let shard_ident = ton_block::ShardIdent::deserialize(reader)?;
-        let index = reader.read_le_u32()?;
-        Ok(Self { shard_ident, index })
-    }
 }
 
 impl<'a> LtDbKey<'a> {

@@ -61,7 +61,7 @@ impl BlockHandleStorage {
         Ok(())
     }
 
-    pub fn find_prev_key_block(&self, seq_no: u32) -> Result<Option<ton_block::BlockIdExt>> {
+    pub fn find_prev_key_block(&self, seq_no: u32) -> Result<Option<Arc<BlockHandle>>> {
         if seq_no == 0 {
             return Ok(None);
         }
@@ -73,13 +73,16 @@ impl BlockHandleStorage {
         // Load key block from current iterator value
         iter.value()
             .map(ton_block::BlockIdExt::from_slice)
+            .transpose()?
+            .map(|key_block_id| {
+                self.load_handle(&key_block_id)?.ok_or_else(|| {
+                    BlockHandleStorageError::KeyBlockHandleNotFound(key_block_id.seq_no).into()
+                })
+            })
             .transpose()
     }
 
-    pub fn find_prev_persistent_key_block(
-        &self,
-        seq_no: u32,
-    ) -> Result<Option<ton_block::BlockIdExt>> {
+    pub fn find_prev_persistent_key_block(&self, seq_no: u32) -> Result<Option<Arc<BlockHandle>>> {
         if seq_no == 0 {
             return Ok(None);
         }
@@ -89,7 +92,7 @@ impl BlockHandleStorage {
         iter.seek_for_prev((seq_no - 1u32).to_be_bytes());
 
         // Loads key block from current iterator value and moves it backward
-        let mut get_key_block = move || -> Result<Option<(ton_block::BlockIdExt, u32)>> {
+        let mut get_key_block = move || -> Result<Option<Arc<BlockHandle>>> {
             // Load key block id
             let key_block_id = match iter
                 .value()
@@ -101,15 +104,15 @@ impl BlockHandleStorage {
             };
 
             // Load block handle for this id
-            let handle = self.load_handle(&key_block_id)?.ok_or_else(|| {
-                BlockHandleStorageError::KeyBlockHandleNotFound(key_block_id.seq_no)
-            })?;
+            let handle = self.load_handle(&key_block_id)?.ok_or(
+                BlockHandleStorageError::KeyBlockHandleNotFound(key_block_id.seq_no),
+            )?;
 
             // Move iterator backward
             iter.prev();
 
             // Done
-            Ok(Some((key_block_id, handle.meta().gen_utime())))
+            Ok(Some(handle))
         };
 
         // Load previous key block
@@ -120,9 +123,12 @@ impl BlockHandleStorage {
 
         // Load previous key blocks and check if the `key_block` is for persistent state
         while let Some(prev_key_block) = get_key_block()? {
-            if is_persistent_state(key_block.1, prev_key_block.1) {
+            if is_persistent_state(
+                key_block.meta().gen_utime(),
+                prev_key_block.meta().gen_utime(),
+            ) {
                 // Found
-                return Ok(Some(key_block.0));
+                return Ok(Some(key_block));
             }
             key_block = prev_key_block;
         }

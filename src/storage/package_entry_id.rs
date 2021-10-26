@@ -12,7 +12,7 @@ use std::str::FromStr;
 
 use anyhow::Result;
 use smallvec::SmallVec;
-use ton_types::UInt256;
+use ton_types::{ByteOrderRead, UInt256};
 
 use super::StoredValue;
 
@@ -55,16 +55,35 @@ where
 
     pub fn to_vec(&self) -> Result<SmallVec<[u8; 96]>> {
         let mut result = SmallVec::with_capacity(84);
-        let (ty, block_id) = match self {
-            Self::Block(id) => (0, id),
-            Self::Proof(id) => (1, id),
-            Self::ProofLink(id) => (2, id),
+        let (block_id, ty) = match self {
+            Self::Block(id) => (id, 0),
+            Self::Proof(id) => (id, 1),
+            Self::ProofLink(id) => (id, 2),
         };
 
-        result.write_all(&[ty, 0, 0, 0])?;
         block_id.borrow().serialize(&mut result)?;
+        result.write_all(&[ty])?;
 
         Ok(result)
+    }
+}
+
+pub struct PackageEntryIdPrefix {
+    pub shard_ident: ton_block::ShardIdent,
+    pub seq_no: u32,
+}
+
+impl PackageEntryIdPrefix {
+    pub fn from_slice(data: &[u8]) -> Result<Self> {
+        let mut reader = std::io::Cursor::new(data);
+
+        let shard_ident = ton_block::ShardIdent::deserialize(&mut reader)?;
+        let seq_no = reader.read_le_u32()?;
+
+        Ok(Self {
+            shard_ident,
+            seq_no,
+        })
     }
 }
 

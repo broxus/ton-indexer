@@ -530,38 +530,53 @@ impl Db {
             .start_gc(resolver, offset, interval);
     }
 
-    pub async fn garbage_collect(&self, gc_type: BlocksGcType) -> Result<usize> {
-        // match gc_type {
-        //     BlocksGcType::KeepLastNBlocks(_) => {
-        //         anyhow::bail!("todo!")
-        //     }
-        //     BlocksGcType::KeepNotOlderThen(seconds) => {
-        //         let now = tiny_adnl::utils::now();
-        //         let old_age = now as u32 - seconds;
-        //         log::info!("Pruning block older then {}", old_age);
-        //         let old_blocks: HashSet<_> = self
-        //             .block_index_db
-        //             .get_blocks_older_then(old_age)?
-        //             .map(|x| x.1.block_id_ext)
-        //             .map(|x| convert_block_id_ext_api2blk(&x).unwrap())
-        //             .collect();
-        //         log::info!("Block to prune: {}", old_blocks.len());
-        //         let (total, key_blocks) = self
-        //             .block_handle_storage
-        //             .drop_handles_data(old_blocks.iter())?;
-        //         log::info!("Meta collect took: {}", tiny_adnl::utils::now() - now);
-        //         let old_blocks: Vec<_> = old_blocks.difference(&key_blocks).collect();
-        //         log::info!("Old blocks: {}", old_blocks.len());
-        //         log::info!(
-        //             "BLocks size: {}",
-        //             self.archive_manager.get_total_size().await.unwrap()
-        //         );
-        //         self.archive_manager.gc(old_blocks.iter().copied()).await?;
-        //         log::info!("Archive gc took: {}", tiny_adnl::utils::now() - now);
-        //         Ok(total)
-        //     }
-        // }
-        Ok(0)
+    pub async fn garbage_collect(
+        &self,
+        key_block_id: &ton_block::BlockIdExt,
+        gc_type: BlocksGcType,
+    ) -> Result<()> {
+        // Find target block
+        let target_block = match gc_type {
+            BlocksGcType::BeforePreviousKeyBlock => self
+                .block_handle_storage
+                .find_prev_key_block(key_block_id.seq_no)?,
+            BlocksGcType::BeforePreviousPersistentState => self
+                .block_handle_storage
+                .find_prev_persistent_key_block(key_block_id.seq_no)?,
+        };
+
+        // Load target block data
+        let target_block = match target_block {
+            Some(handle) => {
+                log::info!(
+                    "Starting blocks GC for key block: {}. Target block: {}",
+                    key_block_id,
+                    handle.id()
+                );
+                self.load_block_data(&handle).await?
+            }
+            None => {
+                log::info!("Blocks GC skipped for key block: {}", key_block_id);
+                return Ok(());
+            }
+        };
+
+        // Convert to fx hash map
+        let shard_blocks = target_block
+            .shards_blocks()?
+            .into_iter()
+            .map(|(key, value)| (key, value.seq_no))
+            .collect();
+
+        // Remove all expired entries
+        self.archive_manager.gc(&shard_blocks).await?;
+
+        // TODO: update block handle storage
+
+        log::info!("Finished blocks GC for key block: {}", target_block.id());
+
+        // Done
+        Ok(())
     }
 }
 

@@ -71,6 +71,7 @@ pub struct Engine {
     is_working: AtomicBool,
     db: Arc<Db>,
     states_gc_resolver: Option<Arc<DefaultStateGcResolver>>,
+    blocks_gc_state: Option<BlocksGcState>,
     subscribers: Vec<Arc<dyn Subscriber>>,
     network: Arc<NodeNetwork>,
     old_blocks_policy: OldBlocksPolicy,
@@ -94,6 +95,11 @@ struct BlockCaches {
     pub last_mc: LastMcBlockId,
     pub init_block: InitMcBlockId,
     pub shard_client_mc_block: ShardsClientMcBlockId,
+}
+
+struct BlocksGcState {
+    ty: BlocksGcType,
+    enabled: AtomicBool,
 }
 
 impl Drop for Engine {
@@ -157,6 +163,10 @@ impl Engine {
             is_working: AtomicBool::new(true),
             db: db.clone(),
             states_gc_resolver,
+            blocks_gc_state: config.blocks_gc_options.map(|options| BlocksGcState {
+                ty: options.ty,
+                enabled: AtomicBool::new(options.enable_for_sync),
+            }),
             subscribers,
             network,
             old_blocks_policy,
@@ -236,6 +246,17 @@ impl Engine {
 
         self.notify_subscribers_with_status(EngineStatus::Synced)
             .await;
+
+        if let Some(blocks_gc) = &self.blocks_gc_state {
+            blocks_gc.enabled.store(true, Ordering::Release);
+
+            let key_block_seqno = self.last_known_key_block_seqno.load(Ordering::Acquire);
+            let handle = self.db.find_block_by_seq_no(
+                &ton_block::AccountIdPrefixFull::any_masterchain(),
+                key_block_seqno,
+            )?;
+            self.db.garbage_collect(handle.id(), blocks_gc.ty).await?;
+        }
 
         let last_mc_block_id = self.load_last_applied_mc_block_id()?;
         let shards_client_mc_block_id = self.load_shards_client_mc_block_id()?;
@@ -752,9 +773,19 @@ impl Engine {
         }
         self.db.assign_mc_ref_seq_no(handle, mc_seq_no)?;
         self.db.index_handle(handle)?;
+
         if self.archives_enabled {
             self.db.archive_block(handle).await?;
         }
+
+        if handle.meta().is_key_block() {
+            if let Some(blocks_gc) = &self.blocks_gc_state {
+                if blocks_gc.enabled.load(Ordering::Acquire) {
+                    self.db.garbage_collect(handle.id(), blocks_gc.ty).await?
+                }
+            }
+        }
+
         self.db.store_block_applied(handle)
     }
 
@@ -995,16 +1026,6 @@ impl Engine {
             downloader,
         })
     }
-
-    pub async fn gc(&self, gc_type: BlocksGcType) -> Result<usize> {
-        self.db.garbage_collect(gc_type).await
-    }
-}
-
-#[derive(Debug)]
-pub enum BlocksGcType {
-    BeforePreviousKeyBlock,
-    BeforePreviousPersistentState,
 }
 
 #[derive(thiserror::Error, Debug)]
