@@ -250,11 +250,7 @@ impl Engine {
         if let Some(blocks_gc) = &self.blocks_gc_state {
             blocks_gc.enabled.store(true, Ordering::Release);
 
-            let key_block_seqno = self.last_known_key_block_seqno.load(Ordering::Acquire);
-            let handle = self.db.find_block_by_seq_no(
-                &ton_block::AccountIdPrefixFull::any_masterchain(),
-                key_block_seqno,
-            )?;
+            let handle = self.db.find_last_key_block()?;
             self.db.garbage_collect(handle.id(), blocks_gc.ty).await?;
         }
 
@@ -778,6 +774,8 @@ impl Engine {
             self.db.archive_block(handle).await?;
         }
 
+        let applied = self.db.store_block_applied(handle)?;
+
         if handle.meta().is_key_block() {
             if let Some(blocks_gc) = &self.blocks_gc_state {
                 if blocks_gc.enabled.load(Ordering::Acquire) {
@@ -786,7 +784,7 @@ impl Engine {
             }
         }
 
-        self.db.store_block_applied(handle)
+        Ok(applied)
     }
 
     pub fn load_last_applied_mc_block_id(&self) -> Result<ton_block::BlockIdExt> {

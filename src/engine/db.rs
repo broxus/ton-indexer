@@ -480,6 +480,10 @@ impl Db {
         self.archive_manager.move_into_archive(handle).await
     }
 
+    pub fn find_last_key_block(&self) -> Result<Arc<BlockHandle>> {
+        self.block_handle_storage.find_last_key_block()
+    }
+
     pub fn store_node_state(&self, key: &'static str, value: Vec<u8>) -> Result<()> {
         self.node_state_storage.store(key, value)
     }

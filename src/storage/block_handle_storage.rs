@@ -61,6 +61,22 @@ impl BlockHandleStorage {
         Ok(())
     }
 
+    pub fn find_last_key_block(&self) -> Result<Arc<BlockHandle>> {
+        let mut iter = self.key_blocks.raw_iterator()?;
+        iter.seek_to_last();
+
+        // Load key block from current iterator value
+        let key_block_id = iter
+            .value()
+            .map(ton_block::BlockIdExt::from_slice)
+            .transpose()?
+            .ok_or(BlockHandleStorageError::KeyBlockNotFound)?;
+
+        self.load_handle(&key_block_id)?.ok_or_else(|| {
+            BlockHandleStorageError::KeyBlockHandleNotFound(key_block_id.seq_no).into()
+        })
+    }
+
     pub fn find_prev_key_block(&self, seq_no: u32) -> Result<Option<Arc<BlockHandle>>> {
         if seq_no == 0 {
             return Ok(None);
@@ -201,6 +217,8 @@ impl Iterator for KeyBlocksIterator<'_> {
 
 #[derive(thiserror::Error, Debug)]
 enum BlockHandleStorageError {
+    #[error("Key block not found")]
+    KeyBlockNotFound,
     #[error("Key block handle not found: {}", .0)]
     KeyBlockHandleNotFound(u32),
 }
