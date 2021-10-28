@@ -23,11 +23,23 @@ pub struct BlockHandleStorage {
 
 impl BlockHandleStorage {
     pub fn with_db(db: &Arc<rocksdb::DB>) -> Result<Self> {
-        Ok(Self {
+        let storage = Self {
             cache: Arc::new(Default::default()),
             handles: Tree::new(db)?,
             key_blocks: Tree::new(db)?,
-        })
+        };
+
+        log::info!("Iterating key blocks:");
+        let key_blocks = storage.key_blocks.iterator(rocksdb::IteratorMode::Start)?;
+        for (key, value) in key_blocks {
+            let seq_no = u64::from_be_bytes(key.as_ref().try_into()?);
+            let block_id = ton_block::BlockIdExt::from_slice(&value)?;
+
+            log::info!("{:016}: {}", seq_no, block_id);
+        }
+        log::info!("Iterating key blocks done");
+
+        Ok(storage)
     }
 
     pub fn load_handle(
