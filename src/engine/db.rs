@@ -551,15 +551,17 @@ impl Db {
 
         // Load target block data
         let target_block = match target_block {
-            Some(handle) => {
+            Some(handle) if handle.meta().has_data() => {
                 log::info!(
                     "Starting blocks GC for key block: {}. Target block: {}",
                     key_block_id,
                     handle.id()
                 );
-                self.load_block_data(&handle).await?
+                self.load_block_data(&handle)
+                    .await
+                    .context("Failed to load target key block data")?
             }
-            None => {
+            _ => {
                 log::info!("Blocks GC skipped for key block: {}", key_block_id);
                 return Ok(());
             }
