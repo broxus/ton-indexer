@@ -32,7 +32,7 @@ impl BlockHandleStorage {
         log::info!("Iterating key blocks:");
         let key_blocks = storage.key_blocks.iterator(rocksdb::IteratorMode::Start)?;
         for (key, value) in key_blocks {
-            let seq_no = u64::from_be_bytes(key.as_ref().try_into()?);
+            let seq_no = u32::from_be_bytes(key.as_ref().try_into()?);
             let block_id = ton_block::BlockIdExt::from_slice(&value)?;
 
             log::info!("{:016}: {}", seq_no, block_id);
