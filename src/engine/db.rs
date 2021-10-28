@@ -573,9 +573,8 @@ impl Db {
             .collect();
 
         // Remove all expired entries
+        self.block_handle_storage.gc_handles_cache(&shard_blocks);
         self.archive_manager.gc(&shard_blocks).await?;
-
-        // TODO: update block handle storage
 
         log::info!("Finished blocks GC for key block: {}", target_block.id());
 

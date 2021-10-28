@@ -21,6 +21,7 @@ use crate::storage::{columns, StoredValue, Tree};
 pub struct ArchiveManager {
     db: Arc<rocksdb::DB>,
     blocks: Tree<columns::ArchiveManagerDb>,
+    handles: Tree<columns::BlockHandles>,
     archive_storage: Tree<columns::ArchiveStorage>,
     block_handles: Tree<columns::BlockHandles>,
     key_blocks: Tree<columns::KeyBlocks>,
@@ -31,6 +32,7 @@ impl ArchiveManager {
         let manager = Self {
             db: db.clone(),
             blocks: Tree::new(db)?,
+            handles: Tree::new(db)?,
             archive_storage: Tree::new(db)?,
             block_handles: Tree::new(db)?,
             key_blocks: Tree::new(db)?,
@@ -119,6 +121,7 @@ impl ArchiveManager {
         let (raw_db, batch) = {
             // Cache cfs before loop
             let blocks_cf = self.blocks.get_cf()?;
+            let handles_cf = self.handles.get_cf()?;
             let key_blocks_cf = self.key_blocks.get_cf()?;
             let raw_db = self.blocks.raw_db_handle().clone();
 
@@ -131,7 +134,7 @@ impl ArchiveManager {
                 // Read only prefix with shard ident and seqno
                 let prefix = PackageEntryIdPrefix::from_slice(key.as_ref())?;
                 match top_blocks.get(&prefix.shard_ident) {
-                    Some(top_seq_no) if &prefix.seq_no < top_seq_no => { /* gc block */ }
+                    Some(top_seq_no) if prefix.seq_no < *top_seq_no => { /* gc block */ }
                     // Skip blocks with seq.no. >= top seq.no.
                     _ => continue,
                 };
@@ -151,7 +154,14 @@ impl ArchiveManager {
                 }
 
                 // Add item to the batch
-                batch.delete_cf(&blocks_cf, key);
+                batch.delete_cf(&blocks_cf, &key);
+
+                // Key structure:
+                // []
+
+                if key.len() >= 48 {
+                    batch.delete_cf(&handles_cf, &key[16..48]);
+                }
             }
 
             (raw_db, batch)

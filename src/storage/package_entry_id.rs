@@ -78,7 +78,7 @@ impl PackageEntryIdPrefix {
         let mut reader = std::io::Cursor::new(data);
 
         let shard_ident = ton_block::ShardIdent::deserialize(&mut reader)?;
-        let seq_no = reader.read_le_u32()?;
+        let seq_no = reader.read_be_u32()?;
 
         Ok(Self {
             shard_ident,

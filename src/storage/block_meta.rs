@@ -60,6 +60,10 @@ impl BlockMeta {
         self.gen_lt
     }
 
+    pub fn clear_data_and_proof(&self) {
+        self.flags.fetch_and(CLEAR_DATA_MASK, Ordering::Release);
+    }
+
     pub fn set_has_data(&self) -> bool {
         self.set_flag(BLOCK_META_FLAG_HAS_DATA)
     }
@@ -217,3 +221,6 @@ const BLOCK_META_FLAG_IS_KEY_BLOCK: u64 = 1 << (32 + 11);
 
 const BLOCK_META_FLAG_MOVING_TO_ARCHIVE: u64 = 1 << (32 + 12);
 const BLOCK_META_FLAG_MOVED_TO_ARCHIVE: u64 = 1 << (32 + 13);
+
+const CLEAR_DATA_MASK: u64 =
+    !(BLOCK_META_FLAG_HAS_DATA | BLOCK_META_FLAG_HAS_PROOF | BLOCK_META_FLAG_HAS_PROOF_LINK);

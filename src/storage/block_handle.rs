@@ -35,18 +35,22 @@ impl BlockHandle {
         }
     }
 
+    #[inline]
     pub fn id(&self) -> &ton_block::BlockIdExt {
         &self.id
     }
 
+    #[inline]
     pub fn meta(&self) -> &BlockMeta {
         &self.meta
     }
 
+    #[inline]
     pub fn block_data_lock(&self) -> &RwLock<()> {
         &self.block_data_lock
     }
 
+    #[inline]
     pub fn proof_data_lock(&self) -> &RwLock<()> {
         &self.proof_data_block
     }
@@ -60,7 +64,6 @@ impl BlockHandle {
         }
     }
 
-    #[allow(unused)]
     pub fn masterchain_ref_seqno(&self) -> u32 {
         if self.id.shard().is_masterchain() {
             self.id.seq_no()

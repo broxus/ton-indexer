@@ -186,7 +186,7 @@ impl StoredValue for ton_block::BlockIdExt {
 
     fn serialize<W: Write>(&self, writer: &mut W) -> Result<()> {
         self.shard_id.serialize(writer)?;
-        writer.write_all(&self.seq_no.to_le_bytes())?;
+        writer.write_all(&self.seq_no.to_be_bytes())?;
         writer.write_all(self.root_hash.as_slice())?;
         writer.write_all(self.file_hash.as_slice())?;
         Ok(())
@@ -197,7 +197,7 @@ impl StoredValue for ton_block::BlockIdExt {
         Self: Sized,
     {
         let shard_id = ton_block::ShardIdent::deserialize(reader)?;
-        let seq_no = reader.read_le_u32()?;
+        let seq_no = reader.read_be_u32()?;
         let root_hash = ton_types::UInt256::from(reader.read_u256()?);
         let file_hash = ton_types::UInt256::from(reader.read_u256()?);
         Ok(Self::with_params(shard_id, seq_no, root_hash, file_hash))
@@ -212,8 +212,8 @@ impl StoredValue for ton_block::ShardIdent {
     type OnStackSlice = [u8; Self::SIZE_HINT];
 
     fn serialize<W: Write>(&self, writer: &mut W) -> Result<()> {
-        writer.write_all(&self.workchain_id().to_le_bytes())?;
-        writer.write_all(&self.shard_prefix_with_tag().to_le_bytes())?;
+        writer.write_all(&self.workchain_id().to_be_bytes())?;
+        writer.write_all(&self.shard_prefix_with_tag().to_be_bytes())?;
         Ok(())
     }
 
@@ -221,8 +221,8 @@ impl StoredValue for ton_block::ShardIdent {
     where
         Self: Sized,
     {
-        let workchain_id = reader.read_le_u32()? as i32;
-        let shard_prefix_tagged = reader.read_le_u64()?;
+        let workchain_id = reader.read_be_u32()? as i32;
+        let shard_prefix_tagged = reader.read_be_u64()?;
         Self::with_tagged_prefix(workchain_id, shard_prefix_tagged)
     }
 }

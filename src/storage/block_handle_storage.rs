@@ -17,7 +17,7 @@ use crate::utils::*;
 
 pub struct BlockHandleStorage {
     cache: Arc<FxDashMap<ton_block::BlockIdExt, Weak<BlockHandle>>>,
-    db: Tree<columns::BlockHandles>,
+    handles: Tree<columns::BlockHandles>,
     key_blocks: Tree<columns::KeyBlocks>,
 }
 
@@ -25,7 +25,7 @@ impl BlockHandleStorage {
     pub fn with_db(db: &Arc<rocksdb::DB>) -> Result<Self> {
         Ok(Self {
             cache: Arc::new(Default::default()),
-            db: Tree::new(db)?,
+            handles: Tree::new(db)?,
             key_blocks: Tree::new(db)?,
         })
     }
@@ -41,7 +41,7 @@ impl BlockHandleStorage {
                 }
             }
 
-            if let Some(meta) = self.db.get(block_id.root_hash.as_slice())? {
+            if let Some(meta) = self.handles.get(block_id.root_hash.as_slice())? {
                 let meta = BlockMeta::from_slice(meta.as_ref())?;
                 if let Some(handle) = self.create_handle(block_id.clone(), meta)? {
                     break Some(handle);
@@ -55,7 +55,7 @@ impl BlockHandleStorage {
     pub fn store_handle(&self, handle: &Arc<BlockHandle>) -> Result<()> {
         let id = handle.id();
 
-        self.db
+        self.handles
             .insert(id.root_hash.as_slice(), handle.meta().to_vec()?)?;
 
         Ok(())
@@ -189,6 +189,28 @@ impl BlockHandleStorage {
         }
 
         Ok(Some(handle))
+    }
+
+    pub fn gc_handles_cache(&self, top_blocks: &FxHashMap<ton_block::ShardIdent, u32>) {
+        self.cache.retain(|block_id, value| {
+            let value = match value.upgrade() {
+                Some(value) => value,
+                None => return false,
+            };
+
+            if block_id.is_masterchain() && value.meta().is_key_block() {
+                return true;
+            }
+
+            match top_blocks.get(&block_id.shard_id) {
+                Some(top_seq_no) if block_id.seq_no < *top_seq_no => {
+                    value.meta().clear_data_and_proof();
+                    false
+                }
+                // Skip blocks with seq.no. >= top seq.no.
+                _ => true,
+            }
+        });
     }
 }
 
