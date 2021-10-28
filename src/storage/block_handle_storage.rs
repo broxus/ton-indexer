@@ -6,7 +6,7 @@
 ///
 use std::sync::{Arc, Weak};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use tiny_adnl::utils::*;
 
 use super::block_handle::*;
@@ -31,13 +31,24 @@ impl BlockHandleStorage {
 
         log::info!("Iterating key blocks:");
         let key_blocks = storage.key_blocks.iterator(rocksdb::IteratorMode::Start)?;
+
+        let mut last_seq_no = 0;
         for (key, value) in key_blocks {
-            let seq_no = u32::from_be_bytes(key.as_ref().try_into()?);
+            last_seq_no = u32::from_be_bytes(key.as_ref().try_into()?);
             let block_id = ton_block::BlockIdExt::from_slice(&value)?;
 
-            log::info!("{:016}: {}", seq_no, block_id);
+            log::info!("{:016}: {}", last_seq_no, block_id);
         }
         log::info!("Iterating key blocks done");
+
+        log::info!("Last seqno: {}", last_seq_no);
+        let prev_key_block = storage
+            .find_prev_key_block(last_seq_no)?
+            .context("Failed to find prev key block")?;
+        log::info!("Prev key block: {}", prev_key_block.id());
+
+        let last_key_block = storage.find_last_key_block()?;
+        log::info!("Last key block: {}", last_key_block.id());
 
         Ok(storage)
     }
