@@ -2,10 +2,11 @@
 name = "ton-indexer"
 version = "0.1.0"
 authors = ["Ivan Kalinin <i.kalinin@dexpa.io>"]
-edition = "2018"
+edition = "2021"
+rust-version = "1.56"
 
 [workspace]
-members = ["ton-indexer-alloc"]
+members = ["ton-indexer-alloc", "ton-indexer-profile"]
 
 [[example]]
 name = "simple_node"
@@ -16,6 +17,7 @@ anyhow = "1.0"
 async-trait = "0.1"
 base64 = "0.13"
 bincode = "1.3"
+bytes = "1.1.0"
 crc = "1.8"
 dashmap = "4.0"
 fdlimit = "0.2.1"
@@ -35,7 +37,8 @@ sha2 = "0.9"
 smallvec = { version = "1.6.1", features = ["serde", "write", "union"] }
 sysinfo = { version = "0.20.1", default-features = false }
 thiserror = "*"
-tokio = { version = "1.6", features = ["sync", "fs"] }
+tokio = { version = "1.6", features = ["sync", "fs", "rt-multi-thread"] }
+lru_time_cache = "0.11.11"
 
 ed25519-dalek = { git = "https://github.com/broxus/ed25519-dalek.git" }
 rocksdb = { git = "https://github.com/broxus/rust-rocksdb.git", features = ["multi-threaded-cf", "lz4", "jemalloc"], default-features = false }
@@ -48,6 +51,7 @@ ton_types = { git = "https://github.com/broxus/ton-labs-types.git" }
 nekoton-utils = { git = "https://github.com/broxus/nekoton.git" }
 
 ton-indexer-alloc = { path = "ton-indexer-alloc" }
+ton-indexer-profile = { path = "ton-indexer-profile" }
 
 [dev-dependencies]
 argh = "0.1"
@@ -61,3 +65,4 @@ tokio = { version = "1.6", features = ["sync", "fs", "rt-multi-thread", "macros"
 [features]
 default = []
 asm = ["sha2/asm", "ed25519-dalek/asm", "ton_types/asm", "ton_block/asm", "tiny-adnl/asm"]
+profile = ["ton-indexer-profile/active"]

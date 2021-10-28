@@ -12,11 +12,13 @@ use anyhow::{Context, Result};
 use futures::StreamExt;
 use tiny_adnl::utils::*;
 
-use self::archive_downloader::*;
-use self::block_maps::*;
 use crate::engine::Engine;
+use crate::profile;
 use crate::storage::*;
 use crate::utils::*;
+
+use self::archive_downloader::*;
+use self::block_maps::*;
 
 mod archive_downloader;
 mod block_maps;
@@ -27,7 +29,7 @@ pub async fn sync(engine: &Arc<Engine>) -> Result<()> {
     log::info!("Started sync");
 
     let active_peers = Arc::new(ActivePeers::default());
-    let last_applied = engine.load_last_applied_mc_block_id()?.seq_no;
+    let last_applied = engine.last_applied_block()?.seq_no;
 
     log::info!("Creating archives stream from {}", last_applied);
     let archives_stream =
@@ -37,37 +39,60 @@ pub async fn sync(engine: &Arc<Engine>) -> Result<()> {
         log::info!("sync: Starting fast sync");
         let mut prev_step = std::time::Instant::now();
 
-        while let Some(archive) = archives_stream.next().await {
+        while let Some(mut archive) = archives_stream.next().await {
             log::info!(
                 "sync: Time from prev step: {} ms",
                 prev_step.elapsed().as_millis()
             );
             prev_step = std::time::Instant::now();
 
-            match archive.get_first_utime() {
-                Some(first_utime) if first_utime + FAST_SYNC_THRESHOLD <= now() as u32 => {}
-                _ => {
-                    log::info!("sync: Stopping fast sync");
-                    break;
-                }
-            }
             let mc_block_id = engine.last_applied_block()?;
 
-            let now = std::time::Instant::now();
-            match import_package(engine, archive, &mc_block_id).await {
-                Ok(()) => {
-                    log::info!(
-                        "sync: Imported archive package for block {}. Took: {} ms",
-                        mc_block_id.seq_no,
-                        now.elapsed().as_millis()
-                    );
+            let mut first_utime = archive.get_first_utime();
+            let import_start = std::time::Instant::now();
+
+            'import_loop: loop {
+                match import_package(engine, archive, &mc_block_id).await {
+                    Ok(()) => {
+                        log::info!(
+                            "sync: Imported archive package for block {}. Took: {} ms",
+                            mc_block_id.seq_no,
+                            import_start.elapsed().as_millis()
+                        );
+                        break 'import_loop;
+                    }
+                    Err(e) => {
+                        log::error!(
+                            "sync: Failed to apply queued archive for block {}: {:?}",
+                            mc_block_id.seq_no,
+                            e
+                        );
+                    }
                 }
-                Err(e) => {
-                    log::error!(
-                        "sync: Failed to apply queued archive for block {}: {:?}",
-                        mc_block_id.seq_no,
-                        e
-                    );
+                loop {
+                    log::info!("sync: Force downloading archive");
+                    let data =
+                        download_archive_or_die(engine, &active_peers, mc_block_id.seq_no).await;
+
+                    match parse_archive(data) {
+                        Ok(parsed) => {
+                            log::info!(
+                                "sync: Parsed {} masterchain blocks, {} blocks total",
+                                parsed.mc_block_ids.len(),
+                                parsed.blocks.len()
+                            );
+                            first_utime = parsed.get_first_utime();
+                            archive = parsed;
+                            break;
+                        }
+                        Err(e) => {
+                            log::error!(
+                                "sync: Failed to parse archive for block {}: {:?}",
+                                mc_block_id.seq_no,
+                                e
+                            );
+                        }
+                    }
                 }
             }
 
@@ -75,6 +100,14 @@ pub async fn sync(engine: &Arc<Engine>) -> Result<()> {
                 "sync: Full cycle took: {} ms",
                 prev_step.elapsed().as_millis()
             );
+
+            match first_utime {
+                Some(first_utime) if first_utime + FAST_SYNC_THRESHOLD <= now() as u32 => {}
+                _ => {
+                    log::info!("sync: Stopping fast sync");
+                    break;
+                }
+            }
         }
     }
     log::info!("sync: Finished fast sync");
@@ -128,10 +161,14 @@ async fn import_package(
     if maps.mc_block_ids.is_empty() {
         return Err(SyncError::EmptyArchivePackage.into());
     }
-
+    profile::start!(t);
     import_mc_blocks(engine, maps.clone(), last_mc_block_id).await?;
-    import_shard_blocks(engine, maps).await?;
-
+    profile::tick!(t =>"import_mc_blocks");
+    profile::span!(
+        "import_shard_blocks",
+        import_shard_blocks(engine, maps).await?
+    );
+    profile::tick!(t =>"import_package");
     Ok(())
 }
 
@@ -182,7 +219,11 @@ async fn import_shard_blocks(engine: &Arc<Engine>, maps: Arc<BlockMaps>) -> Resu
     for (id, entry) in &maps.blocks {
         if !id.shard_id.is_masterchain() {
             let (block, block_proof) = entry.get_data()?;
-            save_block(engine, id, block, block_proof, None).await?;
+
+            profile::span!(
+                "save_shard_block",
+                save_block(engine, id, block, block_proof, None).await?
+            );
         }
     }
 
@@ -264,7 +305,6 @@ async fn save_block(
         block_proof.check_proof_link()?;
     } else {
         let (virt_block, virt_block_info) = block_proof.pre_check_block_proof()?;
-
         let handle = match prev_key_block_id {
             Some(block_id) => engine
                 .db
@@ -279,7 +319,6 @@ async fn save_block(
                     .find_block_by_seq_no(&masterchain_prefix, prev_key_block_seqno)?
             }
         };
-
         let prev_key_block_proof = engine.load_block_proof(&handle, false).await?;
 
         check_with_prev_key_block_proof(
@@ -346,7 +385,11 @@ async fn download_archives(
     .context("To small bounds")?;
 
     while let Some(a) = stream.next().await {
-        let res = save_archive(engine, a, &mut context).await?;
+        let res = profile::span!(
+            "save_background_sync_archive",
+            save_archive(engine, a, &mut context).await?
+        );
+
         if let SyncStatus::Done = res {
             return Ok(());
         }
@@ -390,30 +433,22 @@ async fn save_archive(
     for (id, entry) in &maps.blocks {
         let (block, proof) = entry.get_data()?;
 
-        let is_key_block = match engine.load_block_handle(block.id())? {
-            Some(handle) => {
-                if handle.meta().is_key_block() {
-                    true
-                } else {
-                    // block already saved
-                    continue;
-                }
-            }
-            None => {
-                let handle = save_block(engine, id, block, proof, Some(context.prev_key_block_id))
+        let handle = match engine.load_block_handle(block.id())? {
+            Some(handle) => handle,
+            None => profile::span!(
+                "save_background_sync_block",
+                save_block(engine, id, block, proof, Some(context.prev_key_block_id))
                     .await
-                    .context("Failed saving block")?;
-
-                engine
-                    .notify_subscribers_with_archive_block(&handle, block, proof)
-                    .await
-                    .context("Failed to process archive block")?;
-
-                handle.meta().is_key_block()
-            }
+                    .context("Failed saving block")?
+            ),
         };
 
-        if is_key_block {
+        engine
+            .notify_subscribers_with_archive_block(&handle, block, proof)
+            .await
+            .context("Failed to process archive block")?;
+
+        if handle.meta().is_key_block() {
             *context.prev_key_block_id = id.clone();
         }
     }

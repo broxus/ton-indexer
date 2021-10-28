@@ -3,79 +3,41 @@
 /// Changes:
 /// - replaced verbose `lockfree` crate with `dashmap`
 ///
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use tiny_adnl::utils::*;
-
 use super::shard_state::ShardStateStuff;
-
+use lru_time_cache::LruCache;
+use parking_lot::Mutex;
 pub struct ShardStateCache {
     map: Arc<ShardStatesMap>,
 }
 
-type ShardStatesMap = FxDashMap<ton_block::BlockIdExt, (Arc<ShardStateStuff>, AtomicU64)>;
+type ShardStatesMap = Mutex<LruCache<ton_block::BlockIdExt, Arc<ShardStateStuff>>>;
 
 impl ShardStateCache {
     pub fn new(ttl_sec: u64) -> Self {
-        let map = Arc::new(ShardStatesMap::default());
-
-        tokio::spawn({
-            let map = Arc::downgrade(&map);
-
-            async move {
-                while let Some(map) = map.upgrade() {
-                    tokio::time::sleep(Duration::from_millis(ttl_sec * 100)).await;
-
-                    let now = now();
-                    map.retain(|_, (_, time)| {
-                        let time = time.load(Ordering::Acquire);
-                        now.saturating_sub(time) > ttl_sec
-                    });
-                }
-            }
-        });
-
+        let map = Arc::new(ShardStatesMap::new(
+            LruCache::with_expiry_duration_and_capacity(Duration::from_secs(ttl_sec), 100_000),
+        ));
         Self { map }
     }
 
     pub fn get(&self, block_id: &ton_block::BlockIdExt) -> Option<Arc<ShardStateStuff>> {
-        let item = self.map.get(block_id)?;
-        item.value().1.store(now(), Ordering::Release);
-        Some(item.value().0.clone())
+        let mut map = self.map.lock();
+        if let Some(a) = map.get(block_id) {
+            return Some(a.clone());
+        }
+        None
     }
 
-    pub fn set<F>(&self, block_id: &ton_block::BlockIdExt, factory: F) -> bool
+    pub fn set<F>(&self, block_id: &ton_block::BlockIdExt, factory: F)
     where
         F: FnOnce(Option<&ShardStateStuff>) -> Option<Arc<ShardStateStuff>>,
     {
-        use dashmap::mapref::entry::Entry;
-
-        let now = now();
-
-        match self.map.entry(block_id.clone()) {
-            Entry::Occupied(entry) => match factory(Some(entry.get().0.as_ref())) {
-                Some(value) => {
-                    entry.replace_entry((value, AtomicU64::new(now)));
-                    true
-                }
-                None => false,
-            },
-            Entry::Vacant(entry) => match factory(None) {
-                Some(value) => {
-                    entry.insert((value, AtomicU64::new(now)));
-                    true
-                }
-                None => false,
-            },
-        }
+        let mut map = self.map.lock();
+        if let Some(value) = factory(None) {
+            map.insert(block_id.clone(), value);
+        };
     }
-}
-
-fn now() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
 }

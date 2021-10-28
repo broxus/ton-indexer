@@ -10,10 +10,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+pub use rocksdb::perf::MemoryUsageStats;
 use tiny_adnl::utils::*;
 use ton_api::ton;
-
-pub use rocksdb::perf::MemoryUsageStats;
 
 use crate::config::*;
 use crate::network::*;
@@ -72,9 +71,11 @@ pub struct Engine {
     is_working: AtomicBool,
     db: Arc<Db>,
     states_gc_resolver: Option<Arc<DefaultStateGcResolver>>,
+    blocks_gc_state: Option<BlocksGcState>,
     subscribers: Vec<Arc<dyn Subscriber>>,
     network: Arc<NodeNetwork>,
     old_blocks_policy: OldBlocksPolicy,
+    archives_enabled: bool,
     init_mc_block_id: ton_block::BlockIdExt,
     last_known_mc_block_seqno: AtomicU32,
     last_known_key_block_seqno: AtomicU32,
@@ -87,6 +88,18 @@ pub struct Engine {
     block_applying_operations: OperationsPool<ton_block::BlockIdExt, ()>,
     next_block_applying_operations: OperationsPool<ton_block::BlockIdExt, ton_block::BlockIdExt>,
     download_block_operations: OperationsPool<ton_block::BlockIdExt, (BlockStuff, BlockProofStuff)>,
+    last_blocks: BlockCaches,
+}
+
+struct BlockCaches {
+    pub last_mc: LastMcBlockId,
+    pub init_block: InitMcBlockId,
+    pub shard_client_mc_block: ShardsClientMcBlockId,
+}
+
+struct BlocksGcState {
+    ty: BlocksGcType,
+    enabled: AtomicBool,
 }
 
 impl Drop for Engine {
@@ -109,18 +122,13 @@ impl Engine {
             config.max_db_memory_usage,
         )
         .await?;
-        // let gced = db
-        //     .garbage_collect(GcType::KeepNotOlderThen(86400))
-        //     .await
-        //     .unwrap();
-        // log::info!("Gced {}", gced);
-        // std::process::exit(0);
         let zero_state_id = global_config.zero_state.clone();
 
         let mut init_mc_block_id = zero_state_id.clone();
-        if let Ok(block_id) = InitMcBlockId::load_from_db(db.as_ref()) {
-            if block_id.0.seqno > init_mc_block_id.seq_no as i32 {
-                init_mc_block_id = convert_block_id_ext_api2blk(&block_id.0)?;
+        let init_block = InitMcBlockId::new(db.clone());
+        if let Ok(block_id) = init_block.load_from_db() {
+            if block_id.seqno > init_mc_block_id.seq_no as i32 {
+                init_mc_block_id = convert_block_id_ext_api2blk(&block_id)?;
             }
         }
 
@@ -153,21 +161,31 @@ impl Engine {
 
         let engine = Arc::new(Self {
             is_working: AtomicBool::new(true),
-            db,
+            db: db.clone(),
             states_gc_resolver,
+            blocks_gc_state: config.blocks_gc_options.map(|options| BlocksGcState {
+                ty: options.ty,
+                enabled: AtomicBool::new(options.enable_for_sync),
+            }),
             subscribers,
             network,
             old_blocks_policy,
+            archives_enabled: config.archives_enabled,
             init_mc_block_id,
             last_known_mc_block_seqno: AtomicU32::new(0),
             last_known_key_block_seqno: AtomicU32::new(0),
             parallel_archive_downloads: config.parallel_archive_downloads,
             shard_state_cache_enabled,
-            shard_states_cache: ShardStateCache::new(120),
+            shard_states_cache: ShardStateCache::new(3600),
             shard_states_operations: OperationsPool::new("shard_states_operations"),
             block_applying_operations: OperationsPool::new("block_applying_operations"),
             next_block_applying_operations: OperationsPool::new("next_block_applying_operations"),
             download_block_operations: OperationsPool::new("download_block_operations"),
+            last_blocks: BlockCaches {
+                last_mc: LastMcBlockId::new(db.clone()),
+                init_block,
+                shard_client_mc_block: ShardsClientMcBlockId::new(db.clone()),
+            },
         });
 
         engine
@@ -229,6 +247,13 @@ impl Engine {
         self.notify_subscribers_with_status(EngineStatus::Synced)
             .await;
 
+        if let Some(blocks_gc) = &self.blocks_gc_state {
+            blocks_gc.enabled.store(true, Ordering::Release);
+
+            let handle = self.db.find_last_key_block()?;
+            self.db.garbage_collect(handle.id(), blocks_gc.ty).await?;
+        }
+
         let last_mc_block_id = self.load_last_applied_mc_block_id()?;
         let shards_client_mc_block_id = self.load_shards_client_mc_block_id()?;
 
@@ -288,8 +313,9 @@ impl Engine {
     }
 
     fn set_init_mc_block_id(&self, block_id: &ton_block::BlockIdExt) {
-        InitMcBlockId(convert_block_id_ext_blk2api(block_id))
-            .store_into_db(self.db.as_ref())
+        self.last_blocks
+            .init_block
+            .store_into_db(convert_block_id_ext_blk2api(block_id))
             .ok();
     }
 
@@ -467,14 +493,14 @@ impl Engine {
             .await
     }
 
-    fn load_block_handle(
+    pub(crate) fn load_block_handle(
         &self,
         block_id: &ton_block::BlockIdExt,
     ) -> Result<Option<Arc<BlockHandle>>> {
         self.db.load_block_handle(block_id)
     }
 
-    fn find_block_by_seq_no(
+    pub(crate) fn find_block_by_seq_no(
         &self,
         account_prefix: &ton_block::AccountIdPrefixFull,
         seq_no: u32,
@@ -585,7 +611,6 @@ impl Engine {
                     }
                 });
             }
-
             if let Some(shard_state) = self
                 .shard_states_operations
                 .wait(block_id, timeout_ms, &has_state)
@@ -738,30 +763,48 @@ impl Engine {
         Ok(false)
     }
 
-    fn set_applied(&self, handle: &Arc<BlockHandle>, mc_seq_no: u32) -> Result<bool> {
+    async fn set_applied(&self, handle: &Arc<BlockHandle>, mc_seq_no: u32) -> Result<bool> {
         if handle.meta().is_applied() {
             return Ok(false);
         }
         self.db.assign_mc_ref_seq_no(handle, mc_seq_no)?;
         self.db.index_handle(handle)?;
-        self.db.store_block_applied(handle)
+
+        if self.archives_enabled {
+            self.db.archive_block(handle).await?;
+        }
+
+        let applied = self.db.store_block_applied(handle)?;
+
+        if handle.meta().is_key_block() {
+            if let Some(blocks_gc) = &self.blocks_gc_state {
+                if blocks_gc.enabled.load(Ordering::Acquire) {
+                    self.db.garbage_collect(handle.id(), blocks_gc.ty).await?
+                }
+            }
+        }
+
+        Ok(applied)
     }
 
     pub fn load_last_applied_mc_block_id(&self) -> Result<ton_block::BlockIdExt> {
-        convert_block_id_ext_api2blk(&LastMcBlockId::load_from_db(self.db.as_ref())?.0)
+        convert_block_id_ext_api2blk(&self.last_blocks.last_mc.load_from_db()?)
     }
 
     fn store_last_applied_mc_block_id(&self, block_id: &ton_block::BlockIdExt) -> Result<()> {
-        LastMcBlockId(convert_block_id_ext_blk2api(block_id)).store_into_db(self.db.as_ref())
+        self.last_blocks
+            .last_mc
+            .store_into_db(convert_block_id_ext_blk2api(block_id))
     }
 
     pub fn load_shards_client_mc_block_id(&self) -> Result<ton_block::BlockIdExt> {
-        convert_block_id_ext_api2blk(&ShardsClientMcBlockId::load_from_db(self.db.as_ref())?.0)
+        convert_block_id_ext_api2blk(&self.last_blocks.shard_client_mc_block.load_from_db()?)
     }
 
     fn store_shards_client_mc_block_id(&self, block_id: &ton_block::BlockIdExt) -> Result<()> {
-        ShardsClientMcBlockId(convert_block_id_ext_blk2api(block_id))
-            .store_into_db(self.db.as_ref())
+        self.last_blocks
+            .shard_client_mc_block
+            .store_into_db(convert_block_id_ext_blk2api(block_id))
     }
 
     async fn download_and_apply_block(
@@ -981,16 +1024,6 @@ impl Engine {
             downloader,
         })
     }
-
-    pub async fn gc(&self, gc_type: BlocksGcType) -> Result<usize> {
-        self.db.garbage_collect(gc_type).await
-    }
-}
-
-#[derive(Debug)]
-pub enum BlocksGcType {
-    KeepLastNBlocks(u32),
-    KeepNotOlderThen(u32),
 }
 
 #[derive(thiserror::Error, Debug)]

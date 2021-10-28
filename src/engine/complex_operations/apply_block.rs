@@ -11,6 +11,7 @@ use futures::future::{BoxFuture, FutureExt};
 
 use crate::engine::db::BlockConnection;
 use crate::engine::Engine;
+use crate::profile;
 use crate::storage::*;
 use crate::utils::*;
 
@@ -33,9 +34,15 @@ pub fn apply_block<'a>(
             return Err(ApplyBlockError::BlockIdMismatch.into());
         }
 
-        let (prev1_id, prev2_id) = block.construct_prev_id()?;
-        ensure_prev_blocks_downloaded(engine, &prev1_id, &prev2_id, mc_seq_no, pre_apply, depth)
+        let (prev1_id, prev2_id) = profile::span!("ensure_prev_blocks_downloaded", {
+            let (prev1_id, prev2_id) = block.construct_prev_id()?;
+
+            ensure_prev_blocks_downloaded(
+                engine, &prev1_id, &prev2_id, mc_seq_no, pre_apply, depth,
+            )
             .await?;
+            (prev1_id, prev2_id)
+        });
 
         let shard_state = if handle.meta().has_state() {
             engine.load_state(handle.id()).await?
@@ -50,10 +57,14 @@ pub fn apply_block<'a>(
                 .await?;
 
             if block.id().is_masterchain() {
-                engine.store_last_applied_mc_block_id(block.id())?;
+                profile::span!(
+                    "store_last_applied_mc_block_id",
+                    engine.store_last_applied_mc_block_id(block.id())?
+                );
+
                 // TODO: update shard blocks
 
-                engine.set_applied(handle, mc_seq_no)?;
+                engine.set_applied(handle, mc_seq_no).await?;
 
                 let id = handle.id().clone();
                 engine
@@ -68,7 +79,7 @@ pub fn apply_block<'a>(
                         .context("Failed to advance GC state")?;
                 }
             } else {
-                engine.set_applied(handle, mc_seq_no)?;
+                engine.set_applied(handle, mc_seq_no).await?;
             }
         }
 
@@ -114,10 +125,12 @@ fn update_block_connections(
     prev2_id: &Option<ton_block::BlockIdExt>,
 ) -> Result<()> {
     let db = &engine.db;
-
-    let prev1_handle = engine
-        .load_block_handle(prev1_id)?
-        .ok_or(ApplyBlockError::Prev1BlockHandleNotFound)?;
+    let prev1_handle = profile::span!(
+        "load_prev1_handle",
+        engine
+            .load_block_handle(prev1_id)?
+            .ok_or(ApplyBlockError::Prev1BlockHandleNotFound)?
+    );
 
     match prev2_id {
         Some(prev2_id) => {
@@ -159,17 +172,28 @@ async fn compute_and_store_shard_state(
                 return Err(ApplyBlockError::InvalidMasterchainBlockSequence.into());
             }
 
-            let left = engine
-                .wait_state(prev1_id, None, true)
-                .await?
-                .root_cell()
-                .clone();
-            let right = engine
-                .wait_state(prev2_id, None, true)
-                .await?
-                .root_cell()
-                .clone();
-            ShardStateStuff::construct_split_root(left, right)?
+            let left = profile::span!(
+                "wait_prev_shard_state_root_left",
+                engine
+                    .wait_state(prev1_id, None, true)
+                    .await?
+                    .root_cell()
+                    .clone()
+            );
+
+            let right = profile::span!(
+                "wait_prev_shard_state_root_right",
+                engine
+                    .wait_state(prev2_id, None, true)
+                    .await?
+                    .root_cell()
+                    .clone()
+            );
+
+            profile::span!(
+                "construct_split_root",
+                ShardStateStuff::construct_split_root(left, right)?
+            )
         }
         None => engine
             .wait_state(prev1_id, None, true)
@@ -178,13 +202,20 @@ async fn compute_and_store_shard_state(
             .clone(),
     };
 
-    let merkle_update = block.block().read_state_update()?;
+    let merkle_update = profile::span!(
+        "make_state_merkle_update",
+        block.block().read_state_update()?
+    );
 
     let shard_state = tokio::task::spawn_blocking({
         let block_id = block.id().clone();
         move || -> Result<Arc<ShardStateStuff>> {
             let shard_state_root = merkle_update.apply_for(&prev_shard_state_root)?;
-            Ok(Arc::new(ShardStateStuff::new(block_id, shard_state_root)?))
+
+            profile::span!(
+                "make_shard_state_stuff",
+                Ok(Arc::new(ShardStateStuff::new(block_id, shard_state_root)?))
+            )
         }
     })
     .await??;

@@ -3,8 +3,8 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use rocksdb::{
-    BoundColumnFamily, DBIterator, DBPinnableSlice, IteratorMode, Options, ReadOptions,
-    WriteOptions, DB,
+    BoundColumnFamily, DBIterator, DBPinnableSlice, DBRawIterator, IteratorMode, Options,
+    ReadOptions, WriteOptions, DB,
 };
 
 pub trait Column {
@@ -76,13 +76,11 @@ pub struct Tree<T> {
     _column: std::marker::PhantomData<T>,
 }
 
-/// Note. get_cf Usually took p999 511ns,
-/// So we are not storing it in any way
 impl<T> Tree<T>
 where
     T: Column,
 {
-    pub fn new(db: Arc<DB>) -> Result<Self> {
+    pub fn new(db: &Arc<DB>) -> Result<Self> {
         // Check that tree exists
         db.cf_handle(T::NAME)
             .with_context(|| format!("No cf for {}", T::NAME))?;
@@ -94,11 +92,16 @@ where
         T::read_options(&mut read_config);
 
         Ok(Self {
-            db,
+            db: db.clone(),
             write_config,
             read_config,
             _column: Default::default(),
         })
+    }
+
+    #[inline]
+    pub fn read_config(&self) -> &ReadOptions {
+        &self.read_config
     }
 
     pub fn get<K: AsRef<[u8]>>(&self, key: K) -> Result<Option<DBPinnableSlice>> {
@@ -144,20 +147,10 @@ where
         &self.db
     }
 
+    /// Note. get_cf Usually took p999 511ns,
+    /// So we are not storing it in any way
     pub fn get_cf(&self) -> Result<Arc<BoundColumnFamily>> {
         self.db.cf_handle(T::NAME).context("No cf")
-    }
-
-    pub fn size(&self) -> Result<usize> {
-        let mut tot = 0;
-        let hd = self.get_cf()?;
-        self.raw_db_handle()
-            .iterator_cf(&hd, IteratorMode::Start)
-            .for_each(|(k, v)| {
-                tot += k.len();
-                tot += v.len();
-            });
-        Ok(tot)
     }
 
     pub fn iterator(&'_ self, mode: IteratorMode) -> Result<DBIterator> {
@@ -167,5 +160,14 @@ where
         T::read_options(&mut read_config);
 
         Ok(self.db.iterator_cf_opt(&cf, read_config, mode))
+    }
+
+    pub fn raw_iterator(&'_ self) -> Result<DBRawIterator> {
+        let cf = self.get_cf()?;
+
+        let mut read_config = Default::default();
+        T::read_options(&mut read_config);
+
+        Ok(self.db.raw_iterator_cf_opt(&cf, read_config))
     }
 }

@@ -60,6 +60,10 @@ impl BlockMeta {
         self.gen_lt
     }
 
+    pub fn clear_data_and_proof(&self) {
+        self.flags.fetch_and(CLEAR_DATA_MASK, Ordering::Release);
+    }
+
     pub fn set_has_data(&self) -> bool {
         self.set_flag(BLOCK_META_FLAG_HAS_DATA)
     }
@@ -146,6 +150,18 @@ impl BlockMeta {
         self.test_flag(BLOCK_META_FLAG_IS_KEY_BLOCK)
     }
 
+    pub fn set_is_moving_to_archive(&self) -> bool {
+        self.set_flag(BLOCK_META_FLAG_MOVING_TO_ARCHIVE)
+    }
+
+    pub fn set_is_archived(&self) -> bool {
+        self.set_flag(BLOCK_META_FLAG_MOVED_TO_ARCHIVE)
+    }
+
+    pub fn is_archived(&self) -> bool {
+        self.test_flag(BLOCK_META_FLAG_MOVED_TO_ARCHIVE)
+    }
+
     fn test_flag(&self, flag: u64) -> bool {
         self.flags.load(Ordering::Acquire) & flag == flag
     }
@@ -202,7 +218,9 @@ const BLOCK_META_FLAG_HAS_PREV_1: u64 = 1 << (32 + 8);
 const BLOCK_META_FLAG_HAS_PREV_2: u64 = 1 << (32 + 9);
 const BLOCK_META_FLAG_IS_APPLIED: u64 = 1 << (32 + 10);
 const BLOCK_META_FLAG_IS_KEY_BLOCK: u64 = 1 << (32 + 11);
-// skip flag 12 (?)
-// const BLOCK_META_FLAG_MOVED_TO_ARCHIVE: u64 = 1 << (32 + 13);
-// const BLOCK_META_FLAG_INDEXED: u64 = 1 << (32 + 14);
-// skip flag 15 (?)
+
+const BLOCK_META_FLAG_MOVING_TO_ARCHIVE: u64 = 1 << (32 + 12);
+const BLOCK_META_FLAG_MOVED_TO_ARCHIVE: u64 = 1 << (32 + 13);
+
+const CLEAR_DATA_MASK: u64 =
+    !(BLOCK_META_FLAG_HAS_DATA | BLOCK_META_FLAG_HAS_PROOF | BLOCK_META_FLAG_HAS_PROOF_LINK);

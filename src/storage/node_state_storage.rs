@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use anyhow::Result;
 
 use super::{columns, Tree};
@@ -7,8 +9,8 @@ pub struct NodeStateStorage {
 }
 
 impl NodeStateStorage {
-    pub fn with_db(db: Tree<columns::NodeState>) -> Self {
-        Self { db }
+    pub fn with_db(db: &Arc<rocksdb::DB>) -> Result<Self> {
+        Ok(Self { db: Tree::new(db)? })
     }
 
     pub fn store(&self, key: &'static str, value: Vec<u8>) -> Result<()> {

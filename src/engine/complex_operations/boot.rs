@@ -10,7 +10,6 @@ use std::time::Duration;
 use anyhow::Result;
 use tiny_adnl::utils::*;
 
-use crate::engine::node_state::*;
 use crate::engine::Engine;
 use crate::storage::*;
 use crate::utils::*;
@@ -25,9 +24,9 @@ pub struct BootData {
 
 pub async fn boot(engine: &Arc<Engine>) -> Result<BootData> {
     log::info!("Starting boot");
-    let last_mc_block_id = match LastMcBlockId::load_from_db(engine.db.as_ref()) {
+    let last_mc_block_id = match engine.last_blocks.last_mc.load_from_db() {
         Ok(block_id) => {
-            let last_mc_block_id = convert_block_id_ext_api2blk(&block_id.0)?;
+            let last_mc_block_id = convert_block_id_ext_api2blk(&block_id)?;
             warm_boot(engine, last_mc_block_id).await?
         }
         Err(e) => {
@@ -45,8 +44,8 @@ pub async fn boot(engine: &Arc<Engine>) -> Result<BootData> {
         }
     };
 
-    let shards_client_mc_block_id = match ShardsClientMcBlockId::load_from_db(engine.db.as_ref()) {
-        Ok(block_id) => convert_block_id_ext_api2blk(&block_id.0)?,
+    let shards_client_mc_block_id = match engine.last_blocks.shard_client_mc_block.load_from_db() {
+        Ok(block_id) => convert_block_id_ext_api2blk(&block_id)?,
         Err(_) => {
             engine.store_shards_client_mc_block_id(&last_mc_block_id)?;
             last_mc_block_id.clone()
@@ -355,7 +354,7 @@ pub async fn download_zero_state(
         match engine.download_zerostate(block_id, None).await {
             Ok(state) => {
                 let handle = engine.store_zerostate(block_id, &state).await?;
-                engine.set_applied(&handle, 0)?;
+                engine.set_applied(&handle, 0).await?;
                 return Ok((handle, state));
             }
             Err(e) => {
@@ -450,18 +449,10 @@ async fn download_block_and_state(
         engine.store_state(&handle, &shard_state).await?;
     }
 
-    engine.set_applied(&handle, masterchain_block_id.seq_no)?;
+    engine
+        .set_applied(&handle, masterchain_block_id.seq_no)
+        .await?;
     Ok((handle, block))
-}
-
-fn is_persistent_state(block_utime: u32, prev_utime: u32) -> bool {
-    block_utime / (1 << 17) != prev_utime / (1 << 17)
-}
-
-fn persistent_state_ttl(utime: u32) -> u32 {
-    let x = utime / (1 << 17);
-    let b = x.trailing_zeros();
-    utime + ((1 << 18) << b)
 }
 
 const KEY_BLOCK_UTIME_STEP: i32 = 86400;

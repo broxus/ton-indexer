@@ -96,3 +96,13 @@ impl ShardStateStuff {
         Ok(&self.shard_state_extra()?.config)
     }
 }
+
+pub fn is_persistent_state(block_utime: u32, prev_utime: u32) -> bool {
+    block_utime / (1 << 17) != prev_utime / (1 << 17)
+}
+
+pub fn persistent_state_ttl(utime: u32) -> u32 {
+    let x = utime / (1 << 17);
+    let b = x.trailing_zeros();
+    utime + ((1 << 18) << b)
+}
