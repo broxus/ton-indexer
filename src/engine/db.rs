@@ -585,7 +585,7 @@ total_cached_handles_removed: {}
 total_blocks_removed: {}
 total_handles_removed: {}
 "#,
-            target_block.id(),
+            key_block_id,
             total_cached_handles_removed,
             stats.total_blocks_removed,
             stats.total_handles_removed,

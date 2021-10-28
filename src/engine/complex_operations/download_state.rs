@@ -294,7 +294,7 @@ async fn download_packet_worker(ctx: Arc<DownloadContext>, mut offsets_rx: Offse
             let result = tokio::select! {
                 data = recv_fut => data,
                 _ = ctx.complete_signal.clone() => {
-                    log::error!("Got last_part_signal: {}", offset);
+                    log::warn!("Got last_part_signal: {}", offset);
                     continue;
                 }
             };

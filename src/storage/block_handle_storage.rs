@@ -58,6 +58,11 @@ impl BlockHandleStorage {
         self.handles
             .insert(id.root_hash.as_slice(), handle.meta().to_vec()?)?;
 
+        if handle.meta().is_key_block() {
+            self.key_blocks
+                .insert(handle.id().seq_no.to_be_bytes(), handle.id().to_vec()?)?;
+        }
+
         Ok(())
     }
 
@@ -182,11 +187,6 @@ impl BlockHandleStorage {
         };
 
         self.store_handle(&handle)?;
-
-        if handle.meta().is_key_block() {
-            self.key_blocks
-                .insert(handle.id().seq_no.to_be_bytes(), handle.id().to_vec()?)?;
-        }
 
         Ok(Some(handle))
     }
