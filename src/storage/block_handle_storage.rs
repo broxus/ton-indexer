@@ -191,11 +191,16 @@ impl BlockHandleStorage {
         Ok(Some(handle))
     }
 
-    pub fn gc_handles_cache(&self, top_blocks: &FxHashMap<ton_block::ShardIdent, u32>) {
+    pub fn gc_handles_cache(&self, top_blocks: &FxHashMap<ton_block::ShardIdent, u32>) -> usize {
+        let mut total_removed = 0;
+
         self.cache.retain(|block_id, value| {
             let value = match value.upgrade() {
                 Some(value) => value,
-                None => return false,
+                None => {
+                    total_removed += 1;
+                    return false;
+                }
             };
 
             if block_id.is_masterchain() && value.meta().is_key_block() {
@@ -204,6 +209,7 @@ impl BlockHandleStorage {
 
             match top_blocks.get(&block_id.shard_id) {
                 Some(top_seq_no) if block_id.seq_no < *top_seq_no => {
+                    total_removed += 1;
                     value.meta().clear_data_and_proof();
                     false
                 }
@@ -211,6 +217,8 @@ impl BlockHandleStorage {
                 _ => true,
             }
         });
+
+        total_removed
     }
 }
 

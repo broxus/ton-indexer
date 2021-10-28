@@ -117,7 +117,12 @@ impl ArchiveManager {
         }
     }
 
-    pub async fn gc(&self, top_blocks: &FxHashMap<ton_block::ShardIdent, u32>) -> Result<()> {
+    pub async fn gc(
+        &self,
+        top_blocks: &FxHashMap<ton_block::ShardIdent, u32>,
+    ) -> Result<BlockGcStats> {
+        let mut stats = BlockGcStats::default();
+
         let (raw_db, batch) = {
             // Cache cfs before loop
             let blocks_cf = self.blocks.get_cf()?;
@@ -155,12 +160,17 @@ impl ArchiveManager {
 
                 // Add item to the batch
                 batch.delete_cf(&blocks_cf, &key);
+                stats.total_blocks_removed += 1;
 
                 // Key structure:
-                // []
-
+                // [workchain id, 4 bytes]
+                // [shard id, 8 bytes]
+                // [seqno, 4 bytes]
+                // [root hash, 32 bytes] <-
+                // ..
                 if key.len() >= 48 {
                     batch.delete_cf(&handles_cf, &key[16..48]);
+                    stats.total_handles_removed += 1;
                 }
             }
 
@@ -171,7 +181,7 @@ impl ArchiveManager {
         tokio::task::spawn_blocking(move || raw_db.write(batch)).await??;
 
         // Done
-        Ok(())
+        Ok(stats)
     }
 
     pub async fn move_into_archive(&self, handle: &BlockHandle) -> Result<()> {
@@ -318,6 +328,12 @@ impl ArchiveManager {
             None => Err(ArchiveManagerError::InvalidBlockData.into()),
         }
     }
+}
+
+#[derive(Debug, Copy, Clone, Default)]
+pub struct BlockGcStats {
+    pub total_blocks_removed: usize,
+    pub total_handles_removed: usize,
 }
 
 pub const ARCHIVE_PACKAGE_SIZE: u32 = 100;

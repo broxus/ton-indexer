@@ -575,10 +575,21 @@ impl Db {
             .collect();
 
         // Remove all expired entries
-        self.block_handle_storage.gc_handles_cache(&shard_blocks);
-        self.archive_manager.gc(&shard_blocks).await?;
+        let total_cached_handles_removed =
+            self.block_handle_storage.gc_handles_cache(&shard_blocks);
+        let stats = self.archive_manager.gc(&shard_blocks).await?;
 
-        log::info!("Finished blocks GC for key block: {}", target_block.id());
+        log::info!(
+            r#"Finished blocks GC for key block: {}
+total_cached_handles_removed: {}
+total_blocks_removed: {}
+total_handles_removed: {}
+"#,
+            target_block.id(),
+            total_cached_handles_removed,
+            stats.total_blocks_removed,
+            stats.total_handles_removed,
+        );
 
         // Done
         Ok(())

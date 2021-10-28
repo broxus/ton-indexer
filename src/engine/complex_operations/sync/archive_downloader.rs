@@ -68,7 +68,7 @@ where
             if BlockMaps::is_contiguous(&left, &right) {
                 // Send previous archive
                 if tx.send(left).await.is_err() {
-                    log::error!("Archive stream closed");
+                    log::warn!("Archive stream closed");
                     return;
                 }
             } else {
@@ -85,14 +85,14 @@ where
 
                 // Send previous archive
                 if tx.send(left).await.is_err() {
-                    log::error!("Archive stream closed");
+                    log::warn!("Archive stream closed");
                     return;
                 }
 
                 // Send archives for gaps
                 for arch in gaps {
                     if tx.send(arch).await.is_err() {
-                        log::error!("Archive stream closed");
+                        log::warn!("Archive stream closed");
                         return;
                     }
                 }
@@ -102,7 +102,7 @@ where
         }
 
         if tx.send(left).await.is_err() {
-            log::error!("Archive stream closed");
+            log::warn!("Archive stream closed");
         }
     });
 
