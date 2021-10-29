@@ -17,7 +17,7 @@ use ton_api::ton;
 
 use crate::storage::*;
 use crate::utils::*;
-use crate::BlocksGcType;
+use crate::BlocksGcKind;
 
 pub struct Db {
     block_cache: Cache,
@@ -537,14 +537,14 @@ impl Db {
     pub async fn garbage_collect(
         &self,
         key_block_id: &ton_block::BlockIdExt,
-        gc_type: BlocksGcType,
+        gc_type: BlocksGcKind,
     ) -> Result<()> {
         // Find target block
         let target_block = match gc_type {
-            BlocksGcType::BeforePreviousKeyBlock => self
+            BlocksGcKind::BeforePreviousKeyBlock => self
                 .block_handle_storage
                 .find_prev_key_block(key_block_id.seq_no)?,
-            BlocksGcType::BeforePreviousPersistentState => self
+            BlocksGcKind::BeforePreviousPersistentState => self
                 .block_handle_storage
                 .find_prev_persistent_key_block(key_block_id.seq_no)?,
         };

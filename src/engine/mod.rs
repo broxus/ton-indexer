@@ -98,7 +98,7 @@ struct BlockCaches {
 }
 
 struct BlocksGcState {
-    ty: BlocksGcType,
+    ty: BlocksGcKind,
     enabled: AtomicBool,
 }
 
@@ -164,7 +164,7 @@ impl Engine {
             db: db.clone(),
             states_gc_resolver,
             blocks_gc_state: config.blocks_gc_options.map(|options| BlocksGcState {
-                ty: options.ty,
+                ty: options.kind,
                 enabled: AtomicBool::new(options.enable_for_sync),
             }),
             subscribers,
