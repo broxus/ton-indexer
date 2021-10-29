@@ -9,7 +9,7 @@ use sysinfo::SystemExt;
 use tiny_adnl::*;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct NodeConfig {
     pub ip_address: SocketAddrV4,
     pub adnl_keys: NodeKeys,
@@ -58,6 +58,7 @@ impl Default for NodeConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct NodeKeys {
     #[serde(with = "serde_hex_array")]
     pub dht_key: [u8; 32],
@@ -89,7 +90,7 @@ impl NodeKeys {
 }
 
 #[derive(Debug, Copy, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "lowercase")]
+#[serde(tag = "type", rename_all = "lowercase", deny_unknown_fields)]
 pub enum OldBlocksPolicy {
     Ignore,
     Sync { from_seqno: u32 },
@@ -102,7 +103,7 @@ impl Default for OldBlocksPolicy {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct StateGcOptions {
     /// Default: rand[0,900)
     pub offset_sec: u64,
@@ -120,14 +121,13 @@ impl Default for StateGcOptions {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct BlocksGcOptions {
     /// Blocks GC type
-    /// - `beforePreviousKeyBlock` - on each new key block delete all blocks before the previous one
-    /// - `beforePreviousPersistentState` - on each new key block delete all blocks before the
+    /// - `before_previous_key_block` - on each new key block delete all blocks before the previous one
+    /// - `before_previous_persistent_state` - on each new key block delete all blocks before the
     ///   previous key block with persistent state
-    #[serde(rename = "type")]
-    pub ty: BlocksGcType,
+    pub kind: BlocksGcKind,
 
     /// Whether to enable blocks GC during sync. Default: true
     pub enable_for_sync: bool,
@@ -136,15 +136,15 @@ pub struct BlocksGcOptions {
 impl Default for BlocksGcOptions {
     fn default() -> Self {
         Self {
-            ty: BlocksGcType::BeforePreviousPersistentState,
+            kind: BlocksGcKind::BeforePreviousPersistentState,
             enable_for_sync: true,
         }
     }
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum BlocksGcType {
+#[serde(rename_all = "snake_case")]
+pub enum BlocksGcKind {
     BeforePreviousKeyBlock,
     BeforePreviousPersistentState,
 }

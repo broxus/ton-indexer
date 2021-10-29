@@ -58,14 +58,17 @@ impl ArchiveManager {
                 let mut reader = ArchivePackageViewReader::new(value)?;
 
                 let mut index = 0;
+
+                let fail_context = |index| {
+                    format!(
+                        "Failed to read archive entry {}. Index: {}",
+                        archive_id, index
+                    )
+                };
+
                 while reader
                     .read_next()
-                    .with_context(|| {
-                        format!(
-                            "Failed to read archive entry {}. Index: {}",
-                            archive_id, index
-                        )
-                    })?
+                    .with_context(|| fail_context(index))?
                     .is_some()
                 {
                     index += 1;
