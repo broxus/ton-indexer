@@ -44,6 +44,14 @@ impl BlockMeta {
         }
     }
 
+    pub fn brief(&self) -> BriefBlockMeta {
+        BriefBlockMeta {
+            flags: self.flags.load(Ordering::Acquire),
+            gen_utime: self.gen_utime,
+            gen_lt: self.gen_lt,
+        }
+    }
+
     pub fn masterchain_ref_seqno(&self) -> u32 {
         self.flags.load(Ordering::Acquire) as u32
     }
@@ -52,10 +60,12 @@ impl BlockMeta {
         self.flags.fetch_or(seqno as u64, Ordering::Release) as u32
     }
 
+    #[inline]
     pub fn gen_utime(&self) -> u32 {
         self.gen_utime
     }
 
+    #[inline]
     pub fn gen_lt(&self) -> u64 {
         self.gen_lt
     }
@@ -203,6 +213,40 @@ impl StoredValue for BlockMeta {
             gen_utime,
             gen_lt,
         })
+    }
+}
+
+#[derive(Debug, Default, Copy, Clone)]
+pub struct BriefBlockMeta {
+    flags: u64,
+    gen_utime: u32,
+    gen_lt: u64,
+}
+
+impl BriefBlockMeta {
+    #[inline]
+    pub fn gen_utime(&self) -> u32 {
+        self.gen_utime
+    }
+
+    #[inline]
+    pub fn gen_lt(&self) -> u64 {
+        self.gen_lt
+    }
+
+    #[inline]
+    pub fn masterchain_ref_seqno(&self) -> u32 {
+        self.flags as u32
+    }
+
+    #[inline]
+    pub fn is_key_block(&self) -> bool {
+        self.test_flag(BLOCK_META_FLAG_IS_KEY_BLOCK)
+    }
+
+    #[inline]
+    fn test_flag(&self, flag: u64) -> bool {
+        self.flags & flag == flag
     }
 }
 

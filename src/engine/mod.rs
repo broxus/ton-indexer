@@ -46,10 +46,12 @@ pub trait Subscriber: Send + Sync {
 
     async fn process_block(
         &self,
+        meta: BriefBlockMeta,
         block: &BlockStuff,
         block_proof: Option<&BlockProofStuff>,
         shard_state: &ShardStateStuff,
     ) -> Result<()> {
+        let _unused_by_default = meta;
         let _unused_by_default = block;
         let _unused_by_default = block_proof;
         let _unused_by_default = shard_state;
@@ -58,9 +60,11 @@ pub trait Subscriber: Send + Sync {
 
     async fn process_archive_block(
         &self,
+        meta: BriefBlockMeta,
         block: &BlockStuff,
         block_proof: Option<&BlockProofStuff>,
     ) -> Result<()> {
+        let _unused_by_default = meta;
         let _unused_by_default = block;
         let _unused_by_default = block_proof;
         Ok(())
@@ -919,16 +923,20 @@ impl Engine {
             return Ok(());
         }
 
+        let meta = handle.meta().brief();
+
         if handle.id().shard().is_masterchain() {
             let block_proof = self.load_block_proof(handle, false).await?;
             for subscriber in &self.subscribers {
                 subscriber
-                    .process_block(block, Some(&block_proof), shard_state)
+                    .process_block(meta, block, Some(&block_proof), shard_state)
                     .await?;
             }
         } else {
             for subscriber in &self.subscribers {
-                subscriber.process_block(block, None, shard_state).await?;
+                subscriber
+                    .process_block(meta, block, None, shard_state)
+                    .await?;
             }
         }
 
@@ -945,15 +953,17 @@ impl Engine {
             return Ok(());
         }
 
+        let meta = handle.meta().brief();
+
         if handle.id().shard().is_masterchain() {
             for subscriber in &self.subscribers {
                 subscriber
-                    .process_archive_block(block, Some(block_proof))
+                    .process_archive_block(meta, block, Some(block_proof))
                     .await?;
             }
         } else {
             for subscriber in &self.subscribers {
-                subscriber.process_archive_block(block, None).await?;
+                subscriber.process_archive_block(meta, block, None).await?;
             }
         }
 
