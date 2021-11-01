@@ -76,6 +76,7 @@ struct LoggerSubscriber {
 impl ton_indexer::Subscriber for LoggerSubscriber {
     async fn process_block(
         &self,
+        meta: BriefBlockMeta,
         block: &BlockStuff,
         _block_proof: Option<&BlockProofStuff>,
         _shard_state: &ShardStateStuff,
@@ -88,8 +89,8 @@ impl ton_indexer::Subscriber for LoggerSubscriber {
             return Ok(());
         }
 
-        let info = block.block().info.read_struct()?;
-        log::info!("TIME_DIFF: {}", now() - info.gen_utime().0 as i32);
+        let created_at = meta.gen_utime() as i64;
+        log::info!("TIME_DIFF: {}", now() as i64 - created_at);
 
         Ok(())
     }

@@ -19,12 +19,13 @@ use crate::storage::*;
 use crate::utils::*;
 use crate::BlocksGcKind;
 
+const CURRENT_VERSION: [u8; 3] = [2, 0, 2];
+
 pub struct Db {
     block_cache: Cache,
     uncompressed_block_cache: Cache,
     block_handle_storage: BlockHandleStorage,
     shard_state_storage: ShardStateStorage,
-    node_state_storage: NodeStateStorage,
     archive_manager: ArchiveManager,
     block_index_db: BlockIndexDb,
     background_sync_meta_store: BackgroundSyncMetaStore,
@@ -33,7 +34,7 @@ pub struct Db {
     prev2_block_db: Tree<columns::Prev2>,
     next1_block_db: Tree<columns::Next1>,
     next2_block_db: Tree<columns::Next2>,
-    _db: Arc<rocksdb::DB>,
+    db: Arc<rocksdb::DB>,
 }
 
 pub struct RocksdbStats {
@@ -54,13 +55,11 @@ impl Db {
         PS: AsRef<Path>,
         PF: AsRef<Path>,
     {
-        //todo get it from user
         let limit = match fdlimit::raise_fd_limit() {
-            Some(a) => a,
-            None => {
-                let (x, _) = rlimit::getrlimit(Resource::NOFILE).unwrap_or((256, 0));
-                x
-            }
+            // New fd limit
+            Some(limit) => limit,
+            // Current soft limit
+            None => rlimit::getrlimit(Resource::NOFILE).unwrap_or((256, 0)).0,
         };
 
         let total_blocks_cache_size = (mem_limit * 2) / 3;
@@ -126,9 +125,10 @@ impl Db {
             .build()
             .context("Failed building db")?;
 
+        check_version(&db)?;
+
         let block_handle_storage = BlockHandleStorage::with_db(&db)?;
         let shard_state_storage = ShardStateStorage::with_db(&db, &file_db_path).await?;
-        let node_state_storage = NodeStateStorage::with_db(&db)?;
         let archive_manager = ArchiveManager::with_db(&db)?;
         let block_index_db = BlockIndexDb::with_db(&db)?;
         let background_sync_meta_store = BackgroundSyncMetaStore::new(&db)?;
@@ -138,7 +138,6 @@ impl Db {
             uncompressed_block_cache,
             block_handle_storage,
             shard_state_storage,
-            node_state_storage,
             archive_manager,
             block_index_db,
             background_sync_meta_store,
@@ -146,12 +145,16 @@ impl Db {
             prev2_block_db: Tree::new(&db)?,
             next1_block_db: Tree::new(&db)?,
             next2_block_db: Tree::new(&db)?,
-            _db: db,
+            db,
         }))
     }
 
+    pub fn raw(&self) -> &Arc<rocksdb::DB> {
+        &self.db
+    }
+
     pub fn get_memory_usage_stats(&self) -> Result<RocksdbStats> {
-        let whole_db_stats = rocksdb::perf::get_memory_usage_stats(Some(&[&self._db]), None)?;
+        let whole_db_stats = rocksdb::perf::get_memory_usage_stats(Some(&[&self.db]), None)?;
         let uncompressed_stats = self.uncompressed_block_cache.get_usage();
         let uncompressed_pined_stats = self.uncompressed_block_cache.get_pinned_usage();
         let compressed_stats = self.block_cache.get_usage();
@@ -484,14 +487,6 @@ impl Db {
         self.block_handle_storage.find_last_key_block()
     }
 
-    pub fn store_node_state(&self, key: &'static str, value: Vec<u8>) -> Result<()> {
-        self.node_state_storage.store(key, value)
-    }
-
-    pub fn load_node_state(&self, key: &'static str) -> Result<Vec<u8>> {
-        self.node_state_storage.load(key)
-    }
-
     pub fn index_handle(&self, handle: &Arc<BlockHandle>) -> Result<()> {
         self.block_index_db.add_handle(handle)
     }
@@ -596,6 +591,39 @@ total_handles_removed: {}
     }
 }
 
+fn check_version(db: &Arc<rocksdb::DB>) -> Result<()> {
+    const DB_VERSION_KEY: &str = "db_version";
+
+    let state = Tree::<columns::NodeState>::new(db)?;
+    let is_empty = state
+        .iterator(rocksdb::IteratorMode::Start)?
+        .next()
+        .is_none();
+
+    let version = state.get(DB_VERSION_KEY)?.map(|v| v.to_vec());
+
+    match version {
+        Some(version) if version == CURRENT_VERSION => {
+            log::info!("Stored DB version is compatible");
+            Ok(())
+        }
+        Some(version) => Err(DbError::IncompatibleDbVersion).with_context(|| {
+            format!(
+                "Found version: {:?}. Expected version: {:?}",
+                version, CURRENT_VERSION
+            )
+        }),
+        None if is_empty => {
+            log::info!("Starting with empty db");
+            state
+                .insert(DB_VERSION_KEY, CURRENT_VERSION)
+                .context("Failed to save new DB version")?;
+            Ok(())
+        }
+        None => Err(DbError::VersionNotFound.into()),
+    }
+}
+
 #[inline]
 fn store_block_connection_impl<T>(
     db: &Tree<T>,
@@ -642,6 +670,10 @@ pub enum BlockConnection {
 
 #[derive(thiserror::Error, Debug)]
 enum DbError {
+    #[error("Incompatible DB version")]
+    IncompatibleDbVersion,
+    #[error("Existing DB version not found")]
+    VersionNotFound,
     #[error("Not found")]
     NotFound,
     #[error("Failed to create zero state block handle")]

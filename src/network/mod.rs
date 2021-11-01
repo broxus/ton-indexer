@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use tiny_adnl::utils::*;
 use tiny_adnl::*;
 use ton_api::ton;
@@ -111,14 +111,16 @@ impl NodeNetwork {
                 self.overlay.clone(),
                 self.rldp.clone(),
             ])
-            .await?;
+            .await
+            .context("Failed to start ADNL node")?;
 
         let overlay = self
             .get_overlay(
                 self.masterchain_overlay_id,
                 self.masterchain_overlay_short_id,
             )
-            .await?;
+            .await
+            .context("Failed to start masterchain overlay node")?;
 
         Ok(overlay)
     }

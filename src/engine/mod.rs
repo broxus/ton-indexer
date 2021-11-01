@@ -125,11 +125,14 @@ impl Engine {
             &config.file_db_path,
             config.max_db_memory_usage,
         )
-        .await?;
+        .await
+        .context("Failed to create DB")?;
+
         let zero_state_id = global_config.zero_state.clone();
 
         let mut init_mc_block_id = zero_state_id.clone();
-        let init_block = InitMcBlockId::new(db.clone());
+        let init_block =
+            InitMcBlockId::new(db.raw()).context("Failed to get init masterchain block")?;
         if let Ok(block_id) = init_block.load_from_db() {
             if block_id.seqno > init_mc_block_id.seq_no as i32 {
                 init_mc_block_id = convert_block_id_ext_api2blk(&block_id)?;
@@ -146,8 +149,10 @@ impl Engine {
             config.overlay_shard_options,
             global_config,
         )
-        .await?;
-        network.start().await?;
+        .await
+        .context("Failed to init network")?;
+        network.start().await.context("Failed to start network")?;
+
         log::info!("Network started");
 
         let states_gc_resolver = match config.state_gc_options {
@@ -186,15 +191,17 @@ impl Engine {
             next_block_applying_operations: OperationsPool::new("next_block_applying_operations"),
             download_block_operations: OperationsPool::new("download_block_operations"),
             last_blocks: BlockCaches {
-                last_mc: LastMcBlockId::new(db.clone()),
+                last_mc: LastMcBlockId::new(db.raw())?,
                 init_block,
-                shard_client_mc_block: ShardsClientMcBlockId::new(db.clone()),
+                shard_client_mc_block: ShardsClientMcBlockId::new(db.raw())?,
             },
         });
 
         engine
             .get_full_node_overlay(ton_block::BASE_WORKCHAIN_ID, ton_block::SHARD_FULL)
-            .await?;
+            .await
+            .context("Failed to create base workchain overlay node")?;
+
         log::info!("Overlay connected");
         Ok(engine)
     }
