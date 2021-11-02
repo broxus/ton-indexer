@@ -20,9 +20,8 @@ use crate::storage::{columns, StoredValue, Tree};
 
 pub struct ArchiveManager {
     db: Arc<rocksdb::DB>,
-    blocks: Tree<columns::ArchiveManagerDb>,
-    handles: Tree<columns::BlockHandles>,
-    archive_storage: Tree<columns::ArchiveStorage>,
+    archives: Tree<columns::Archives>,
+    package_entries: Tree<columns::PackageEntries>,
     block_handles: Tree<columns::BlockHandles>,
     key_blocks: Tree<columns::KeyBlocks>,
 }
@@ -31,9 +30,8 @@ impl ArchiveManager {
     pub fn with_db(db: &Arc<rocksdb::DB>) -> Result<Self> {
         let manager = Self {
             db: db.clone(),
-            blocks: Tree::new(db)?,
-            handles: Tree::new(db)?,
-            archive_storage: Tree::new(db)?,
+            archives: Tree::new(db)?,
+            package_entries: Tree::new(db)?,
             block_handles: Tree::new(db)?,
             key_blocks: Tree::new(db)?,
         };
@@ -44,7 +42,7 @@ impl ArchiveManager {
     }
 
     fn self_check(&self) -> Result<()> {
-        let storage_cf = self.archive_storage.get_cf()?;
+        let storage_cf = self.archives.get_cf()?;
         let mut iter = self.db.raw_iterator_cf(&storage_cf);
         iter.seek_to_first();
 
@@ -92,7 +90,7 @@ impl ArchiveManager {
     where
         I: Borrow<ton_block::BlockIdExt> + Hash,
     {
-        self.blocks.insert(id.to_vec()?, data)?;
+        self.package_entries.insert(id.to_vec()?, data)?;
         Ok(())
     }
 
@@ -100,7 +98,7 @@ impl ArchiveManager {
     where
         I: Borrow<ton_block::BlockIdExt> + Hash,
     {
-        self.blocks.contains_key(id.to_vec()?)
+        self.package_entries.contains_key(id.to_vec()?)
     }
 
     pub async fn get_data<I>(&self, handle: &BlockHandle, id: &PackageEntryId<I>) -> Result<Vec<u8>>
@@ -114,7 +112,7 @@ impl ArchiveManager {
             }
         };
 
-        match self.blocks.get(id.to_vec()?)? {
+        match self.package_entries.get(id.to_vec()?)? {
             Some(a) => Ok(a.to_vec()),
             None => Err(ArchiveManagerError::InvalidBlockData.into()),
         }
@@ -128,16 +126,18 @@ impl ArchiveManager {
 
         let (raw_db, batch) = {
             // Cache cfs before loop
-            let blocks_cf = self.blocks.get_cf()?;
-            let handles_cf = self.handles.get_cf()?;
+            let blocks_cf = self.package_entries.get_cf()?;
+            let block_handles_cf = self.block_handles.get_cf()?;
             let key_blocks_cf = self.key_blocks.get_cf()?;
-            let raw_db = self.blocks.raw_db_handle().clone();
+            let raw_db = self.package_entries.raw_db_handle().clone();
 
             // Create batch
             let mut batch = rocksdb::WriteBatch::default();
 
             // Iterate all entries and find expired items
-            let blocks_iter = self.blocks.iterator(rocksdb::IteratorMode::Start)?;
+            let blocks_iter = self
+                .package_entries
+                .iterator(rocksdb::IteratorMode::Start)?;
             for (key, _) in blocks_iter {
                 // Read only prefix with shard ident and seqno
                 let prefix = PackageEntryIdPrefix::from_slice(key.as_ref())?;
@@ -172,7 +172,7 @@ impl ArchiveManager {
                 // [root hash, 32 bytes] <-
                 // ..
                 if key.len() >= 48 {
-                    batch.delete_cf(&handles_cf, &key[16..48]);
+                    batch.delete_cf(&block_handles_cf, &key[16..48]);
                     stats.total_handles_removed += 1;
                 }
             }
@@ -229,7 +229,7 @@ impl ArchiveManager {
         };
 
         // Prepare cf
-        let storage_cf = self.archive_storage.get_cf()?;
+        let storage_cf = self.archives.get_cf()?;
         let handle_cf = self.block_handles.get_cf()?;
 
         // Prepare archive
@@ -271,7 +271,7 @@ impl ArchiveManager {
     }
 
     pub fn get_archive_id(&self, mc_seq_no: u32) -> Result<Option<u64>> {
-        let storage_cf = self.archive_storage.get_cf()?;
+        let storage_cf = self.archives.get_cf()?;
 
         let mut iterator = self.db.raw_iterator_cf(&storage_cf);
         iterator.seek_for_prev(&(mc_seq_no as u64).to_be_bytes());
@@ -288,7 +288,7 @@ impl ArchiveManager {
         offset: usize,
         limit: usize,
     ) -> Result<Option<Vec<u8>>> {
-        match self.archive_storage.get(id.to_be_bytes())? {
+        match self.archives.get(id.to_be_bytes())? {
             Some(slice) if offset < slice.len() => {
                 let end = std::cmp::min(offset + limit, slice.len());
                 Ok(Some(slice[offset..end].to_vec()))
@@ -326,7 +326,7 @@ impl ArchiveManager {
     where
         I: Borrow<ton_block::BlockIdExt> + Hash,
     {
-        match self.blocks.get(entry_id.to_vec()?)? {
+        match self.package_entries.get(entry_id.to_vec()?)? {
             Some(data) => make_archive_segment(&entry_id.filename(), &data).map_err(From::from),
             None => Err(ArchiveManagerError::InvalidBlockData.into()),
         }

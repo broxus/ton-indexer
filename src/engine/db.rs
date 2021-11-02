@@ -107,20 +107,19 @@ impl Db {
                 // opts.enable_statistics();
                 // opts.set_stats_dump_period_sec(300);
             })
-            .column::<columns::ArchiveStorage>()
+            .column::<columns::Archives>()
             .column::<columns::BlockHandles>()
             .column::<columns::KeyBlocks>()
-            .column::<columns::ShardStateDb>()
-            .column::<columns::CellDb<0>>()
-            .column::<columns::CellDb<1>>()
-            .column::<columns::NodeState>()
+            .column::<columns::ShardStates>()
+            .column::<columns::Cells>()
+            .column::<columns::NodeStates>()
             .column::<columns::LtDesc>()
             .column::<columns::Lt>()
             .column::<columns::Prev1>()
             .column::<columns::Prev2>()
             .column::<columns::Next1>()
             .column::<columns::Next2>()
-            .column::<columns::ArchiveManagerDb>()
+            .column::<columns::PackageEntries>()
             .column::<columns::BackgroundSyncMeta>()
             .build()
             .context("Failed building db")?;
@@ -594,7 +593,7 @@ total_handles_removed: {}
 fn check_version(db: &Arc<rocksdb::DB>) -> Result<()> {
     const DB_VERSION_KEY: &str = "db_version";
 
-    let state = Tree::<columns::NodeState>::new(db)?;
+    let state = Tree::<columns::NodeStates>::new(db)?;
     let is_empty = state
         .iterator(rocksdb::IteratorMode::Start)?
         .next()

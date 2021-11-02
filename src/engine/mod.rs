@@ -7,7 +7,6 @@
 ///
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
 
 use anyhow::{Context, Result};
 pub use rocksdb::perf::MemoryUsageStats;
@@ -156,13 +155,13 @@ impl Engine {
         log::info!("Network started");
 
         let states_gc_resolver = match config.state_gc_options {
-            Some(options) => {
+            Some(_options) => {
                 let resolver = Arc::new(DefaultStateGcResolver::default());
-                db.start_states_gc(
-                    resolver.clone(),
-                    Duration::from_secs(options.offset_sec),
-                    Duration::from_secs(options.interval_sec),
-                );
+                // db.start_states_gc(
+                //     resolver.clone(),
+                //     Duration::from_secs(options.offset_sec),
+                //     Duration::from_secs(options.interval_sec),
+                // );
                 Some(resolver)
             }
             None => None,

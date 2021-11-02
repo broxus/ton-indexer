@@ -1,22 +1,134 @@
-/// This file is a modified copy of the file from https://github.com/tonlabs/ton-labs-node
-///
-/// Changes:
-/// - replaced old `failure` crate with `anyhow`
-/// - slightly changed serialization for more optimal allocations
-///
+use std::collections::VecDeque;
 use std::io::Write;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 
 use anyhow::Result;
 use parking_lot::RwLock;
 use smallvec::SmallVec;
-use ton_types::{ByteOrderRead, CellImpl};
+use tiny_adnl::utils::*;
+use ton_types::{ByteOrderRead, CellImpl, UInt256};
 
-use super::shard_state_storage::DynamicBocDb;
+use crate::storage::{columns, Tree};
+
+pub struct CellStorage {
+    db: Tree<columns::Cells>,
+    cells: FxDashMap<UInt256, Weak<StorageCell>>,
+}
+
+impl CellStorage {
+    pub fn new(db: &Arc<rocksdb::DB>) -> Result<Self> {
+        Ok(Self {
+            db: Tree::new(db)?,
+            cells: FxDashMap::default(),
+        })
+    }
+
+    pub fn get_cf(&self) -> Result<Arc<rocksdb::BoundColumnFamily>> {
+        self.db.get_cf()
+    }
+
+    pub fn store_dynamic_boc(&self, marker: u8, root: ton_types::Cell) -> Result<usize> {
+        let mut transaction = FxHashMap::default();
+
+        let written_count = self.prepare_tree_of_cells(marker, root, &mut transaction)?;
+
+        let cf = self.db.get_cf()?;
+        let mut batch = rocksdb::WriteBatch::default();
+
+        for (cell_id, data) in &transaction {
+            batch.put_cf(&cf, cell_id, data);
+        }
+
+        self.db.raw_db_handle().write(batch)?;
+
+        Ok(written_count)
+    }
+
+    pub fn load_cell(self: &Arc<Self>, hash: UInt256) -> Result<Arc<StorageCell>> {
+        if let Some(cell) = self.cells.get(&hash) {
+            if let Some(cell) = cell.upgrade() {
+                return Ok(cell);
+            }
+        }
+
+        let cell = match self.db.get(hash.as_slice())? {
+            Some(value) => Arc::new(StorageCell::deserialize(self.clone(), &value)?),
+            None => return Err(CellStorageError::CellNotFound.into()),
+        };
+        self.cells.insert(hash, Arc::downgrade(&cell));
+
+        Ok(cell)
+    }
+
+    pub fn load_cell_references(
+        &self,
+        hash: &UInt256,
+    ) -> Result<SmallVec<[StorageCellReference; 4]>> {
+        match self.db.get(hash.as_slice())? {
+            Some(value) => StorageCell::deserialize_references(value.as_ref()),
+            None => Err(CellStorageError::CellNotFound.into()),
+        }
+    }
+
+    pub fn store_single_cell(&self, hash: &[u8], value: &[u8]) -> Result<()> {
+        self.db.insert(hash, value)
+    }
+
+    pub fn drop_cell(&self, hash: &UInt256) {
+        self.cells.remove(hash);
+    }
+
+    pub fn clear(&self) -> Result<()> {
+        self.db.clear()?;
+        self.cells.clear();
+        Ok(())
+    }
+
+    fn prepare_tree_of_cells(
+        &self,
+        marker: u8,
+        cell: ton_types::Cell,
+        transaction: &mut FxHashMap<UInt256, Vec<u8>>,
+    ) -> Result<usize> {
+        let cell_id = cell.repr_hash();
+        if self.db.contains_key(&cell_id)? || transaction.contains_key(&cell_id) {
+            return Ok(0);
+        }
+
+        let mut count = 1;
+        transaction.insert(cell_id, StorageCell::serialize(marker, &*cell)?);
+
+        let mut stack = VecDeque::with_capacity(16);
+        stack.push_back(cell);
+
+        while let Some(current) = stack.pop_back() {
+            for i in 0..current.references_count() {
+                let cell = current.reference(i)?;
+                let cell_id = cell.repr_hash();
+
+                if self.db.contains_key(&cell_id)? || transaction.contains_key(&cell_id) {
+                    continue;
+                }
+
+                count += 1;
+                transaction.insert(cell.repr_hash(), StorageCell::serialize(marker, &*cell)?);
+                stack.push_back(cell);
+            }
+        }
+
+        Ok(count)
+    }
+}
+
+#[derive(thiserror::Error, Debug)]
+enum CellStorageError {
+    #[error("Cell not found in cell db")]
+    CellNotFound,
+}
 
 pub struct StorageCell {
-    boc_db: DynamicBocDb,
+    cell_storage: Arc<CellStorage>,
     cell_data: ton_types::CellData,
     references: RwLock<SmallVec<[StorageCellReference; 4]>>,
     tree_bits_count: Arc<AtomicU64>,
@@ -28,15 +140,19 @@ impl StorageCell {
         self.hash(ton_types::MAX_LEVEL as usize)
     }
 
-    pub fn deserialize(boc_db: DynamicBocDb, data: &[u8]) -> Result<Self> {
+    pub fn deserialize(boc_db: Arc<CellStorage>, data: &[u8]) -> Result<Self> {
         let mut reader = std::io::Cursor::new(data);
 
+        // skip marker
+        reader.set_position(1);
+
+        // deserialize cell
         let cell_data = ton_types::CellData::deserialize(&mut reader)?;
         let references_count = reader.read_byte()?;
         let mut references = SmallVec::with_capacity(references_count as usize);
 
         for _ in 0..references_count {
-            let hash = ton_types::UInt256::from(reader.read_u256()?);
+            let hash = UInt256::from(reader.read_u256()?);
             references.push(StorageCellReference::Unloaded(hash));
         }
 
@@ -49,7 +165,7 @@ impl StorageCell {
         };
 
         Ok(Self {
-            boc_db,
+            cell_storage: boc_db,
             cell_data,
             references: RwLock::new(references),
             tree_bits_count: Arc::new(AtomicU64::new(tree_bits_count)),
@@ -60,21 +176,29 @@ impl StorageCell {
     pub fn deserialize_references(data: &[u8]) -> Result<SmallVec<[StorageCellReference; 4]>> {
         let mut reader = std::io::Cursor::new(data);
 
+        // skip marker
+        reader.set_position(1);
+
+        // deserialize cell
         let _cell_data = ton_types::CellData::deserialize(&mut reader)?;
         let references_count = reader.read_byte()?;
         let mut references = SmallVec::with_capacity(references_count as usize);
 
         for _ in 0..references_count {
-            let hash = ton_types::UInt256::from(reader.read_u256()?);
+            let hash = UInt256::from(reader.read_u256()?);
             references.push(StorageCellReference::Unloaded(hash));
         }
         Ok(references)
     }
 
-    pub fn serialize(cell: &dyn CellImpl) -> Result<Vec<u8>> {
-        let references_count = cell.references_count() as u8;
-
+    pub fn serialize(marker: u8, cell: &dyn CellImpl) -> Result<Vec<u8>> {
         let mut data = SmallVec::<[u8; 512]>::with_capacity(512);
+
+        // write marker
+        data.write_all(&[marker])?;
+
+        // serialize cell
+        let references_count = cell.references_count() as u8;
         cell.cell_data().serialize(&mut data)?;
         data.write_all(&[references_count])?;
 
@@ -88,14 +212,14 @@ impl StorageCell {
         Ok(data.as_slice().to_vec())
     }
 
-    fn reference(&self, index: usize) -> Result<Arc<StorageCell>> {
+    pub fn reference(&self, index: usize) -> Result<Arc<StorageCell>> {
         let hash = match &self.references.read().get(index) {
             Some(StorageCellReference::Unloaded(hash)) => *hash,
             Some(StorageCellReference::Loaded(cell)) => return Ok(cell.clone()),
             None => return Err(StorageCellError::AccessingInvalidReference.into()),
         };
 
-        let storage_cell = self.boc_db.load_cell(hash)?;
+        let storage_cell = self.cell_storage.load_cell(hash)?;
         self.references.write()[index] = StorageCellReference::Loaded(storage_cell.clone());
 
         Ok(storage_cell)
@@ -134,7 +258,7 @@ impl CellImpl for StorageCell {
         self.cell_data.level_mask()
     }
 
-    fn hash(&self, index: usize) -> ton_types::UInt256 {
+    fn hash(&self, index: usize) -> UInt256 {
         self.cell_data.hash(index)
     }
 
@@ -157,7 +281,7 @@ impl CellImpl for StorageCell {
 
 impl Drop for StorageCell {
     fn drop(&mut self) {
-        self.boc_db.drop_cell(&self.repr_hash())
+        self.cell_storage.drop_cell(&self.repr_hash())
     }
 }
 
@@ -189,11 +313,11 @@ fn same_references(
 #[derive(Clone, PartialEq)]
 pub enum StorageCellReference {
     Loaded(Arc<StorageCell>),
-    Unloaded(ton_types::UInt256),
+    Unloaded(UInt256),
 }
 
 impl StorageCellReference {
-    pub fn hash(&self) -> ton_types::UInt256 {
+    pub fn hash(&self) -> UInt256 {
         match self {
             Self::Loaded(cell) => cell.repr_hash(),
             Self::Unloaded(hash) => *hash,

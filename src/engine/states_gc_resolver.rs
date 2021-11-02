@@ -93,6 +93,15 @@ impl DefaultStateGcResolver {
         self.top_shard_seqno
             .retain(|item, _| current_shards.contains(item));
 
+        log::info!("------ new_min_ref_mc_seqno: {}", new_min_ref_mc_seqno);
+        for item in self.top_shard_seqno.iter() {
+            log::info!(
+                "------ {:016x}: {}",
+                item.key().shard_prefix_with_tag(),
+                item.value().load(Ordering::Acquire)
+            );
+        }
+
         Ok(())
     }
 }

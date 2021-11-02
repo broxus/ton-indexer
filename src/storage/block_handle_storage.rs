@@ -17,7 +17,7 @@ use crate::utils::*;
 
 pub struct BlockHandleStorage {
     cache: Arc<FxDashMap<ton_block::BlockIdExt, Weak<BlockHandle>>>,
-    handles: Tree<columns::BlockHandles>,
+    block_handles: Tree<columns::BlockHandles>,
     key_blocks: Tree<columns::KeyBlocks>,
 }
 
@@ -25,7 +25,7 @@ impl BlockHandleStorage {
     pub fn with_db(db: &Arc<rocksdb::DB>) -> Result<Self> {
         Ok(Self {
             cache: Arc::new(Default::default()),
-            handles: Tree::new(db)?,
+            block_handles: Tree::new(db)?,
             key_blocks: Tree::new(db)?,
         })
     }
@@ -41,7 +41,7 @@ impl BlockHandleStorage {
                 }
             }
 
-            if let Some(meta) = self.handles.get(block_id.root_hash.as_slice())? {
+            if let Some(meta) = self.block_handles.get(block_id.root_hash.as_slice())? {
                 let meta = BlockMeta::from_slice(meta.as_ref())?;
                 if let Some(handle) = self.create_handle(block_id.clone(), meta)? {
                     break Some(handle);
@@ -55,7 +55,7 @@ impl BlockHandleStorage {
     pub fn store_handle(&self, handle: &Arc<BlockHandle>) -> Result<()> {
         let id = handle.id();
 
-        self.handles
+        self.block_handles
             .insert(id.root_hash.as_slice(), handle.meta().to_vec()?)?;
 
         if handle.meta().is_key_block() {
