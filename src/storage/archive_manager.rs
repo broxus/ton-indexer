@@ -120,6 +120,7 @@ impl ArchiveManager {
 
     pub async fn gc(
         &self,
+        target_mc_block: &ton_block::BlockIdExt,
         top_blocks: &FxHashMap<ton_block::ShardIdent, u32>,
     ) -> Result<BlockGcStats> {
         let mut stats = BlockGcStats::default();
@@ -141,11 +142,22 @@ impl ArchiveManager {
             for (key, _) in blocks_iter {
                 // Read only prefix with shard ident and seqno
                 let prefix = PackageEntryIdPrefix::from_slice(key.as_ref())?;
-                match top_blocks.get(&prefix.shard_ident) {
-                    Some(top_seq_no) if prefix.seq_no < *top_seq_no => { /* gc block */ }
-                    // Skip blocks with seq.no. >= top seq.no.
-                    _ => continue,
-                };
+
+                if prefix.shard_ident.is_masterchain() {
+                    if prefix.seq_no >= target_mc_block.seq_no {
+                        continue;
+                    }
+                } else {
+                    match top_blocks.get(&prefix.shard_ident) {
+                        Some(top_seq_no) if prefix.seq_no < *top_seq_no => { /* gc block */ }
+                        // Skip blocks with seq.no. >= top seq.no.
+                        Some(_) => continue,
+                        None => {
+                            log::warn!("Top block not found for: {}", prefix.shard_ident);
+                            continue;
+                        }
+                    };
+                }
 
                 // Additionally check whether this item is a key block
                 if prefix.shard_ident.is_masterchain()
@@ -163,7 +175,10 @@ impl ArchiveManager {
 
                 // Add item to the batch
                 batch.delete_cf(&blocks_cf, &key);
-                stats.total_blocks_removed += 1;
+                stats.total_package_entries_removed += 1;
+                if prefix.shard_ident.is_masterchain() {
+                    stats.mc_package_entries_removed += 1;
+                }
 
                 // Key structure:
                 // [workchain id, 4 bytes]
@@ -335,7 +350,8 @@ impl ArchiveManager {
 
 #[derive(Debug, Copy, Clone, Default)]
 pub struct BlockGcStats {
-    pub total_blocks_removed: usize,
+    pub mc_package_entries_removed: usize,
+    pub total_package_entries_removed: usize,
     pub total_handles_removed: usize,
 }
 

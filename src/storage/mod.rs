@@ -194,7 +194,7 @@ impl StoredValue for ton_block::BlockIdExt {
     /// 4 bytes seqno,
     /// 32 bytes root hash,
     /// 32 bytes file hash
-    const SIZE_HINT: usize = 4 + 8 + 4 + 32 + 32;
+    const SIZE_HINT: usize = ton_block::ShardIdent::SIZE_HINT + 4 + 32 + 32;
 
     /// 96 is minimal suitable for `smallvec::Array` and `SIZE_HINT`
     type OnStackSlice = [u8; 96];

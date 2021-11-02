@@ -6,6 +6,7 @@
 /// - replaced recursions with dfs to prevent stack overflow
 ///
 use std::collections::VecDeque;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -121,6 +122,7 @@ pub trait StatesGcResolver: Send + Sync {
 }
 
 struct ShardStateStorageState {
+    node_state: Tree<columns::NodeStates>,
     shard_state_db: Tree<columns::ShardStates>,
     cell_storage: Arc<CellStorage>,
 }
@@ -128,6 +130,7 @@ struct ShardStateStorageState {
 impl ShardStateStorageState {
     fn new(db: &Arc<rocksdb::DB>) -> Result<Self> {
         Ok(Self {
+            node_state: Tree::new(db)?,
             shard_state_db: Tree::new(db)?,
             cell_storage: Arc::new(CellStorage::new(db)?),
         })
@@ -298,6 +301,48 @@ impl ShardStateStorageState {
 struct StateMarkup {
     marked: FxHashSet<UInt256>,
     to_sweep: Vec<(ton_block::BlockIdExt, UInt256)>,
+}
+
+struct GcState {
+    current_marker: u8,
+    active: bool,
+    since_block_id: Option<ton_block::BlockIdExt>,
+}
+
+impl StoredValue for GcState {
+    const SIZE_HINT: usize = 1 + 1 + 1 + ton_block::BlockIdExt::SIZE_HINT;
+
+    type OnStackSlice = [u8; 96];
+
+    fn serialize<W: Write>(&self, writer: &mut W) -> Result<()> {
+        writer.write_all(&[
+            self.current_marker,
+            self.active as u8,
+            self.since_block_id.is_some() as u8,
+        ])?;
+        if let Some(last_block) = &self.since_block_id {
+            last_block.serialize(writer)?;
+        }
+        Ok(())
+    }
+
+    fn deserialize<R: Read>(reader: &mut R) -> Result<Self>
+    where
+        Self: Sized,
+    {
+        let mut data = [0; 3];
+        reader.read_exact(&mut data)?;
+        let last_block_id = match data[2] {
+            0 => None,
+            _ => Some(ton_block::BlockIdExt::deserialize(reader)?),
+        };
+
+        Ok(Self {
+            current_marker: data[0],
+            active: data[1] != 0,
+            since_block_id: last_block_id,
+        })
+    }
 }
 
 #[derive(thiserror::Error, Debug)]

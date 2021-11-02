@@ -561,26 +561,32 @@ impl Db {
         };
 
         // Convert to fx hash map
-        let shard_blocks = target_block
+        let mut shard_blocks = target_block
             .shards_blocks()?
             .into_iter()
             .map(|(key, value)| (key, value.seq_no))
             .collect();
 
         // Remove all expired entries
-        let total_cached_handles_removed =
-            self.block_handle_storage.gc_handles_cache(&shard_blocks);
-        let stats = self.archive_manager.gc(&shard_blocks).await?;
+        let total_cached_handles_removed = self
+            .block_handle_storage
+            .gc_handles_cache(target_block.id(), &shard_blocks);
+        let stats = self
+            .archive_manager
+            .gc(target_block.id(), &shard_blocks)
+            .await?;
 
         log::info!(
             r#"Finished blocks GC for key block: {}
 total_cached_handles_removed: {}
-total_blocks_removed: {}
+mc_package_entries_removed: {}
+total_package_entries_removed: {}
 total_handles_removed: {}
 "#,
             key_block_id,
             total_cached_handles_removed,
-            stats.total_blocks_removed,
+            stats.mc_package_entries_removed,
+            stats.total_package_entries_removed,
             stats.total_handles_removed,
         );
 
