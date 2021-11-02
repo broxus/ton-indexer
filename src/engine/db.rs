@@ -65,11 +65,11 @@ impl Db {
         let total_blocks_cache_size = (mem_limit * 2) / 3;
         mem_limit -= total_blocks_cache_size;
         let block_cache = Cache::new_lru_cache(total_blocks_cache_size / 2)?;
-        let uncompressed_block_cache = Cache::new_lru_cache(total_blocks_cache_size / 2)?;
+        let compressed_block_cache = Cache::new_lru_cache(total_blocks_cache_size / 2)?;
 
         let mut block_factory = BlockBasedOptions::default();
         block_factory.set_block_cache(&block_cache);
-        block_factory.set_block_cache_compressed(&uncompressed_block_cache);
+        block_factory.set_block_cache_compressed(&compressed_block_cache);
         block_factory.set_cache_index_and_filter_blocks(true);
         block_factory.set_pin_l0_filter_and_index_blocks_in_cache(true);
         block_factory.set_pin_top_level_index_and_filter(true);
@@ -120,7 +120,6 @@ impl Db {
             .column::<columns::Next1>()
             .column::<columns::Next2>()
             .column::<columns::PackageEntries>()
-            .column::<columns::BackgroundSyncMeta>()
             .build()
             .context("Failed building db")?;
 
@@ -134,7 +133,7 @@ impl Db {
 
         Ok(Arc::new(Self {
             block_cache,
-            uncompressed_block_cache,
+            uncompressed_block_cache: compressed_block_cache,
             block_handle_storage,
             shard_state_storage,
             archive_manager,

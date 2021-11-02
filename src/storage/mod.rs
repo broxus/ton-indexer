@@ -143,11 +143,6 @@ pub mod columns {
     impl Column for Next2 {
         const NAME: &'static str = "next2";
     }
-
-    pub struct BackgroundSyncMeta;
-    impl Column for BackgroundSyncMeta {
-        const NAME: &'static str = "background_sync_meta";
-    }
 }
 
 fn archive_data_merge(
