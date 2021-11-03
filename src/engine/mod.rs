@@ -7,6 +7,7 @@
 ///
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 pub use rocksdb::perf::MemoryUsageStats;
@@ -22,14 +23,12 @@ use self::complex_operations::*;
 use self::db::*;
 use self::downloader::*;
 use self::node_state::*;
-use self::states_gc_resolver::*;
 
 pub mod complex_operations;
 mod db;
 mod downloader;
 mod node_state;
 pub mod rpc_operations;
-mod states_gc_resolver;
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum EngineStatus {
@@ -73,7 +72,7 @@ pub trait Subscriber: Send + Sync {
 pub struct Engine {
     is_working: AtomicBool,
     db: Arc<Db>,
-    states_gc_resolver: Option<Arc<DefaultStateGcResolver>>,
+    states_gc_options: Option<StateGcOptions>,
     blocks_gc_state: Option<BlocksGcState>,
     subscribers: Vec<Arc<dyn Subscriber>>,
     network: Arc<NodeNetwork>,
@@ -152,23 +151,10 @@ impl Engine {
 
         log::info!("Network started");
 
-        let states_gc_resolver = match config.state_gc_options {
-            Some(_options) => {
-                let resolver = Arc::new(DefaultStateGcResolver::default());
-                // db.start_states_gc(
-                //     resolver.clone(),
-                //     Duration::from_secs(options.offset_sec),
-                //     Duration::from_secs(options.interval_sec),
-                // );
-                Some(resolver)
-            }
-            None => None,
-        };
-
         let engine = Arc::new(Self {
             is_working: AtomicBool::new(true),
             db: db.clone(),
-            states_gc_resolver,
+            states_gc_options: config.state_gc_options,
             blocks_gc_state: config.blocks_gc_options.map(|options| BlocksGcState {
                 ty: options.kind,
                 enabled: AtomicBool::new(options.enable_for_sync),
@@ -258,7 +244,9 @@ impl Engine {
             blocks_gc.enabled.store(true, Ordering::Release);
 
             let handle = self.db.find_last_key_block()?;
-            self.db.garbage_collect(handle.id(), blocks_gc.ty).await?;
+            self.db
+                .remove_outdated_blocks(handle.id(), blocks_gc.ty)
+                .await?;
         }
 
         let last_mc_block_id = self.load_last_applied_mc_block_id()?;
@@ -285,6 +273,36 @@ impl Engine {
                 }
             }
         });
+
+        if let Some(options) = &self.states_gc_options {
+            let engine = Arc::downgrade(self);
+            let offset = Duration::from_secs(options.offset_sec);
+            let interval = Duration::from_secs(options.interval_sec);
+
+            tokio::spawn(async move {
+                tokio::time::sleep(offset).await;
+                loop {
+                    tokio::time::sleep(interval).await;
+
+                    let engine = match engine.upgrade() {
+                        Some(engine) => engine,
+                        None => return,
+                    };
+
+                    let block_id = match engine.load_shards_client_mc_block_id() {
+                        Ok(block_id) => block_id,
+                        Err(e) => {
+                            log::error!("Failed to load last shards client block: {:?}", e);
+                            continue;
+                        }
+                    };
+
+                    if let Err(e) = engine.db.remove_outdated_states(&block_id).await {
+                        log::error!("Failed to GC state: {:?}", e);
+                    }
+                }
+            });
+        };
 
         // Engine started
         Ok(())
@@ -776,7 +794,9 @@ impl Engine {
         if handle.meta().is_key_block() {
             if let Some(blocks_gc) = &self.blocks_gc_state {
                 if blocks_gc.enabled.load(Ordering::Acquire) {
-                    self.db.garbage_collect(handle.id(), blocks_gc.ty).await?
+                    self.db
+                        .remove_outdated_blocks(handle.id(), blocks_gc.ty)
+                        .await?
                 }
             }
         }

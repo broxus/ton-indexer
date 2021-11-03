@@ -6,7 +6,7 @@
 ///
 use std::sync::Arc;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use futures::future::{BoxFuture, FutureExt};
 
 use crate::engine::db::BlockConnection;
@@ -71,13 +71,6 @@ pub fn apply_block<'a>(
                     .next_block_applying_operations
                     .do_or_wait(&prev1_id, None, async move { Ok(id) })
                     .await?;
-
-                if let Some(resolver) = &engine.states_gc_resolver {
-                    resolver
-                        .advance(engine, &engine.load_shards_client_mc_block_id()?)
-                        .await
-                        .context("Failed to advance GC state")?;
-                }
             } else {
                 engine.set_applied(handle, mc_seq_no).await?;
             }

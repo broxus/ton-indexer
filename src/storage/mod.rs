@@ -16,6 +16,7 @@ pub use self::cell_storage::*;
 pub use self::node_state_storage::*;
 pub use self::package_entry_id::*;
 pub use self::shard_state_storage::*;
+pub use self::top_blocks::*;
 pub use self::tree::*;
 
 mod archive_manager;
@@ -29,6 +30,7 @@ mod cell_storage;
 mod node_state_storage;
 mod package_entry_id;
 mod shard_state_storage;
+mod top_blocks;
 mod tree;
 
 pub mod columns {
@@ -93,6 +95,7 @@ pub mod columns {
 
         fn options(opts: &mut Options) {
             opts.set_optimize_filters_for_hits(true);
+            // opts.set_merge_operator_associative("cell_sweep_merge", cell_sweep_merge);
         }
     }
 
@@ -162,6 +165,27 @@ fn archive_data_merge(
 
     Some(result)
 }
+
+// fn cell_sweep_merge(
+//     _: &[u8],
+//     current_value: Option<&[u8]>,
+//     operands: &MergeOperands,
+// ) -> Option<Vec<u8>> {
+//     // Check current value with only latest operand
+//     match (current_value, operands.iter().last()) {
+//         // Keep only non-empty values marked with specified byte
+//         (Some(value), Some([operand])) if value.len() > 0 && value[0] == operand => {
+//             Some(value.to_vec())
+//         }
+//         // Keep previous value if there were no operands
+//         (Some(value), None) => {
+//             log::warn!("Empty merge operands"); // TODO: remove
+//             Some(value.to_vec())
+//         }
+//         // Remove other values (with different mark or empty)
+//         _ => None,
+//     }
+// }
 
 pub trait StoredValue {
     const SIZE_HINT: usize;

@@ -104,6 +104,11 @@ where
         &self.read_config
     }
 
+    #[inline]
+    pub fn write_config(&self) -> &WriteOptions {
+        &self.write_config
+    }
+
     pub fn get<K: AsRef<[u8]>>(&self, key: K) -> Result<Option<DBPinnableSlice>> {
         let cf = self.get_cf()?;
         Ok(self.db.get_pinned_cf_opt(&cf, key, &self.read_config)?)

@@ -5,21 +5,19 @@
 /// - rewritten initial state processing logic using files and stream processing
 /// - replaced recursions with dfs to prevent stack overflow
 ///
-use std::collections::VecDeque;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
-use anyhow::Result;
-use tiny_adnl::utils::*;
+use anyhow::{Context, Result};
 use ton_types::UInt256;
 
 use self::files_context::*;
 use self::replace_transaction::*;
 use super::tree::*;
 use crate::storage::cell_storage::*;
-use crate::storage::{columns, StoredValue};
+use crate::storage::{columns, StoredValue, TopBlocks};
 
 mod entries_buffer;
 mod files_context;
@@ -91,238 +89,193 @@ impl ShardStateStorage {
         ))
     }
 
-    pub fn start_gc(
-        &self,
-        resolver: Arc<dyn StatesGcResolver>,
-        offset: Duration,
-        interval: Duration,
-    ) {
-        let state = Arc::downgrade(&self.state);
+    pub fn gc(&self, top_blocks: &TopBlocks) -> Result<()> {
+        log::info!(
+            "Starting shard states GC for target block: {}",
+            top_blocks.target_mc_block
+        );
+        let instant = Instant::now();
 
-        tokio::spawn(async move {
-            tokio::time::sleep(offset).await;
-            loop {
-                tokio::time::sleep(interval).await;
+        self.state.gc(top_blocks)?;
 
-                let state = match state.upgrade() {
-                    Some(state) => state,
-                    None => return,
-                };
-
-                if let Err(e) = state.gc(&resolver).await {
-                    log::error!("Failed to GC state: {:?}", e);
-                }
-            }
-        });
+        log::info!(
+            "Finished shard states GC for target block: {}. Took: {} ms",
+            top_blocks.target_mc_block,
+            instant.elapsed().as_millis()
+        );
+        Ok(())
     }
 }
 
-pub trait StatesGcResolver: Send + Sync {
-    fn state_expired(&self, block_id: &ton_block::BlockIdExt) -> Result<bool>;
-}
-
 struct ShardStateStorageState {
-    node_state: Tree<columns::NodeStates>,
+    gc_state: GcStateStorage,
     shard_state_db: Tree<columns::ShardStates>,
     cell_storage: Arc<CellStorage>,
 }
 
 impl ShardStateStorageState {
     fn new(db: &Arc<rocksdb::DB>) -> Result<Self> {
-        Ok(Self {
-            node_state: Tree::new(db)?,
+        let state = Self {
+            gc_state: GcStateStorage::new(db)?,
             shard_state_db: Tree::new(db)?,
             cell_storage: Arc::new(CellStorage::new(db)?),
-        })
+        };
+
+        let gc_state = state.gc_state.load()?;
+        match &gc_state.step {
+            Step::Wait => {
+                log::info!("Shard state GC is pending");
+            }
+            Step::Mark(top_blocks) => {
+                state.mark(
+                    gc_state.current_marker,
+                    gc_state.next_marker(),
+                    top_blocks,
+                    true,
+                )?;
+                state.sweep(gc_state.next_marker())?;
+            }
+            Step::Sweep => state.sweep(gc_state.current_marker)?,
+        }
+
+        Ok(state)
     }
 
-    async fn gc(self: &Arc<Self>, _resolver: &Arc<dyn StatesGcResolver>) -> Result<()> {
-        // let active_boc_db = self.active_boc_db.load(Ordering::Acquire);
-        // let inactive_boc_db = match active_boc_db {
-        //     0 => self.dynamic_boc_db_1.clone(),
-        //     1 => self.dynamic_boc_db_0.clone(),
-        //     _ => return Err(ShardStateStorageError::UnknownBocDb.into()),
-        // };
-        //
-        // log::info!("shard GC: Starting GC for boc_db{}", inactive_boc_db.id);
-        //
-        // let start = Instant::now();
-        // while inactive_boc_db.writer_count.load(Ordering::Acquire) > 0 {
-        //     tokio::time::sleep(Duration::from_secs(1)).await;
-        //     let time = start.elapsed().as_millis();
-        //     if time > 2000 {
-        //         log::warn!("Waiting writers for {} ms", time);
-        //     }
-        // }
-        // log::info!(
-        //     "shard GC: Waiting writers in boc_db{} took {} ms",
-        //     inactive_boc_db.id,
-        //     start.elapsed().as_millis()
-        // );
-        //
-        // let start = Instant::now();
-        // let StateMarkup { marked, to_sweep } = {
-        //     let state = self.clone();
-        //     let inactive_boc_db = inactive_boc_db.clone();
-        //     let resolver = resolver.clone();
-        //     tokio::task::spawn_blocking(move || state.mark(inactive_boc_db, resolver))
-        //         .await?
-        //         .context("Failed to mark roots")?
-        // };
-        //
-        // log::info!(
-        //     "shard GC: Marking roots in boc_db{} took {} ms. Marked: {}. To sweep: {}",
-        //     inactive_boc_db.id,
-        //     start.elapsed().as_millis(),
-        //     marked.len(),
-        //     to_sweep.len()
-        // );
-        //
-        // let start = Instant::now();
-        // if !to_sweep.is_empty() {
-        //     let state = self.clone();
-        //     let inactive_boc_db = inactive_boc_db.clone();
-        //     tokio::task::spawn_blocking(move || state.sweep(inactive_boc_db, marked, to_sweep))
-        //         .await?
-        //         .context("Failed to sweep cells")?;
-        // }
-        // log::info!(
-        //     "shard GC: Sweeping roots in boc_db{} took {} ms",
-        //     inactive_boc_db.id,
-        //     start.elapsed().as_millis()
-        // );
-        //
-        // self.active_boc_db
-        //     .store(inactive_boc_db.id, Ordering::Release);
+    fn gc(&self, top_blocks: &TopBlocks) -> Result<()> {
+        let gc_state = self.gc_state.load()?;
+        if !matches!(&gc_state.step, Step::Wait) {
+            log::info!("Invalid GC state: {:?}", gc_state);
+        };
 
-        Ok(())
+        self.gc_state
+            .update(&GcState {
+                current_marker: gc_state.current_marker,
+                step: Step::Mark(top_blocks.clone()),
+            })
+            .context("Failed to update gc state to 'Mark'")?;
+
+        self.mark(
+            gc_state.current_marker,
+            gc_state.next_marker(),
+            top_blocks,
+            false,
+        )?;
+
+        self.sweep(gc_state.next_marker())
     }
 
     fn mark(
         &self,
-        cell_storage: Arc<CellStorage>,
-        resolver: Arc<dyn StatesGcResolver>,
-    ) -> Result<StateMarkup> {
-        let mut to_sweep = Vec::new();
-        let mut to_mark = Vec::new();
+        current_marker: u8,
+        target_marker: u8,
+        top_blocks: &TopBlocks,
+        force: bool,
+    ) -> Result<()> {
+        let mut total = 0;
 
-        let start = Instant::now();
+        // Mark all cells for new blocks recursively
         for (key, value) in self.shard_state_db.iterator(rocksdb::IteratorMode::Start)? {
             let block_id = ton_block::BlockIdExt::from_slice(&key)?;
-            let cell_id = UInt256::from_be_bytes(&value);
-
-            if resolver.state_expired(&block_id)? {
-                to_sweep.push((block_id, cell_id));
-            } else {
-                to_mark.push(cell_id);
-            }
-        }
-        log::info!(
-            "shard GC: Blocks iteration took {} ms",
-            start.elapsed().as_millis()
-        );
-
-        let mut marked = FxHashSet::default();
-        let mut mark_subtree = |cell_id: UInt256| -> Result<()> {
-            marked.insert(cell_id);
-            let mut stack = VecDeque::with_capacity(32);
-            stack.push_back(cell_id);
-
-            while let Some(cell_id) = stack.pop_back() {
-                for reference in cell_storage.load_cell_references(&cell_id)? {
-                    let cell_id = reference.hash();
-                    if marked.contains(&cell_id) {
-                        continue;
-                    }
-
-                    marked.insert(cell_id);
-                    stack.push_back(cell_id);
-                }
+            if !top_blocks.contains(&block_id)? {
+                continue;
             }
 
-            Ok(())
-        };
-
-        if !to_sweep.is_empty() {
-            for cell_id in to_mark {
-                mark_subtree(cell_id)?;
-            }
+            total += self.cell_storage.mark_cells_tree(
+                UInt256::from_be_bytes(&value),
+                target_marker,
+                force,
+            )?;
         }
 
-        Ok(StateMarkup { marked, to_sweep })
+        log::info!("Marked {} cells", total);
+
+        // Update gc state
+        self.gc_state
+            .update(&GcState {
+                current_marker,
+                step: Step::Sweep,
+            })
+            .context("Failed to update gc state to 'Sweep'")
     }
 
-    fn sweep(
-        &self,
-        marked: FxHashSet<UInt256>,
-        to_sweep: Vec<(ton_block::BlockIdExt, UInt256)>,
-    ) -> Result<()> {
-        let states_cf = self.shard_state_db.get_cf()?;
-        let cell_cf = self.cell_storage.get_cf()?;
-        let db = self.shard_state_db.raw_db_handle();
+    fn sweep(&self, target_marker: u8) -> Result<()> {
+        // Remove all unmarked cells
+        let total = self
+            .cell_storage
+            .sweep_cells(target_marker)
+            .context("Failed to sweep cells")?;
 
-        let mut sweeped = FxHashSet::default();
-        let mut sweep_subtree = |block_id: ton_block::BlockIdExt, cell_id: UInt256| -> Result<()> {
-            let mut batch = rocksdb::WriteBatch::default();
-            batch.delete_cf(&states_cf, block_id.to_vec()?);
-            batch.delete_cf(&cell_cf, cell_id.as_slice());
+        log::info!("Swept {} cells", total);
 
-            sweeped.insert(cell_id);
-            let mut stack = VecDeque::with_capacity(32);
-            stack.push_back(cell_id);
-
-            while let Some(cell_id) = stack.pop_back() {
-                let references = self.cell_storage.load_cell_references(&cell_id)?;
-
-                for reference in references {
-                    let cell_id = reference.hash();
-                    if marked.contains(&cell_id) || sweeped.contains(&cell_id) {
-                        continue;
-                    }
-
-                    batch.delete_cf(&cell_cf, cell_id.as_slice());
-                    sweeped.insert(cell_id);
-                    stack.push_back(cell_id);
-                }
-            }
-
-            db.write(batch)?;
-            Ok(())
-        };
-
-        for (block_id, cell_id) in to_sweep {
-            sweep_subtree(block_id, cell_id)?;
-        }
-
-        Ok(())
+        // Update gc state
+        self.gc_state
+            .update(&GcState {
+                current_marker: target_marker,
+                step: Step::Wait,
+            })
+            .context("Failed to update gc state to 'Wait'")
     }
 }
 
-struct StateMarkup {
-    marked: FxHashSet<UInt256>,
-    to_sweep: Vec<(ton_block::BlockIdExt, UInt256)>,
+struct GcStateStorage {
+    node_states: Tree<columns::NodeStates>,
 }
 
+impl GcStateStorage {
+    fn new(db: &Arc<rocksdb::DB>) -> Result<Self> {
+        let storage = Self {
+            node_states: Tree::new(db)?,
+        };
+        let _ = storage.load()?;
+        Ok(storage)
+    }
+
+    fn load(&self) -> Result<GcState> {
+        Ok(match self.node_states.get(STATES_GC_STATE_KEY)? {
+            Some(value) => {
+                GcState::from_slice(&value).context("Failed to decode states GC state")?
+            }
+            None => {
+                let state = GcState {
+                    current_marker: 0,
+                    step: Step::Wait,
+                };
+                self.update(&state)?;
+                state
+            }
+        })
+    }
+
+    fn update(&self, state: &GcState) -> Result<()> {
+        self.node_states
+            .insert(STATES_GC_STATE_KEY, state.to_vec()?)
+            .context("Failed to update shards GC state")
+    }
+}
+
+#[derive(Debug)]
 struct GcState {
     current_marker: u8,
-    active: bool,
-    since_block_id: Option<ton_block::BlockIdExt>,
+    step: Step,
 }
 
 impl StoredValue for GcState {
-    const SIZE_HINT: usize = 1 + 1 + 1 + ton_block::BlockIdExt::SIZE_HINT;
+    const SIZE_HINT: usize = 512;
 
-    type OnStackSlice = [u8; 96];
+    type OnStackSlice = [u8; 512];
 
     fn serialize<W: Write>(&self, writer: &mut W) -> Result<()> {
-        writer.write_all(&[
-            self.current_marker,
-            self.active as u8,
-            self.since_block_id.is_some() as u8,
-        ])?;
-        if let Some(last_block) = &self.since_block_id {
-            last_block.serialize(writer)?;
+        let (step, blocks) = match &self.step {
+            Step::Wait => (0, None),
+            Step::Mark(blocks) => (1, Some(blocks)),
+            Step::Sweep => (1, None),
+        };
+        writer.write_all(&[self.current_marker, step])?;
+
+        if let Some(blocks) = blocks {
+            blocks.serialize(writer)?;
         }
+
         Ok(())
     }
 
@@ -330,23 +283,41 @@ impl StoredValue for GcState {
     where
         Self: Sized,
     {
-        let mut data = [0; 3];
+        let mut data = [0u8; 2];
         reader.read_exact(&mut data)?;
-        let last_block_id = match data[2] {
-            0 => None,
-            _ => Some(ton_block::BlockIdExt::deserialize(reader)?),
+        let step = match data[1] {
+            0 => Step::Wait,
+            1 => Step::Mark(TopBlocks::deserialize(reader)?),
+            2 => Step::Sweep,
+            _ => return Err(ShardStateStorageError::InvalidStatesGcStep.into()),
         };
 
         Ok(Self {
             current_marker: data[0],
-            active: data[1] != 0,
-            since_block_id: last_block_id,
+            step,
         })
     }
 }
+
+impl GcState {
+    fn next_marker(&self) -> u8 {
+        self.current_marker.wrapping_add(1)
+    }
+}
+
+#[derive(Debug)]
+enum Step {
+    Wait,
+    Mark(TopBlocks),
+    Sweep,
+}
+
+const STATES_GC_STATE_KEY: &str = "states_gc_state";
 
 #[derive(thiserror::Error, Debug)]
 enum ShardStateStorageError {
     #[error("Not found")]
     NotFound,
+    #[error("Invalid states GC step")]
+    InvalidStatesGcStep,
 }

@@ -11,12 +11,11 @@ use std::hash::Hash;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use tiny_adnl::utils::*;
 
 use super::archive_package::*;
 use super::block_handle::*;
 use super::package_entry_id::*;
-use crate::storage::{columns, StoredValue, Tree};
+use crate::storage::{columns, StoredValue, TopBlocks, Tree};
 
 pub struct ArchiveManager {
     db: Arc<rocksdb::DB>,
@@ -118,11 +117,7 @@ impl ArchiveManager {
         }
     }
 
-    pub async fn gc(
-        &self,
-        target_mc_block: &ton_block::BlockIdExt,
-        top_blocks: &FxHashMap<ton_block::ShardIdent, u32>,
-    ) -> Result<BlockGcStats> {
+    pub async fn gc(&self, top_blocks: &TopBlocks) -> Result<BlockGcStats> {
         let mut stats = BlockGcStats::default();
 
         let (raw_db, batch) = {
@@ -144,11 +139,11 @@ impl ArchiveManager {
                 let prefix = PackageEntryIdPrefix::from_slice(key.as_ref())?;
 
                 if prefix.shard_ident.is_masterchain() {
-                    if prefix.seq_no >= target_mc_block.seq_no {
+                    if prefix.seq_no >= top_blocks.target_mc_block.seq_no {
                         continue;
                     }
                 } else {
-                    match top_blocks.get(&prefix.shard_ident) {
+                    match top_blocks.shard_heights.get(&prefix.shard_ident) {
                         Some(top_seq_no) if prefix.seq_no < *top_seq_no => { /* gc block */ }
                         // Skip blocks with seq.no. >= top seq.no.
                         Some(_) => continue,

@@ -6,7 +6,6 @@
 ///
 use std::path::Path;
 use std::sync::Arc;
-use std::time::Duration;
 
 use anyhow::Context;
 use anyhow::Result;
@@ -517,17 +516,18 @@ impl Db {
         &self.background_sync_meta_store
     }
 
-    pub fn start_states_gc(
-        &self,
-        resolver: Arc<dyn StatesGcResolver>,
-        offset: Duration,
-        interval: Duration,
-    ) {
-        self.shard_state_storage
-            .start_gc(resolver, offset, interval);
+    pub async fn remove_outdated_states(&self, mc_block_id: &ton_block::BlockIdExt) -> Result<()> {
+        let top_blocks = match self.load_block_handle(mc_block_id)? {
+            Some(handle) => self
+                .load_block_data(&handle)
+                .await
+                .and_then(|block_data| TopBlocks::from_mc_block(&block_data))?,
+            None => return Err(DbError::BlockHandleNotFound.into()),
+        };
+        self.shard_state_storage.gc(&top_blocks)
     }
 
-    pub async fn garbage_collect(
+    pub async fn remove_outdated_blocks(
         &self,
         key_block_id: &ton_block::BlockIdExt,
         gc_type: BlocksGcKind,
@@ -543,7 +543,7 @@ impl Db {
         };
 
         // Load target block data
-        let target_block = match target_block {
+        let top_blocks = match target_block {
             Some(handle) if handle.meta().has_data() => {
                 log::info!(
                     "Starting blocks GC for key block: {}. Target block: {}",
@@ -552,7 +552,9 @@ impl Db {
                 );
                 self.load_block_data(&handle)
                     .await
-                    .context("Failed to load target key block data")?
+                    .context("Failed to load target key block data")
+                    .and_then(|block_data| TopBlocks::from_mc_block(&block_data))
+                    .context("Failed to compute top blocks for target block")?
             }
             _ => {
                 log::info!("Blocks GC skipped for key block: {}", key_block_id);
@@ -560,21 +562,9 @@ impl Db {
             }
         };
 
-        // Convert to fx hash map
-        let mut shard_blocks = target_block
-            .shards_blocks()?
-            .into_iter()
-            .map(|(key, value)| (key, value.seq_no))
-            .collect();
-
         // Remove all expired entries
-        let total_cached_handles_removed = self
-            .block_handle_storage
-            .gc_handles_cache(target_block.id(), &shard_blocks);
-        let stats = self
-            .archive_manager
-            .gc(target_block.id(), &shard_blocks)
-            .await?;
+        let total_cached_handles_removed = self.block_handle_storage.gc_handles_cache(&top_blocks);
+        let stats = self.archive_manager.gc(&top_blocks).await?;
 
         log::info!(
             r#"Finished blocks GC for key block: {}
