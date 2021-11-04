@@ -524,7 +524,7 @@ impl Db {
                 .and_then(|block_data| TopBlocks::from_mc_block(&block_data))?,
             None => return Err(DbError::BlockHandleNotFound.into()),
         };
-        self.shard_state_storage.gc(&top_blocks)
+        self.shard_state_storage.gc(&top_blocks).await
     }
 
     pub async fn remove_outdated_blocks(

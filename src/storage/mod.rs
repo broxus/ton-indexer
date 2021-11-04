@@ -1,4 +1,4 @@
-use std::io::{Read, Write};
+use std::io::{Read, Seek, Write};
 
 use anyhow::Result;
 use rocksdb::MergeOperands;
@@ -194,7 +194,7 @@ pub trait StoredValue {
 
     fn serialize<W: Write>(&self, writer: &mut W) -> Result<()>;
 
-    fn deserialize<R: Read>(reader: &mut R) -> Result<Self>
+    fn deserialize<R: Read + Seek>(reader: &mut R) -> Result<Self>
     where
         Self: Sized;
 
@@ -231,7 +231,7 @@ impl StoredValue for ton_block::BlockIdExt {
         Ok(())
     }
 
-    fn deserialize<R: Read>(reader: &mut R) -> Result<Self>
+    fn deserialize<R: Read + Seek>(reader: &mut R) -> Result<Self>
     where
         Self: Sized,
     {
@@ -256,7 +256,7 @@ impl StoredValue for ton_block::ShardIdent {
         Ok(())
     }
 
-    fn deserialize<R: Read>(reader: &mut R) -> Result<Self>
+    fn deserialize<R: Read + Seek>(reader: &mut R) -> Result<Self>
     where
         Self: Sized,
     {

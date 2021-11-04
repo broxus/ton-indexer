@@ -5,13 +5,16 @@
 /// - rewritten initial state processing logic using files and stream processing
 /// - replaced recursions with dfs to prevent stack overflow
 ///
-use std::io::{Read, Write};
+use std::collections::hash_map;
+use std::io::{Read, Seek, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::{Context, Result};
-use ton_types::UInt256;
+use tiny_adnl::utils::*;
+use ton_types::{ByteOrderRead, UInt256};
 
 use self::files_context::*;
 use self::replace_transaction::*;
@@ -50,7 +53,9 @@ impl ShardStateStorage {
     ) -> Result<()> {
         let cell_id = root.repr_hash();
 
-        self.state.cell_storage.store_dynamic_boc(0, root)?;
+        let marker = self.state.current_marker();
+
+        self.state.cell_storage.store_dynamic_boc(marker, root)?;
         self.state
             .shard_state_db
             .insert(block_id.to_vec()?, cell_id.as_slice())
@@ -78,25 +83,33 @@ impl ShardStateStorage {
             self.state.cell_storage.clear()?;
         }
 
+        let marker = self.state.current_marker();
+
         let ctx = FilesContext::new(self.downloads_dir.as_ref(), block_id).await?;
+
         Ok((
             ShardStateReplaceTransaction::new(
                 &self.state.shard_state_db,
                 &self.state.cell_storage,
-                0,
+                marker,
             ),
             ctx,
         ))
     }
 
-    pub fn gc(&self, top_blocks: &TopBlocks) -> Result<()> {
+    pub async fn gc(&self, top_blocks: &TopBlocks) -> Result<()> {
         log::info!(
             "Starting shard states GC for target block: {}",
             top_blocks.target_mc_block
         );
         let instant = Instant::now();
 
-        self.state.gc(top_blocks)?;
+        tokio::task::spawn_blocking({
+            let state = self.state.clone();
+            let top_blocks = top_blocks.clone();
+            move || state.gc(&top_blocks)
+        })
+        .await??;
 
         log::info!(
             "Finished shard states GC for target block: {}. Took: {} ms",
@@ -108,6 +121,7 @@ impl ShardStateStorage {
 }
 
 struct ShardStateStorageState {
+    current_marker: AtomicU8,
     gc_state: GcStateStorage,
     shard_state_db: Tree<columns::ShardStates>,
     cell_storage: Arc<CellStorage>,
@@ -116,29 +130,46 @@ struct ShardStateStorageState {
 impl ShardStateStorageState {
     fn new(db: &Arc<rocksdb::DB>) -> Result<Self> {
         let state = Self {
+            current_marker: Default::default(),
             gc_state: GcStateStorage::new(db)?,
             shard_state_db: Tree::new(db)?,
             cell_storage: Arc::new(CellStorage::new(db)?),
         };
 
         let gc_state = state.gc_state.load()?;
-        match &gc_state.step {
+        let target_marker = gc_state.next_marker();
+
+        let current_marker = match &gc_state.step {
             Step::Wait => {
                 log::info!("Shard state GC is pending");
+                gc_state.current_marker
             }
             Step::Mark(top_blocks) => {
-                state.mark(
-                    gc_state.current_marker,
-                    gc_state.next_marker(),
-                    top_blocks,
-                    true,
-                )?;
-                state.sweep(gc_state.next_marker())?;
+                state.mark(gc_state.current_marker, target_marker, top_blocks, true)?;
+                state.sweep_cells(gc_state.current_marker, target_marker, top_blocks)?;
+                state.sweep_blocks(target_marker, top_blocks)?;
+                target_marker
             }
-            Step::Sweep => state.sweep(gc_state.current_marker)?,
-        }
+            Step::SweepCells(top_blocks) => {
+                state.sweep_cells(gc_state.current_marker, target_marker, top_blocks)?;
+                state.sweep_blocks(target_marker, top_blocks)?;
+                target_marker
+            }
+            Step::SweepBlocks(top_blocks) => {
+                state.sweep_blocks(target_marker, top_blocks)?;
+                target_marker
+            }
+        };
+
+        state
+            .current_marker
+            .store(current_marker, Ordering::Release);
 
         Ok(state)
+    }
+
+    fn current_marker(&self) -> u8 {
+        self.current_marker.load(Ordering::Acquire)
     }
 
     fn gc(&self, top_blocks: &TopBlocks) -> Result<()> {
@@ -154,6 +185,9 @@ impl ShardStateStorageState {
             })
             .context("Failed to update gc state to 'Mark'")?;
 
+        self.current_marker
+            .store(gc_state.next_marker(), Ordering::Release);
+
         self.mark(
             gc_state.current_marker,
             gc_state.next_marker(),
@@ -161,7 +195,9 @@ impl ShardStateStorageState {
             false,
         )?;
 
-        self.sweep(gc_state.next_marker())
+        self.sweep_cells(gc_state.current_marker, gc_state.next_marker(), top_blocks)?;
+
+        self.sweep_blocks(gc_state.next_marker(), top_blocks)
     }
 
     fn mark(
@@ -173,6 +209,13 @@ impl ShardStateStorageState {
     ) -> Result<()> {
         let mut total = 0;
 
+        let mut last_blocks = self
+            .gc_state
+            .load_last_blocks()
+            .context("Failed to load last shard blocks")?;
+
+        log::info!("Last blocks: {:?}", last_blocks);
+
         // Mark all cells for new blocks recursively
         for (key, value) in self.shard_state_db.iterator(rocksdb::IteratorMode::Start)? {
             let block_id = ton_block::BlockIdExt::from_slice(&key)?;
@@ -180,12 +223,46 @@ impl ShardStateStorageState {
                 continue;
             }
 
-            total += self.cell_storage.mark_cells_tree(
+            let edge_block = match last_blocks.entry(block_id.shard_id) {
+                // Skip blocks which were definitely processed
+                hash_map::Entry::Occupied(entry) if block_id.seq_no < *entry.get() => continue,
+                // Block may have been processed
+                hash_map::Entry::Occupied(entry) => {
+                    entry.remove();
+                    true
+                }
+                // Block is definitely processed first time
+                hash_map::Entry::Vacant(_) => false,
+            };
+
+            log::info!(
+                "---- Marking block: {:?}. Edge block: {}",
+                block_id,
+                edge_block
+            );
+
+            self.gc_state
+                .update_last_block(block_id.shard_id, block_id.seq_no)
+                .context("Failed to update last block")?;
+
+            let count = self.cell_storage.mark_cells_tree(
                 UInt256::from_be_bytes(&value),
                 target_marker,
-                force,
+                force && edge_block,
             )?;
+            total += count;
+
+            log::info!(
+                "==== Marked block: {:?}, cells: {}, total: {}",
+                block_id,
+                count,
+                total
+            );
         }
+
+        self.gc_state
+            .clear_last_blocks()
+            .context("Failed to reset last block")?;
 
         log::info!("Marked {} cells", total);
 
@@ -193,19 +270,55 @@ impl ShardStateStorageState {
         self.gc_state
             .update(&GcState {
                 current_marker,
-                step: Step::Sweep,
+                step: Step::SweepCells(top_blocks.clone()),
             })
             .context("Failed to update gc state to 'Sweep'")
     }
 
-    fn sweep(&self, target_marker: u8) -> Result<()> {
+    fn sweep_cells(
+        &self,
+        current_marker: u8,
+        target_marker: u8,
+        top_blocks: &TopBlocks,
+    ) -> Result<()> {
+        log::info!("---- Sweeping cells other than {}", target_marker);
+
         // Remove all unmarked cells
         let total = self
             .cell_storage
             .sweep_cells(target_marker)
             .context("Failed to sweep cells")?;
 
-        log::info!("Swept {} cells", total);
+        log::info!("==== Swept {} cells", total);
+
+        // Update gc state
+        self.gc_state
+            .update(&GcState {
+                current_marker,
+                step: Step::SweepBlocks(top_blocks.clone()),
+            })
+            .context("Failed to update gc state to 'SweepBlocks'")
+    }
+
+    fn sweep_blocks(&self, target_marker: u8, top_blocks: &TopBlocks) -> Result<()> {
+        log::info!("---- Sweeping blocks");
+
+        let mut total = 0;
+
+        // Remove all unmarked cells
+        for (key, _) in self.shard_state_db.iterator(rocksdb::IteratorMode::Start)? {
+            let block_id = ton_block::BlockIdExt::from_slice(&key)?;
+            if top_blocks.contains(&block_id)? {
+                continue;
+            }
+
+            self.shard_state_db
+                .remove(key)
+                .context("Failed to remove swept block")?;
+            total += 1;
+        }
+
+        log::info!("==== Swept {} blocks", total);
 
         // Update gc state
         self.gc_state
@@ -251,6 +364,40 @@ impl GcStateStorage {
             .insert(STATES_GC_STATE_KEY, state.to_vec()?)
             .context("Failed to update shards GC state")
     }
+
+    fn clear_last_blocks(&self) -> Result<()> {
+        let iter = self.node_states.prefix_iterator(GC_LAST_BLOCK_KEY)?;
+        for (key, _) in iter.filter(|(key, _)| key.starts_with(GC_LAST_BLOCK_KEY)) {
+            self.node_states.remove(key)?
+        }
+        Ok(())
+    }
+
+    fn load_last_blocks(&self) -> Result<FxHashMap<ton_block::ShardIdent, u32>> {
+        let mut result = FxHashMap::default();
+
+        let iter = self.node_states.prefix_iterator(GC_LAST_BLOCK_KEY)?;
+        for (key, value) in iter.filter(|(key, _)| key.starts_with(GC_LAST_BLOCK_KEY)) {
+            log::info!("{}", hex::encode(&key));
+
+            let shard_ident = LastShardBlockKey::from_slice(&key)
+                .context("Failed to load last shard id")?
+                .0;
+            let top_block = std::io::Cursor::new(&value)
+                .read_le_u32()
+                .context("Failed to load top block")?;
+            result.insert(shard_ident, top_block);
+        }
+
+        Ok(result)
+    }
+
+    fn update_last_block(&self, shard_ident: ton_block::ShardIdent, seq_no: u32) -> Result<()> {
+        self.node_states.insert(
+            LastShardBlockKey(shard_ident).to_vec()?,
+            seq_no.to_le_bytes(),
+        )
+    }
 }
 
 #[derive(Debug)]
@@ -268,7 +415,8 @@ impl StoredValue for GcState {
         let (step, blocks) = match &self.step {
             Step::Wait => (0, None),
             Step::Mark(blocks) => (1, Some(blocks)),
-            Step::Sweep => (1, None),
+            Step::SweepCells(blocks) => (2, Some(blocks)),
+            Step::SweepBlocks(blocks) => (3, Some(blocks)),
         };
         writer.write_all(&[self.current_marker, step])?;
 
@@ -279,7 +427,7 @@ impl StoredValue for GcState {
         Ok(())
     }
 
-    fn deserialize<R: Read>(reader: &mut R) -> Result<Self>
+    fn deserialize<R: Read + Seek>(reader: &mut R) -> Result<Self>
     where
         Self: Sized,
     {
@@ -288,7 +436,8 @@ impl StoredValue for GcState {
         let step = match data[1] {
             0 => Step::Wait,
             1 => Step::Mark(TopBlocks::deserialize(reader)?),
-            2 => Step::Sweep,
+            2 => Step::SweepCells(TopBlocks::deserialize(reader)?),
+            3 => Step::SweepBlocks(TopBlocks::deserialize(reader)?),
             _ => return Err(ShardStateStorageError::InvalidStatesGcStep.into()),
         };
 
@@ -309,10 +458,34 @@ impl GcState {
 enum Step {
     Wait,
     Mark(TopBlocks),
-    Sweep,
+    SweepCells(TopBlocks),
+    SweepBlocks(TopBlocks),
 }
 
-const STATES_GC_STATE_KEY: &str = "states_gc_state";
+#[derive(Debug)]
+struct LastShardBlockKey(ton_block::ShardIdent);
+
+impl StoredValue for LastShardBlockKey {
+    const SIZE_HINT: usize = GC_LAST_BLOCK_KEY.len() + ton_block::ShardIdent::SIZE_HINT;
+
+    type OnStackSlice = [u8; Self::SIZE_HINT];
+
+    fn serialize<W: Write>(&self, writer: &mut W) -> Result<()> {
+        writer.write_all(GC_LAST_BLOCK_KEY)?;
+        self.0.serialize(writer)
+    }
+
+    fn deserialize<R: Read + Seek>(reader: &mut R) -> Result<Self>
+    where
+        Self: Sized,
+    {
+        reader.seek(std::io::SeekFrom::Start(GC_LAST_BLOCK_KEY.len() as u64))?;
+        ton_block::ShardIdent::deserialize(reader).map(Self)
+    }
+}
+
+const STATES_GC_STATE_KEY: &[u8] = b"states_gc_state";
+const GC_LAST_BLOCK_KEY: &[u8] = b"gc_last_block";
 
 #[derive(thiserror::Error, Debug)]
 enum ShardStateStorageError {

@@ -167,6 +167,14 @@ where
         Ok(self.db.iterator_cf_opt(&cf, read_config, mode))
     }
 
+    pub fn prefix_iterator<P>(&'_ self, prefix: P) -> Result<DBIterator>
+    where
+        P: AsRef<[u8]>,
+    {
+        let cf = self.get_cf()?;
+        Ok(self.db.prefix_iterator_cf(&cf, prefix))
+    }
+
     pub fn raw_iterator(&'_ self) -> Result<DBRawIterator> {
         let cf = self.get_cf()?;
 

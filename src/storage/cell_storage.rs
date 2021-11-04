@@ -100,6 +100,8 @@ impl CellStorage {
 
         let mut total = 0;
 
+        let mut buffer = SmallVec::<[u8; 512]>::with_capacity(512);
+
         // While some cells left
         while let Some(cell_id) = stack.pop() {
             // Load cell marker and references from the top of the stack
@@ -115,9 +117,10 @@ impl CellStorage {
 
                         // Update cell data if marker changed
                         if marker_changed {
-                            let mut value = value.to_vec();
-                            value[0] = target_marker;
-                            db.put_cf_opt(&cf, cell_id.as_slice(), value, write_config)?;
+                            buffer.clear();
+                            buffer.extend_from_slice(value);
+                            buffer[0] = target_marker;
+                            db.put_cf_opt(&cf, cell_id.as_slice(), &buffer, write_config)?;
                         }
 
                         (marker_changed, references)
