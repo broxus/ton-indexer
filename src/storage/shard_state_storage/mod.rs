@@ -83,15 +83,13 @@ impl ShardStateStorage {
             self.state.cell_storage.clear()?;
         }
 
-        let marker = self.state.current_marker();
-
         let ctx = FilesContext::new(self.downloads_dir.as_ref(), block_id).await?;
 
         Ok((
             ShardStateReplaceTransaction::new(
                 &self.state.shard_state_db,
                 &self.state.cell_storage,
-                marker,
+                0, // NOTE: zero marker is used for 'persistent' state
             ),
             ctx,
         ))
@@ -356,7 +354,7 @@ impl GcStateStorage {
             }
             None => {
                 let state = GcState {
-                    current_marker: 0,
+                    current_marker: 1, // NOTE: zero marker is reserved for persistent state
                     step: Step::Wait,
                 };
                 self.update(&state)?;
@@ -456,7 +454,10 @@ impl StoredValue for GcState {
 
 impl GcState {
     fn next_marker(&self) -> u8 {
-        self.current_marker.wrapping_add(1)
+        match self.current_marker {
+            u8::MAX => 1,
+            marker => marker + 1,
+        }
     }
 }
 

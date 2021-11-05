@@ -65,12 +65,15 @@ impl CellStorage {
 
         let mut total = 0;
 
-        // TODO: test with merge operator
-
         columns::Cells::read_options(&mut read_config);
         let iter = db.iterator_cf_opt(&cf, read_config, rocksdb::IteratorMode::Start);
         for (key, value) in iter {
-            if !value.is_empty() && value[0] != target_marker {
+            if value.is_empty() {
+                continue;
+            }
+            let marker = value[0];
+
+            if marker > 0 && marker != target_marker {
                 db.delete_cf_opt(&cf, key, write_config)?;
                 total += 1;
             }
@@ -113,7 +116,7 @@ impl CellStorage {
 
                         let (marker, references) =
                             StorageCell::deserialize_marker_and_references(value)?;
-                        let marker_changed = marker != target_marker;
+                        let marker_changed = marker > 0 && marker != target_marker;
 
                         // Update cell data if marker changed
                         if marker_changed {
