@@ -212,7 +212,7 @@ impl ShardStateStorageState {
             .load_last_blocks()
             .context("Failed to load last shard blocks")?;
 
-        log::info!("Last blocks: {:?}", last_blocks);
+        log::info!("Last blocks for states GC: {:?}", last_blocks);
 
         // Mark all cells for new blocks recursively
         for (key, value) in self.shard_state_db.iterator(rocksdb::IteratorMode::Start)? {
@@ -233,12 +233,6 @@ impl ShardStateStorageState {
                 hash_map::Entry::Vacant(_) => false,
             };
 
-            log::info!(
-                "---- Marking block: {:?}. Edge block: {}",
-                block_id,
-                edge_block
-            );
-
             self.gc_state
                 .update_last_block(block_id.shard_id, block_id.seq_no)
                 .context("Failed to update last block")?;
@@ -249,13 +243,6 @@ impl ShardStateStorageState {
                 force && edge_block,
             )?;
             total += count;
-
-            log::info!(
-                "==== Marked block: {:?}, cells: {}, total: {}",
-                block_id,
-                count,
-                total
-            );
         }
 
         self.gc_state
@@ -279,7 +266,7 @@ impl ShardStateStorageState {
         target_marker: u8,
         top_blocks: &TopBlocks,
     ) -> Result<()> {
-        log::info!("---- Sweeping cells other than {}", target_marker);
+        log::info!("Sweeping cells other than {}", target_marker);
 
         let time = Instant::now();
 
@@ -290,7 +277,7 @@ impl ShardStateStorageState {
             .context("Failed to sweep cells")?;
 
         log::info!(
-            "==== Swept {} cells. Took: {} ms",
+            "Swept {} cells. Took: {} ms",
             total,
             time.elapsed().as_millis()
         );
@@ -305,7 +292,9 @@ impl ShardStateStorageState {
     }
 
     fn sweep_blocks(&self, target_marker: u8, top_blocks: &TopBlocks) -> Result<()> {
-        log::info!("---- Sweeping blocks");
+        log::info!("Sweeping block states");
+
+        let time = Instant::now();
 
         let mut total = 0;
 
@@ -322,7 +311,11 @@ impl ShardStateStorageState {
             total += 1;
         }
 
-        log::info!("==== Swept {} blocks", total);
+        log::info!(
+            "Swept {} block states. Took: {} ms",
+            total,
+            time.elapsed().as_millis()
+        );
 
         // Update gc state
         self.gc_state
