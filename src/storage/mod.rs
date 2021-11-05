@@ -1,4 +1,4 @@
-use std::io::{Read, Write};
+use std::io::{Read, Seek, Write};
 
 use anyhow::Result;
 use rocksdb::MergeOperands;
@@ -12,9 +12,11 @@ pub use self::block_handle::*;
 pub use self::block_handle_storage::*;
 pub use self::block_index_db::*;
 pub use self::block_meta::*;
+pub use self::cell_storage::*;
 pub use self::node_state_storage::*;
 pub use self::package_entry_id::*;
 pub use self::shard_state_storage::*;
+pub use self::top_blocks::*;
 pub use self::tree::*;
 
 mod archive_manager;
@@ -24,10 +26,11 @@ mod block_handle;
 mod block_handle_storage;
 mod block_index_db;
 mod block_meta;
+mod cell_storage;
 mod node_state_storage;
 mod package_entry_id;
 mod shard_state_storage;
-mod storage_cell;
+mod top_blocks;
 mod tree;
 
 pub mod columns {
@@ -35,9 +38,12 @@ pub mod columns {
 
     use super::{archive_data_merge, Column};
 
-    pub struct ArchiveStorage;
-    impl Column for ArchiveStorage {
-        const NAME: &'static str = "archive_storage";
+    /// Stores prepared archives
+    /// - Key: `u64 (BE)` (archive id)
+    /// - Value: `Vec<u8>` (archive data)
+    pub struct Archives;
+    impl Column for Archives {
+        const NAME: &'static str = "archives";
 
         fn options(opts: &mut Options) {
             opts.set_merge_operator_associative("archive_data_merge", archive_data_merge);
@@ -45,59 +51,76 @@ pub mod columns {
     }
 
     /// Maps block root hash to block meta
+    /// - Key: `ton_types::UInt256`
+    /// - Value: `BlockMeta`
     pub struct BlockHandles;
     impl Column for BlockHandles {
         const NAME: &'static str = "block_handles";
     }
 
+    /// Maps seqno to key block id
+    /// - Key: `u32 (BE)`
+    /// - Value: `ton_block::BlockIdExt`
     pub struct KeyBlocks;
     impl Column for KeyBlocks {
         const NAME: &'static str = "key_blocks";
     }
 
-    /// Maps BlockId to data
-    pub struct ArchiveManagerDb;
-    impl Column for ArchiveManagerDb {
-        const NAME: &'static str = "archive";
+    /// Maps package entry id to entry data
+    /// - Key: `PackageEntryId<I>, where I: Borrow<ton_block::BlockIdExt>`
+    /// - Value: `Vec<u8>`
+    pub struct PackageEntries;
+    impl Column for PackageEntries {
+        const NAME: &'static str = "package_entries";
 
         fn options(opts: &mut Options) {
             opts.set_optimize_filters_for_hits(true);
         }
     }
 
-    pub struct ShardStateDb;
-    impl Column for ShardStateDb {
-        const NAME: &'static str = "shard_state_db";
+    /// Maps BlockId to root cell hash
+    /// - Key: `ton_block::BlockIdExt`
+    /// - Value: `ton_types::UInt256`
+    pub struct ShardStates;
+    impl Column for ShardStates {
+        const NAME: &'static str = "shard_states";
     }
 
-    pub struct CellDb<const N: u8>;
-    impl Column for CellDb<0> {
-        const NAME: &'static str = "cell_db";
+    /// Stores cells data
+    /// - Key: `ton_types::UInt256` (cell repr hash)
+    /// - Value: `StorageCell`
+    pub struct Cells;
+    impl Column for Cells {
+        const NAME: &'static str = "cells";
 
         fn options(opts: &mut Options) {
             opts.set_optimize_filters_for_hits(true);
         }
     }
-    impl Column for CellDb<1> {
-        const NAME: &'static str = "cell_db_additional";
+
+    /// Stores generic node parameters
+    /// - Key: `...`
+    /// - Value: `...`
+    pub struct NodeStates;
+    impl Column for NodeStates {
+        const NAME: &'static str = "node_states";
 
         fn options(opts: &mut Options) {
             opts.set_optimize_filters_for_hits(true);
         }
-    }
-
-    pub struct NodeState;
-    impl Column for NodeState {
-        const NAME: &'static str = "node_state";
     }
 
     /// Maps shard id to last_seq_no + last_lt + last_utime
+    /// - Key: `ton_block::ShardIdent`
+    /// - Value: `bincode(LtDesc)`
     pub struct LtDesc;
     impl Column for LtDesc {
         const NAME: &'static str = "lt_desc";
     }
 
     /// Maps ShardIdent to lt + utime + BlockIdExt
+    /// - Key: `LtDbKey`
+    /// - Value: `bincode(LtDbEntry)`
     pub struct Lt;
     impl Column for Lt {
         const NAME: &'static str = "lt";
@@ -121,12 +144,6 @@ pub mod columns {
     pub struct Next2;
     impl Column for Next2 {
         const NAME: &'static str = "next2";
-    }
-
-    pub struct BackgroundSyncMeta;
-
-    impl Column for BackgroundSyncMeta {
-        const NAME: &'static str = "background_sync_meta";
     }
 }
 
@@ -155,7 +172,7 @@ pub trait StoredValue {
 
     fn serialize<W: Write>(&self, writer: &mut W) -> Result<()>;
 
-    fn deserialize<R: Read>(reader: &mut R) -> Result<Self>
+    fn deserialize<R: Read + Seek>(reader: &mut R) -> Result<Self>
     where
         Self: Sized;
 
@@ -179,7 +196,7 @@ impl StoredValue for ton_block::BlockIdExt {
     /// 4 bytes seqno,
     /// 32 bytes root hash,
     /// 32 bytes file hash
-    const SIZE_HINT: usize = 4 + 8 + 4 + 32 + 32;
+    const SIZE_HINT: usize = ton_block::ShardIdent::SIZE_HINT + 4 + 32 + 32;
 
     /// 96 is minimal suitable for `smallvec::Array` and `SIZE_HINT`
     type OnStackSlice = [u8; 96];
@@ -192,7 +209,7 @@ impl StoredValue for ton_block::BlockIdExt {
         Ok(())
     }
 
-    fn deserialize<R: Read>(reader: &mut R) -> Result<Self>
+    fn deserialize<R: Read + Seek>(reader: &mut R) -> Result<Self>
     where
         Self: Sized,
     {
@@ -217,7 +234,7 @@ impl StoredValue for ton_block::ShardIdent {
         Ok(())
     }
 
-    fn deserialize<R: Read>(reader: &mut R) -> Result<Self>
+    fn deserialize<R: Read + Seek>(reader: &mut R) -> Result<Self>
     where
         Self: Sized,
     {

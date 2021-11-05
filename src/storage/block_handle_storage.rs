@@ -12,12 +12,12 @@ use tiny_adnl::utils::*;
 use super::block_handle::*;
 use super::block_meta::*;
 use super::tree::*;
-use super::{columns, StoredValue};
+use super::{columns, StoredValue, TopBlocks};
 use crate::utils::*;
 
 pub struct BlockHandleStorage {
     cache: Arc<FxDashMap<ton_block::BlockIdExt, Weak<BlockHandle>>>,
-    handles: Tree<columns::BlockHandles>,
+    block_handles: Tree<columns::BlockHandles>,
     key_blocks: Tree<columns::KeyBlocks>,
 }
 
@@ -25,7 +25,7 @@ impl BlockHandleStorage {
     pub fn with_db(db: &Arc<rocksdb::DB>) -> Result<Self> {
         Ok(Self {
             cache: Arc::new(Default::default()),
-            handles: Tree::new(db)?,
+            block_handles: Tree::new(db)?,
             key_blocks: Tree::new(db)?,
         })
     }
@@ -41,7 +41,7 @@ impl BlockHandleStorage {
                 }
             }
 
-            if let Some(meta) = self.handles.get(block_id.root_hash.as_slice())? {
+            if let Some(meta) = self.block_handles.get(block_id.root_hash.as_slice())? {
                 let meta = BlockMeta::from_slice(meta.as_ref())?;
                 if let Some(handle) = self.create_handle(block_id.clone(), meta)? {
                     break Some(handle);
@@ -55,7 +55,7 @@ impl BlockHandleStorage {
     pub fn store_handle(&self, handle: &Arc<BlockHandle>) -> Result<()> {
         let id = handle.id();
 
-        self.handles
+        self.block_handles
             .insert(id.root_hash.as_slice(), handle.meta().to_vec()?)?;
 
         if handle.meta().is_key_block() {
@@ -191,7 +191,7 @@ impl BlockHandleStorage {
         Ok(Some(handle))
     }
 
-    pub fn gc_handles_cache(&self, top_blocks: &FxHashMap<ton_block::ShardIdent, u32>) -> usize {
+    pub fn gc_handles_cache(&self, top_blocks: &TopBlocks) -> usize {
         let mut total_removed = 0;
 
         self.cache.retain(|block_id, value| {
@@ -203,11 +203,12 @@ impl BlockHandleStorage {
                 }
             };
 
-            if block_id.is_masterchain() && value.meta().is_key_block() {
-                return true;
+            if block_id.is_masterchain() {
+                return value.meta().is_key_block()
+                    || block_id.seq_no >= top_blocks.target_mc_block.seq_no;
             }
 
-            match top_blocks.get(&block_id.shard_id) {
+            match top_blocks.shard_heights.get(&block_id.shard_id) {
                 Some(top_seq_no) if block_id.seq_no < *top_seq_no => {
                     total_removed += 1;
                     value.meta().clear_data_and_proof();

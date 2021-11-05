@@ -6,7 +6,6 @@
 ///
 use std::path::Path;
 use std::sync::Arc;
-use std::time::Duration;
 
 use anyhow::Context;
 use anyhow::Result;
@@ -65,15 +64,16 @@ impl Db {
         let total_blocks_cache_size = (mem_limit * 2) / 3;
         mem_limit -= total_blocks_cache_size;
         let block_cache = Cache::new_lru_cache(total_blocks_cache_size / 2)?;
-        let uncompressed_block_cache = Cache::new_lru_cache(total_blocks_cache_size / 2)?;
+        let compressed_block_cache = Cache::new_lru_cache(total_blocks_cache_size / 2)?;
 
         let mut block_factory = BlockBasedOptions::default();
         block_factory.set_block_cache(&block_cache);
-        block_factory.set_block_cache_compressed(&uncompressed_block_cache);
+        block_factory.set_block_cache_compressed(&compressed_block_cache);
         block_factory.set_cache_index_and_filter_blocks(true);
         block_factory.set_pin_l0_filter_and_index_blocks_in_cache(true);
         block_factory.set_pin_top_level_index_and_filter(true);
         block_factory.set_block_size(32 * 1024); // reducing block size reduces index size
+        block_factory.set_index_type(rocksdb::BlockBasedIndexType::HashSearch);
 
         let db = DbBuilder::new(sled_db_path)
             .options(|opts| {
@@ -107,21 +107,19 @@ impl Db {
                 // opts.enable_statistics();
                 // opts.set_stats_dump_period_sec(300);
             })
-            .column::<columns::ArchiveStorage>()
+            .column::<columns::Archives>()
             .column::<columns::BlockHandles>()
             .column::<columns::KeyBlocks>()
-            .column::<columns::ShardStateDb>()
-            .column::<columns::CellDb<0>>()
-            .column::<columns::CellDb<1>>()
-            .column::<columns::NodeState>()
+            .column::<columns::ShardStates>()
+            .column::<columns::Cells>()
+            .column::<columns::NodeStates>()
             .column::<columns::LtDesc>()
             .column::<columns::Lt>()
             .column::<columns::Prev1>()
             .column::<columns::Prev2>()
             .column::<columns::Next1>()
             .column::<columns::Next2>()
-            .column::<columns::ArchiveManagerDb>()
-            .column::<columns::BackgroundSyncMeta>()
+            .column::<columns::PackageEntries>()
             .build()
             .context("Failed building db")?;
 
@@ -135,7 +133,7 @@ impl Db {
 
         Ok(Arc::new(Self {
             block_cache,
-            uncompressed_block_cache,
+            uncompressed_block_cache: compressed_block_cache,
             block_handle_storage,
             shard_state_storage,
             archive_manager,
@@ -519,17 +517,18 @@ impl Db {
         &self.background_sync_meta_store
     }
 
-    pub fn start_states_gc(
-        &self,
-        resolver: Arc<dyn StatesGcResolver>,
-        offset: Duration,
-        interval: Duration,
-    ) {
-        self.shard_state_storage
-            .start_gc(resolver, offset, interval);
+    pub async fn remove_outdated_states(&self, mc_block_id: &ton_block::BlockIdExt) -> Result<()> {
+        let top_blocks = match self.load_block_handle(mc_block_id)? {
+            Some(handle) => self
+                .load_block_data(&handle)
+                .await
+                .and_then(|block_data| TopBlocks::from_mc_block(&block_data))?,
+            None => return Err(DbError::BlockHandleNotFound.into()),
+        };
+        self.shard_state_storage.gc(&top_blocks).await
     }
 
-    pub async fn garbage_collect(
+    pub async fn remove_outdated_blocks(
         &self,
         key_block_id: &ton_block::BlockIdExt,
         gc_type: BlocksGcKind,
@@ -545,7 +544,7 @@ impl Db {
         };
 
         // Load target block data
-        let target_block = match target_block {
+        let top_blocks = match target_block {
             Some(handle) if handle.meta().has_data() => {
                 log::info!(
                     "Starting blocks GC for key block: {}. Target block: {}",
@@ -554,7 +553,9 @@ impl Db {
                 );
                 self.load_block_data(&handle)
                     .await
-                    .context("Failed to load target key block data")?
+                    .context("Failed to load target key block data")
+                    .and_then(|block_data| TopBlocks::from_mc_block(&block_data))
+                    .context("Failed to compute top blocks for target block")?
             }
             _ => {
                 log::info!("Blocks GC skipped for key block: {}", key_block_id);
@@ -562,27 +563,21 @@ impl Db {
             }
         };
 
-        // Convert to fx hash map
-        let shard_blocks = target_block
-            .shards_blocks()?
-            .into_iter()
-            .map(|(key, value)| (key, value.seq_no))
-            .collect();
-
         // Remove all expired entries
-        let total_cached_handles_removed =
-            self.block_handle_storage.gc_handles_cache(&shard_blocks);
-        let stats = self.archive_manager.gc(&shard_blocks).await?;
+        let total_cached_handles_removed = self.block_handle_storage.gc_handles_cache(&top_blocks);
+        let stats = self.archive_manager.gc(&top_blocks).await?;
 
         log::info!(
             r#"Finished blocks GC for key block: {}
 total_cached_handles_removed: {}
-total_blocks_removed: {}
+mc_package_entries_removed: {}
+total_package_entries_removed: {}
 total_handles_removed: {}
 "#,
             key_block_id,
             total_cached_handles_removed,
-            stats.total_blocks_removed,
+            stats.mc_package_entries_removed,
+            stats.total_package_entries_removed,
             stats.total_handles_removed,
         );
 
@@ -594,7 +589,7 @@ total_handles_removed: {}
 fn check_version(db: &Arc<rocksdb::DB>) -> Result<()> {
     const DB_VERSION_KEY: &str = "db_version";
 
-    let state = Tree::<columns::NodeState>::new(db)?;
+    let state = Tree::<columns::NodeStates>::new(db)?;
     let is_empty = state
         .iterator(rocksdb::IteratorMode::Start)?
         .next()

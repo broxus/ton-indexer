@@ -104,6 +104,11 @@ where
         &self.read_config
     }
 
+    #[inline]
+    pub fn write_config(&self) -> &WriteOptions {
+        &self.write_config
+    }
+
     pub fn get<K: AsRef<[u8]>>(&self, key: K) -> Result<Option<DBPinnableSlice>> {
         let cf = self.get_cf()?;
         Ok(self.db.get_pinned_cf_opt(&cf, key, &self.read_config)?)
@@ -160,6 +165,14 @@ where
         T::read_options(&mut read_config);
 
         Ok(self.db.iterator_cf_opt(&cf, read_config, mode))
+    }
+
+    pub fn prefix_iterator<P>(&'_ self, prefix: P) -> Result<DBIterator>
+    where
+        P: AsRef<[u8]>,
+    {
+        let cf = self.get_cf()?;
+        Ok(self.db.prefix_iterator_cf(&cf, prefix))
     }
 
     pub fn raw_iterator(&'_ self) -> Result<DBRawIterator> {

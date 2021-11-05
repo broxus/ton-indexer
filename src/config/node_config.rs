@@ -19,10 +19,10 @@ pub struct NodeConfig {
 
     pub state_gc_options: Option<StateGcOptions>,
     pub blocks_gc_options: Option<BlocksGcOptions>,
+    pub shard_state_cache_options: Option<ShardStateCacheOptions>,
     pub archives_enabled: bool,
 
     pub old_blocks_policy: OldBlocksPolicy,
-    pub shard_state_cache_enabled: bool,
     pub max_db_memory_usage: usize,
 
     pub parallel_archive_downloads: u32,
@@ -43,9 +43,9 @@ impl Default for NodeConfig {
             file_db_path: "db/file".into(),
             state_gc_options: None,
             blocks_gc_options: None,
+            shard_state_cache_options: Some(Default::default()),
             archives_enabled: false,
             old_blocks_policy: Default::default(),
-            shard_state_cache_enabled: false,
             max_db_memory_usage: default_max_db_memory_usage(),
             parallel_archive_downloads: 16,
             adnl_options: Default::default(),
@@ -120,7 +120,7 @@ impl Default for StateGcOptions {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Copy, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct BlocksGcOptions {
     /// Blocks GC type
@@ -147,6 +147,25 @@ impl Default for BlocksGcOptions {
 pub enum BlocksGcKind {
     BeforePreviousKeyBlock,
     BeforePreviousPersistentState,
+}
+
+#[derive(Debug, Copy, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ShardStateCacheOptions {
+    /// LRU cache item duration. Default: `120`
+    pub ttl_sec: u64,
+
+    /// Max element count. Default: `100000`
+    pub capacity: usize,
+}
+
+impl Default for ShardStateCacheOptions {
+    fn default() -> Self {
+        Self {
+            ttl_sec: 120,
+            capacity: 100_000,
+        }
+    }
 }
 
 /// Third of all memory as suggested in docs

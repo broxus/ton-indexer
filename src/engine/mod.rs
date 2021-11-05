@@ -23,14 +23,12 @@ use self::complex_operations::*;
 use self::db::*;
 use self::downloader::*;
 use self::node_state::*;
-use self::states_gc_resolver::*;
 
 pub mod complex_operations;
 mod db;
 mod downloader;
 mod node_state;
 pub mod rpc_operations;
-mod states_gc_resolver;
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum EngineStatus {
@@ -74,7 +72,7 @@ pub trait Subscriber: Send + Sync {
 pub struct Engine {
     is_working: AtomicBool,
     db: Arc<Db>,
-    states_gc_resolver: Option<Arc<DefaultStateGcResolver>>,
+    states_gc_options: Option<StateGcOptions>,
     blocks_gc_state: Option<BlocksGcState>,
     subscribers: Vec<Arc<dyn Subscriber>>,
     network: Arc<NodeNetwork>,
@@ -85,7 +83,6 @@ pub struct Engine {
     last_known_key_block_seqno: AtomicU32,
 
     parallel_archive_downloads: u32,
-    shard_state_cache_enabled: bool,
     shard_states_cache: ShardStateCache,
 
     shard_states_operations: OperationsPool<ton_block::BlockIdExt, Arc<ShardStateStuff>>,
@@ -119,7 +116,6 @@ impl Engine {
         subscribers: Vec<Arc<dyn Subscriber>>,
     ) -> Result<Arc<Self>> {
         let old_blocks_policy = config.old_blocks_policy;
-        let shard_state_cache_enabled = config.shard_state_cache_enabled;
         let db = Db::new(
             &config.rocks_db_path,
             &config.file_db_path,
@@ -155,23 +151,10 @@ impl Engine {
 
         log::info!("Network started");
 
-        let states_gc_resolver = match config.state_gc_options {
-            Some(options) => {
-                let resolver = Arc::new(DefaultStateGcResolver::default());
-                db.start_states_gc(
-                    resolver.clone(),
-                    Duration::from_secs(options.offset_sec),
-                    Duration::from_secs(options.interval_sec),
-                );
-                Some(resolver)
-            }
-            None => None,
-        };
-
         let engine = Arc::new(Self {
             is_working: AtomicBool::new(true),
             db: db.clone(),
-            states_gc_resolver,
+            states_gc_options: config.state_gc_options,
             blocks_gc_state: config.blocks_gc_options.map(|options| BlocksGcState {
                 ty: options.kind,
                 enabled: AtomicBool::new(options.enable_for_sync),
@@ -184,8 +167,7 @@ impl Engine {
             last_known_mc_block_seqno: AtomicU32::new(0),
             last_known_key_block_seqno: AtomicU32::new(0),
             parallel_archive_downloads: config.parallel_archive_downloads,
-            shard_state_cache_enabled,
-            shard_states_cache: ShardStateCache::new(3600),
+            shard_states_cache: ShardStateCache::new(config.shard_state_cache_options),
             shard_states_operations: OperationsPool::new("shard_states_operations"),
             block_applying_operations: OperationsPool::new("block_applying_operations"),
             next_block_applying_operations: OperationsPool::new("next_block_applying_operations"),
@@ -262,7 +244,9 @@ impl Engine {
             blocks_gc.enabled.store(true, Ordering::Release);
 
             let handle = self.db.find_last_key_block()?;
-            self.db.garbage_collect(handle.id(), blocks_gc.ty).await?;
+            self.db
+                .remove_outdated_blocks(handle.id(), blocks_gc.ty)
+                .await?;
         }
 
         let last_mc_block_id = self.load_last_applied_mc_block_id()?;
@@ -289,6 +273,36 @@ impl Engine {
                 }
             }
         });
+
+        if let Some(options) = &self.states_gc_options {
+            let engine = Arc::downgrade(self);
+            let offset = Duration::from_secs(options.offset_sec);
+            let interval = Duration::from_secs(options.interval_sec);
+
+            tokio::spawn(async move {
+                tokio::time::sleep(offset).await;
+                loop {
+                    tokio::time::sleep(interval).await;
+
+                    let engine = match engine.upgrade() {
+                        Some(engine) => engine,
+                        None => return,
+                    };
+
+                    let block_id = match engine.load_shards_client_mc_block_id() {
+                        Ok(block_id) => block_id,
+                        Err(e) => {
+                            log::error!("Failed to load last shards client block: {:?}", e);
+                            continue;
+                        }
+                    };
+
+                    if let Err(e) = engine.db.remove_outdated_states(&block_id).await {
+                        log::error!("Failed to GC state: {:?}", e);
+                    }
+                }
+            });
+        };
 
         // Engine started
         Ok(())
@@ -636,19 +650,13 @@ impl Engine {
         &self,
         block_id: &ton_block::BlockIdExt,
     ) -> Result<Arc<ShardStateStuff>> {
-        if self.shard_state_cache_enabled {
-            if let Some(state) = self.shard_states_cache.get(block_id) {
-                return Ok(state);
-            }
+        if let Some(state) = self.shard_states_cache.get(block_id) {
+            return Ok(state);
         }
 
         let state = Arc::new(self.db.load_shard_state(block_id).await?);
 
-        if self.shard_state_cache_enabled {
-            self.shard_states_cache
-                .set(block_id, |_| Some(state.clone()));
-        }
-
+        self.shard_states_cache.set(block_id, || state.clone());
         Ok(state)
     }
 
@@ -657,11 +665,7 @@ impl Engine {
         handle: &Arc<BlockHandle>,
         state: &Arc<ShardStateStuff>,
     ) -> Result<()> {
-        if self.shard_state_cache_enabled {
-            self.shard_states_cache.set(handle.id(), |existing| {
-                existing.is_none().then(|| state.clone())
-            });
-        }
+        self.shard_states_cache.set(handle.id(), || state.clone());
 
         self.db.store_shard_state(handle, state.as_ref()).await?;
 
@@ -790,7 +794,9 @@ impl Engine {
         if handle.meta().is_key_block() {
             if let Some(blocks_gc) = &self.blocks_gc_state {
                 if blocks_gc.enabled.load(Ordering::Acquire) {
-                    self.db.garbage_collect(handle.id(), blocks_gc.ty).await?
+                    self.db
+                        .remove_outdated_blocks(handle.id(), blocks_gc.ty)
+                        .await?
                 }
             }
         }

@@ -5,7 +5,7 @@ use anyhow::Result;
 use super::{columns, Tree};
 
 pub struct NodeStateStorage {
-    db: Tree<columns::NodeState>,
+    db: Tree<columns::NodeStates>,
 }
 
 impl NodeStateStorage {

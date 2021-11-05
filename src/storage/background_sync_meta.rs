@@ -5,11 +5,11 @@ use ton_block::BlockIdExt;
 
 use crate::storage::{columns, StoredValue, Tree};
 
-const LOW_ID: &str = "low";
-const HIGH_ID: &str = "high";
+const LOW_ID: &str = "background_sync_low";
+const HIGH_ID: &str = "background_sync_high";
 
 pub struct BackgroundSyncMetaStore {
-    db: Tree<columns::BackgroundSyncMeta>,
+    db: Tree<columns::NodeStates>,
 }
 
 impl BackgroundSyncMetaStore {
