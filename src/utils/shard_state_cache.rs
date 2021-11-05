@@ -44,7 +44,7 @@ impl ShardStateCache {
     pub fn remove(&self, top_blocks: &TopBlocks) {
         if let Some(map) = &self.map {
             let mut map = map.lock();
-            map.retain(|(key, _)| top_blocks.contains(key).unwrap_or_default());
+            map.retain(|(key, _)| top_blocks.contains(key));
         }
     }
 }

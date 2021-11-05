@@ -138,20 +138,9 @@ impl ArchiveManager {
                 // Read only prefix with shard ident and seqno
                 let prefix = PackageEntryIdPrefix::from_slice(key.as_ref())?;
 
-                if prefix.shard_ident.is_masterchain() {
-                    if prefix.seq_no >= top_blocks.target_mc_block.seq_no {
-                        continue;
-                    }
-                } else {
-                    match top_blocks.shard_heights.get(&prefix.shard_ident) {
-                        Some(top_seq_no) if prefix.seq_no < *top_seq_no => { /* gc block */ }
-                        // Skip blocks with seq.no. >= top seq.no.
-                        Some(_) => continue,
-                        None => {
-                            log::warn!("Top block not found for: {}", prefix.shard_ident);
-                            continue;
-                        }
-                    };
+                // Don't gc latest blocks
+                if top_blocks.contains_shard_seq_no(&prefix.shard_ident, prefix.seq_no) {
+                    continue;
                 }
 
                 // Additionally check whether this item is a key block

@@ -204,18 +204,13 @@ impl BlockHandleStorage {
             };
 
             if block_id.is_masterchain() {
-                return value.meta().is_key_block()
-                    || block_id.seq_no >= top_blocks.target_mc_block.seq_no;
-            }
-
-            match top_blocks.shard_heights.get(&block_id.shard_id) {
-                Some(top_seq_no) if block_id.seq_no < *top_seq_no => {
-                    total_removed += 1;
-                    value.meta().clear_data_and_proof();
-                    false
-                }
-                // Skip blocks with seq.no. >= top seq.no.
-                _ => true,
+                value.meta().is_key_block() || block_id.seq_no >= top_blocks.target_mc_block.seq_no
+            } else if top_blocks.contains(block_id) {
+                true
+            } else {
+                total_removed += 1;
+                value.meta().clear_data_and_proof();
+                false
             }
         });
 

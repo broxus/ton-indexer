@@ -217,7 +217,7 @@ impl ShardStateStorageState {
         // Mark all cells for new blocks recursively
         for (key, value) in self.shard_state_db.iterator(rocksdb::IteratorMode::Start)? {
             let block_id = ton_block::BlockIdExt::from_slice(&key)?;
-            if !top_blocks.contains(&block_id)? {
+            if !top_blocks.contains(&block_id) {
                 continue;
             }
 
@@ -301,7 +301,7 @@ impl ShardStateStorageState {
         // Remove all unmarked cells
         for (key, _) in self.shard_state_db.iterator(rocksdb::IteratorMode::Start)? {
             let block_id = ton_block::BlockIdExt::from_slice(&key)?;
-            if top_blocks.contains(&block_id)? {
+            if top_blocks.contains(&block_id) {
                 continue;
             }
 

@@ -296,21 +296,3 @@ enum BlockIndexDbError {
     #[error("Block not found")]
     BlockNotFound,
 }
-
-#[cfg(test)]
-mod test {
-    use super::{LtDbKey, LtDbKeyOwned};
-
-    #[test]
-    fn serde() {
-        let key = LtDbKey {
-            shard_ident: &Default::default(),
-            index: 13,
-        };
-        let bytes = key.to_vec().unwrap();
-        let mut bytes = std::io::Cursor::new(bytes);
-        let got = LtDbKeyOwned::deserialize(&mut bytes).unwrap();
-        assert_eq!(&got.shard_ident, key.shard_ident);
-        assert_eq!(got.index, key.index);
-    }
-}
