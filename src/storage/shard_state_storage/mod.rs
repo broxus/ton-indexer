@@ -283,13 +283,19 @@ impl ShardStateStorageState {
     ) -> Result<()> {
         log::info!("---- Sweeping cells other than {}", target_marker);
 
+        let time = Instant::now();
+
         // Remove all unmarked cells
         let total = self
             .cell_storage
             .sweep_cells(target_marker)
             .context("Failed to sweep cells")?;
 
-        log::info!("==== Swept {} cells", total);
+        log::info!(
+            "==== Swept {} cells. Took: {} ms",
+            total,
+            time.elapsed().as_millis()
+        );
 
         // Update gc state
         self.gc_state

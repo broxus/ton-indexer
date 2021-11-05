@@ -95,7 +95,6 @@ pub mod columns {
 
         fn options(opts: &mut Options) {
             opts.set_optimize_filters_for_hits(true);
-            // opts.set_merge_operator_associative("cell_sweep_merge", cell_sweep_merge);
         }
     }
 
@@ -165,27 +164,6 @@ fn archive_data_merge(
 
     Some(result)
 }
-
-// fn cell_sweep_merge(
-//     _: &[u8],
-//     current_value: Option<&[u8]>,
-//     operands: &MergeOperands,
-// ) -> Option<Vec<u8>> {
-//     // Check current value with only latest operand
-//     match (current_value, operands.iter().last()) {
-//         // Keep only non-empty values marked with specified byte
-//         (Some(value), Some([operand])) if value.len() > 0 && value[0] == operand => {
-//             Some(value.to_vec())
-//         }
-//         // Keep previous value if there were no operands
-//         (Some(value), None) => {
-//             log::warn!("Empty merge operands"); // TODO: remove
-//             Some(value.to_vec())
-//         }
-//         // Remove other values (with different mark or empty)
-//         _ => None,
-//     }
-// }
 
 pub trait StoredValue {
     const SIZE_HINT: usize;

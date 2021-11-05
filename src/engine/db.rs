@@ -73,6 +73,7 @@ impl Db {
         block_factory.set_pin_l0_filter_and_index_blocks_in_cache(true);
         block_factory.set_pin_top_level_index_and_filter(true);
         block_factory.set_block_size(32 * 1024); // reducing block size reduces index size
+        block_factory.set_index_type(rocksdb::BlockBasedIndexType::HashSearch);
 
         let db = DbBuilder::new(sled_db_path)
             .options(|opts| {
