@@ -6,6 +6,7 @@ use parking_lot::Mutex;
 
 use super::shard_state::ShardStateStuff;
 use crate::config::ShardStateCacheOptions;
+use crate::storage::TopBlocks;
 
 pub struct ShardStateCache {
     map: Option<ShardStatesMap>,
@@ -37,6 +38,13 @@ impl ShardStateCache {
     {
         if let Some(map) = &self.map {
             map.lock().insert(block_id.clone(), factory());
+        }
+    }
+
+    pub fn remove(&self, top_blocks: &TopBlocks) {
+        if let Some(map) = &self.map {
+            let mut map = map.lock();
+            map.retain(|(key, _)| top_blocks.contains(key).unwrap_or_default());
         }
     }
 }

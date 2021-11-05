@@ -297,8 +297,9 @@ impl Engine {
                         }
                     };
 
-                    if let Err(e) = engine.db.remove_outdated_states(&block_id).await {
-                        log::error!("Failed to GC state: {:?}", e);
+                    match engine.db.remove_outdated_states(&block_id).await {
+                        Ok(top_blocks) => engine.shard_states_cache.remove(&top_blocks),
+                        Err(e) => log::error!("Failed to GC state: {:?}", e),
                     }
                 }
             });

@@ -23,7 +23,11 @@ pub async fn walk_masterchain_blocks(
         mc_block_id = match load_next_masterchain_block(engine, &mc_block_id).await {
             Ok(id) => id,
             Err(e) => {
-                log::error!("Failed to load next masterchain block for: {:?}", e);
+                log::error!(
+                    "Failed to load next masterchain block for {}: {:?}",
+                    mc_block_id,
+                    e
+                );
                 continue;
             }
         }

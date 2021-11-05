@@ -517,7 +517,10 @@ impl Db {
         &self.background_sync_meta_store
     }
 
-    pub async fn remove_outdated_states(&self, mc_block_id: &ton_block::BlockIdExt) -> Result<()> {
+    pub async fn remove_outdated_states(
+        &self,
+        mc_block_id: &ton_block::BlockIdExt,
+    ) -> Result<TopBlocks> {
         let top_blocks = match self.load_block_handle(mc_block_id)? {
             Some(handle) => self
                 .load_block_data(&handle)
@@ -525,7 +528,10 @@ impl Db {
                 .and_then(|block_data| TopBlocks::from_mc_block(&block_data))?,
             None => return Err(DbError::BlockHandleNotFound.into()),
         };
-        self.shard_state_storage.gc(&top_blocks).await
+
+        self.shard_state_storage.gc(&top_blocks).await?;
+
+        Ok(top_blocks)
     }
 
     pub async fn remove_outdated_blocks(
