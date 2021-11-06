@@ -94,9 +94,12 @@ impl Db {
                 opts.set_zstd_max_train_bytes(32 * 1024 * 1024);
                 opts.set_compression_type(DBCompressionType::Lz4);
                 // io
-                opts.set_log_level(rocksdb::LogLevel::Error);
-                opts.set_recycle_log_file_num(5);
                 opts.set_max_open_files(limit as i32);
+
+                // logging
+                opts.set_log_level(rocksdb::LogLevel::Error);
+                opts.set_keep_log_file_num(2);
+                opts.set_recycle_log_file_num(2);
 
                 // cf
                 opts.create_if_missing(true);
