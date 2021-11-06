@@ -8,11 +8,11 @@
 use std::collections::hash_map;
 use std::io::{Read, Seek, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
+use parking_lot::Mutex;
 use tiny_adnl::utils::*;
 use ton_types::{ByteOrderRead, UInt256};
 
@@ -53,7 +53,7 @@ impl ShardStateStorage {
     ) -> Result<()> {
         let cell_id = root.repr_hash();
 
-        let marker = self.state.current_marker();
+        let (marker, _handle) = self.state.begin_store();
 
         self.state.cell_storage.store_dynamic_boc(marker, root)?;
         self.state
@@ -102,12 +102,7 @@ impl ShardStateStorage {
         );
         let instant = Instant::now();
 
-        tokio::task::spawn_blocking({
-            let state = self.state.clone();
-            let top_blocks = top_blocks.clone();
-            move || state.gc(&top_blocks)
-        })
-        .await??;
+        self.state.gc(top_blocks).await?;
 
         log::info!(
             "Finished shard states GC for target block: {}. Took: {} ms",
@@ -119,16 +114,23 @@ impl ShardStateStorage {
 }
 
 struct ShardStateStorageState {
-    current_marker: AtomicU8,
+    writer_state: Mutex<WriterState>,
     gc_state: GcStateStorage,
     shard_state_db: Tree<columns::ShardStates>,
     cell_storage: Arc<CellStorage>,
 }
 
+#[derive(Default)]
+struct WriterState {
+    current_marker: u8,
+    gc_started: bool,
+    writer_count: u32,
+}
+
 impl ShardStateStorageState {
     fn new(db: &Arc<rocksdb::DB>) -> Result<Self> {
         let state = Self {
-            current_marker: Default::default(),
+            writer_state: Default::default(),
             gc_state: GcStateStorage::new(db)?,
             shard_state_db: Tree::new(db)?,
             cell_storage: Arc::new(CellStorage::new(db)?),
@@ -159,18 +161,34 @@ impl ShardStateStorageState {
             }
         };
 
-        state
-            .current_marker
-            .store(current_marker, Ordering::Release);
+        state.writer_state.lock().current_marker = current_marker;
 
         Ok(state)
     }
 
-    fn current_marker(&self) -> u8 {
-        self.current_marker.load(Ordering::Acquire)
+    fn begin_store(&'_ self) -> (u8, Option<impl Drop + '_>) {
+        struct WriterStateHandle<'a>(&'a Mutex<WriterState>);
+
+        impl Drop for WriterStateHandle<'_> {
+            fn drop(&mut self) {
+                let mut state = self.0.lock();
+                state.writer_count = state.writer_count.saturating_sub(1);
+            }
+        }
+
+        let mut writer_state = self.writer_state.lock();
+        if writer_state.gc_started {
+            (writer_state.current_marker, None)
+        } else {
+            writer_state.writer_count += 1;
+            (
+                writer_state.current_marker,
+                Some(WriterStateHandle(&self.writer_state)),
+            )
+        }
     }
 
-    fn gc(&self, top_blocks: &TopBlocks) -> Result<()> {
+    async fn gc(self: &Arc<Self>, top_blocks: &TopBlocks) -> Result<()> {
         let gc_state = self.gc_state.load()?;
         if !matches!(&gc_state.step, Step::Wait) {
             log::info!("Invalid GC state: {:?}", gc_state);
@@ -183,19 +201,37 @@ impl ShardStateStorageState {
             })
             .context("Failed to update gc state to 'Mark'")?;
 
-        self.current_marker
-            .store(gc_state.next_marker(), Ordering::Release);
+        let mut has_writers = {
+            let mut writer_state = self.writer_state.lock();
+            writer_state.gc_started = true;
+            writer_state.current_marker = gc_state.current_marker;
+            writer_state.writer_count > 0
+        };
+        while has_writers {
+            log::info!("Waiting writers...");
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            has_writers = self.writer_state.lock().writer_count > 0;
+        }
 
-        self.mark(
-            gc_state.current_marker,
-            gc_state.next_marker(),
-            top_blocks,
-            false,
-        )?;
+        let result = tokio::task::spawn_blocking({
+            let state = self.clone();
+            let top_blocks = top_blocks.clone();
+            move || {
+                state.mark(
+                    gc_state.current_marker,
+                    gc_state.next_marker(),
+                    &top_blocks,
+                    false,
+                )?;
+                state.sweep_cells(gc_state.current_marker, gc_state.next_marker(), &top_blocks)?;
+                state.sweep_blocks(gc_state.next_marker(), &top_blocks)
+            }
+        })
+        .await?;
 
-        self.sweep_cells(gc_state.current_marker, gc_state.next_marker(), top_blocks)?;
+        self.writer_state.lock().gc_started = false;
 
-        self.sweep_blocks(gc_state.next_marker(), top_blocks)
+        result
     }
 
     fn mark(
