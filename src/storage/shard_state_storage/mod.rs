@@ -375,8 +375,6 @@ impl GcStateStorage {
 
         let iter = self.node_states.prefix_iterator(GC_LAST_BLOCK_KEY)?;
         for (key, value) in iter.filter(|(key, _)| key.starts_with(GC_LAST_BLOCK_KEY)) {
-            log::info!("{}", hex::encode(&key));
-
             let shard_ident = LastShardBlockKey::from_slice(&key)
                 .context("Failed to load last shard id")?
                 .0;

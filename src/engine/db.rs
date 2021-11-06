@@ -46,7 +46,7 @@ pub struct RocksdbStats {
 
 impl Db {
     pub async fn new<PS, PF>(
-        sled_db_path: PS,
+        rocksdb_path: PS,
         file_db_path: PF,
         mut mem_limit: usize,
     ) -> Result<Arc<Self>>
@@ -75,7 +75,7 @@ impl Db {
         block_factory.set_block_size(32 * 1024); // reducing block size reduces index size
         block_factory.set_index_type(rocksdb::BlockBasedIndexType::HashSearch);
 
-        let db = DbBuilder::new(sled_db_path)
+        let db = DbBuilder::new(rocksdb_path)
             .options(|opts| {
                 // Memory consuming options
                 // 8 mb
@@ -94,7 +94,8 @@ impl Db {
                 opts.set_zstd_max_train_bytes(32 * 1024 * 1024);
                 opts.set_compression_type(DBCompressionType::Lz4);
                 // io
-                opts.set_recycle_log_file_num(32);
+                opts.set_log_level(rocksdb::LogLevel::Error);
+                opts.set_recycle_log_file_num(5);
                 opts.set_max_open_files(limit as i32);
 
                 // cf
