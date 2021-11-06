@@ -204,7 +204,7 @@ impl ShardStateStorageState {
         let mut has_writers = {
             let mut writer_state = self.writer_state.lock();
             writer_state.gc_started = true;
-            writer_state.current_marker = gc_state.current_marker;
+            writer_state.current_marker = gc_state.next_marker();
             writer_state.writer_count > 0
         };
         while has_writers {
