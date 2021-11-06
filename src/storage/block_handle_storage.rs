@@ -203,11 +203,13 @@ impl BlockHandleStorage {
                 }
             };
 
-            if block_id.is_masterchain() {
-                value.meta().is_key_block() || block_id.seq_no >= top_blocks.target_mc_block.seq_no
-            } else if top_blocks.contains(block_id) {
+            if block_id.is_masterchain() && value.meta().is_key_block()
+                || top_blocks.contains(block_id)
+            {
+                // Keep key blocks and latest blocks
                 true
             } else {
+                // Remove all outdated
                 total_removed += 1;
                 value.meta().clear_data_and_proof();
                 false
