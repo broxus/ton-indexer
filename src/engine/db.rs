@@ -526,10 +526,24 @@ impl Db {
         mc_block_id: &ton_block::BlockIdExt,
     ) -> Result<TopBlocks> {
         let top_blocks = match self.load_block_handle(mc_block_id)? {
-            Some(handle) => self
-                .load_block_data(&handle)
-                .await
-                .and_then(|block_data| TopBlocks::from_mc_block(&block_data))?,
+            Some(handle) => {
+                let block_data = self.load_block_data(&handle).await?;
+                let block_info = block_data
+                    .block()
+                    .read_info()
+                    .context("Failed to read block info")?;
+
+                let target_block_handle = self
+                    .find_block_by_seq_no(
+                        &ton_block::AccountIdPrefixFull::any_masterchain(),
+                        block_info.min_ref_mc_seqno(),
+                    )
+                    .context("Failed to find min ref mc")?;
+
+                self.load_block_data(&target_block_handle)
+                    .await
+                    .and_then(|block_data| TopBlocks::from_mc_block(&block_data))?
+            }
             None => return Err(DbError::BlockHandleNotFound.into()),
         };
 
