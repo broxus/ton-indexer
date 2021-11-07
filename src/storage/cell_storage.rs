@@ -3,7 +3,7 @@ use std::io::{Read, Write};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Weak};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use parking_lot::RwLock;
 use smallvec::SmallVec;
 use tiny_adnl::utils::*;
@@ -24,19 +24,20 @@ impl CellStorage {
         })
     }
 
-    pub fn store_dynamic_boc(&self, marker: u8, root: ton_types::Cell) -> Result<usize> {
+    pub fn store_dynamic_boc(
+        &self,
+        batch: &mut rocksdb::WriteBatch,
+        marker: u8,
+        root: ton_types::Cell,
+    ) -> Result<usize> {
         let mut transaction = FxHashMap::default();
-
         let written_count = self.prepare_tree_of_cells(marker, root, &mut transaction)?;
 
         let cf = self.cells.get_cf()?;
-        let mut batch = rocksdb::WriteBatch::default();
 
         for (cell_id, data) in &transaction {
             batch.put_cf(&cf, cell_id, data);
         }
-
-        self.cells.raw_db_handle().write(batch)?;
 
         Ok(written_count)
     }
@@ -128,7 +129,10 @@ impl CellStorage {
 
                         (marker_changed, references)
                     }
-                    None => return Err(CellStorageError::CellNotFound.into()),
+                    None => {
+                        return Err(CellStorageError::CellNotFound)
+                            .with_context(|| format!("Child not found. Depth: {}", stack.len()))
+                    }
                 };
 
             total += marker_changed as usize;
@@ -164,15 +168,41 @@ impl CellStorage {
         cell: ton_types::Cell,
         transaction: &mut FxHashMap<UInt256, Vec<u8>>,
     ) -> Result<usize> {
+        let cf = self.cells.get_cf()?;
+        let db = self.cells.raw_db_handle();
+        let read_options = self.cells.read_config();
+
+        let mut buffer = SmallVec::<[u8; 512]>::with_capacity(512);
+
         let cell_id = cell.repr_hash();
-        if self.cells.contains_key(&cell_id)? || transaction.contains_key(&cell_id) {
-            return Ok(0);
+        match db.get_pinned_cf_opt(&cf, &cell_id, read_options)? {
+            Some(value) => {
+                // NOTE: dereference value only once to prevent multiple ffi calls
+                let value = value.as_ref();
+
+                if value.is_empty() {
+                    // Empty cell is invalid
+                    return Err(CellStorageError::InvalidCell.into());
+                } else if value[0] > 0 && value[0] != marker {
+                    // Proceed if cell was updated
+                    buffer.clear();
+                    buffer.extend_from_slice(value);
+                    buffer[0] = marker;
+                    transaction.insert(cell_id, buffer.to_vec());
+                } else {
+                    // Cell already exists
+                    return Ok(0);
+                }
+            }
+            // Insert cell value if it doesn't exist
+            None => {
+                transaction.insert(cell_id, StorageCell::serialize(marker, &*cell)?);
+            }
         }
 
-        let mut count = 1;
-        transaction.insert(cell_id, StorageCell::serialize(marker, &*cell)?);
-
         let mut stack = VecDeque::with_capacity(16);
+
+        let mut count = 1;
         stack.push_back(cell);
 
         while let Some(current) = stack.pop_back() {
@@ -180,12 +210,28 @@ impl CellStorage {
                 let cell = current.reference(i)?;
                 let cell_id = cell.repr_hash();
 
-                if self.cells.contains_key(&cell_id)? || transaction.contains_key(&cell_id) {
-                    continue;
+                match db.get_pinned_cf_opt(&cf, &cell_id, read_options)? {
+                    Some(value) => {
+                        // NOTE: dereference value only once to prevent multiple ffi calls
+                        let value = value.as_ref();
+                        if !value.is_empty() && value[0] > 0 && value[0] != marker {
+                            // Update cell if marker is different or value is invalid
+                            buffer.clear();
+                            buffer.extend_from_slice(value);
+                            buffer[0] = marker;
+                            transaction.insert(cell_id, buffer.to_vec());
+                        } else {
+                            // Cell already exists
+                            continue;
+                        }
+                    }
+                    None if transaction.contains_key(&cell_id) => continue,
+                    None => {
+                        transaction.insert(cell_id, StorageCell::serialize(marker, &*cell)?);
+                    }
                 }
 
                 count += 1;
-                transaction.insert(cell.repr_hash(), StorageCell::serialize(marker, &*cell)?);
                 stack.push_back(cell);
             }
         }
@@ -198,6 +244,8 @@ impl CellStorage {
 enum CellStorageError {
     #[error("Cell not found in cell db")]
     CellNotFound,
+    #[error("Invalid cell")]
+    InvalidCell,
 }
 
 pub struct StorageCell {

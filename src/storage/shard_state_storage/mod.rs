@@ -55,10 +55,21 @@ impl ShardStateStorage {
 
         let (marker, _handle) = self.state.begin_store();
 
-        self.state.cell_storage.store_dynamic_boc(marker, root)?;
+        let mut batch = rocksdb::WriteBatch::default();
+
         self.state
-            .shard_state_db
-            .insert(block_id.to_vec()?, cell_id.as_slice())
+            .cell_storage
+            .store_dynamic_boc(&mut batch, marker, root)?;
+
+        batch.put_cf(
+            &self.state.shard_state_db.get_cf()?,
+            block_id.to_vec()?,
+            cell_id.as_slice(),
+        );
+
+        self.state.shard_state_db.raw_db_handle().write(batch)?;
+
+        Ok(())
     }
 
     pub async fn load_state(&self, block_id: &ton_block::BlockIdExt) -> Result<ton_types::Cell> {
