@@ -201,10 +201,12 @@ impl ShardStateStorageState {
             })
             .context("Failed to update gc state to 'Mark'")?;
 
+        let target_marker = gc_state.next_marker();
+
         let mut has_writers = {
             let mut writer_state = self.writer_state.lock();
             writer_state.gc_started = true;
-            writer_state.current_marker = gc_state.next_marker();
+            writer_state.current_marker = target_marker;
             writer_state.writer_count > 0
         };
         while has_writers {
@@ -217,14 +219,9 @@ impl ShardStateStorageState {
             let state = self.clone();
             let top_blocks = top_blocks.clone();
             move || {
-                state.mark(
-                    gc_state.current_marker,
-                    gc_state.next_marker(),
-                    &top_blocks,
-                    false,
-                )?;
-                state.sweep_cells(gc_state.current_marker, gc_state.next_marker(), &top_blocks)?;
-                state.sweep_blocks(gc_state.next_marker(), &top_blocks)
+                state.mark(gc_state.current_marker, target_marker, &top_blocks, false)?;
+                state.sweep_cells(gc_state.current_marker, target_marker, &top_blocks)?;
+                state.sweep_blocks(target_marker, &top_blocks)
             }
         })
         .await?;

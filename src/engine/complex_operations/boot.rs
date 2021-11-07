@@ -355,6 +355,7 @@ pub async fn download_zero_state(
             Ok(state) => {
                 let handle = engine.store_zerostate(block_id, &state).await?;
                 engine.set_applied(&handle, 0).await?;
+                engine.notify_subscribers_with_full_state(&state).await?;
                 return Ok((handle, state));
             }
             Err(e) => {
@@ -447,6 +448,9 @@ async fn download_block_and_state(
 
         log::info!("Received shard state for: {}", shard_state.block_id());
         engine.store_state(&handle, &shard_state).await?;
+        engine
+            .notify_subscribers_with_full_state(&shard_state)
+            .await?;
     }
 
     engine

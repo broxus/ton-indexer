@@ -67,6 +67,11 @@ pub trait Subscriber: Send + Sync {
         let _unused_by_default = block_proof;
         Ok(())
     }
+
+    async fn process_full_state(&self, state: &ShardStateStuff) -> Result<()> {
+        let _unused_by_default = state;
+        Ok(())
+    }
 }
 
 pub struct Engine {
@@ -963,10 +968,6 @@ impl Engine {
         block: &BlockStuff,
         block_proof: &BlockProofStuff,
     ) -> Result<()> {
-        if self.subscribers.is_empty() {
-            return Ok(());
-        }
-
         let meta = handle.meta().brief();
 
         if handle.id().shard().is_masterchain() {
@@ -981,6 +982,13 @@ impl Engine {
             }
         }
 
+        Ok(())
+    }
+
+    async fn notify_subscribers_with_full_state(&self, state: &ShardStateStuff) -> Result<()> {
+        for subscriber in &self.subscribers {
+            subscriber.process_full_state(state).await?;
+        }
         Ok(())
     }
 
