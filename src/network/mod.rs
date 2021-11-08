@@ -59,7 +59,7 @@ impl NodeNetwork {
 
         let masterchain_zero_state_id = global_config.zero_state;
 
-        let adnl = AdnlNode::new(ip_address, keystore, adnl_options);
+        let adnl = AdnlNode::new(ip_address, keystore, adnl_options, None);
         let dht = DhtNode::new(adnl.clone(), Self::TAG_DHT_KEY, dht_options)?;
 
         let overlay = OverlayNode::new(

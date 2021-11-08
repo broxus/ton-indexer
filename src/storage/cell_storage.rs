@@ -29,17 +29,15 @@ impl CellStorage {
         batch: &mut rocksdb::WriteBatch,
         marker: u8,
         root: ton_types::Cell,
-    ) -> Result<usize> {
-        let mut transaction = FxHashMap::default();
-        let written_count = self.prepare_tree_of_cells(marker, root, &mut transaction)?;
+    ) -> Result<()> {
+        let transaction = self.prepare_tree_of_cells(marker, root)?;
 
         let cf = self.cells.get_cf()?;
-
         for (cell_id, data) in &transaction {
             batch.put_cf(&cf, cell_id, data);
         }
 
-        Ok(written_count)
+        Ok(())
     }
 
     pub fn load_cell(self: &Arc<Self>, hash: UInt256) -> Result<Arc<StorageCell>> {
@@ -166,32 +164,32 @@ impl CellStorage {
         &self,
         marker: u8,
         cell: ton_types::Cell,
-        transaction: &mut FxHashMap<UInt256, Vec<u8>>,
-    ) -> Result<usize> {
+    ) -> Result<FxHashMap<UInt256, Vec<u8>>> {
+        // Prepare handles
         let cf = self.cells.get_cf()?;
         let db = self.cells.raw_db_handle();
         let read_options = self.cells.read_config();
 
-        let mut buffer = SmallVec::<[u8; 512]>::with_capacity(512);
+        let mut transaction = FxHashMap::default();
 
+        // Check root cell
         let cell_id = cell.repr_hash();
         match db.get_pinned_cf_opt(&cf, &cell_id, read_options)? {
             Some(value) => {
                 // NOTE: dereference value only once to prevent multiple ffi calls
                 let value = value.as_ref();
-
+                // Overwrite value if it has different marker
                 if value.is_empty() {
                     // Empty cell is invalid
                     return Err(CellStorageError::InvalidCell.into());
                 } else if value[0] > 0 && value[0] != marker {
                     // Proceed if cell was updated
-                    buffer.clear();
-                    buffer.extend_from_slice(value);
-                    buffer[0] = marker;
-                    transaction.insert(cell_id, buffer.to_vec());
+                    let mut value = value.to_vec();
+                    value[0] = marker;
+                    transaction.insert(cell_id, value);
                 } else {
-                    // Cell already exists
-                    return Ok(0);
+                    // Cell already exists. Do nothing
+                    return Ok(transaction);
                 }
             }
             // Insert cell value if it doesn't exist
@@ -201,8 +199,6 @@ impl CellStorage {
         }
 
         let mut stack = VecDeque::with_capacity(16);
-
-        let mut count = 1;
         stack.push_back(cell);
 
         while let Some(current) = stack.pop_back() {
@@ -214,29 +210,31 @@ impl CellStorage {
                     Some(value) => {
                         // NOTE: dereference value only once to prevent multiple ffi calls
                         let value = value.as_ref();
-                        if !value.is_empty() && value[0] > 0 && value[0] != marker {
+                        if value.is_empty() {
+                            transaction.insert(cell_id, StorageCell::serialize(marker, &*cell)?);
+                        } else if value[0] > 0 && value[0] != marker {
                             // Update cell if marker is different or value is invalid
-                            buffer.clear();
-                            buffer.extend_from_slice(value);
-                            buffer[0] = marker;
-                            transaction.insert(cell_id, buffer.to_vec());
+                            let mut value = value.to_vec();
+                            // SAFETY: bounds are checked above. Definitely removes bounds check
+                            unsafe { *value.get_unchecked_mut(0) = marker };
+                            transaction.insert(cell_id, value);
                         } else {
                             // Cell already exists
                             continue;
                         }
                     }
+                    // Already inserting this cell
                     None if transaction.contains_key(&cell_id) => continue,
                     None => {
                         transaction.insert(cell_id, StorageCell::serialize(marker, &*cell)?);
                     }
                 }
 
-                count += 1;
                 stack.push_back(cell);
             }
         }
 
-        Ok(count)
+        Ok(transaction)
     }
 }
 
