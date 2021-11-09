@@ -12,6 +12,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::{Context, Result};
+use futures::stream::FuturesUnordered;
 use futures::StreamExt;
 use tiny_adnl::utils::*;
 use ton_types::{ByteOrderRead, UInt256};
@@ -126,8 +127,8 @@ impl ShardStateStorage {
 
 struct ShardStateStorageState {
     current_marker: tokio::sync::RwLock<u8>,
-    gc_state_storage: GcStateStorage,
     shard_state_db: Tree<columns::ShardStates>,
+    gc_state_storage: Arc<GcStateStorage>,
     cell_storage: Arc<CellStorage>,
 }
 
@@ -135,8 +136,8 @@ impl ShardStateStorageState {
     async fn new(db: &Arc<rocksdb::DB>) -> Result<Self> {
         let state = Self {
             current_marker: Default::default(),
-            gc_state_storage: GcStateStorage::new(db)?,
             shard_state_db: Tree::new(db)?,
+            gc_state_storage: Arc::new(GcStateStorage::new(db)?),
             cell_storage: Arc::new(CellStorage::new(db)?),
         };
 
@@ -220,6 +221,7 @@ impl ShardStateStorageState {
     ) -> Result<()> {
         let time = Instant::now();
 
+        // Load previous intermediate state
         let last_blocks = self
             .gc_state_storage
             .load_last_blocks()
@@ -229,49 +231,65 @@ impl ShardStateStorageState {
 
         let total = {
             let db = self.shard_state_db.raw_db_handle();
-            let snapshot = db.snapshot();
-
-            let mut tasks = futures::stream::FuturesUnordered::new();
 
             let total = Arc::new(AtomicUsize::new(0));
+            let mut tasks = FuturesUnordered::new();
 
+            // Prepare one database snapshot for all shard states iterators
+            let snapshot = db.snapshot();
+
+            // Iterate all shards
             for shard_ident in top_blocks.iter_shards() {
+                // Prepare context
                 let db = db.clone();
                 let top_blocks = top_blocks.clone();
                 let mut last_block = last_blocks.get(shard_ident).cloned();
                 let cell_storage = self.cell_storage.clone();
                 let total = total.clone();
 
+                // Compute iteration bounds
                 let lower_bound = make_block_id_bound(shard_ident, 0x00)?;
+                let upper_bound = make_block_id_bound(shard_ident, 0xff)?;
 
+                // Prepare shard states read options
                 let mut read_options = rocksdb::ReadOptions::default();
                 columns::ShardStates::read_options(&mut read_options);
                 read_options.set_snapshot(&snapshot);
-                read_options.set_iterate_upper_bound(make_block_id_bound(shard_ident, 0xff)?);
+                read_options.set_iterate_lower_bound(lower_bound);
 
+                // Compute intermediate state key
                 let last_shard_block_key = LastShardBlockKey(*shard_ident).to_vec()?;
 
+                // Spawn task
                 tasks.push(tokio::task::spawn_blocking(move || {
+                    // Prepare cf handles
                     let shard_states_cf =
                         db.cf_handle(columns::ShardStates::NAME).context("No cf")?;
                     let node_states_cf =
                         db.cf_handle(columns::NodeStates::NAME).context("No cf")?;
 
+                    // Prepare intermediate state write options
                     let mut write_options = rocksdb::WriteOptions::default();
                     columns::NodeStates::write_options(&mut write_options);
 
-                    let mode =
-                        rocksdb::IteratorMode::From(&lower_bound, rocksdb::Direction::Forward);
+                    // Prepare reverse iterator
+                    let iter = db.iterator_cf_opt(
+                        &shard_states_cf,
+                        read_options,
+                        rocksdb::IteratorMode::From(&upper_bound, rocksdb::Direction::Reverse),
+                    );
 
-                    for (key, value) in db.iterator_cf_opt(&shard_states_cf, read_options, mode) {
+                    // Iterate all block states in shard starting from the latest
+                    for (key, value) in iter {
                         let block_id = ton_block::BlockIdExt::from_slice(&key)?;
+                        // Stop iterating on first outdated block
                         if !top_blocks.contains(&block_id) {
-                            continue;
+                            break;
                         }
 
                         let edge_block = match &last_block {
                             // Skip blocks which were definitely processed
-                            Some(seq_no) if block_id.seq_no < *seq_no => continue,
+                            Some(seq_no) if block_id.seq_no > *seq_no => continue,
                             // Block may have been processed
                             Some(_) => {
                                 last_block = None;
@@ -281,6 +299,8 @@ impl ShardStateStorageState {
                             None => false,
                         };
 
+                        // Update intermediate state for this shard to continue
+                        // from this block on accidental restart
                         db.put_cf_opt(
                             &node_states_cf,
                             &last_shard_block_key,
@@ -289,6 +309,7 @@ impl ShardStateStorageState {
                         )
                         .context("Failed to update last block")?;
 
+                        // Mark all cells of this state recursively with target marker
                         let count = cell_storage.mark_cells_tree(
                             UInt256::from_be_bytes(&value),
                             target_marker,
@@ -301,13 +322,16 @@ impl ShardStateStorageState {
                 }));
             }
 
+            // Wait for all tasks to complete
             while let Some(result) = tasks.next().await {
                 result??
             }
 
+            // Load counter
             total.load(Ordering::Acquire)
         };
 
+        // Clear intermediate states
         self.gc_state_storage
             .clear_last_blocks()
             .context("Failed to reset last block")?;
@@ -452,13 +476,6 @@ impl GcStateStorage {
         }
 
         Ok(result)
-    }
-
-    fn update_last_block(&self, shard_ident: ton_block::ShardIdent, seq_no: u32) -> Result<()> {
-        self.node_states.insert(
-            LastShardBlockKey(shard_ident).to_vec()?,
-            seq_no.to_le_bytes(),
-        )
     }
 }
 
