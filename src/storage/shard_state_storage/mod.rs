@@ -134,14 +134,14 @@ struct ShardStateStorageState {
 
 impl ShardStateStorageState {
     async fn new(db: &Arc<rocksdb::DB>) -> Result<Self> {
-        let state = Self {
+        let res = Self {
             current_marker: Default::default(),
             shard_state_db: Tree::new(db)?,
             gc_state_storage: Arc::new(GcStateStorage::new(db)?),
             cell_storage: Arc::new(CellStorage::new(db)?),
         };
 
-        let gc_state = state.gc_state_storage.load()?;
+        let gc_state = res.gc_state_storage.load()?;
         let target_marker = gc_state.next_marker();
 
         let current_marker = match &gc_state.step {
@@ -150,27 +150,28 @@ impl ShardStateStorageState {
                 gc_state.current_marker
             }
             Step::Mark(top_blocks) => {
-                state
-                    .mark(gc_state.current_marker, target_marker, top_blocks, true)
+                res.mark(gc_state.current_marker, target_marker, top_blocks, true)
                     .await?;
-                state.sweep_cells(gc_state.current_marker, target_marker, top_blocks)?;
-                state.sweep_blocks(target_marker, top_blocks)?;
+                res.sweep_cells(gc_state.current_marker, target_marker, top_blocks)
+                    .await?;
+                res.sweep_blocks(target_marker, top_blocks).await?;
                 target_marker
             }
             Step::SweepCells(top_blocks) => {
-                state.sweep_cells(gc_state.current_marker, target_marker, top_blocks)?;
-                state.sweep_blocks(target_marker, top_blocks)?;
+                res.sweep_cells(gc_state.current_marker, target_marker, top_blocks)
+                    .await?;
+                res.sweep_blocks(target_marker, top_blocks).await?;
                 target_marker
             }
             Step::SweepBlocks(top_blocks) => {
-                state.sweep_blocks(target_marker, top_blocks)?;
+                res.sweep_blocks(target_marker, top_blocks).await?;
                 target_marker
             }
         };
 
-        *state.current_marker.write().await = current_marker;
+        *res.current_marker.write().await = current_marker;
 
-        Ok(state)
+        Ok(res)
     }
 
     async fn gc(self: &Arc<Self>, top_blocks: &TopBlocks) -> Result<()> {
@@ -186,30 +187,15 @@ impl ShardStateStorageState {
             })
             .context("Failed to update gc state to 'Mark'")?;
 
+        // NOTE: make sure that target marker lock is dropped after all  gc steps are finished
         let mut target_marker = self.current_marker.write().await;
         *target_marker = gc_state.next_marker();
 
-        let result = tokio::task::spawn_blocking({
-            let state = self.clone();
-            let top_blocks = top_blocks.clone();
-            let target_marker = *target_marker;
-
-            state
-                .mark(gc_state.current_marker, target_marker, &top_blocks, false)
-                .await?;
-
-            move || {
-                state.sweep_cells(gc_state.current_marker, target_marker, &top_blocks)?;
-                state.sweep_blocks(target_marker, &top_blocks)?;
-                Ok(())
-            }
-        })
-        .await?;
-
-        // NOTE: make sure that target marker lock is dropped after gc is finished
-        drop(target_marker);
-
-        result
+        self.mark(gc_state.current_marker, *target_marker, top_blocks, false)
+            .await?;
+        self.sweep_cells(gc_state.current_marker, *target_marker, top_blocks)
+            .await?;
+        self.sweep_blocks(*target_marker, top_blocks).await
     }
 
     async fn mark(
@@ -351,7 +337,7 @@ impl ShardStateStorageState {
             .context("Failed to update gc state to 'Sweep'")
     }
 
-    fn sweep_cells(
+    async fn sweep_cells(
         &self,
         current_marker: u8,
         target_marker: u8,
@@ -365,6 +351,7 @@ impl ShardStateStorageState {
         let total = self
             .cell_storage
             .sweep_cells(target_marker)
+            .await
             .context("Failed to sweep cells")?;
 
         log::info!(
@@ -382,25 +369,46 @@ impl ShardStateStorageState {
             .context("Failed to update gc state to 'SweepBlocks'")
     }
 
-    fn sweep_blocks(&self, target_marker: u8, top_blocks: &TopBlocks) -> Result<()> {
+    async fn sweep_blocks(&self, target_marker: u8, top_blocks: &TopBlocks) -> Result<()> {
         log::info!("Sweeping block states");
 
         let time = Instant::now();
 
-        let mut total = 0;
+        // Prepare context
+        let db = self.shard_state_db.raw_db_handle().clone();
+        let top_blocks = top_blocks.clone();
 
-        // Remove all unmarked cells
-        for (key, _) in self.shard_state_db.iterator(rocksdb::IteratorMode::Start)? {
-            let block_id = ton_block::BlockIdExt::from_slice(&key)?;
-            if top_blocks.contains(&block_id) {
-                continue;
+        // Spawn blocking thread for iterator
+        let total = tokio::task::spawn_blocking(move || {
+            // Manually get required column factory and r/w options
+            let shard_state_cf = db.cf_handle(columns::ShardStates::NAME).context("No cf")?;
+
+            let mut read_options = rocksdb::ReadOptions::default();
+            columns::ShardStates::read_options(&mut read_options);
+
+            let mut write_options = rocksdb::WriteOptions::default();
+            columns::ShardStates::write_options(&mut write_options);
+
+            // Create iterator
+            let iter =
+                db.iterator_cf_opt(&shard_state_cf, read_options, rocksdb::IteratorMode::Start);
+
+            // Iterate all blocks and remove outdated
+            let mut total = 0;
+            for (key, _) in iter {
+                let block_id = ton_block::BlockIdExt::from_slice(&key)?;
+                if top_blocks.contains(&block_id) {
+                    continue;
+                }
+
+                db.delete_cf_opt(&shard_state_cf, key, &write_options)
+                    .context("Failed to remove swept block")?;
+                total += 1;
             }
 
-            self.shard_state_db
-                .remove(key)
-                .context("Failed to remove swept block")?;
-            total += 1;
-        }
+            Result::<_, anyhow::Error>::Ok(total)
+        })
+        .await??;
 
         log::info!(
             "Swept {} block states. Took: {} ms",

@@ -1,9 +1,11 @@
 use std::collections::VecDeque;
 use std::io::{Read, Write};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Weak};
 
 use anyhow::{Context, Result};
+use futures::stream::FuturesUnordered;
+use futures::StreamExt;
 use parking_lot::RwLock;
 use smallvec::SmallVec;
 use tiny_adnl::utils::*;
@@ -56,29 +58,71 @@ impl CellStorage {
         Ok(cell)
     }
 
-    pub fn sweep_cells(&self, target_marker: u8) -> Result<usize> {
-        let cf = self.cells.get_cf()?;
-        let mut read_config = Default::default();
-        let write_config = self.cells.write_config();
-        let db = self.cells.raw_db_handle();
+    pub async fn sweep_cells(&self, target_marker: u8) -> Result<usize> {
+        let total = Arc::new(AtomicUsize::new(0));
+        let mut tasks = FuturesUnordered::new();
 
-        let mut total = 0;
+        // Prepare one database snapshot for all shard states iterators
+        let snapshot = self.cells.raw_db_handle().snapshot();
 
-        columns::Cells::read_options(&mut read_config);
-        let iter = db.iterator_cf_opt(&cf, read_config, rocksdb::IteratorMode::Start);
-        for (key, value) in iter {
-            if value.is_empty() {
-                continue;
-            }
-            let marker = value[0];
+        for i in 0..8 {
+            // iii00000, 00000000, ...
+            let mut lower_bound = [0; 32];
+            lower_bound[0] = i << 5;
 
-            if marker > 0 && marker != target_marker {
-                db.delete_cf_opt(&cf, key, write_config)?;
-                total += 1;
-            }
+            // iii11111, 11111111, ...
+            let mut upper_bound = [0xff; 32];
+            upper_bound[0] = (i << 5) | 0b00011111;
+
+            // Prepare cells read options
+            let mut read_options = rocksdb::ReadOptions::default();
+            columns::Cells::read_options(&mut read_options);
+            read_options.set_snapshot(&snapshot);
+            read_options.set_iterate_upper_bound(upper_bound);
+
+            let db = self.cells.raw_db_handle().clone();
+            let total = total.clone();
+
+            tasks.push(tokio::task::spawn_blocking(move || {
+                let cells_cf = db.cf_handle(columns::Cells::NAME).context("No cf")?;
+
+                // Prepare iterator
+                let iter = db.iterator_cf_opt(
+                    &cells_cf,
+                    read_options,
+                    rocksdb::IteratorMode::From(&lower_bound, rocksdb::Direction::Forward),
+                );
+
+                // Prepare cells write options
+                let mut write_options = rocksdb::WriteOptions::default();
+                columns::Cells::write_options(&mut write_options);
+
+                // Iterate all cells in range
+                let mut subtotal = 0;
+                for (key, value) in iter {
+                    if value.is_empty() {
+                        continue;
+                    }
+                    let marker = value[0];
+
+                    if marker > 0 && marker != target_marker {
+                        db.delete_cf_opt(&cells_cf, key, &write_options)?;
+                        subtotal += 1;
+                    }
+                }
+
+                total.fetch_add(subtotal, Ordering::Release);
+                Result::<(), anyhow::Error>::Ok(())
+            }));
         }
 
-        Ok(total)
+        // Wait for all tasks to complete
+        while let Some(result) = tasks.next().await {
+            result??
+        }
+
+        // Load counter
+        Ok(total.load(Ordering::Acquire))
     }
 
     pub fn mark_cells_tree(
