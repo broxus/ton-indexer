@@ -117,70 +117,87 @@ impl ArchiveManager {
         }
     }
 
-    pub async fn gc(&self, top_blocks: &TopBlocks) -> Result<BlockGcStats> {
+    pub fn gc(
+        &self,
+        max_blocks_per_batch: Option<usize>,
+        top_blocks: &TopBlocks,
+    ) -> Result<BlockGcStats> {
         let mut stats = BlockGcStats::default();
 
-        let (raw_db, batch) = {
-            // Cache cfs before loop
-            let blocks_cf = self.package_entries.get_cf()?;
-            let block_handles_cf = self.block_handles.get_cf()?;
-            let key_blocks_cf = self.key_blocks.get_cf()?;
-            let raw_db = self.package_entries.raw_db_handle().clone();
+        // Cache cfs before loop
+        let blocks_cf = self.package_entries.get_cf()?;
+        let block_handles_cf = self.block_handles.get_cf()?;
+        let key_blocks_cf = self.key_blocks.get_cf()?;
+        let raw_db = self.package_entries.raw_db_handle().clone();
 
-            // Create batch
-            let mut batch = rocksdb::WriteBatch::default();
+        // Create batch
+        let mut batch = rocksdb::WriteBatch::default();
+        let mut batch_len = 0;
 
-            // Iterate all entries and find expired items
-            let blocks_iter = self
-                .package_entries
-                .iterator(rocksdb::IteratorMode::Start)?;
-            for (key, _) in blocks_iter {
-                // Read only prefix with shard ident and seqno
-                let prefix = PackageEntryIdPrefix::from_slice(key.as_ref())?;
+        // Iterate all entries and find expired items
+        let blocks_iter = self
+            .package_entries
+            .iterator(rocksdb::IteratorMode::Start)?;
+        for (key, _) in blocks_iter {
+            // Read only prefix with shard ident and seqno
+            let prefix = PackageEntryIdPrefix::from_slice(key.as_ref())?;
 
-                // Don't gc latest blocks
-                if top_blocks.contains_shard_seq_no(&prefix.shard_ident, prefix.seq_no) {
-                    continue;
-                }
-
-                // Additionally check whether this item is a key block
-                if prefix.shard_ident.is_masterchain()
-                    && raw_db
-                        .get_pinned_cf_opt(
-                            &key_blocks_cf,
-                            prefix.seq_no.to_be_bytes(),
-                            self.key_blocks.read_config(),
-                        )?
-                        .is_some()
-                {
-                    // Don't remove key blocks
-                    continue;
-                }
-
-                // Add item to the batch
-                batch.delete_cf(&blocks_cf, &key);
-                stats.total_package_entries_removed += 1;
-                if prefix.shard_ident.is_masterchain() {
-                    stats.mc_package_entries_removed += 1;
-                }
-
-                // Key structure:
-                // [workchain id, 4 bytes]
-                // [shard id, 8 bytes]
-                // [seqno, 4 bytes]
-                // [root hash, 32 bytes] <-
-                // ..
-                if key.len() >= 48 {
-                    batch.delete_cf(&block_handles_cf, &key[16..48]);
-                    stats.total_handles_removed += 1;
-                }
+            // Don't gc latest blocks
+            if top_blocks.contains_shard_seq_no(&prefix.shard_ident, prefix.seq_no) {
+                continue;
             }
 
-            (raw_db, batch)
-        };
+            // Additionally check whether this item is a key block
+            if prefix.shard_ident.is_masterchain()
+                && raw_db
+                    .get_pinned_cf_opt(
+                        &key_blocks_cf,
+                        prefix.seq_no.to_be_bytes(),
+                        self.key_blocks.read_config(),
+                    )?
+                    .is_some()
+            {
+                // Don't remove key blocks
+                continue;
+            }
 
-        // Apply batch
-        tokio::task::spawn_blocking(move || raw_db.write(batch)).await??;
+            // Add item to the batch
+            batch.delete_cf(&blocks_cf, &key);
+            stats.total_package_entries_removed += 1;
+            if prefix.shard_ident.is_masterchain() {
+                stats.mc_package_entries_removed += 1;
+            }
+
+            // Key structure:
+            // [workchain id, 4 bytes]
+            // [shard id, 8 bytes]
+            // [seqno, 4 bytes]
+            // [root hash, 32 bytes] <-
+            // ..
+            if key.len() >= 48 {
+                batch.delete_cf(&block_handles_cf, &key[16..48]);
+                stats.total_handles_removed += 1;
+            }
+
+            batch_len += 1;
+            if matches!(
+                max_blocks_per_batch,
+                Some(max_blocks_per_batch) if batch_len >= max_blocks_per_batch
+            ) {
+                log::info!(
+                    "Applying intermediate batch {}...",
+                    stats.total_package_entries_removed
+                );
+                let batch = std::mem::take(&mut batch);
+                raw_db.write(batch)?;
+                batch_len = 0;
+            }
+        }
+
+        if batch_len > 0 {
+            log::info!("Applying final batch...");
+            raw_db.write(batch)?;
+        }
 
         // Done
         Ok(stats)

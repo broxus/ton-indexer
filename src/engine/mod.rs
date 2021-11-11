@@ -105,6 +105,7 @@ struct BlockCaches {
 
 struct BlocksGcState {
     ty: BlocksGcKind,
+    max_blocks_per_batch: Option<usize>,
     enabled: AtomicBool,
 }
 
@@ -162,6 +163,7 @@ impl Engine {
             states_gc_options: config.state_gc_options,
             blocks_gc_state: config.blocks_gc_options.map(|options| BlocksGcState {
                 ty: options.kind,
+                max_blocks_per_batch: options.max_blocks_per_batch,
                 enabled: AtomicBool::new(options.enable_for_sync),
             }),
             subscribers,
@@ -250,7 +252,7 @@ impl Engine {
 
             let handle = self.db.find_last_key_block()?;
             self.db
-                .remove_outdated_blocks(handle.id(), blocks_gc.ty)
+                .remove_outdated_blocks(handle.id(), blocks_gc.max_blocks_per_batch, blocks_gc.ty)
                 .await?;
         }
 
@@ -801,7 +803,11 @@ impl Engine {
             if let Some(blocks_gc) = &self.blocks_gc_state {
                 if blocks_gc.enabled.load(Ordering::Acquire) {
                     self.db
-                        .remove_outdated_blocks(handle.id(), blocks_gc.ty)
+                        .remove_outdated_blocks(
+                            handle.id(),
+                            blocks_gc.max_blocks_per_batch,
+                            blocks_gc.ty,
+                        )
                         .await?
                 }
             }

@@ -131,6 +131,9 @@ pub struct BlocksGcOptions {
 
     /// Whether to enable blocks GC during sync. Default: true
     pub enable_for_sync: bool,
+
+    /// Max `WriteBatch` entries before apply
+    pub max_blocks_per_batch: Option<usize>,
 }
 
 impl Default for BlocksGcOptions {
@@ -138,6 +141,7 @@ impl Default for BlocksGcOptions {
         Self {
             kind: BlocksGcKind::BeforePreviousPersistentState,
             enable_for_sync: true,
+            max_blocks_per_batch: Some(100_000),
         }
     }
 }

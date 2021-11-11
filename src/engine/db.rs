@@ -553,8 +553,9 @@ impl Db {
     }
 
     pub async fn remove_outdated_blocks(
-        &self,
+        self: &Arc<Self>,
         key_block_id: &ton_block::BlockIdExt,
+        max_blocks_per_batch: Option<usize>,
         gc_type: BlocksGcKind,
     ) -> Result<()> {
         // Find target block
@@ -589,7 +590,12 @@ impl Db {
 
         // Remove all expired entries
         let total_cached_handles_removed = self.block_handle_storage.gc_handles_cache(&top_blocks);
-        let stats = self.archive_manager.gc(&top_blocks).await?;
+
+        let db = self.clone();
+        let stats = tokio::task::spawn_blocking(move || {
+            db.archive_manager.gc(max_blocks_per_batch, &top_blocks)
+        })
+        .await??;
 
         log::info!(
             r#"Finished blocks GC for key block: {}
