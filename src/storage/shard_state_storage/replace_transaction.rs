@@ -19,7 +19,7 @@ pub struct ShardStateReplaceTransaction<'a> {
     marker: u8,
     reader: ShardStatePacketReader,
     boc_header: Option<BocHeader>,
-    cells_read: usize,
+    cells_read: u64,
 }
 
 impl<'a> ShardStateReplaceTransaction<'a> {
@@ -115,7 +115,8 @@ impl<'a> ShardStateReplaceTransaction<'a> {
             }
         };
 
-        let hashes_file = ctx.create_mapped_hashes_file(header.cell_count * HashesEntry::LEN)?;
+        let hashes_file =
+            ctx.create_mapped_hashes_file(header.cell_count as usize * HashesEntry::LEN)?;
         let cells_file = ctx.create_mapped_cells_file().await?;
 
         tokio::task::block_in_place(|| {
@@ -155,8 +156,8 @@ impl<'a> ShardStateReplaceTransaction<'a> {
                             &chunk_buffer[chunk_size..chunk_size + cell_size],
                         ),
                         header.ref_size,
-                        header.cell_count,
-                        cell_index,
+                        header.cell_count as usize,
+                        cell_index as usize,
                         &mut data_buffer,
                     )?;
 
@@ -182,7 +183,7 @@ impl<'a> ShardStateReplaceTransaction<'a> {
                     // SAFETY: `entries_buffer` is guaranteed to be in separate memory area
                     unsafe {
                         hashes_file.write_all_at(
-                            cell_index * HashesEntry::LEN,
+                            cell_index as usize * HashesEntry::LEN,
                             entries_buffer.current_entry_buffer(),
                         )
                     };

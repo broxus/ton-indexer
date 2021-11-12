@@ -77,7 +77,7 @@ impl ShardStatePacketReader {
                 .context("Ref size must be in range [1;4]");
         }
 
-        let offset_size = try_read!(src.read_byte()) as usize;
+        let offset_size = try_read!(src.read_byte()) as u64;
         if offset_size == 0 || offset_size > 8 {
             return Err(ShardStateParserError::InvalidShardStateHeader)
                 .context("Offset size must be in range [1;8]");
@@ -96,7 +96,7 @@ impl ShardStatePacketReader {
                 .context("Root count is greater then cell count");
         }
 
-        try_read!(src.read_be_uint(offset_size)); // skip total cells size
+        try_read!(src.read_be_uint(offset_size as usize)); // skip total cells size
 
         let root_index = if magic == BOC_GENERIC_TAG {
             Some(try_read!(src.read_be_uint(ref_size)))
@@ -107,7 +107,7 @@ impl ShardStatePacketReader {
         src.end();
 
         if index_included {
-            self.set_skip(cell_count * offset_size);
+            self.set_skip((cell_count * offset_size) as usize);
         }
 
         Ok(Some(BocHeader {
@@ -251,12 +251,12 @@ impl ShardStatePacketReader {
 
 #[derive(Debug)]
 pub struct BocHeader {
-    pub root_index: Option<usize>,
+    pub root_index: Option<u64>,
     pub index_included: bool,
     pub has_crc: bool,
     pub ref_size: usize,
-    pub offset_size: usize,
-    pub cell_count: usize,
+    pub offset_size: u64,
+    pub cell_count: u64,
 }
 
 pub struct RawCell<'a> {
@@ -319,7 +319,7 @@ impl<'a> RawCell<'a> {
 
         let mut reference_indices = SmallVec::with_capacity(r);
         for _ in 0..r {
-            let index = src.read_be_uint(ref_size)?;
+            let index = src.read_be_uint(ref_size)? as usize;
             if index > cell_count || index <= cell_index {
                 return Err(ShardStateParserError::InvalidShardStateCell)
                     .context("Reference index out of range");
