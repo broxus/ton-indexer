@@ -48,6 +48,10 @@ impl BlockStuff {
         &self.block
     }
 
+    pub fn into_block(self) -> ton_block::Block {
+        self.block
+    }
+
     pub fn id(&self) -> &ton_block::BlockIdExt {
         &self.id
     }
