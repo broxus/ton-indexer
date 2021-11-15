@@ -105,13 +105,13 @@ macro_rules! start {
 #[cfg(feature = "active")]
 #[macro_export]
 macro_rules! tick {
-    ($name:ident$( => $id:literal)?$(, x = $x:expr)?) => {
+    ($id:ident$( => $name:literal)?$(, x = $x:expr)?) => {
         // SAFETY: yes
         unsafe {
             $crate::COLLECTOR.add_record($crate::Record::new(
-                &$name,
+                &$id,
                 $crate::tick!(@expand_x $($x)?),
-                $crate::tick!(@expand_id $name $($id)?),
+                $crate::tick!(@expand_id $id $($name)?),
                 module_path!(),
             ));
         }
@@ -120,8 +120,8 @@ macro_rules! tick {
     (@expand_x $x:expr) => { Some(From::from($x)) };
     (@expand_x) => { None };
 
-    (@expand_id $name:ident $id:literal) => { $id };
-    (@expand_id $name:ident) => { stringify!($id) };
+    (@expand_id $id:ident $name:literal) => { $name };
+    (@expand_id $id:ident) => { stringify!($id) };
 }
 
 #[cfg(not(feature = "active"))]
