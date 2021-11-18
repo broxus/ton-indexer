@@ -13,7 +13,6 @@ use futures::StreamExt;
 use tiny_adnl::utils::*;
 
 use crate::engine::Engine;
-use crate::profile;
 use crate::storage::*;
 use crate::utils::*;
 
@@ -161,14 +160,14 @@ async fn import_package(
     if maps.mc_block_ids.is_empty() {
         return Err(SyncError::EmptyArchivePackage.into());
     }
-    profile::start!(t);
+    profl::start!(t);
     import_mc_blocks(engine, maps.clone(), last_mc_block_id).await?;
-    profile::tick!(t =>"import_mc_blocks");
-    profile::span!(
+    profl::tick!(t =>"import_mc_blocks");
+    profl::span!(
         "import_shard_blocks",
         import_shard_blocks(engine, maps).await?
     );
-    profile::tick!(t =>"import_package");
+    profl::tick!(t =>"import_package");
     Ok(())
 }
 
@@ -220,7 +219,7 @@ async fn import_shard_blocks(engine: &Arc<Engine>, maps: Arc<BlockMaps>) -> Resu
         if !id.shard_id.is_masterchain() {
             let (block, block_proof) = entry.get_data()?;
 
-            profile::span!(
+            profl::span!(
                 "save_shard_block",
                 save_block(engine, id, block, block_proof, None).await?
             );
@@ -385,7 +384,7 @@ async fn download_archives(
     .context("To small bounds")?;
 
     while let Some(a) = stream.next().await {
-        let res = profile::span!(
+        let res = profl::span!(
             "save_background_sync_archive",
             save_archive(engine, a, &mut context).await?
         );
@@ -435,7 +434,7 @@ async fn save_archive(
 
         let handle = match engine.load_block_handle(block.id())? {
             Some(handle) => handle,
-            None => profile::span!(
+            None => profl::span!(
                 "save_background_sync_block",
                 save_block(engine, id, block, proof, Some(context.prev_key_block_id))
                     .await

@@ -11,7 +11,6 @@ use futures::future::{BoxFuture, FutureExt};
 
 use crate::engine::db::BlockConnection;
 use crate::engine::Engine;
-use crate::profile;
 use crate::storage::*;
 use crate::utils::*;
 
@@ -34,7 +33,7 @@ pub fn apply_block<'a>(
             return Err(ApplyBlockError::BlockIdMismatch.into());
         }
 
-        let (prev1_id, prev2_id) = profile::span!("ensure_prev_blocks_downloaded", {
+        let (prev1_id, prev2_id) = profl::span!("ensure_prev_blocks_downloaded", {
             let (prev1_id, prev2_id) = block.construct_prev_id()?;
 
             ensure_prev_blocks_downloaded(
@@ -57,7 +56,7 @@ pub fn apply_block<'a>(
                 .await?;
 
             if block.id().is_masterchain() {
-                profile::span!(
+                profl::span!(
                     "store_last_applied_mc_block_id",
                     engine.store_last_applied_mc_block_id(block.id())?
                 );
@@ -118,7 +117,7 @@ fn update_block_connections(
     prev2_id: &Option<ton_block::BlockIdExt>,
 ) -> Result<()> {
     let db = &engine.db;
-    let prev1_handle = profile::span!(
+    let prev1_handle = profl::span!(
         "load_prev1_handle",
         engine
             .load_block_handle(prev1_id)?
@@ -165,7 +164,7 @@ async fn compute_and_store_shard_state(
                 return Err(ApplyBlockError::InvalidMasterchainBlockSequence.into());
             }
 
-            let left = profile::span!(
+            let left = profl::span!(
                 "wait_prev_shard_state_root_left",
                 engine
                     .wait_state(prev1_id, None, true)
@@ -174,7 +173,7 @@ async fn compute_and_store_shard_state(
                     .clone()
             );
 
-            let right = profile::span!(
+            let right = profl::span!(
                 "wait_prev_shard_state_root_right",
                 engine
                     .wait_state(prev2_id, None, true)
@@ -183,7 +182,7 @@ async fn compute_and_store_shard_state(
                     .clone()
             );
 
-            profile::span!(
+            profl::span!(
                 "construct_split_root",
                 ShardStateStuff::construct_split_root(left, right)?
             )
@@ -195,7 +194,7 @@ async fn compute_and_store_shard_state(
             .clone(),
     };
 
-    let merkle_update = profile::span!(
+    let merkle_update = profl::span!(
         "make_state_merkle_update",
         block.block().read_state_update()?
     );
@@ -205,7 +204,7 @@ async fn compute_and_store_shard_state(
         move || -> Result<Arc<ShardStateStuff>> {
             let shard_state_root = merkle_update.apply_for(&prev_shard_state_root)?;
 
-            profile::span!(
+            profl::span!(
                 "make_shard_state_stuff",
                 Ok(Arc::new(ShardStateStuff::new(block_id, shard_state_root)?))
             )

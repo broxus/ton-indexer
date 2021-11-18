@@ -6,7 +6,7 @@ edition = "2021"
 rust-version = "1.56"
 
 [workspace]
-members = ["ton-indexer-alloc", "ton-indexer-profile"]
+members = ["ton-indexer-alloc"]
 
 [[example]]
 name = "simple_node"
@@ -40,6 +40,7 @@ thiserror = "*"
 tokio = { version = "1.6", features = ["sync", "fs", "rt-multi-thread"] }
 
 lru_time_cache = { git = "https://github.com/Rexagon/lru_time_cache.git" }
+profl = { git = "https://github.com/broxus/profl.git" }
 
 ed25519-dalek = { git = "https://github.com/broxus/ed25519-dalek.git" }
 rocksdb = { git = "https://github.com/Rexagon/rust-rocksdb.git", features = ["multi-threaded-cf", "lz4", "jemalloc"], default-features = false }
@@ -52,7 +53,6 @@ ton_types = { git = "https://github.com/broxus/ton-labs-types.git" }
 nekoton-utils = { git = "https://github.com/broxus/nekoton.git" }
 
 ton-indexer-alloc = { path = "ton-indexer-alloc" }
-ton-indexer-profile = { path = "ton-indexer-profile" }
 
 [dev-dependencies]
 argh = "0.1"
@@ -66,4 +66,4 @@ tokio = { version = "1.6", features = ["sync", "fs", "rt-multi-thread", "macros"
 [features]
 default = []
 asm = ["sha2/asm", "ed25519-dalek/asm", "ton_types/asm", "ton_block/asm", "tiny-adnl/asm"]
-profile = ["ton-indexer-profile/active"]
+profile = ["profl/active"]
