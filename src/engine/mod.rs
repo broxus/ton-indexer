@@ -571,6 +571,17 @@ impl Engine {
         self.db.find_block_by_lt(account_prefix, lt)
     }
 
+    pub async fn load_last_key_block(&self) -> Result<BlockStuff> {
+        let handle = self
+            .db
+            .find_last_key_block()
+            .context("Failed to find last key block")?;
+        self.db
+            .load_block_data(&handle)
+            .await
+            .context("Failed to load key block data")
+    }
+
     async fn wait_next_applied_mc_block(
         &self,
         prev_handle: &Arc<BlockHandle>,
