@@ -5,7 +5,7 @@
 /// - removed validator stuff
 /// - slightly changed application of blocks
 ///
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -95,6 +95,8 @@ pub struct Engine {
     next_block_applying_operations: OperationsPool<ton_block::BlockIdExt, ton_block::BlockIdExt>,
     download_block_operations: OperationsPool<ton_block::BlockIdExt, (BlockStuff, BlockProofStuff)>,
     last_blocks: BlockCaches,
+
+    metrics: EngineMetrics,
 }
 
 struct BlockCaches {
@@ -183,6 +185,12 @@ impl Engine {
                 last_mc: LastMcBlockId::new(db.raw())?,
                 init_block,
                 shard_client_mc_block: ShardsClientMcBlockId::new(db.raw())?,
+            },
+            metrics: EngineMetrics {
+                last_mc_block_seqno: Default::default(),
+                last_shard_client_mc_block_seqno: Default::default(),
+                mc_time_diff: Default::default(),
+                shard_client_time_diff: Default::default(),
             },
         });
 
@@ -328,6 +336,10 @@ impl Engine {
 
     pub fn get_memory_usage_stats(&self) -> Result<RocksdbStats> {
         self.db.get_memory_usage_stats()
+    }
+
+    pub fn metrics(&self) -> &EngineMetrics {
+        &self.metrics
     }
 
     pub async fn broadcast_external_message(
@@ -823,7 +835,11 @@ impl Engine {
     fn store_last_applied_mc_block_id(&self, block_id: &ton_block::BlockIdExt) -> Result<()> {
         self.last_blocks
             .last_mc
-            .store_into_db(convert_block_id_ext_blk2api(block_id))
+            .store_into_db(convert_block_id_ext_blk2api(block_id))?;
+        self.metrics
+            .last_mc_block_seqno
+            .store(block_id.seq_no, Ordering::Release);
+        Ok(())
     }
 
     pub fn load_shards_client_mc_block_id(&self) -> Result<ton_block::BlockIdExt> {
@@ -833,7 +849,11 @@ impl Engine {
     fn store_shards_client_mc_block_id(&self, block_id: &ton_block::BlockIdExt) -> Result<()> {
         self.last_blocks
             .shard_client_mc_block
-            .store_into_db(convert_block_id_ext_blk2api(block_id))
+            .store_into_db(convert_block_id_ext_blk2api(block_id))?;
+        self.metrics
+            .last_shard_client_mc_block_seqno
+            .store(block_id.seq_no, Ordering::Release);
+        Ok(())
     }
 
     async fn download_and_apply_block(
@@ -949,8 +969,13 @@ impl Engine {
         }
 
         let meta = handle.meta().brief();
+        let time_diff = now() as i64 - meta.gen_utime() as i64;
 
         if handle.id().shard().is_masterchain() {
+            self.metrics
+                .mc_time_diff
+                .store(time_diff, Ordering::Release);
+
             let block_proof = self.load_block_proof(handle, false).await?;
             for subscriber in &self.subscribers {
                 subscriber
@@ -958,6 +983,10 @@ impl Engine {
                     .await?;
             }
         } else {
+            self.metrics
+                .shard_client_time_diff
+                .store(time_diff, Ordering::Release);
+
             for subscriber in &self.subscribers {
                 subscriber
                     .process_block(meta, block, None, shard_state)
@@ -1062,6 +1091,14 @@ impl Engine {
             downloader,
         })
     }
+}
+
+#[derive(Debug)]
+pub struct EngineMetrics {
+    pub last_mc_block_seqno: AtomicU32,
+    pub last_shard_client_mc_block_seqno: AtomicU32,
+    pub mc_time_diff: AtomicI64,
+    pub shard_client_time_diff: AtomicI64,
 }
 
 #[derive(thiserror::Error, Debug)]

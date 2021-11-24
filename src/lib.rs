@@ -1,5 +1,5 @@
 pub use crate::config::*;
-pub use crate::engine::{Engine, EngineStatus, Subscriber};
+pub use crate::engine::{Engine, EngineMetrics, EngineStatus, Subscriber};
 pub use crate::storage::BriefBlockMeta;
 
 pub use ton_indexer_alloc as alloc;
