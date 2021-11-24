@@ -96,7 +96,7 @@ pub struct Engine {
     download_block_operations: OperationsPool<ton_block::BlockIdExt, (BlockStuff, BlockProofStuff)>,
     last_blocks: BlockCaches,
 
-    metrics: EngineMetrics,
+    metrics: Arc<EngineMetrics>,
 }
 
 struct BlockCaches {
@@ -186,12 +186,12 @@ impl Engine {
                 init_block,
                 shard_client_mc_block: ShardsClientMcBlockId::new(db.raw())?,
             },
-            metrics: EngineMetrics {
+            metrics: Arc::new(EngineMetrics {
                 last_mc_block_seqno: Default::default(),
                 last_shard_client_mc_block_seqno: Default::default(),
                 mc_time_diff: Default::default(),
                 shard_client_time_diff: Default::default(),
-            },
+            }),
         });
 
         engine
@@ -338,7 +338,7 @@ impl Engine {
         self.db.get_memory_usage_stats()
     }
 
-    pub fn metrics(&self) -> &EngineMetrics {
+    pub fn metrics(&self) -> &Arc<EngineMetrics> {
         &self.metrics
     }
 
