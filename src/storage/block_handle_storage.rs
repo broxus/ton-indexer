@@ -237,7 +237,7 @@ impl Iterator for KeyBlocksIterator<'_> {
         let value = self
             .raw_iterator
             .value()
-            .map(|value| ton_block::BlockIdExt::from_slice(value))?;
+            .map(ton_block::BlockIdExt::from_slice)?;
         self.raw_iterator.next();
         Some(value)
     }
