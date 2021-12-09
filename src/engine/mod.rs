@@ -1112,29 +1112,6 @@ pub struct EngineMetrics {
     pub shard_client_time_diff: AtomicI64,
 }
 
-impl std::fmt::Display for EngineMetrics {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let last_mc_block_seqno = self.last_mc_block_seqno.load(Ordering::Acquire);
-        let last_shard_client_mc_block_seqno = self
-            .last_shard_client_mc_block_seqno
-            .load(Ordering::Acquire);
-        let mc_time_diff = self.mc_time_diff.load(Ordering::Acquire);
-        let shard_client_time_diff = self.shard_client_time_diff.load(Ordering::Acquire);
-
-        write!(
-            f,
-            "last_mc_block_seqno {}\n\
-             last_shard_client_mc_block_seqno {}\n\
-             mc_time_diff {}\n\
-             shard_client_time_diff {}",
-            last_mc_block_seqno,
-            last_shard_client_mc_block_seqno,
-            mc_time_diff,
-            shard_client_time_diff
-        )
-    }
-}
-
 #[derive(thiserror::Error, Debug)]
 enum EngineError {
     #[error("Downloading next block is only allowed for masterchain")]
