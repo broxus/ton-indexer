@@ -1,7 +1,8 @@
+use std::io::{Seek, SeekFrom, Write};
 use std::net::SocketAddrV4;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use nekoton_utils::*;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
@@ -79,6 +80,46 @@ impl NodeKeys {
             overlay_key: rng.gen(),
             dht_key: rng.gen(),
         }
+    }
+
+    /// Load from file
+    ///
+    /// NOTE: generates and saves new if it doesn't exist
+    pub fn load<P>(path: P, force_regenerate: bool) -> Result<Self>
+    where
+        P: AsRef<Path>,
+    {
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .read(true)
+            .open(path)
+            .context("Failed to open ADNL keys")?;
+
+        let keys = if force_regenerate {
+            Self::generate()
+        } else {
+            match serde_json::from_reader(&file) {
+                Ok(keys) => keys,
+                Err(_) => {
+                    log::warn!("Failed to read ADNL keys. Generating new");
+                    Self::generate()
+                }
+            }
+        };
+
+        keys.save(file).context("Failed to save ADNL keys")?;
+
+        Ok(keys)
+    }
+
+    pub fn save<W>(&self, mut file: W) -> Result<()>
+    where
+        W: Write + Seek,
+    {
+        file.seek(SeekFrom::Start(0))?;
+        serde_json::to_writer_pretty(file, self)?;
+        Ok(())
     }
 
     pub fn build_keystore(&self) -> Result<AdnlKeystore> {
