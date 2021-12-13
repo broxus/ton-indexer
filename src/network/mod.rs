@@ -235,12 +235,15 @@ impl NodeNetwork {
     fn start_updating_peers(self: &Arc<Self>, overlay_client: &Arc<OverlayClient>) {
         const PEER_UPDATE_INTERVAL: u64 = 5; // Seconds
 
+        let interval = Duration::from_secs(PEER_UPDATE_INTERVAL);
+
         let network = self.clone();
         let overlay_client = overlay_client.clone();
+        let working_state = self.working_state.clone();
 
         tokio::spawn(async move {
             let mut iter = None;
-            loop {
+            while working_state.is_working() {
                 log::trace!("find overlay nodes by dht...");
 
                 if let Err(e) = network.update_peers(&overlay_client, &mut iter).await {
@@ -252,7 +255,10 @@ impl NodeNetwork {
                     return;
                 }
 
-                tokio::time::sleep(Duration::from_secs(PEER_UPDATE_INTERVAL)).await;
+                if working_state.wait_or_complete(interval).await {
+                    log::warn!("Stopped updating peers");
+                    return;
+                }
             }
         });
     }
