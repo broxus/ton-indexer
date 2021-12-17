@@ -61,11 +61,19 @@ pub async fn boot(engine: &Arc<Engine>) -> Result<BootData> {
 async fn cold_boot(engine: &Arc<Engine>) -> Result<ton_block::BlockIdExt> {
     log::info!("Starting cold boot");
     let boot_data = prepare_cold_boot_data(engine).await?;
+    let zero_state = match &boot_data {
+        ColdBootData::ZeroState { state, .. } => Some(state.clone()),
+        ColdBootData::KeyBlock { .. } => None,
+    };
     let key_blocks = get_key_blocks(engine, boot_data).await?;
     let last_key_block = choose_key_block(key_blocks)?;
 
     let block_id = last_key_block.id();
-    download_start_blocks_and_states(engine, block_id).await?;
+    match (block_id.seq_no, zero_state) {
+        (0, Some(zero_state)) => download_base_wc_zero_state(engine, &zero_state).await?,
+        _ => download_start_blocks_and_states(engine, block_id).await?,
+    }
+
     log::info!("Cold boot finished");
     Ok(block_id.clone())
 }
@@ -308,7 +316,6 @@ impl ColdBootData {
     }
 }
 
-#[allow(unused)]
 async fn download_base_wc_zero_state(
     engine: &Arc<Engine>,
     zero_state: &ShardStateStuff,

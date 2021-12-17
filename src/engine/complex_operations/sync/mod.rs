@@ -318,14 +318,19 @@ async fn save_block(
                     .find_block_by_seq_no(&masterchain_prefix, prev_key_block_seqno)?
             }
         };
-        let prev_key_block_proof = engine.load_block_proof(&handle, false).await?;
 
-        check_with_prev_key_block_proof(
-            block_proof,
-            &prev_key_block_proof,
-            &virt_block,
-            &virt_block_info,
-        )?;
+        if handle.id().seq_no == 0 {
+            let zero_state = engine.load_mc_zero_state().await?;
+            block_proof.check_with_master_state(&zero_state)?;
+        } else {
+            let prev_key_block_proof = engine.load_block_proof(&handle, false).await?;
+            check_with_prev_key_block_proof(
+                block_proof,
+                &prev_key_block_proof,
+                &virt_block,
+                &virt_block_info,
+            )?;
+        }
     }
 
     let handle = engine.store_block_data(block).await?.handle;

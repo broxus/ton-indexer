@@ -83,6 +83,7 @@ pub struct Engine {
     network: Arc<NodeNetwork>,
     old_blocks_policy: OldBlocksPolicy,
     archives_enabled: bool,
+    zero_state_id: ton_block::BlockIdExt,
     init_mc_block_id: ton_block::BlockIdExt,
     last_known_mc_block_seqno: AtomicU32,
     last_known_key_block_seqno: AtomicU32,
@@ -172,6 +173,7 @@ impl Engine {
             network,
             old_blocks_policy,
             archives_enabled: config.archives_enabled,
+            zero_state_id,
             init_mc_block_id,
             last_known_mc_block_seqno: AtomicU32::new(0),
             last_known_key_block_seqno: AtomicU32::new(0),
@@ -675,6 +677,10 @@ impl Engine {
                 return Ok(shard_state);
             }
         }
+    }
+
+    pub async fn load_mc_zero_state(&self) -> Result<Arc<ShardStateStuff>> {
+        self.load_state(&self.zero_state_id).await
     }
 
     pub async fn load_state(
