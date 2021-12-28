@@ -17,7 +17,6 @@ use super::StoredValue;
 pub struct BlockMeta {
     flags: AtomicU64,
     gen_utime: u32,
-    gen_lt: u64,
 }
 
 impl BlockMeta {
@@ -28,19 +27,13 @@ impl BlockMeta {
         } else {
             0
         };
-        Ok(Self::with_data(
-            flags,
-            info.gen_utime().0,
-            info.start_lt(),
-            0,
-        ))
+        Ok(Self::with_data(flags, info.gen_utime().0, 0))
     }
 
-    pub fn with_data(flags: u64, gen_utime: u32, gen_lt: u64, masterchain_ref_seqno: u32) -> Self {
+    pub fn with_data(flags: u64, gen_utime: u32, masterchain_ref_seqno: u32) -> Self {
         Self {
             flags: AtomicU64::new(flags | masterchain_ref_seqno as u64),
             gen_utime,
-            gen_lt,
         }
     }
 
@@ -48,7 +41,6 @@ impl BlockMeta {
         BriefBlockMeta {
             flags: self.flags.load(Ordering::Acquire),
             gen_utime: self.gen_utime,
-            gen_lt: self.gen_lt,
         }
     }
 
@@ -63,11 +55,6 @@ impl BlockMeta {
     #[inline]
     pub fn gen_utime(&self) -> u32 {
         self.gen_utime
-    }
-
-    #[inline]
-    pub fn gen_lt(&self) -> u64 {
-        self.gen_lt
     }
 
     pub fn clear_data_and_proof(&self) {
@@ -184,8 +171,7 @@ impl BlockMeta {
 impl StoredValue for BlockMeta {
     /// 8 bytes flags
     /// 4 bytes gen_utime
-    /// 8 bytes gen_lt
-    const SIZE_HINT: usize = 8 + 4 + 8;
+    const SIZE_HINT: usize = 8 + 4;
 
     type OnStackSlice = [u8; Self::SIZE_HINT];
 
@@ -195,7 +181,6 @@ impl StoredValue for BlockMeta {
 
         writer.write_all(&flags.to_le_bytes())?;
         writer.write_all(&self.gen_utime.to_le_bytes())?;
-        writer.write_all(&self.gen_lt.to_le_bytes())?;
 
         Ok(())
     }
@@ -206,12 +191,10 @@ impl StoredValue for BlockMeta {
     {
         let flags = reader.read_le_u64()?;
         let gen_utime = reader.read_le_u32()?;
-        let gen_lt = reader.read_le_u64()?;
 
         Ok(Self {
             flags: AtomicU64::new(flags),
             gen_utime,
-            gen_lt,
         })
     }
 }
@@ -220,18 +203,12 @@ impl StoredValue for BlockMeta {
 pub struct BriefBlockMeta {
     flags: u64,
     gen_utime: u32,
-    gen_lt: u64,
 }
 
 impl BriefBlockMeta {
     #[inline]
     pub fn gen_utime(&self) -> u32 {
         self.gen_utime
-    }
-
-    #[inline]
-    pub fn gen_lt(&self) -> u64 {
-        self.gen_lt
     }
 
     #[inline]

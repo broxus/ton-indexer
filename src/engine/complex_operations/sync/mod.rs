@@ -5,6 +5,8 @@
 /// - greatly improved sync speed
 /// - added sync from old blocks
 ///
+///
+/// TODO: rewrite stream items handling 🌚
 use std::borrow::Cow;
 use std::sync::Arc;
 
@@ -311,11 +313,7 @@ async fn save_block(
                 .context("Prev key block not found")?,
             None => {
                 let prev_key_block_seqno = virt_block_info.prev_key_block_seqno();
-
-                let masterchain_prefix = ton_block::AccountIdPrefixFull::any_masterchain();
-                engine
-                    .db
-                    .find_block_by_seq_no(&masterchain_prefix, prev_key_block_seqno)?
+                engine.db.load_key_block_handle(prev_key_block_seqno)?
             }
         };
 

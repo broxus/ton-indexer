@@ -547,32 +547,6 @@ impl Engine {
         self.db.load_block_handle(block_id)
     }
 
-    pub(crate) fn find_block_by_seq_no(
-        &self,
-        account_prefix: &ton_block::AccountIdPrefixFull,
-        seq_no: u32,
-    ) -> Result<Arc<BlockHandle>> {
-        self.db.find_block_by_seq_no(account_prefix, seq_no)
-    }
-
-    #[allow(unused)]
-    fn find_block_by_utime(
-        &self,
-        account_prefix: &ton_block::AccountIdPrefixFull,
-        utime: u32,
-    ) -> Result<Arc<BlockHandle>> {
-        self.db.find_block_by_utime(account_prefix, utime)
-    }
-
-    #[allow(unused)]
-    fn find_block_by_lt(
-        &self,
-        account_prefix: &ton_block::AccountIdPrefixFull,
-        lt: u64,
-    ) -> Result<Arc<BlockHandle>> {
-        self.db.find_block_by_lt(account_prefix, lt)
-    }
-
     pub async fn load_last_key_block(&self) -> Result<BlockStuff> {
         let handle = self
             .db
@@ -761,6 +735,7 @@ impl Engine {
         Ok(handle)
     }
 
+    #[allow(unused)]
     async fn load_prev_key_block(&self, block_id: u32) -> Result<ton_block::BlockIdExt> {
         let current_block = self.load_last_applied_mc_block_id()?;
         let current_shard_state = self.load_state(&current_block).await?;
@@ -820,7 +795,6 @@ impl Engine {
             return Ok(false);
         }
         self.db.assign_mc_ref_seq_no(handle, mc_seq_no)?;
-        self.db.index_handle(handle)?;
 
         if self.archives_enabled {
             self.db.archive_block(handle).await?;
@@ -1051,10 +1025,7 @@ impl Engine {
             let (virt_block, virt_block_info) = block_proof.pre_check_block_proof()?;
             let prev_key_block_seqno = virt_block_info.prev_key_block_seqno();
 
-            let masterchain_prefix = ton_block::AccountIdPrefixFull::any_masterchain();
-            let handle = self
-                .db
-                .find_block_by_seq_no(&masterchain_prefix, prev_key_block_seqno)?;
+            let handle = self.db.load_key_block_handle(prev_key_block_seqno)?;
             let prev_key_block_proof = self.load_block_proof(&handle, false).await?;
 
             check_with_prev_key_block_proof(

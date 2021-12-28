@@ -13,6 +13,7 @@ use rlimit::Resource;
 use rocksdb::perf::MemoryUsageStats;
 use rocksdb::{BlockBasedOptions, Cache, DBCompressionType};
 use ton_api::ton;
+use ton_block::HashmapAugType;
 
 use crate::storage::*;
 use crate::utils::*;
@@ -26,7 +27,6 @@ pub struct Db {
     block_handle_storage: BlockHandleStorage,
     shard_state_storage: ShardStateStorage,
     archive_manager: ArchiveManager,
-    block_index_db: BlockIndexDb,
     background_sync_meta_store: BackgroundSyncMetaStore,
 
     prev1_block_db: Tree<columns::Prev1>,
@@ -117,8 +117,6 @@ impl Db {
             .column::<columns::ShardStates>()
             .column::<columns::Cells>()
             .column::<columns::NodeStates>()
-            .column::<columns::LtDesc>()
-            .column::<columns::Lt>()
             .column::<columns::Prev1>()
             .column::<columns::Prev2>()
             .column::<columns::Next1>()
@@ -132,7 +130,6 @@ impl Db {
         let block_handle_storage = BlockHandleStorage::with_db(&db)?;
         let shard_state_storage = ShardStateStorage::with_db(&db, &file_db_path).await?;
         let archive_manager = ArchiveManager::with_db(&db)?;
-        let block_index_db = BlockIndexDb::with_db(&db)?;
         let background_sync_meta_store = BackgroundSyncMetaStore::new(&db)?;
 
         Ok(Arc::new(Self {
@@ -141,7 +138,6 @@ impl Db {
             block_handle_storage,
             shard_state_storage,
             archive_manager,
-            block_index_db,
             background_sync_meta_store,
             prev1_block_db: Tree::new(&db)?,
             prev2_block_db: Tree::new(&db)?,
@@ -183,7 +179,7 @@ impl Db {
 
         let meta = match (block, utime) {
             (Some(block), _) => BlockMeta::from_block(block)?,
-            (None, Some(utime)) if block_id.seq_no == 0 => BlockMeta::with_data(0, utime, 0, 0),
+            (None, Some(utime)) if block_id.seq_no == 0 => BlockMeta::with_data(0, utime, 0),
             _ if block_id.seq_no == 0 => return Err(DbError::FailedToCreateZerostateHandle.into()),
             _ => return Err(DbError::FailedToCreateBlockHandle.into()),
         };
@@ -207,6 +203,10 @@ impl Db {
         block_id: &ton_block::BlockIdExt,
     ) -> Result<Option<Arc<BlockHandle>>> {
         self.block_handle_storage.load_handle(block_id)
+    }
+
+    pub fn load_key_block_handle(&self, seq_no: u32) -> Result<Arc<BlockHandle>> {
+        self.block_handle_storage.load_key_block_handle(seq_no)
     }
 
     pub fn key_block_iterator(&self, since: Option<u32>) -> Result<KeyBlocksIterator<'_>> {
@@ -432,46 +432,6 @@ impl Db {
         }
     }
 
-    pub fn find_block_by_seq_no(
-        &self,
-        account_prefix: &ton_block::AccountIdPrefixFull,
-        seq_no: u32,
-    ) -> Result<Arc<BlockHandle>> {
-        let block_id = self
-            .block_index_db
-            .get_block_by_seq_no(account_prefix, seq_no)?;
-
-        self.block_handle_storage
-            .load_handle(&block_id)?
-            .ok_or_else(|| DbError::BlockHandleNotFound.into())
-    }
-
-    pub fn find_block_by_utime(
-        &self,
-        account_prefix: &ton_block::AccountIdPrefixFull,
-        utime: u32,
-    ) -> Result<Arc<BlockHandle>> {
-        let block_id = self
-            .block_index_db
-            .get_block_by_utime(account_prefix, utime)?;
-
-        self.block_handle_storage
-            .load_handle(&block_id)?
-            .ok_or_else(|| DbError::BlockHandleNotFound.into())
-    }
-
-    pub fn find_block_by_lt(
-        &self,
-        account_prefix: &ton_block::AccountIdPrefixFull,
-        lt: u64,
-    ) -> Result<Arc<BlockHandle>> {
-        let block_id = self.block_index_db.get_block_by_lt(account_prefix, lt)?;
-
-        self.block_handle_storage
-            .load_handle(&block_id)?
-            .ok_or_else(|| DbError::BlockHandleNotFound.into())
-    }
-
     pub fn store_block_applied(&self, handle: &Arc<BlockHandle>) -> Result<bool> {
         if handle.meta().set_is_applied() {
             self.block_handle_storage.store_handle(handle)?;
@@ -487,10 +447,6 @@ impl Db {
 
     pub fn find_last_key_block(&self) -> Result<Arc<BlockHandle>> {
         self.block_handle_storage.find_last_key_block()
-    }
-
-    pub fn index_handle(&self, handle: &Arc<BlockHandle>) -> Result<()> {
-        self.block_index_db.add_handle(handle)
     }
 
     pub fn assign_mc_ref_seq_no(
@@ -527,18 +483,31 @@ impl Db {
     ) -> Result<TopBlocks> {
         let top_blocks = match self.load_block_handle(mc_block_id)? {
             Some(handle) => {
+                let state = self
+                    .load_shard_state(handle.id())
+                    .await
+                    .context("Failed to load shard state for top block")?;
+                let state_extra = state.shard_state_extra()?;
+
                 let block_data = self.load_block_data(&handle).await?;
                 let block_info = block_data
                     .block()
                     .read_info()
                     .context("Failed to read block info")?;
 
+                let target_block_id = state_extra
+                    .prev_blocks
+                    .get(&block_info.min_ref_mc_seqno())
+                    .context("Failed to find min ref mc block id")?
+                    .context("Prev ref mc not found")?
+                    .master_block_id()
+                    .1;
+
                 let target_block_handle = self
-                    .find_block_by_seq_no(
-                        &ton_block::AccountIdPrefixFull::any_masterchain(),
-                        block_info.min_ref_mc_seqno(),
-                    )
-                    .context("Failed to find min ref mc")?;
+                    .block_handle_storage
+                    .load_handle(&target_block_id)
+                    .context("Failed to find min ref mc block handle")?
+                    .context("Prev ref mc handle not found")?;
 
                 self.load_block_data(&target_block_handle)
                     .await

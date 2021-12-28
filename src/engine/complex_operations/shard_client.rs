@@ -175,8 +175,7 @@ pub async fn process_block_broadcast(
     }
 
     let (key_block_proof, validator_set, catchain_config) = {
-        let masterchain_prefix = ton_block::AccountIdPrefixFull::any_masterchain();
-        let handle = engine.find_block_by_seq_no(&masterchain_prefix, prev_key_block_seqno)?;
+        let handle = engine.db.load_key_block_handle(prev_key_block_seqno)?;
         let proof = engine.load_block_proof(&handle, false).await?;
         let (validator_set, catchain_config) = proof.get_cur_validators_set()?;
         (proof, validator_set, catchain_config)

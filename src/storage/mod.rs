@@ -10,7 +10,6 @@ pub use self::archive_package::*;
 pub use self::background_sync_meta::*;
 pub use self::block_handle::*;
 pub use self::block_handle_storage::*;
-pub use self::block_index_db::*;
 pub use self::block_meta::*;
 pub use self::cell_storage::*;
 pub use self::node_state_storage::*;
@@ -24,7 +23,6 @@ mod archive_package;
 mod background_sync_meta;
 mod block_handle;
 mod block_handle_storage;
-mod block_index_db;
 mod block_meta;
 mod cell_storage;
 mod node_state_storage;
@@ -108,22 +106,6 @@ pub mod columns {
         fn options(opts: &mut Options) {
             opts.set_optimize_filters_for_hits(true);
         }
-    }
-
-    /// Maps shard id to last_seq_no + last_lt + last_utime
-    /// - Key: `ton_block::ShardIdent`
-    /// - Value: `bincode(LtDesc)`
-    pub struct LtDesc;
-    impl Column for LtDesc {
-        const NAME: &'static str = "lt_desc";
-    }
-
-    /// Maps ShardIdent to lt + utime + BlockIdExt
-    /// - Key: `LtDbKey`
-    /// - Value: `bincode(LtDbEntry)`
-    pub struct Lt;
-    impl Column for Lt {
-        const NAME: &'static str = "lt";
     }
 
     pub struct Prev1;
