@@ -19,7 +19,7 @@ use crate::storage::*;
 use crate::utils::*;
 use crate::BlocksGcKind;
 
-const CURRENT_VERSION: [u8; 3] = [2, 0, 2];
+const CURRENT_VERSION: [u8; 3] = [2, 0, 6];
 
 pub struct Db {
     block_cache: Cache,
