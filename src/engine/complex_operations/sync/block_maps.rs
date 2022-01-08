@@ -2,7 +2,7 @@ use std::hash::BuildHasherDefault;
 use std::sync::Arc;
 
 use anyhow::Result;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use tiny_adnl::utils::*;
 
 use crate::storage::*;
@@ -123,16 +123,46 @@ impl BlockMaps {
         let mut map = FxHashMap::with_capacity_and_hasher(16, BuildHasherDefault::default());
         for blk in self.blocks.keys() {
             map.entry(blk.shard_id)
-                .or_insert_with(Vec::new)
-                .push(blk.seq_no);
+                .or_insert_with(BTreeSet::new)
+                .insert(blk.seq_no);
         }
 
-        for (_, mut blocks) in map {
-            blocks.sort_unstable();
-            let mut block_seqnos = blocks.into_iter();
-            let mut prev = block_seqnos.next()?;
-            for seqno in block_seqnos {
-                if seqno != prev + 1 {
+        fn find_block(
+            map: &FxHashMap<ton_block::ShardIdent, BTreeSet<u32>>,
+            shard_ident: &ton_block::ShardIdent,
+            prev_seqno: u32,
+        ) -> bool {
+            if let Ok((left, right)) = shard_ident.split() {
+                // Check case after merge in the same archive
+                if let Some(ids) = map.get(&left) {
+                    // Search prev seqno in the left shard
+                    if ids.contains(&prev_seqno) {
+                        return true;
+                    }
+                } else if let Some(ids) = map.get(&right) {
+                    // Search prev seqno in the right shard
+                    if ids.contains(&prev_seqno) {
+                        return true;
+                    }
+                }
+            } else if let Ok(parent) = shard_ident.merge() {
+                // Check case after second split in the same archive
+                if let Some(ids) = map.get(&parent) {
+                    // Search prev shard in the parent shard
+                    if ids.contains(&prev_seqno) {
+                        return true;
+                    }
+                }
+            }
+            false
+        }
+
+        for (shard_ident, blocks) in &map {
+            let mut block_seqnos = blocks.iter();
+            let mut prev = *block_seqnos.next()?;
+
+            for &seqno in block_seqnos {
+                if seqno != prev + 1 && !find_block(&map, shard_ident, seqno - 1) {
                     log::error!(
                         "Bad shard blocks {}. Prev: {}, block: {}",
                         seqno,
