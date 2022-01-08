@@ -39,7 +39,7 @@ sha2 = "0.9"
 smallvec = { version = "1.6.1", features = ["serde", "write", "union"] }
 sysinfo = { version = "0.20.1", default-features = false }
 thiserror = "*"
-tokio = { version = "1.6", features = ["sync", "fs", "rt-multi-thread"] }
+tokio = { version = "1.6", features = ["sync", "fs", "rt-multi-thread", "parking_lot"] }
 
 lru_time_cache = { git = "https://github.com/Rexagon/lru_time_cache.git" }
 
