@@ -1,4 +1,5 @@
 use std::convert::{TryFrom, TryInto};
+use std::path::Path;
 
 use anyhow::Result;
 use nekoton_utils::*;
@@ -9,6 +10,18 @@ use ton_api::{ton, IntoBoxed};
 pub struct GlobalConfig {
     pub dht_nodes: Vec<ton::dht::node::Node>,
     pub zero_state: ton_block::BlockIdExt,
+}
+
+impl GlobalConfig {
+    pub fn load<P>(path: P) -> Result<Self>
+    where
+        P: AsRef<Path>,
+    {
+        let file = std::fs::File::open(path)?;
+        let reader = std::io::BufReader::new(file);
+        let config = serde_json::from_reader(reader)?;
+        Ok(config)
+    }
 }
 
 impl<'de> Deserialize<'de> for GlobalConfig {
