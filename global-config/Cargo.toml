@@ -1,0 +1,13 @@
+[package]
+name = "global-config"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1.0"
+base64 = "0.13"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+ton_api = { git = "https://github.com/broxus/ton-labs-tl.git", package = "ton_api", default-features = false }
+ton_block = { git = "https://github.com/broxus/ton-labs-block.git" }

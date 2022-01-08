@@ -9,13 +9,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+use global_config::*;
 use tiny_adnl::utils::*;
 use tiny_adnl::*;
 use ton_api::ton;
 
 pub use self::full_node_overlay_client::*;
 pub use self::full_node_overlay_service::*;
-use crate::config::*;
 
 mod full_node_overlay_client;
 mod full_node_overlay_service;

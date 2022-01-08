@@ -6,7 +6,7 @@ edition = "2021"
 rust-version = "1.56"
 
 [workspace]
-members = ["ton-indexer-alloc"]
+members = ["ton-indexer-alloc", "global-config"]
 
 [[example]]
 name = "simple_node"
@@ -51,9 +51,8 @@ tiny-adnl = { git = "https://github.com/broxus/tiny-adnl.git" }
 ton_block = { git = "https://github.com/broxus/ton-labs-block.git" }
 ton_types = { git = "https://github.com/broxus/ton-labs-types.git" }
 
-nekoton-utils = { git = "https://github.com/broxus/nekoton.git" }
-
 ton-indexer-alloc = { path = "ton-indexer-alloc" }
+global-config = { path = "global-config" }
 
 [dev-dependencies]
 argh = "0.1"

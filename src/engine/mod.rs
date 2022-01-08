@@ -10,6 +10,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+use global_config::GlobalConfig;
 pub use rocksdb::perf::MemoryUsageStats;
 use tiny_adnl::utils::*;
 use ton_api::ton;

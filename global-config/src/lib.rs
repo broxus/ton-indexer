@@ -1,8 +1,7 @@
 use std::convert::{TryFrom, TryInto};
 use std::path::Path;
 
-use anyhow::Result;
-use nekoton_utils::*;
+use anyhow::{anyhow, Result};
 use serde::{Deserialize, Deserializer};
 use ton_api::{ton, IntoBoxed};
 
@@ -128,8 +127,7 @@ impl TryFrom<ValidatorJson> for ton_block::BlockIdExt {
             shard_id: ton_block::ShardIdent::with_tagged_prefix(
                 value.zero_state.workchain,
                 value.zero_state.shard as u64,
-            )
-            .map_err(anyhow::Error::msg)?,
+            )?,
             seq_no: value.zero_state.seqno as u32,
             root_hash: value.zero_state.root_hash.into(),
             file_hash: value.zero_state.file_hash.into(),
@@ -137,18 +135,12 @@ impl TryFrom<ValidatorJson> for ton_block::BlockIdExt {
     }
 }
 
-fn require_type(ty: String, required: &'static str) -> Result<(), GlobalConfigError> {
+fn require_type(ty: String, required: &'static str) -> Result<()> {
     if ty == required {
         Ok(())
     } else {
-        Err(GlobalConfigError::InvalidType(ty, required))
+        Err(anyhow!("Invalid type {}, expected {}", ty, required))
     }
-}
-
-#[derive(thiserror::Error, Debug)]
-enum GlobalConfigError {
-    #[error("Invalid type {}, expected {}", .0, .1)]
-    InvalidType(String, &'static str),
 }
 
 #[derive(Deserialize)]
@@ -180,7 +172,7 @@ struct DhtNodeJson {
     id: IdJson,
     addr_list: AddressListJson,
     version: i32,
-    #[serde(with = "serde_base64_array")]
+    #[serde(deserialize_with = "deserialize_base64_array")]
     signature: [u8; 64],
 }
 
@@ -188,7 +180,7 @@ struct DhtNodeJson {
 struct IdJson {
     #[serde(rename = "@type")]
     ty: String,
-    #[serde(with = "serde_base64_array")]
+    #[serde(deserialize_with = "deserialize_base64_array")]
     key: [u8; 32],
 }
 
@@ -223,10 +215,21 @@ struct ZeroStateJson {
     workchain: i32,
     shard: i64,
     seqno: i32,
-    #[serde(with = "serde_base64_array")]
+    #[serde(deserialize_with = "deserialize_base64_array")]
     root_hash: [u8; 32],
-    #[serde(with = "serde_base64_array")]
+    #[serde(deserialize_with = "deserialize_base64_array")]
     file_hash: [u8; 32],
+}
+
+fn deserialize_base64_array<'de, D, const N: usize>(deserializer: D) -> Result<[u8; N], D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::Error;
+    let data = String::deserialize(deserializer)?;
+    let data = base64::decode(data).map_err(D::Error::custom)?;
+    data.try_into()
+        .map_err(|_| D::Error::custom(format!("Invalid array length, expected: {}", N)))
 }
 
 #[cfg(test)]
