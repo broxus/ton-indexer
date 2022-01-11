@@ -57,10 +57,10 @@ global-config = { path = "global-config" }
 [dev-dependencies]
 argh = "0.1"
 config = { version = "0.11", default-features = false, features = ["yaml"] }
-external-ip = "4.1"
+public-ip = "0.2.2"
 log4rs = "1.0"
 serde_yaml = "0.8"
-tokio = { version = "1.6", features = ["sync", "fs", "rt-multi-thread", "macros"] }
+tokio = { version = "1.6", features = ["sync", "fs", "rt-multi-thread", "macros", "parking_lot"] }
 
 [features]
 default = []

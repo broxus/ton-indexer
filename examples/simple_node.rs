@@ -1,4 +1,4 @@
-use std::net::{IpAddr, SocketAddrV4};
+use std::net::SocketAddrV4;
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -108,15 +108,8 @@ impl Config {
     async fn generate() -> Result<Self> {
         const DEFAULT_PORT: u16 = 30303;
 
-        let ip = external_ip::ConsensusBuilder::new()
-            .add_sources(external_ip::get_http_sources::<external_ip::Sources>())
-            .build()
-            .get_consensus()
-            .await;
-
-        let ip_address = match ip {
-            Some(IpAddr::V4(ip)) => SocketAddrV4::new(ip, DEFAULT_PORT),
-            Some(_) => anyhow::bail!("IPv6 not supported"),
+        let ip_address = match public_ip::addr_v4().await {
+            Some(ip) => SocketAddrV4::new(ip, DEFAULT_PORT),
             None => anyhow::bail!("External ip not found"),
         };
 
