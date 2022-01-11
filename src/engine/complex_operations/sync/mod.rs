@@ -334,7 +334,8 @@ async fn save_block(
     let handle = engine.store_block_data(block).await?.handle;
     let handle = engine
         .store_block_proof(block_id, Some(handle), block_proof)
-        .await?;
+        .await?
+        .handle;
     Ok(handle)
 }
 

@@ -86,7 +86,6 @@ pub struct Engine {
     archives_enabled: bool,
     zero_state_id: ton_block::BlockIdExt,
     init_mc_block_id: ton_block::BlockIdExt,
-    last_known_mc_block_seqno: AtomicU32,
     last_known_key_block_seqno: AtomicU32,
 
     parallel_archive_downloads: u32,
@@ -176,7 +175,6 @@ impl Engine {
             archives_enabled: config.archives_enabled,
             zero_state_id,
             init_mc_block_id,
-            last_known_mc_block_seqno: AtomicU32::new(0),
             last_known_key_block_seqno: AtomicU32::new(0),
             parallel_archive_downloads: config.parallel_archive_downloads,
             shard_states_cache: ShardStateCache::new(config.shard_state_cache_options),
@@ -365,12 +363,6 @@ impl Engine {
             .init_block
             .store_into_db(convert_block_id_ext_blk2api(block_id))
             .ok();
-    }
-
-    fn update_last_known_mc_block_seqno(&self, seqno: u32) -> bool {
-        self.last_known_mc_block_seqno
-            .fetch_max(seqno, Ordering::SeqCst)
-            < seqno
     }
 
     fn update_last_known_key_block_seqno(&self, seqno: u32) -> bool {
@@ -694,12 +686,12 @@ impl Engine {
 
     async fn store_block_data(&self, block: &BlockStuff) -> Result<StoreBlockResult> {
         let store_block_result = self.db.store_block_data(block).await?;
-        if store_block_result.handle.id().shard().is_masterchain() {
-            if store_block_result.handle.meta().is_key_block() {
-                self.update_last_known_key_block_seqno(store_block_result.handle.id().seq_no);
-            }
-            self.update_last_known_mc_block_seqno(store_block_result.handle.id().seq_no);
+
+        let handle = &store_block_result.handle;
+        if handle.id().shard().is_masterchain() && handle.meta().is_key_block() {
+            self.update_last_known_key_block_seqno(store_block_result.handle.id().seq_no);
         }
+
         Ok(store_block_result)
     }
 
@@ -716,12 +708,8 @@ impl Engine {
         block_id: &ton_block::BlockIdExt,
         handle: Option<Arc<BlockHandle>>,
         proof: &BlockProofStuff,
-    ) -> Result<Arc<BlockHandle>> {
-        Ok(self
-            .db
-            .store_block_proof(block_id, handle, proof)
-            .await?
-            .handle)
+    ) -> Result<StoreBlockResult> {
+        self.db.store_block_proof(block_id, handle, proof).await
     }
 
     async fn store_zerostate(
@@ -729,7 +717,7 @@ impl Engine {
         block_id: &ton_block::BlockIdExt,
         state: &Arc<ShardStateStuff>,
     ) -> Result<Arc<BlockHandle>> {
-        let handle =
+        let (handle, _) =
             self.db
                 .create_or_load_block_handle(block_id, None, Some(state.state().gen_time()))?;
         self.store_state(&handle, state).await?;
@@ -861,28 +849,50 @@ impl Engine {
 
         loop {
             if let Some(handle) = self.load_block_handle(block_id)? {
+                // Block is already applied
                 if handle.meta().is_applied() || pre_apply && handle.meta().has_state() {
                     return Ok(());
                 }
 
+                let mut possibly_updated = false;
+
+                // Check if block was already downloaded
                 if handle.meta().has_data() {
+                    // While it is still not applied
                     while !(pre_apply && handle.meta().has_state() || handle.meta().is_applied()) {
+                        possibly_updated = true;
+
+                        // Apply block
                         let operation = async {
                             let block = self.load_block_data(&handle).await?;
                             apply_block(self, &handle, &block, mc_seq_no, pre_apply, depth).await?;
                             Ok(())
                         };
-
-                        self.block_applying_operations
+                        match self
+                            .block_applying_operations
                             .do_or_wait(handle.id(), None, operation)
-                            .await?;
+                            .await
+                        {
+                            // Successfully applied but continue to the next iteration
+                            // just to be sure
+                            Ok(_) => continue,
+                            // For some reason, the data disappeared, so proceed to the downloader
+                            Err(_) if !handle.meta().has_data() => break,
+                            // Return on other errors
+                            Err(e) => return Err(e),
+                        }
                     }
+                }
+
+                // Block is applied and has data
+                if possibly_updated && handle.meta().has_data() {
                     return Ok(());
                 }
             }
 
             log::trace!("Start downloading block {} for apply", block_id);
 
+            // Prepare params
             let (max_attempts, timeouts) = if pre_apply {
                 (
                     Some(10),
@@ -896,6 +906,7 @@ impl Engine {
                 (None, None)
             };
 
+            // Download next block
             if let Some((block, block_proof)) = self
                 .download_block_operations
                 .do_or_wait(
@@ -913,7 +924,8 @@ impl Engine {
                 let handle = self.store_block_data(&block).await?.handle;
                 let handle = self
                     .store_block_proof(block_id, Some(handle), &block_proof)
-                    .await?;
+                    .await?
+                    .handle;
 
                 log::trace!("Downloaded block {} for apply", block_id);
 

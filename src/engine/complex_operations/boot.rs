@@ -143,7 +143,10 @@ async fn prepare_cold_boot_data(engine: &Arc<Engine>) -> Result<ColdBootData> {
             {
                 Ok(proof) => match proof.check_proof_link() {
                     Ok(_) => {
-                        let handle = engine.store_block_proof(block_id, handle, &proof).await?;
+                        let handle = engine
+                            .store_block_proof(block_id, handle, &proof)
+                            .await?
+                            .handle;
                         break (handle, proof);
                     }
                     Err(e) => {
@@ -285,7 +288,10 @@ async fn download_key_block_proof(
 
         match result {
             Ok(_) => {
-                let handle = engine.store_block_proof(block_id, None, &proof).await?;
+                let handle = engine
+                    .store_block_proof(block_id, None, &proof)
+                    .await?
+                    .handle;
                 return Ok((handle, proof));
             }
             Err(e) => {
@@ -424,7 +430,8 @@ async fn download_block_and_state(
             if !handle.meta().has_proof() {
                 handle = engine
                     .store_block_proof(block_id, Some(handle), &proof)
-                    .await?;
+                    .await?
+                    .handle;
             }
             (block, handle)
         }

@@ -92,19 +92,25 @@ async fn load_next_masterchain_block(
     block_proof.check_with_master_state(&prev_state)?;
 
     let mut next_handle = match engine.load_block_handle(block.id())? {
-        Some(next_handle) => {
-            if !next_handle.meta().has_data() {
-                return Err(ShardClientError::InvalidBlockHandle.into());
+        // Handle exists and it has block data specified
+        Some(next_handle) if next_handle.meta().has_data() => next_handle,
+        // Handle doesn't exist or doesn't have block data
+        handle => {
+            if handle.is_some() {
+                log::warn!(
+                    "Partially initialized handle detected for block {}",
+                    block.id()
+                );
             }
-            next_handle
+            engine.store_block_data(&block).await?.handle
         }
-        None => engine.store_block_data(&block).await?.handle,
     };
 
     if !next_handle.meta().has_proof() {
         next_handle = engine
             .store_block_proof(block.id(), Some(next_handle), &block_proof)
-            .await?;
+            .await?
+            .handle;
     }
 
     engine
@@ -190,12 +196,21 @@ pub async fn process_block_broadcast(
     }
 
     let block = BlockStuff::deserialize_checked(block_id, broadcast.data.0)?;
-    let mut handle = engine.store_block_data(&block).await?.handle;
+    let mut handle = match engine.store_block_data(&block).await? {
+        result if result.updated => result.handle,
+        // Skipped apply for block broadcast because the block is already being processed
+        _ => return Ok(()),
+    };
 
     if !handle.meta().has_proof() {
-        handle = engine
+        handle = match engine
             .store_block_proof(block.id(), Some(handle), &proof)
-            .await?;
+            .await?
+        {
+            result if result.updated => result.handle,
+            // Skipped apply for block broadcast because the block is already being processed
+            _ => return Ok(()),
+        };
     }
 
     if block.id().shard_id.is_masterchain() {
@@ -278,8 +293,6 @@ enum ShardClientError {
     ShardchainBlockHandleNotFound,
     #[error("Block id mismatch")]
     BlockIdMismatch,
-    #[error("Invalid block handle")]
-    InvalidBlockHandle,
     #[error("Invalid block extra")]
     InvalidBlockExtra,
 }

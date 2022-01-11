@@ -172,9 +172,9 @@ impl Db {
         block_id: &ton_block::BlockIdExt,
         block: Option<&ton_block::Block>,
         utime: Option<u32>,
-    ) -> Result<Arc<BlockHandle>> {
+    ) -> Result<(Arc<BlockHandle>, HandleCreationStatus)> {
         if let Some(handle) = self.load_block_handle(block_id)? {
-            return Ok(handle);
+            return Ok((handle, HandleCreationStatus::Fetched));
         }
 
         let meta = match (block, utime) {
@@ -188,11 +188,11 @@ impl Db {
             .block_handle_storage
             .create_handle(block_id.clone(), meta)?
         {
-            return Ok(handle);
+            return Ok((handle, HandleCreationStatus::Created));
         }
 
         if let Some(handle) = self.load_block_handle(block_id)? {
-            return Ok(handle);
+            return Ok((handle, HandleCreationStatus::Fetched));
         }
 
         Err(DbError::FailedToCreateBlockHandle.into())
@@ -214,24 +214,26 @@ impl Db {
     }
 
     pub async fn store_block_data(&self, block: &BlockStuff) -> Result<StoreBlockResult> {
-        let handle = self.create_or_load_block_handle(block.id(), Some(block.block()), None)?;
+        let (handle, status) =
+            self.create_or_load_block_handle(block.id(), Some(block.block()), None)?;
 
         let archive_id = PackageEntryId::Block(handle.id());
-        let mut already_existed = true;
+        let mut updated = false;
         if !handle.meta().has_data() || !self.archive_manager.has_data(&archive_id)? {
             let _lock = handle.block_data_lock().write().await;
             if !handle.meta().has_data() || !self.archive_manager.has_data(&archive_id)? {
                 self.archive_manager.add_data(&archive_id, block.data())?;
                 if handle.meta().set_has_data() {
                     self.block_handle_storage.store_handle(&handle)?;
-                    already_existed = false;
+                    updated = true;
                 }
             }
         }
 
         Ok(StoreBlockResult {
             handle,
-            already_existed,
+            updated,
+            new: status == HandleCreationStatus::Created,
         })
     }
 
@@ -263,8 +265,8 @@ impl Db {
             return Err(DbError::BlockProofIdMismatch.into());
         }
 
-        let handle = match handle {
-            Some(handle) => handle,
+        let (handle, status) = match handle {
+            Some(handle) => (handle, HandleCreationStatus::Fetched),
             None => self.create_or_load_block_handle(
                 block_id,
                 Some(&proof.virtualize_block()?.0),
@@ -272,7 +274,7 @@ impl Db {
             )?,
         };
 
-        let mut already_existed = true;
+        let mut updated = false;
         if proof.is_link() {
             let archive_id = PackageEntryId::ProofLink(block_id);
             if !handle.meta().has_proof_link() || !self.archive_manager.has_data(&archive_id)? {
@@ -281,7 +283,7 @@ impl Db {
                     self.archive_manager.add_data(&archive_id, proof.data())?;
                     if handle.meta().set_has_proof_link() {
                         self.block_handle_storage.store_handle(&handle)?;
-                        already_existed = false;
+                        updated = true;
                     }
                 }
             }
@@ -293,7 +295,7 @@ impl Db {
                     self.archive_manager.add_data(&archive_id, proof.data())?;
                     if handle.meta().set_has_proof() {
                         self.block_handle_storage.store_handle(&handle)?;
-                        already_existed = false;
+                        updated = true;
                     }
                 }
             }
@@ -301,7 +303,8 @@ impl Db {
 
         Ok(StoreBlockResult {
             handle,
-            already_existed,
+            updated,
+            new: status == HandleCreationStatus::Created,
         })
     }
 
@@ -651,7 +654,8 @@ where
 
 pub struct StoreBlockResult {
     pub handle: Arc<BlockHandle>,
-    pub already_existed: bool,
+    pub updated: bool,
+    pub new: bool,
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
@@ -660,6 +664,12 @@ pub enum BlockConnection {
     Prev2,
     Next1,
     Next2,
+}
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+pub enum HandleCreationStatus {
+    Created,
+    Fetched,
 }
 
 #[derive(thiserror::Error, Debug)]
