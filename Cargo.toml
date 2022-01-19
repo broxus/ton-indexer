@@ -57,6 +57,7 @@ global-config = { path = "global-config" }
 [dev-dependencies]
 argh = "0.1"
 config = { version = "0.11", default-features = false, features = ["yaml"] }
+cargo-husky = { version = "1.5.0", features = ["precommit-hook", "run-cargo-test", "run-cargo-clippy", "run-cargo-fmt"] }
 public-ip = "0.2.2"
 log4rs = "1.0"
 serde_yaml = "0.8"
