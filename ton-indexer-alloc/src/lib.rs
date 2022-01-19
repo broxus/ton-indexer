@@ -1,5 +1,8 @@
 use std::ffi::{c_void, CString};
 
+pub use tikv_jemalloc_ctl::Error;
+use tikv_jemalloc_ctl::{epoch, stats};
+
 pub type Allocator = tikv_jemallocator::Jemalloc;
 
 pub const fn allocator() -> Allocator {
@@ -39,4 +42,33 @@ fn set_jemalloc_param<T>(name: &str, mut value: T) {
     if res != 0 {
         log::error!("Failed to set {}: {}", name, errno::Errno(res));
     }
+}
+
+pub fn fetch_stats() -> Result<JemallocStats, Error> {
+    // Stats are cached. Need to advance epoch to refresh.
+    epoch::advance()?;
+
+    Ok(JemallocStats {
+        allocated: stats::allocated::read()? as u64,
+        active: stats::active::read()? as u64,
+        metadata: stats::metadata::read()? as u64,
+        resident: stats::resident::read()? as u64,
+        mapped: stats::mapped::read()? as u64,
+        retained: stats::retained::read()? as u64,
+        dirty: (stats::resident::read()? - stats::active::read()? - stats::metadata::read()?)
+            as u64,
+        fragmentation: (stats::active::read()? - stats::allocated::read()?) as u64,
+    })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct JemallocStats {
+    pub allocated: u64,
+    pub active: u64,
+    pub metadata: u64,
+    pub resident: u64,
+    pub mapped: u64,
+    pub retained: u64,
+    pub dirty: u64,
+    pub fragmentation: u64,
 }
