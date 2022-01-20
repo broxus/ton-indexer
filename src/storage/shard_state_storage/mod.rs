@@ -229,7 +229,7 @@ impl ShardStateStorageState {
             let shards_iter = top_blocks.iter_shards();
 
             let shard_count = shards_iter.clone().count();
-            let shards_per_chunk = shard_count / num_cpus::get();
+            let shards_per_chunk = std::cmp::max(shard_count / num_cpus::get(), 1);
 
             // Iterate all shards
             for shard_idents in &shards_iter.chunks(shards_per_chunk) {
