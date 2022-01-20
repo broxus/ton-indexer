@@ -14,6 +14,8 @@ use std::time::Instant;
 use anyhow::{Context, Result};
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
+use itertools::Itertools;
+use smallvec::SmallVec;
 use tiny_adnl::utils::*;
 use ton_types::{ByteOrderRead, UInt256};
 
@@ -224,27 +226,53 @@ impl ShardStateStorageState {
             // Prepare one database snapshot for all shard states iterators
             let snapshot = db.snapshot();
 
+            let shards_iter = top_blocks.iter_shards();
+
+            let shard_count = shards_iter.clone().count();
+            let shards_per_chunk = shard_count / num_cpus::get();
+
             // Iterate all shards
-            for shard_ident in top_blocks.iter_shards() {
+            for shard_idents in &shards_iter.chunks(shards_per_chunk) {
                 // Prepare context
                 let db = db.clone();
                 let top_blocks = top_blocks.clone();
-                let mut last_block = last_blocks.get(shard_ident).cloned();
                 let cell_storage = self.cell_storage.clone();
                 let total = total.clone();
 
-                // Compute iteration bounds
-                let lower_bound = make_block_id_bound(shard_ident, 0x00)?;
-                let upper_bound = make_block_id_bound(shard_ident, 0xff)?;
+                struct ShardTask {
+                    last_block: Option<u32>,
+                    upper_bound: Vec<u8>,
+                    read_options: rocksdb::ReadOptions,
+                    last_shard_block_key:
+                        SmallVec<<LastShardBlockKey as StoredValue>::OnStackSlice>,
+                }
 
-                // Prepare shard states read options
-                let mut read_options = rocksdb::ReadOptions::default();
-                columns::ShardStates::read_options(&mut read_options);
-                read_options.set_snapshot(&snapshot);
-                read_options.set_iterate_lower_bound(lower_bound);
+                // Prepare tasks
+                let shard_tasks = shard_idents
+                    .map(|shard_ident| {
+                        let last_block = last_blocks.get(shard_ident).cloned();
 
-                // Compute intermediate state key
-                let last_shard_block_key = LastShardBlockKey(*shard_ident).to_vec()?;
+                        // Compute iteration bounds
+                        let lower_bound = make_block_id_bound(shard_ident, 0x00)?;
+                        let upper_bound = make_block_id_bound(shard_ident, 0xff)?;
+
+                        // Prepare shard states read options
+                        let mut read_options = rocksdb::ReadOptions::default();
+                        columns::ShardStates::read_options(&mut read_options);
+                        read_options.set_snapshot(&snapshot);
+                        read_options.set_iterate_lower_bound(lower_bound);
+
+                        // Compute intermediate state key
+                        let last_shard_block_key = LastShardBlockKey(*shard_ident).to_vec()?;
+
+                        Ok(ShardTask {
+                            last_block,
+                            upper_bound,
+                            read_options,
+                            last_shard_block_key,
+                        })
+                    })
+                    .collect::<Result<Vec<_>>>()?;
 
                 // Spawn task
                 tasks.push(tokio::task::spawn_blocking(move || {
@@ -258,50 +286,55 @@ impl ShardStateStorageState {
                     let mut write_options = rocksdb::WriteOptions::default();
                     columns::NodeStates::write_options(&mut write_options);
 
-                    // Prepare reverse iterator
-                    let iter = db.iterator_cf_opt(
-                        &shard_states_cf,
-                        read_options,
-                        rocksdb::IteratorMode::From(&upper_bound, rocksdb::Direction::Reverse),
-                    );
+                    for mut task in shard_tasks {
+                        // Prepare reverse iterator
+                        let iter = db.iterator_cf_opt(
+                            &shard_states_cf,
+                            task.read_options,
+                            rocksdb::IteratorMode::From(
+                                &task.upper_bound,
+                                rocksdb::Direction::Reverse,
+                            ),
+                        );
 
-                    // Iterate all block states in shard starting from the latest
-                    for (key, value) in iter {
-                        let block_id = ton_block::BlockIdExt::from_slice(&key)?;
-                        // Stop iterating on first outdated block
-                        if !top_blocks.contains(&block_id) {
-                            break;
-                        }
-
-                        let edge_block = match &last_block {
-                            // Skip blocks which were definitely processed
-                            Some(seq_no) if block_id.seq_no > *seq_no => continue,
-                            // Block may have been processed
-                            Some(_) => {
-                                last_block = None;
-                                true
+                        // Iterate all block states in shard starting from the latest
+                        for (key, value) in iter {
+                            let block_id = ton_block::BlockIdExt::from_slice(&key)?;
+                            // Stop iterating on first outdated block
+                            if !top_blocks.contains(&block_id) {
+                                break;
                             }
-                            // Block is definitely processed first time
-                            None => false,
-                        };
 
-                        // Update intermediate state for this shard to continue
-                        // from this block on accidental restart
-                        db.put_cf_opt(
-                            &node_states_cf,
-                            &last_shard_block_key,
-                            block_id.seq_no.to_le_bytes(),
-                            &write_options,
-                        )
-                        .context("Failed to update last block")?;
+                            let edge_block = match &task.last_block {
+                                // Skip blocks which were definitely processed
+                                Some(seq_no) if block_id.seq_no > *seq_no => continue,
+                                // Block may have been processed
+                                Some(_) => {
+                                    task.last_block = None;
+                                    true
+                                }
+                                // Block is definitely processed first time
+                                None => false,
+                            };
 
-                        // Mark all cells of this state recursively with target marker
-                        let count = cell_storage.mark_cells_tree(
-                            UInt256::from_be_bytes(&value),
-                            target_marker,
-                            force && edge_block,
-                        )?;
-                        total.fetch_add(count, Ordering::Release);
+                            // Update intermediate state for this shard to continue
+                            // from this block on accidental restart
+                            db.put_cf_opt(
+                                &node_states_cf,
+                                &task.last_shard_block_key,
+                                block_id.seq_no.to_le_bytes(),
+                                &write_options,
+                            )
+                            .context("Failed to update last block")?;
+
+                            // Mark all cells of this state recursively with target marker
+                            let count = cell_storage.mark_cells_tree(
+                                UInt256::from_be_bytes(&value),
+                                target_marker,
+                                force && edge_block,
+                            )?;
+                            total.fetch_add(count, Ordering::Release);
+                        }
                     }
 
                     Result::<(), anyhow::Error>::Ok(())
