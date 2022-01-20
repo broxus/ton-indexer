@@ -53,17 +53,21 @@ pub async fn download_state(
     let (result_tx, result_rx) = oneshot::channel();
     let (packets_tx, packets_rx) = mpsc::channel(PROCESSING_QUEUE_LEN);
 
+    let (_completion_trigger, completion_signal) = trigger_on_drop();
+
     tokio::spawn({
         let engine = engine.clone();
         let block_id = block_id.clone();
         async move { result_tx.send(background_process(&engine, block_id, clear_db, packets_rx).await) }
     });
 
-    {
+    let block_id = block_id.clone();
+    let masterchain_block_id = masterchain_block_id.clone();
+    let downloader = async move {
         let mut scheduler = Scheduler::with_slots(
             overlay,
-            block_id.clone(),
-            masterchain_block_id.clone(),
+            block_id,
+            masterchain_block_id,
             neighbour,
             DOWNLOADING_QUEUE_LEN,
             PACKET_SIZE,
@@ -79,8 +83,25 @@ pub async fn download_state(
             }
         }
 
-        log::info!("DOWNLOADED: {} bytes", total_bytes);
-    }
+        Result::<_, anyhow::Error>::Ok(total_bytes)
+    };
+
+    tokio::spawn(async move {
+        tokio::select! {
+            result = downloader => match result {
+                Ok(total_bytes) => {
+                    log::info!(
+                        "Persistent state downloader finished. Total size: {} bytes",
+                        total_bytes
+                    );
+                },
+                Err(e) => {
+                    log::error!("Persistent state downloader failed: {:?}", e);
+                },
+            },
+            _ = completion_signal => {}
+        }
+    });
 
     result_rx.await?
 }

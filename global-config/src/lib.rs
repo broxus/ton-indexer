@@ -9,6 +9,8 @@ use ton_api::{ton, IntoBoxed};
 pub struct GlobalConfig {
     pub dht_nodes: Vec<ton::dht::node::Node>,
     pub zero_state: ton_block::BlockIdExt,
+    pub init_block: Option<ton_block::BlockIdExt>,
+    pub hard_forks: Vec<ton_block::BlockIdExt>,
 }
 
 impl GlobalConfig {
@@ -41,10 +43,22 @@ impl TryFrom<GlobalConfigJson> for GlobalConfig {
 
     fn try_from(value: GlobalConfigJson) -> Result<Self, Self::Error> {
         require_type(value.ty, "config.global")?;
+        require_type(value.validator.ty, "validator.config.global")?;
 
         Ok(Self {
             dht_nodes: value.dht.try_into()?,
-            zero_state: value.validator.try_into()?,
+            zero_state: value.validator.zero_state.try_into()?,
+            init_block: value
+                .validator
+                .init_block
+                .map(TryFrom::try_from)
+                .transpose()?,
+            hard_forks: value
+                .validator
+                .hardforks
+                .into_iter()
+                .map(TryFrom::try_from)
+                .collect::<Result<Vec<_>>>()?,
         })
     }
 }
@@ -118,19 +132,18 @@ impl TryFrom<AddressJson> for ton::adnl::Address {
     }
 }
 
-impl TryFrom<ValidatorJson> for ton_block::BlockIdExt {
+impl TryFrom<BlockIdJson> for ton_block::BlockIdExt {
     type Error = anyhow::Error;
 
-    fn try_from(value: ValidatorJson) -> Result<Self, Self::Error> {
-        require_type(value.ty, "validator.config.global")?;
+    fn try_from(value: BlockIdJson) -> Result<Self, Self::Error> {
         Ok(ton_block::BlockIdExt {
             shard_id: ton_block::ShardIdent::with_tagged_prefix(
-                value.zero_state.workchain,
-                value.zero_state.shard as u64,
+                value.workchain,
+                value.shard as u64,
             )?,
-            seq_no: value.zero_state.seqno as u32,
-            root_hash: value.zero_state.root_hash.into(),
-            file_hash: value.zero_state.file_hash.into(),
+            seq_no: value.seqno as u32,
+            root_hash: value.root_hash.into(),
+            file_hash: value.file_hash.into(),
         })
     }
 }
@@ -207,11 +220,15 @@ struct AddressJson {
 struct ValidatorJson {
     #[serde(rename = "@type")]
     ty: String,
-    zero_state: ZeroStateJson,
+    zero_state: BlockIdJson,
+    #[serde(default)]
+    init_block: Option<BlockIdJson>,
+    #[serde(default)]
+    hardforks: Vec<BlockIdJson>,
 }
 
 #[derive(Deserialize)]
-struct ZeroStateJson {
+struct BlockIdJson {
     workchain: i32,
     shard: i64,
     seqno: i32,
