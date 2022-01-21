@@ -1,5 +1,5 @@
 pub use crate::config::*;
-pub use crate::engine::{Engine, EngineMetrics, EngineStatus, Subscriber};
+pub use crate::engine::{Engine, EngineMetrics, EngineStatus, RocksdbStats, Subscriber};
 pub use crate::storage::BriefBlockMeta;
 
 pub use global_config::*;
