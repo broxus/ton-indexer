@@ -189,12 +189,7 @@ impl Engine {
                 init_block,
                 shard_client_mc_block: ShardsClientMcBlockId::new(db.raw())?,
             },
-            metrics: Arc::new(EngineMetrics {
-                last_mc_block_seqno: Default::default(),
-                last_shard_client_mc_block_seqno: Default::default(),
-                mc_time_diff: Default::default(),
-                shard_client_time_diff: Default::default(),
-            }),
+            metrics: Arc::new(Default::default()),
         });
 
         engine
@@ -981,6 +976,9 @@ impl Engine {
             self.metrics
                 .mc_time_diff
                 .store(time_diff, Ordering::Release);
+            self.metrics
+                .last_mc_utime
+                .store(meta.gen_utime(), Ordering::Release);
 
             let block_proof = self.load_block_proof(handle, false).await?;
             for subscriber in &self.subscribers {
@@ -1096,10 +1094,11 @@ impl Engine {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct EngineMetrics {
     pub last_mc_block_seqno: AtomicU32,
     pub last_shard_client_mc_block_seqno: AtomicU32,
+    pub last_mc_utime: AtomicU32,
     pub mc_time_diff: AtomicI64,
     pub shard_client_time_diff: AtomicI64,
 }

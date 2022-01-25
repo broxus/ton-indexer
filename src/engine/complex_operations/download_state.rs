@@ -296,6 +296,8 @@ struct DownloadContext {
 }
 
 async fn download_packet_worker(ctx: Arc<DownloadContext>, mut offsets_rx: OffsetsRx) {
+    tokio::pin!(let complete_signal = ctx.complete_signal.clone(););
+
     'tasks: while let Some(offset) = offsets_rx.recv().await {
         let mut part_attempt = 0;
         loop {
@@ -314,7 +316,7 @@ async fn download_packet_worker(ctx: Arc<DownloadContext>, mut offsets_rx: Offse
 
             let result = tokio::select! {
                 data = recv_fut => data,
-                _ = ctx.complete_signal.clone() => {
+                _ = &mut complete_signal => {
                     log::warn!("Got last_part_signal: {}", offset);
                     continue;
                 }
