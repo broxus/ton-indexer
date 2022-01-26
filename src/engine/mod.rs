@@ -340,6 +340,10 @@ impl Engine {
         &self.metrics
     }
 
+    pub fn network_metrics(&self) -> NetworkMetrics {
+        self.network.metrics()
+    }
+
     pub async fn broadcast_external_message(
         &self,
         to: &ton_block::AccountIdPrefixFull,

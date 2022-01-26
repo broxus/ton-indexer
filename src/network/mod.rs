@@ -104,6 +104,14 @@ impl NodeNetwork {
         Ok(node_network)
     }
 
+    pub fn metrics(&self) -> NetworkMetrics {
+        NetworkMetrics {
+            adnl: self.adnl.metrics(),
+            dht: self.dht.metrics(),
+            rldp: self.rldp.metrics(),
+        }
+    }
+
     pub async fn start(self: &Arc<Self>) -> Result<Arc<dyn FullNodeOverlayClient>> {
         self.adnl
             .start(vec![
@@ -291,6 +299,13 @@ impl NodeNetwork {
 
         tokio::task::block_in_place(|| self.overlay.add_public_peers(overlay_id, nodes))
     }
+}
+
+#[derive(Debug, Copy, Clone)]
+pub struct NetworkMetrics {
+    pub adnl: AdnlNodeMetrics,
+    pub dht: DhtNodeMetrics,
+    pub rldp: RldpNodeMetrics,
 }
 
 struct WorkingState {
