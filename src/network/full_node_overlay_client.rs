@@ -482,7 +482,7 @@ impl FullNodeOverlayClient for OverlayClient {
             match self.overlay().wait_for_broadcast(self.overlay_id()).await {
                 Ok(info) => {
                     let answer: ton::ton_node::Broadcast =
-                        Deserializer::new(&mut std::io::Cursor::new(info.data))
+                        Deserializer::new(&mut info.data.as_slice())
                             .read_boxed()
                             .map_err(|e| anyhow::Error::msg(e.to_string()))?;
                     break Ok((answer, info.from));
