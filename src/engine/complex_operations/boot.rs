@@ -282,7 +282,16 @@ async fn download_key_block_proof(
         let result = match boot_data {
             ColdBootData::KeyBlock {
                 proof: prev_proof, ..
-            } => proof.check_with_prev_key_block_proof(prev_proof),
+            } => proof
+                .check_with_prev_key_block_proof(prev_proof)
+                .or_else(|e| {
+                    if engine.is_hard_fork(block_id) {
+                        log::warn!("Received hard fork key block {}. Ignoring proof", block_id);
+                        Ok(())
+                    } else {
+                        Err(e)
+                    }
+                }),
             ColdBootData::ZeroState { state, .. } => proof.check_with_master_state(state),
         };
 

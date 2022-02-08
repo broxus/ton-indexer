@@ -89,6 +89,7 @@ pub struct Engine {
     zero_state_id: ton_block::BlockIdExt,
     init_mc_block_id: ton_block::BlockIdExt,
     last_known_key_block_seqno: AtomicU32,
+    hard_forks: FxHashSet<ton_block::BlockIdExt>,
 
     parallel_archive_downloads: u32,
     shard_states_cache: ShardStateCache,
@@ -146,6 +147,8 @@ impl Engine {
             }
         }
 
+        let hard_forks = global_config.hard_forks.clone().into_iter().collect();
+
         let network = NodeNetwork::new(
             config.ip_address.into(),
             config.adnl_keys.build_keystore()?,
@@ -178,6 +181,7 @@ impl Engine {
             zero_state_id,
             init_mc_block_id,
             last_known_key_block_seqno: AtomicU32::new(0),
+            hard_forks,
             parallel_archive_downloads: config.parallel_archive_downloads,
             shard_states_cache: ShardStateCache::new(config.shard_state_cache_options),
             shard_states_operations: OperationsPool::new("shard_states_operations"),
@@ -364,6 +368,10 @@ impl Engine {
             .init_block
             .store_into_db(convert_block_id_ext_blk2api(block_id))
             .ok();
+    }
+
+    fn is_hard_fork(&self, block_id: &ton_block::BlockIdExt) -> bool {
+        self.hard_forks.contains(block_id)
     }
 
     fn update_last_known_key_block_seqno(&self, seqno: u32) -> bool {
@@ -1045,12 +1053,17 @@ impl Engine {
             let handle = self.db.load_key_block_handle(prev_key_block_seqno)?;
             let prev_key_block_proof = self.load_block_proof(&handle, false).await?;
 
-            check_with_prev_key_block_proof(
+            if let Err(e) = check_with_prev_key_block_proof(
                 block_proof,
                 &prev_key_block_proof,
                 &virt_block,
                 &virt_block_info,
-            )?;
+            ) {
+                if !self.is_hard_fork(handle.id()) {
+                    return Err(e);
+                }
+                log::warn!("Received hard fork block {}. Ignoring proof", handle.id());
+            }
         }
         Ok(())
     }

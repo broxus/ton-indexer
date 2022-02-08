@@ -322,12 +322,17 @@ async fn save_block(
             block_proof.check_with_master_state(&zero_state)?;
         } else {
             let prev_key_block_proof = engine.load_block_proof(&handle, false).await?;
-            check_with_prev_key_block_proof(
+            if let Err(e) = check_with_prev_key_block_proof(
                 block_proof,
                 &prev_key_block_proof,
                 &virt_block,
                 &virt_block_info,
-            )?;
+            ) {
+                if !engine.is_hard_fork(handle.id()) {
+                    return Err(e);
+                }
+                log::warn!("Received hard fork block {}. Ignoring proof", handle.id());
+            };
         }
     }
 
