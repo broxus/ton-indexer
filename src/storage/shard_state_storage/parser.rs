@@ -1,7 +1,7 @@
 use std::io::Read;
 
 use anyhow::{Context, Result};
-use crc::{crc32, Hasher32};
+use crc::{Crc, CRC_32_ISCSI};
 use smallvec::SmallVec;
 use ton_types::ByteOrderRead;
 
@@ -16,7 +16,7 @@ macro_rules! try_read {
 }
 
 pub struct ShardStatePacketReader {
-    hasher: crc32::Digest,
+    hasher: crc::Digest<'static, u32>,
     offset: usize,
     current_packet: Vec<u8>,
     next_packet: Vec<u8>,
@@ -26,7 +26,7 @@ pub struct ShardStatePacketReader {
 impl ShardStatePacketReader {
     pub fn new() -> Self {
         Self {
-            hasher: crc32::Digest::new(crc32::CASTAGNOLI),
+            hasher: CRC.digest(),
             offset: 0,
             current_packet: Default::default(),
             next_packet: Default::default(),
@@ -176,7 +176,7 @@ impl ShardStatePacketReader {
             return Ok(None);
         }
 
-        let current_crc = self.hasher.sum32();
+        let current_crc = std::mem::replace(&mut self.hasher, CRC.digest()).finalize();
 
         let mut src = self.begin();
         let target_crc = try_read!(src.read_le_u32());
@@ -217,37 +217,39 @@ impl ShardStatePacketReader {
         match n.cmp(&remaining) {
             std::cmp::Ordering::Less => {
                 self.hasher
-                    .write(&self.current_packet[self.offset..self.offset + n]);
+                    .update(&self.current_packet[self.offset..self.offset + n]);
                 self.offset += n;
                 ReaderAction::Complete
             }
             std::cmp::Ordering::Equal => {
-                self.hasher.write(&self.current_packet[self.offset..]);
+                self.hasher.update(&self.current_packet[self.offset..]);
                 self.offset = 0;
                 self.current_packet = std::mem::take(&mut self.next_packet);
                 ReaderAction::Complete
             }
             std::cmp::Ordering::Greater => {
                 n -= remaining;
-                self.hasher.write(&self.current_packet[self.offset..]);
+                self.hasher.update(&self.current_packet[self.offset..]);
                 self.offset = 0;
                 self.current_packet = std::mem::take(&mut self.next_packet);
 
                 if n > self.current_packet.len() {
                     n -= self.current_packet.len();
-                    self.hasher.write(&self.current_packet);
+                    self.hasher.update(&self.current_packet);
                     self.current_packet = Vec::new();
                     self.bytes_to_skip = n;
                     ReaderAction::Incomplete
                 } else {
                     self.offset = n;
-                    self.hasher.write(&self.current_packet[..self.offset]);
+                    self.hasher.update(&self.current_packet[..self.offset]);
                     ReaderAction::Complete
                 }
             }
         }
     }
 }
+
+static CRC: Crc<u32> = Crc::<u32>::new(&CRC_32_ISCSI);
 
 #[derive(Debug)]
 pub struct BocHeader {
@@ -388,12 +390,12 @@ impl<'a> ShardStatePacketReaderTransaction<'a> {
             // Write to the hasher until the end of current packet
             self.reader
                 .hasher
-                .write(&self.reader.current_packet[self.reader.offset..]);
+                .update(&self.reader.current_packet[self.reader.offset..]);
 
             // Write to the hasher current bytes
             self.reader
                 .hasher
-                .write(&self.reader.next_packet[..self.offset]);
+                .update(&self.reader.next_packet[..self.offset]);
 
             // Replace current packet
             self.reader.current_packet = std::mem::take(&mut self.reader.next_packet);
@@ -401,7 +403,7 @@ impl<'a> ShardStatePacketReaderTransaction<'a> {
             // Write to the hasher current bytes
             self.reader
                 .hasher
-                .write(&self.reader.current_packet[self.reader.offset..self.offset]);
+                .update(&self.reader.current_packet[self.reader.offset..self.offset]);
         }
 
         // Bump offset
