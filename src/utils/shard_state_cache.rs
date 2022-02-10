@@ -47,4 +47,20 @@ impl ShardStateCache {
             map.retain(|(key, _)| top_blocks.contains(key));
         }
     }
+
+    pub fn is_empty(&self) -> bool {
+        if let Some(map) = &self.map {
+            map.lock().is_empty()
+        } else {
+            true
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        if let Some(map) = &self.map {
+            map.lock().len()
+        } else {
+            0
+        }
+    }
 }

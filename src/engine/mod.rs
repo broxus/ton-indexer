@@ -344,6 +344,16 @@ impl Engine {
         &self.metrics
     }
 
+    pub fn internal_metrics(&self) -> InternalEngineMetrics {
+        InternalEngineMetrics {
+            shard_states_cache_len: self.shard_states_cache.len(),
+            shard_states_operations_len: self.shard_states_operations.len(),
+            block_applying_operations: self.block_applying_operations.len(),
+            next_block_applying_operations: self.next_block_applying_operations.len(),
+            download_block_operations: self.download_block_operations.len(),
+        }
+    }
+
     pub fn network_metrics(&self) -> NetworkMetrics {
         self.network.metrics()
     }
@@ -1118,6 +1128,15 @@ pub struct EngineMetrics {
     pub last_mc_utime: AtomicU32,
     pub mc_time_diff: AtomicI64,
     pub shard_client_time_diff: AtomicI64,
+}
+
+#[derive(Debug, Default)]
+pub struct InternalEngineMetrics {
+    pub shard_states_cache_len: usize,
+    pub shard_states_operations_len: usize,
+    pub block_applying_operations: usize,
+    pub next_block_applying_operations: usize,
+    pub download_block_operations: usize,
 }
 
 #[derive(thiserror::Error, Debug)]
