@@ -92,7 +92,6 @@ pub struct Engine {
     hard_forks: FxHashSet<ton_block::BlockIdExt>,
 
     parallel_archive_downloads: u32,
-    shard_states_cache: ShardStateCache,
 
     shard_states_operations: OperationsPool<ton_block::BlockIdExt, Arc<ShardStateStuff>>,
     block_applying_operations: OperationsPool<ton_block::BlockIdExt, ()>,
@@ -183,7 +182,6 @@ impl Engine {
             last_known_key_block_seqno: AtomicU32::new(0),
             hard_forks,
             parallel_archive_downloads: config.parallel_archive_downloads,
-            shard_states_cache: ShardStateCache::new(config.shard_state_cache_options),
             shard_states_operations: OperationsPool::new("shard_states_operations"),
             block_applying_operations: OperationsPool::new("block_applying_operations"),
             next_block_applying_operations: OperationsPool::new("next_block_applying_operations"),
@@ -314,9 +312,8 @@ impl Engine {
                         }
                     };
 
-                    match engine.db.remove_outdated_states(&block_id).await {
-                        Ok(top_blocks) => engine.shard_states_cache.remove(&top_blocks),
-                        Err(e) => log::error!("Failed to GC state: {:?}", e),
+                    if let Err(e) = engine.db.remove_outdated_states(&block_id).await {
+                        log::error!("Failed to GC state: {:?}", e);
                     }
                 }
             });
@@ -346,7 +343,6 @@ impl Engine {
 
     pub fn internal_metrics(&self) -> InternalEngineMetrics {
         InternalEngineMetrics {
-            shard_states_cache_len: self.shard_states_cache.len(),
             shard_states_operations_len: self.shard_states_operations.len(),
             block_applying_operations_len: self.block_applying_operations.len(),
             next_block_applying_operations_len: self.next_block_applying_operations.len(),
@@ -673,13 +669,7 @@ impl Engine {
         &self,
         block_id: &ton_block::BlockIdExt,
     ) -> Result<Arc<ShardStateStuff>> {
-        if let Some(state) = self.shard_states_cache.get(block_id) {
-            return Ok(state);
-        }
-
         let state = Arc::new(self.db.load_shard_state(block_id).await?);
-
-        self.shard_states_cache.set(block_id, || state.clone());
         Ok(state)
     }
 
@@ -688,8 +678,6 @@ impl Engine {
         handle: &Arc<BlockHandle>,
         state: &Arc<ShardStateStuff>,
     ) -> Result<()> {
-        self.shard_states_cache.set(handle.id(), || state.clone());
-
         self.db.store_shard_state(handle, state.as_ref()).await?;
 
         self.shard_states_operations
@@ -1132,7 +1120,6 @@ pub struct EngineMetrics {
 
 #[derive(Debug, Default)]
 pub struct InternalEngineMetrics {
-    pub shard_states_cache_len: usize,
     pub shard_states_operations_len: usize,
     pub block_applying_operations_len: usize,
     pub next_block_applying_operations_len: usize,
