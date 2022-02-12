@@ -15,14 +15,15 @@ use crate::storage::{columns, Column, Tree};
 
 pub struct CellStorage {
     cells: Tree<columns::Cells>,
-    cells_cache: FxDashMap<UInt256, Weak<StorageCell>>,
+    cells_cache: Arc<FxDashMap<UInt256, Weak<StorageCell>>>,
 }
 
 impl CellStorage {
     pub fn new(db: &Arc<rocksdb::DB>) -> Result<Self> {
+        let cache = Arc::new(FxDashMap::default());
         Ok(Self {
             cells: Tree::new(db)?,
-            cells_cache: FxDashMap::default(),
+            cells_cache: cache,
         })
     }
 
@@ -291,11 +292,12 @@ enum CellStorageError {
 }
 
 pub struct StorageCell {
+    _c: countme::Count<Self>,
     cell_storage: Arc<CellStorage>,
     cell_data: ton_types::CellData,
     references: RwLock<SmallVec<[StorageCellReference; 4]>>,
-    tree_bits_count: Arc<AtomicU64>,
-    tree_cell_count: Arc<AtomicU64>,
+    tree_bits_count: AtomicU64,
+    tree_cell_count: AtomicU64,
 }
 
 impl StorageCell {
@@ -328,11 +330,12 @@ impl StorageCell {
         };
 
         Ok(Self {
+            _c: Default::default(),
             cell_storage: boc_db,
             cell_data,
             references: RwLock::new(references),
-            tree_bits_count: Arc::new(AtomicU64::new(tree_bits_count)),
-            tree_cell_count: Arc::new(AtomicU64::new(tree_cell_count)),
+            tree_bits_count: AtomicU64::new(tree_bits_count),
+            tree_cell_count: AtomicU64::new(tree_cell_count),
         })
     }
 

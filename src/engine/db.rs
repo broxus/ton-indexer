@@ -152,7 +152,10 @@ impl Db {
     }
 
     pub fn get_memory_usage_stats(&self) -> Result<RocksdbStats> {
-        let whole_db_stats = rocksdb::perf::get_memory_usage_stats(Some(&[&self.db]), None)?;
+        let caches = &[&self.block_cache, &self.uncompressed_block_cache];
+        let whole_db_stats =
+            rocksdb::perf::get_memory_usage_stats(Some(&[&self.db]), Some(caches))?;
+
         let uncompressed_stats = self.uncompressed_block_cache.get_usage();
         let uncompressed_pined_stats = self.uncompressed_block_cache.get_pinned_usage();
         let compressed_stats = self.block_cache.get_usage();

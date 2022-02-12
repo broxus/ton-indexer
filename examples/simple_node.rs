@@ -2,11 +2,14 @@ use std::net::SocketAddrV4;
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use argh::FromArgs;
 use serde::{Deserialize, Serialize};
 use tiny_adnl::utils::*;
+use ton_block::{DepthBalanceInfo, Deserializable, ShardAccount};
+use ton_types::{HashmapType, UInt256};
 
 use ton_indexer::utils::*;
 use ton_indexer::*;
@@ -33,6 +36,28 @@ pub struct Arguments {
 #[tokio::main]
 async fn main() -> Result<()> {
     let args: Arguments = argh::from_env();
+    human_panic::setup_panic!();
+    countme::enable(true);
+    tokio::spawn(async {
+        loop {
+            let counts = countme::get::<ton_types::Cell>();
+            log::warn!(
+                "Cell: Live: {}. Total: {}, Max: {}",
+                counts.live,
+                counts.total,
+                counts.max_live
+            );
+            let counts = countme::get::<StorageCell>();
+            log::warn!(
+                "StorageCell: Live: {}. Total: {}, Max: {}",
+                counts.live,
+                counts.total,
+                counts.max_live
+            );
+
+            tokio::time::sleep(Duration::from_secs(10)).await;
+        }
+    });
 
     match (args.gen_config, args.config, args.global_config) {
         (Some(new_config_path), _, _) => generate_config(new_config_path)
@@ -79,7 +104,7 @@ impl ton_indexer::Subscriber for LoggerSubscriber {
         meta: BriefBlockMeta,
         block: &BlockStuff,
         _block_proof: Option<&BlockProofStuff>,
-        _shard_state: &ShardStateStuff,
+        shard_state: &ShardStateStuff,
     ) -> Result<()> {
         if block.id().is_masterchain() {
             return Ok(());
@@ -90,7 +115,23 @@ impl ton_indexer::Subscriber for LoggerSubscriber {
         }
 
         let created_at = meta.gen_utime() as i64;
+
+        block.block().read_info()?;
+        block.block().read_value_flow()?;
+
         log::info!("TIME_DIFF: {}", now() as i64 - created_at);
+        let state = shard_state.state().read_accounts()?;
+
+        state
+            .iterate_slices(|ref mut key, ref mut value| {
+                UInt256::construct_from(key)?;
+                DepthBalanceInfo::construct_from(value)?;
+                let shard_acc = ShardAccount::construct_from(value)?;
+                let _acc = shard_acc.read_account()?;
+
+                Ok(true)
+            })
+            .ok();
 
         Ok(())
     }
