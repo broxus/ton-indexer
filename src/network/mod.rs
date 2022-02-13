@@ -112,6 +112,12 @@ impl NodeNetwork {
         }
     }
 
+    pub fn overlay_metrics(
+        &self,
+    ) -> impl Iterator<Item = (OverlayIdShort, OverlayShardMetrics)> + '_ {
+        self.overlay.metrics()
+    }
+
     pub async fn start(self: &Arc<Self>) -> Result<Arc<dyn FullNodeOverlayClient>> {
         self.adnl
             .start(vec![

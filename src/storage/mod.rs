@@ -30,7 +30,6 @@ mod package_entry_id;
 mod shard_state_storage;
 mod top_blocks;
 mod tree;
-pub use StorageCell;
 
 pub mod columns {
     use rocksdb::Options;

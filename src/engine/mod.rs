@@ -12,6 +12,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 pub use rocksdb::perf::MemoryUsageStats;
 use tiny_adnl::utils::*;
+use tiny_adnl::OverlayShardMetrics;
 use ton_api::ton;
 
 pub use db::RocksdbStats;
@@ -352,6 +353,12 @@ impl Engine {
 
     pub fn network_metrics(&self) -> NetworkMetrics {
         self.network.metrics()
+    }
+
+    pub fn network_overlay_metrics(
+        &self,
+    ) -> impl Iterator<Item = (OverlayIdShort, OverlayShardMetrics)> + '_ {
+        self.network.overlay_metrics()
     }
 
     pub async fn broadcast_external_message(
