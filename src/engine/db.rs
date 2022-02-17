@@ -11,7 +11,7 @@ use anyhow::Context;
 use anyhow::Result;
 use rlimit::Resource;
 use rocksdb::perf::MemoryUsageStats;
-use rocksdb::{BlockBasedOptions, Cache, DBCompressionType};
+use rocksdb::{BlockBasedOptions, Cache, DBCompressionType, DataBlockIndexType};
 use ton_api::ton;
 use ton_block::HashmapAugType;
 
@@ -73,26 +73,16 @@ impl Db {
         block_factory.set_pin_l0_filter_and_index_blocks_in_cache(true);
         block_factory.set_pin_top_level_index_and_filter(true);
         block_factory.set_block_size(32 * 1024); // reducing block size reduces index size
-        block_factory.set_index_type(rocksdb::BlockBasedIndexType::HashSearch);
+        block_factory.set_data_block_index_type(DataBlockIndexType::BinaryAndHash);
 
         let db = DbBuilder::new(rocksdb_path)
             .options(|opts| {
-                // Memory consuming options
-                // 8 mb
-                // for direct io buffering
-                opts.set_writable_file_max_buffer_size(1024 * 1024 * 8);
-                // 8 mb
-                // for direct io buffering
-                opts.set_compaction_readahead_size(1024 * 1024 * 8);
-                // 256
-                // all metatables size
-                opts.set_db_write_buffer_size(mem_limit);
-
                 opts.set_block_based_table_factory(&block_factory);
-
+                opts.set_compaction_style(rocksdb::DBCompactionStyle::Level);
+                opts.optimize_level_style_compaction(mem_limit);
                 // compression opts
                 opts.set_zstd_max_train_bytes(32 * 1024 * 1024);
-                opts.set_compression_type(DBCompressionType::Lz4);
+                opts.set_compression_type(DBCompressionType::Zstd);
                 // io
                 opts.set_max_open_files(limit as i32);
 
