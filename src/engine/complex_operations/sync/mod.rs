@@ -456,7 +456,7 @@ async fn save_archive(
             .await
             .context("Failed to process archive block")?;
 
-        if handle.meta().is_key_block() {
+        if handle.is_key_block() {
             *context.prev_key_block_id = id.clone();
         }
     }

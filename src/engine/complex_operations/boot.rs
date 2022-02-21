@@ -122,7 +122,7 @@ async fn prepare_cold_boot_data(engine: &Arc<Engine>) -> Result<ColdBootData> {
                         }
                     };
 
-                    if !handle.meta().is_key_block() {
+                    if !handle.is_key_block() {
                         return Err(BootError::StartingFromNonKeyBlock.into());
                     }
 
@@ -160,7 +160,7 @@ async fn prepare_cold_boot_data(engine: &Arc<Engine>) -> Result<ColdBootData> {
             tokio::time::sleep(Duration::from_millis(10)).await;
         };
 
-        if !handle.meta().is_key_block() {
+        if !handle.is_key_block() {
             return Err(BootError::StartingFromNonKeyBlock.into());
         }
 

@@ -2,7 +2,6 @@ use std::net::SocketAddrV4;
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
 
 use anyhow::{Context, Result};
 use argh::FromArgs;
@@ -37,27 +36,27 @@ pub struct Arguments {
 async fn main() -> Result<()> {
     let args: Arguments = argh::from_env();
     human_panic::setup_panic!();
-    countme::enable(true);
-    tokio::spawn(async {
-        loop {
-            let counts = countme::get::<ton_types::Cell>();
-            log::warn!(
-                "Cell: Live: {}. Total: {}, Max: {}",
-                counts.live,
-                counts.total,
-                counts.max_live
-            );
-            let counts = countme::get::<StorageCell>();
-            log::warn!(
-                "StorageCell: Live: {}. Total: {}, Max: {}",
-                counts.live,
-                counts.total,
-                counts.max_live
-            );
-
-            tokio::time::sleep(Duration::from_secs(10)).await;
-        }
-    });
+    // countme::enable(true);
+    // tokio::spawn(async {
+    //     loop {
+    //         let counts = countme::get::<ton_types::Cell>();
+    //         log::warn!(
+    //             "Cell: Live: {}. Total: {}, Max: {}",
+    //             counts.live,
+    //             counts.total,
+    //             counts.max_live
+    //         );
+    //         let counts = countme::get::<StorageCell>();
+    //         log::warn!(
+    //             "StorageCell: Live: {}. Total: {}, Max: {}",
+    //             counts.live,
+    //             counts.total,
+    //             counts.max_live
+    //         );
+    //
+    //         tokio::time::sleep(Duration::from_secs(10)).await;
+    //     }
+    // });
 
     match (args.gen_config, args.config, args.global_config) {
         (Some(new_config_path), _, _) => generate_config(new_config_path)

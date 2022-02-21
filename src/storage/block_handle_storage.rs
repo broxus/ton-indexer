@@ -58,7 +58,7 @@ impl BlockHandleStorage {
         self.block_handles
             .insert(id.root_hash.as_slice(), handle.meta().to_vec()?)?;
 
-        if handle.meta().is_key_block() {
+        if handle.is_key_block() {
             self.key_blocks
                 .insert(handle.id().seq_no.to_be_bytes(), handle.id().to_vec()?)?;
         }
@@ -217,9 +217,7 @@ impl BlockHandleStorage {
                 }
             };
 
-            if block_id.is_masterchain() && value.meta().is_key_block()
-                || top_blocks.contains(block_id)
-            {
+            if block_id.is_masterchain() && value.is_key_block() || top_blocks.contains(block_id) {
                 // Keep key blocks and latest blocks
                 true
             } else {

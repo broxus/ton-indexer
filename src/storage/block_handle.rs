@@ -46,6 +46,11 @@ impl BlockHandle {
     }
 
     #[inline]
+    pub fn is_key_block(&self) -> bool {
+        self.meta.is_key_block() || self.id.seq_no == 0
+    }
+
+    #[inline]
     pub fn block_data_lock(&self) -> &RwLock<()> {
         &self.block_data_lock
     }

@@ -702,7 +702,7 @@ impl Engine {
         let store_block_result = self.db.store_block_data(block).await?;
 
         let handle = &store_block_result.handle;
-        if handle.id().shard().is_masterchain() && handle.meta().is_key_block() {
+        if handle.id().shard().is_masterchain() && handle.is_key_block() {
             self.update_last_known_key_block_seqno(store_block_result.handle.id().seq_no);
         }
 
@@ -805,7 +805,7 @@ impl Engine {
 
         let applied = self.db.store_block_applied(handle)?;
 
-        if handle.meta().is_key_block() {
+        if handle.is_key_block() {
             if let Some(blocks_gc) = &self.blocks_gc_state {
                 if blocks_gc.enabled.load(Ordering::Acquire) {
                     self.db
