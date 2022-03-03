@@ -278,7 +278,7 @@ impl BlockProofStuff {
         let total_weight: u64 = validators_list.iter().map(|v| v.weight).sum();
         let weight = signatures
             .pure_signatures
-            .check_signatures(validators_list, &checked_data)
+            .check_signatures(&validators_list, &checked_data)
             .map_err(|e| anyhow!("Proof for {}: error while check signatures: {}", self.id, e))?;
 
         // Check weight

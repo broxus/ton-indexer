@@ -273,7 +273,7 @@ fn validate_broadcast(
     let data_to_sign =
         ton_block::Block::build_data_for_sign(&block_id.root_hash, &block_id.file_hash);
     let total_weight: u64 = validators.iter().map(|v| v.weight).sum();
-    let weight = block_pure_signatures.check_signatures(validators, &data_to_sign)?;
+    let weight = block_pure_signatures.check_signatures(&validators, &data_to_sign)?;
 
     if weight * 3 <= total_weight * 2 {
         return Err(anyhow!(
