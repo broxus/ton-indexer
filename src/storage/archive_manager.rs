@@ -306,7 +306,7 @@ impl ArchiveManager {
     ) -> Result<Option<Vec<u8>>> {
         match self.archives.get(id.to_be_bytes())? {
             Some(slice) if offset < slice.len() => {
-                let end = std::cmp::min(offset + limit, slice.len());
+                let end = std::cmp::min(offset.saturating_add(limit), slice.len());
                 Ok(Some(slice[offset..end].to_vec()))
             }
             Some(_) => Err(ArchiveManagerError::InvalidOffset.into()),

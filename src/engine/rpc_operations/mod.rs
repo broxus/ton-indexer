@@ -186,9 +186,15 @@ impl RpcService for Engine {
         self: Arc<Self>,
         query: ton::rpc::ton_node::GetNextKeyBlockIds,
     ) -> Result<ton::ton_node::KeyBlocks> {
-        const NEXT_KEY_BLOCKS_LIMIT: i32 = 8;
+        const NEXT_KEY_BLOCKS_LIMIT: usize = 8;
 
-        let limit = std::cmp::min(query.max_size, NEXT_KEY_BLOCKS_LIMIT) as usize;
+        let limit = std::cmp::min(
+            query
+                .max_size
+                .try_into()
+                .map_err(|_| RpcServiceError::InvalidArgument)?,
+            NEXT_KEY_BLOCKS_LIMIT,
+        );
 
         let get_next_key_block_ids = || {
             let start_block_id = convert_block_id_ext_api2blk(&query.block)?;
@@ -402,6 +408,8 @@ enum RpcServiceError {
     NotKeyBlock,
     #[error("Block is not from masterchain")]
     BlockNotFromMasterChain,
+    #[error("Invalid argument")]
+    InvalidArgument,
     #[error("Invalid root hash")]
     InvalidRootHash,
     #[error("Invalid file hash")]
