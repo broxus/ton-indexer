@@ -3,8 +3,6 @@
 /// Changes:
 /// - replaced old `failure` crate with `anyhow`
 ///
-use std::io::Cursor;
-
 use anyhow::{anyhow, Result};
 use ton_block::{Deserializable, Serializable};
 use ton_types::{Cell, UInt256};
@@ -43,7 +41,7 @@ impl ShardStateStuff {
         ton_block::ShardStateSplit { left, right }.serialize()
     }
 
-    pub fn deserialize_zerostate(id: ton_block::BlockIdExt, bytes: &[u8]) -> Result<Self> {
+    pub fn deserialize_zerostate(id: ton_block::BlockIdExt, mut bytes: &[u8]) -> Result<Self> {
         if id.seq_no() != 0 {
             return Err(anyhow!("Given id has non-zero seq number"));
         }
@@ -53,7 +51,7 @@ impl ShardStateStuff {
             return Err(anyhow!("Wrong zero state's {} file hash", id));
         }
 
-        let root = ton_types::deserialize_tree_of_cells(&mut Cursor::new(bytes))?;
+        let root = ton_types::deserialize_tree_of_cells(&mut bytes)?;
         if root.repr_hash() != id.root_hash() {
             return Err(anyhow!("Wrong zero state's {} root hash", id));
         }

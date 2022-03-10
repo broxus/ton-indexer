@@ -138,7 +138,6 @@ mod test {
     #[ignore]
     fn test_profile() {
         use super::*;
-        use std::io::Write;
         use tempfile::TempDir;
 
         let dir = TempDir::new().unwrap();

@@ -30,7 +30,7 @@ impl BlockStuff {
     }
 
     pub fn deserialize(id: ton_block::BlockIdExt, data: Vec<u8>) -> Result<Self> {
-        let root = ton_types::deserialize_tree_of_cells(&mut std::io::Cursor::new(&data))?;
+        let root = ton_types::deserialize_tree_of_cells(&mut data.as_slice())?;
         if id.root_hash != root.repr_hash() {
             return Err(anyhow!("wrong root hash for {}", id));
         }

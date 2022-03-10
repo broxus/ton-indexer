@@ -24,7 +24,7 @@ impl BlockProofStuff {
         data: Vec<u8>,
         is_link: bool,
     ) -> Result<Self> {
-        let root = ton_types::deserialize_tree_of_cells(&mut std::io::Cursor::new(&data))?;
+        let root = ton_types::deserialize_tree_of_cells(&mut data.as_slice())?;
         let proof = ton_block::BlockProof::construct_from(&mut root.clone().into())?;
 
         if proof.proof_for != block_id {
