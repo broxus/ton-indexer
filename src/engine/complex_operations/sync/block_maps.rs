@@ -145,7 +145,9 @@ impl BlockMaps {
                         return true;
                     }
                 }
-            } else if let Ok(parent) = shard_ident.merge() {
+            }
+
+            if let Ok(parent) = shard_ident.merge() {
                 // Check case after second split in the same archive
                 if let Some(ids) = map.get(&parent) {
                     // Search prev shard in the parent shard
@@ -154,6 +156,7 @@ impl BlockMaps {
                     }
                 }
             }
+
             false
         }
 
