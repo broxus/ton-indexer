@@ -133,13 +133,16 @@ impl BlockMaps {
             prev_seqno: u32,
         ) -> bool {
             if let Ok((left, right)) = shard_ident.split() {
-                // Check case after merge in the same archive
+                // Check case after merge in the same archive in the left child
                 if let Some(ids) = map.get(&left) {
                     // Search prev seqno in the left shard
                     if ids.contains(&prev_seqno) {
                         return true;
                     }
-                } else if let Some(ids) = map.get(&right) {
+                }
+
+                // Check case after merge in the same archive in the right child
+                if let Some(ids) = map.get(&right) {
                     // Search prev seqno in the right shard
                     if ids.contains(&prev_seqno) {
                         return true;
@@ -166,12 +169,7 @@ impl BlockMaps {
 
             for &seqno in block_seqnos {
                 if seqno != prev + 1 && !find_block(&map, shard_ident, seqno - 1) {
-                    log::error!(
-                        "Bad shard blocks {}. Prev: {}, block: {}",
-                        seqno,
-                        prev,
-                        seqno
-                    );
+                    log::error!("Bad shard blocks {shard_ident}:{seqno}. Prev: {prev}",);
                     return None;
                 }
                 prev = seqno;
