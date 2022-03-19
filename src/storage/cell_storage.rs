@@ -112,7 +112,7 @@ impl CellStorage {
                     }
                 }
 
-                total.fetch_add(subtotal, Ordering::Release);
+                total.fetch_add(subtotal, Ordering::Relaxed);
                 Result::<(), anyhow::Error>::Ok(())
             }));
         }
@@ -123,7 +123,7 @@ impl CellStorage {
         }
 
         // Load counter
-        Ok(total.load(Ordering::Acquire))
+        Ok(total.load(Ordering::Relaxed))
     }
 
     pub fn mark_cells_tree(

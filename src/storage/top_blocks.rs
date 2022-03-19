@@ -44,10 +44,6 @@ impl TopBlocks {
             }
         }
     }
-
-    pub fn iter_shards(&'_ self) -> impl Iterator<Item = &'_ ton_block::ShardIdent> + Clone {
-        std::iter::once(&self.target_mc_block.shard_id).chain(self.shard_heights.keys())
-    }
 }
 
 impl StoredValue for TopBlocks {

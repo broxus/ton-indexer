@@ -217,6 +217,11 @@ impl ShardStateStorageState {
 
         log::info!("Last blocks for states GC: {:?}", last_blocks);
 
+        let mut unique_shards = self
+            .find_unique_shards()
+            .context("Failed to find unique shards")?;
+        unique_shards.push(ton_block::ShardIdent::masterchain());
+
         let total = {
             let db = self.shard_state_db.raw_db_handle();
 
@@ -226,13 +231,11 @@ impl ShardStateStorageState {
             // Prepare one database snapshot for all shard states iterators
             let snapshot = db.snapshot();
 
-            let shards_iter = top_blocks.iter_shards();
-
-            let shard_count = shards_iter.clone().count();
+            let shard_count = unique_shards.len();
             let shards_per_chunk = std::cmp::max(shard_count / num_cpus::get(), 1);
 
             // Iterate all shards
-            for shard_idents in &shards_iter.chunks(shards_per_chunk) {
+            for shard_idents in &unique_shards.into_iter().chunks(shards_per_chunk) {
                 // Prepare context
                 let db = db.clone();
                 let top_blocks = top_blocks.clone();
@@ -250,11 +253,11 @@ impl ShardStateStorageState {
                 // Prepare tasks
                 let shard_tasks = shard_idents
                     .map(|shard_ident| {
-                        let last_block = last_blocks.get(shard_ident).cloned();
+                        let last_block = last_blocks.get(&shard_ident).cloned();
 
                         // Compute iteration bounds
-                        let lower_bound = make_block_id_bound(shard_ident, 0x00)?;
-                        let upper_bound = make_block_id_bound(shard_ident, 0xff)?;
+                        let lower_bound = make_block_id_bound(&shard_ident, 0x00)?;
+                        let upper_bound = make_block_id_bound(&shard_ident, 0xff)?;
 
                         // Prepare shard states read options
                         let mut read_options = rocksdb::ReadOptions::default();
@@ -263,7 +266,7 @@ impl ShardStateStorageState {
                         read_options.set_iterate_lower_bound(lower_bound);
 
                         // Compute intermediate state key
-                        let last_shard_block_key = LastShardBlockKey(*shard_ident).to_vec()?;
+                        let last_shard_block_key = LastShardBlockKey(shard_ident).to_vec()?;
 
                         Ok(ShardTask {
                             last_block,
@@ -457,6 +460,33 @@ impl ShardStateStorageState {
             })
             .context("Failed to update gc state to 'Wait'")
     }
+
+    fn find_unique_shards(&self) -> Result<Vec<ton_block::ShardIdent>> {
+        let db = self.shard_state_db.raw_db_handle();
+
+        let upper_bound = make_block_id_bound_stub(0);
+
+        // Prepare shard states read options
+        let mut read_options = rocksdb::ReadOptions::default();
+        columns::ShardStates::read_options(&mut read_options);
+
+        // Prepare cf handle
+        let shard_states_cf = db.cf_handle(columns::ShardStates::NAME).context("No cf")?;
+
+        // Prepare reverse iterator
+        let mut iter = db.raw_iterator_cf_opt(&shard_states_cf, read_options);
+        iter.seek_for_prev(&upper_bound);
+
+        let mut shard_idents = Vec::new();
+        while let Some(mut key) = iter.key() {
+            let block_id = ton_block::BlockIdExt::deserialize(&mut key)?;
+            shard_idents.push(block_id.shard_id);
+
+            iter.seek_for_prev(&make_block_id_bound(&block_id.shard_id, 0x00)?);
+        }
+
+        Ok(shard_idents)
+    }
 }
 
 struct GcStateStorage {
@@ -525,6 +555,14 @@ fn make_block_id_bound(shard_ident: &ton_block::ShardIdent, value: u8) -> Result
     shard_ident.serialize(&mut result)?;
     result.resize(ton_block::BlockIdExt::SIZE_HINT, value);
     Ok(result)
+}
+
+/// Returns serialized upper bound for [ton_block::BlockIdExt]
+fn make_block_id_bound_stub(workchain: i32) -> Vec<u8> {
+    let mut result = Vec::with_capacity(ton_block::BlockIdExt::SIZE_HINT);
+    result.extend_from_slice(&workchain.to_be_bytes());
+    result.resize(ton_block::BlockIdExt::SIZE_HINT, 0xff);
+    result
 }
 
 #[derive(Debug)]
