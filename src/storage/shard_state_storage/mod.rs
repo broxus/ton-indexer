@@ -5,7 +5,7 @@
 /// - rewritten initial state processing logic using files and stream processing
 /// - replaced recursions with dfs to prevent stack overflow
 ///
-use std::io::{Read, Seek, Write};
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -189,7 +189,7 @@ impl ShardStateStorageState {
             })
             .context("Failed to update gc state to 'Mark'")?;
 
-        // NOTE: make sure that target marker lock is dropped after all  gc steps are finished
+        // NOTE: make sure that target marker lock is dropped after all gc steps are finished
         let mut target_marker = self.current_marker.write().await;
         *target_marker = gc_state.next_marker();
 
@@ -299,7 +299,7 @@ impl ShardStateStorageState {
 
                         // Iterate all block states in shard starting from the latest
                         for (key, value) in iter {
-                            let block_id = ton_block::BlockIdExt::from_slice(&key)?;
+                            let block_id = ton_block::BlockIdExt::deserialize(&mut &*key)?;
                             // Stop iterating on first outdated block
                             if !top_blocks.contains(&block_id) {
                                 break;
@@ -333,7 +333,7 @@ impl ShardStateStorageState {
                                 target_marker,
                                 force && edge_block,
                             )?;
-                            total.fetch_add(count, Ordering::Release);
+                            total.fetch_add(count, Ordering::Relaxed);
                         }
                     }
 
@@ -347,7 +347,7 @@ impl ShardStateStorageState {
             }
 
             // Load counter
-            total.load(Ordering::Acquire)
+            total.load(Ordering::Relaxed)
         };
 
         // Clear intermediate states
@@ -429,7 +429,7 @@ impl ShardStateStorageState {
             // Iterate all blocks and remove outdated
             let mut total = 0;
             for (key, _) in iter {
-                let block_id = ton_block::BlockIdExt::from_slice(&key)?;
+                let block_id = ton_block::BlockIdExt::deserialize(&mut &*key)?;
                 if top_blocks.contains(&block_id) {
                     continue;
                 }
@@ -510,7 +510,7 @@ impl GcStateStorage {
             let shard_ident = LastShardBlockKey::from_slice(&key)
                 .context("Failed to load last shard id")?
                 .0;
-            let top_block = std::io::Cursor::new(&value)
+            let top_block = (&mut &*value)
                 .read_le_u32()
                 .context("Failed to load top block")?;
             result.insert(shard_ident, top_block);
@@ -554,7 +554,7 @@ impl StoredValue for GcState {
         Ok(())
     }
 
-    fn deserialize<R: Read + Seek>(reader: &mut R) -> Result<Self>
+    fn deserialize(reader: &mut &[u8]) -> Result<Self>
     where
         Self: Sized,
     {
@@ -605,11 +605,14 @@ impl StoredValue for LastShardBlockKey {
         self.0.serialize(writer)
     }
 
-    fn deserialize<R: Read + Seek>(reader: &mut R) -> Result<Self>
+    fn deserialize(reader: &mut &[u8]) -> Result<Self>
     where
         Self: Sized,
     {
-        reader.seek(std::io::SeekFrom::Start(GC_LAST_BLOCK_KEY.len() as u64))?;
+        if reader.len() > GC_LAST_BLOCK_KEY.len() {
+            *reader = &(*reader)[GC_LAST_BLOCK_KEY.len()..];
+        }
+
         ton_block::ShardIdent::deserialize(reader).map(Self)
     }
 }
@@ -623,4 +626,22 @@ enum ShardStateStorageError {
     NotFound,
     #[error("Invalid states GC step")]
     InvalidStatesGcStep,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn correct_last_shared_block_key_repr() {
+        let key = LastShardBlockKey(
+            ton_block::ShardIdent::with_tagged_prefix(-1, ton_block::SHARD_FULL).unwrap(),
+        );
+
+        let mut data = Vec::new();
+        key.serialize(&mut data).unwrap();
+
+        let deserialized_key = LastShardBlockKey::from_slice(&data).unwrap();
+        assert_eq!(deserialized_key.0, key.0);
+    }
 }

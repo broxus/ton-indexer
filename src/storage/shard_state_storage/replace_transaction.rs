@@ -152,9 +152,7 @@ impl<'a> ShardStateReplaceTransaction<'a> {
                     chunk_size -= cell_size + 1;
 
                     let cell = RawCell::from_stored_data(
-                        &mut std::io::Cursor::new(
-                            &chunk_buffer[chunk_size..chunk_size + cell_size],
-                        ),
+                        &mut &chunk_buffer[chunk_size..chunk_size + cell_size],
                         header.ref_size,
                         header.cell_count as usize,
                         cell_index as usize,

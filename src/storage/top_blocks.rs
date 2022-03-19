@@ -1,4 +1,4 @@
-use std::io::{Read, Seek, Write};
+use std::io::Write;
 
 use anyhow::Result;
 use tiny_adnl::utils::FxHashMap;
@@ -67,7 +67,7 @@ impl StoredValue for TopBlocks {
         Ok(())
     }
 
-    fn deserialize<R: Read + Seek>(reader: &mut R) -> Result<Self>
+    fn deserialize(reader: &mut &[u8]) -> Result<Self>
     where
         Self: Sized,
     {

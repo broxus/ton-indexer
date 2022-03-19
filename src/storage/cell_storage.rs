@@ -305,24 +305,25 @@ impl StorageCell {
         self.hash(ton_types::MAX_LEVEL as usize)
     }
 
-    pub fn deserialize(boc_db: Arc<CellStorage>, data: &[u8]) -> Result<Self> {
-        let mut reader = std::io::Cursor::new(data);
-
+    pub fn deserialize(boc_db: Arc<CellStorage>, mut data: &[u8]) -> Result<Self> {
         // skip marker
-        reader.set_position(1);
+        if data.is_empty() {
+            return Err(StorageCellError::InvalidData.into());
+        }
+        data = &(*data)[1..];
 
         // deserialize cell
-        let cell_data = ton_types::CellData::deserialize(&mut reader)?;
-        let references_count = reader.read_byte()?;
+        let cell_data = ton_types::CellData::deserialize(&mut data)?;
+        let references_count = data.read_byte()?;
         let mut references = SmallVec::with_capacity(references_count as usize);
 
         for _ in 0..references_count {
-            let hash = UInt256::from(reader.read_u256()?);
+            let hash = UInt256::from(data.read_u256()?);
             references.push(StorageCellReference::Unloaded(hash));
         }
 
-        let (tree_bits_count, tree_cell_count) = match reader.read_le_u64() {
-            Ok(tree_bits_count) => match reader.read_le_u64() {
+        let (tree_bits_count, tree_cell_count) = match data.read_le_u64() {
+            Ok(tree_bits_count) => match data.read_le_u64() {
                 Ok(tree_cell_count) => (tree_bits_count, tree_cell_count),
                 Err(_) => (0, 0),
             },
@@ -340,18 +341,16 @@ impl StorageCell {
     }
 
     pub fn deserialize_marker_and_references(
-        data: &[u8],
+        mut data: &[u8],
     ) -> Result<(u8, SmallVec<[StorageCellReference; 4]>)> {
-        let mut reader = std::io::Cursor::new(data);
+        let reader = &mut data;
 
         // skip marker
         let mut marker = [0u8];
         reader.read_exact(&mut marker)?;
 
-        reader.set_position(1);
-
         // deserialize cell
-        let _cell_data = ton_types::CellData::deserialize(&mut reader)?;
+        let _cell_data = ton_types::CellData::deserialize(reader)?;
         let references_count = reader.read_byte()?;
         let mut references = SmallVec::with_capacity(references_count as usize);
 
@@ -498,6 +497,8 @@ impl StorageCellReference {
 
 #[derive(thiserror::Error, Debug)]
 enum StorageCellError {
+    #[error("Invalid data")]
+    InvalidData,
     #[error("Accessing invalid cell reference")]
     AccessingInvalidReference,
 }

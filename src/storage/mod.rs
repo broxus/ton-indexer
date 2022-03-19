@@ -1,4 +1,4 @@
-use std::io::{Read, Seek, Write};
+use std::io::Write;
 
 use anyhow::Result;
 use rocksdb::MergeOperands;
@@ -154,15 +154,16 @@ pub trait StoredValue {
 
     fn serialize<W: Write>(&self, writer: &mut W) -> Result<()>;
 
-    fn deserialize<R: Read + Seek>(reader: &mut R) -> Result<Self>
+    fn deserialize(reader: &mut &[u8]) -> Result<Self>
     where
         Self: Sized;
 
-    fn from_slice(data: &[u8]) -> Result<Self>
+    #[inline(always)]
+    fn from_slice(mut data: &[u8]) -> Result<Self>
     where
         Self: Sized,
     {
-        Self::deserialize(&mut std::io::Cursor::new(data))
+        Self::deserialize(&mut data)
     }
 
     fn to_vec(&self) -> Result<SmallVec<Self::OnStackSlice>> {
@@ -191,7 +192,7 @@ impl StoredValue for ton_block::BlockIdExt {
         Ok(())
     }
 
-    fn deserialize<R: Read + Seek>(reader: &mut R) -> Result<Self>
+    fn deserialize(reader: &mut &[u8]) -> Result<Self>
     where
         Self: Sized,
     {
@@ -216,7 +217,7 @@ impl StoredValue for ton_block::ShardIdent {
         Ok(())
     }
 
-    fn deserialize<R: Read + Seek>(reader: &mut R) -> Result<Self>
+    fn deserialize(reader: &mut &[u8]) -> Result<Self>
     where
         Self: Sized,
     {

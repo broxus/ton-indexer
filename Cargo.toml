@@ -20,11 +20,11 @@ bincode = "1.3"
 bytes = "1.1.0"
 crc = "2.1"
 countme = { version = "3.0.0" }
-dashmap = { version = "5.1.0", features = ['serde'], default-features = false } # to make `Ref` !Send
+dashmap = { version = "5.1.0", features = ["serde"], default-features = false } # to make `Ref` !Send
 fdlimit = "0.2.1"
 futures = "0.3.21"
 hex = "0.4"
-itertools = "0.10.1"
+itertools = "0.10.3"
 libc = "0.2"
 log = "0.4"
 num-traits = "0.2"
@@ -33,14 +33,14 @@ parking_lot = "0.12.0"
 pin-project-lite = "0.2.8"
 profl = "0.1"
 rand = "0.8"
-rlimit = "0.6.2"
+rlimit = "0.7.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sha2 = "0.9"
 smallvec = { version = "1.8.0", features = ["serde", "write", "union"] }
-sysinfo = { version = "0.23.1", default-features = false }
-thiserror = "*"
-tokio = { version = "1.16.1", features = ["sync", "fs", "rt-multi-thread", "parking_lot"] }
+sysinfo = { version = "0.23.5", default-features = false }
+thiserror = "1.0"
+tokio = { version = "1.17.0", features = ["sync", "fs", "rt-multi-thread", "parking_lot"] }
 
 lru_time_cache = { git = "https://github.com/Rexagon/lru_time_cache.git" }
 

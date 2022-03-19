@@ -5,7 +5,7 @@
 /// - moved all flags here from block handle
 /// - removed temporary unused flags
 ///
-use std::io::{Read, Write};
+use std::io::Write;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::Result;
@@ -185,7 +185,7 @@ impl StoredValue for BlockMeta {
         Ok(())
     }
 
-    fn deserialize<R: Read>(reader: &mut R) -> Result<Self>
+    fn deserialize(reader: &mut &[u8]) -> Result<Self>
     where
         Self: Sized,
     {

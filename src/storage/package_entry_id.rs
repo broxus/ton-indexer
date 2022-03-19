@@ -74,10 +74,9 @@ pub struct PackageEntryIdPrefix {
 }
 
 impl PackageEntryIdPrefix {
-    pub fn from_slice(data: &[u8]) -> Result<Self> {
-        let mut reader = std::io::Cursor::new(data);
-
-        let shard_ident = ton_block::ShardIdent::deserialize(&mut reader)?;
+    pub fn from_slice(mut data: &[u8]) -> Result<Self> {
+        let reader = &mut data;
+        let shard_ident = ton_block::ShardIdent::deserialize(reader)?;
         let seq_no = reader.read_be_u32()?;
 
         Ok(Self {
