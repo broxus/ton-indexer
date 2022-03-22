@@ -152,7 +152,7 @@ impl CellStorage {
         // While some cells left
         while let Some(cell_id) = stack.pop() {
             // Load cell marker and references from the top of the stack
-            let (marker_changed, references) =
+            let (persistent_cell, marker_changed, references) =
                 match db.get_pinned_cf_opt(&cf, cell_id.as_slice(), read_config)? {
                     Some(value) => {
                         // NOTE: dereference value only once to prevent multiple ffi calls
@@ -160,7 +160,9 @@ impl CellStorage {
 
                         let (marker, references) =
                             StorageCell::deserialize_marker_and_references(value)?;
-                        let marker_changed = marker > 0 && marker != target_marker;
+
+                        let persistent_cell = marker == 0;
+                        let marker_changed = !persistent_cell && marker != target_marker;
 
                         // Update cell data if marker changed
                         if marker_changed {
@@ -170,7 +172,7 @@ impl CellStorage {
                             db.put_cf_opt(&cf, cell_id.as_slice(), &buffer, write_config)?;
                         }
 
-                        (marker_changed, references)
+                        (persistent_cell, marker_changed, references)
                     }
                     None => {
                         return Err(CellStorageError::CellNotFound)
@@ -181,7 +183,7 @@ impl CellStorage {
             total += marker_changed as usize;
 
             // Add all children
-            if marker_changed || force {
+            if !persistent_cell && (marker_changed || force) {
                 for cell_id in references {
                     stack.push(cell_id.hash());
                 }
