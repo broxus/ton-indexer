@@ -81,7 +81,7 @@ impl FullNodeOverlayClient for OverlayClient {
             },
         })?;
         self.overlay()
-            .broadcast(self.overlay_id(), &broadcast, None)?;
+            .broadcast(self.overlay_id(), broadcast, None)?;
         Ok(())
     }
 
