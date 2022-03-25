@@ -65,37 +65,37 @@ where
     tokio::spawn(async move {
         while let Some(right) = stream.next().await {
             // Check if there are some gaps between two archives
-            if BlockMaps::is_contiguous(&left, &right) {
-                // Send previous archive
-                if tx.send(left).await.is_err() {
-                    log::warn!("Archive stream closed");
-                    return;
-                }
-            } else {
-                // Find gaps
-                let (prev, next) = left
-                    .distance_to(&right)
-                    .expect("download_archive_maps produces non empty archives");
-
-                // Download gaps
-                let gaps = match download_gaps(prev, next, &engine, &active_peers, &signal).await {
-                    Some(gaps) => gaps,
-                    None => return,
-                };
-
-                // Send previous archive
-                if tx.send(left).await.is_err() {
-                    log::warn!("Archive stream closed");
-                    return;
-                }
-
-                // Send archives for gaps
-                for arch in gaps {
-                    if tx.send(arch).await.is_err() {
+            match right.find_intersection(&left) {
+                BlockMapsIntersection::Contiguous => {
+                    // Send previous archive
+                    if tx.send(left).await.is_err() {
                         log::warn!("Archive stream closed");
                         return;
                     }
                 }
+                BlockMapsIntersection::Gap { from, to } => {
+                    // Download gaps
+                    let gaps = match download_gaps(from, to, &engine, &active_peers, &signal).await
+                    {
+                        Some(gaps) => gaps,
+                        None => return,
+                    };
+
+                    // Send previous archive
+                    if tx.send(left).await.is_err() {
+                        log::warn!("Archive stream closed");
+                        return;
+                    }
+
+                    // Send archives for gaps
+                    for arch in gaps {
+                        if tx.send(arch).await.is_err() {
+                            log::warn!("Archive stream closed");
+                            return;
+                        }
+                    }
+                }
+                _ => continue,
             }
 
             left = right
@@ -111,18 +111,18 @@ where
 
 async fn download_gaps(
     mut from: u32,
-    next: u32,
+    to: u32,
     engine: &Arc<Engine>,
     active_peers: &Arc<ActivePeers>,
     signal: &CancellationToken,
 ) -> Option<Vec<Arc<BlockMaps>>> {
-    log::warn!("Finding archive for the gap {}..{}", from, next);
+    log::warn!("Finding archive for the gap {}..{}", from, to);
 
     let mut arhives = Vec::with_capacity(1);
-    while from + 1 < next {
-        let archive = download_archive_maps(engine, active_peers, signal, from + 1).await?;
+    while from < to {
+        let archive = download_archive_maps(engine, active_peers, signal, from).await?;
 
-        from = archive.highest_id().unwrap().seq_no;
+        from = archive.highest_mc_id().unwrap().seq_no + 1;
         arhives.push(archive);
     }
 
@@ -147,13 +147,13 @@ pub async fn download_archive_maps(
         };
         log::info!("Download took: {} ms", start.elapsed().as_millis());
 
-        match parse_archive(data) {
-            Ok(map) if map.is_valid(mc_seq_no).is_some() => break Some(map),
+        match BlockMaps::new(&data) {
+            Ok(map) => match map.check(mc_seq_no) {
+                Ok(()) => break Some(map),
+                Err(e) => log::error!("Invalid archive: {:?}", e),
+            },
             Err(e) => {
                 log::error!("Failed to parse archive: {:?}", e);
-            }
-            _ => {
-                log::error!("Empty archive {}", mc_seq_no);
             }
         };
     }

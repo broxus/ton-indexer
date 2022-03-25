@@ -75,7 +75,7 @@ pub async fn sync(engine: &Arc<Engine>) -> Result<()> {
                     let data =
                         download_archive_or_die(engine, &active_peers, mc_block_id.seq_no).await;
 
-                    match parse_archive(data) {
+                    match BlockMaps::new(&data) {
                         Ok(parsed) => {
                             log::info!(
                                 "sync: Parsed {} masterchain blocks, {} blocks total",
@@ -143,7 +143,7 @@ async fn apply(
     data: Vec<u8>,
 ) -> Result<()> {
     log::info!("sync: Parsing archive for block {}", mc_seq_no);
-    let maps = parse_archive(data)?;
+    let maps = BlockMaps::new(&data)?;
     log::info!(
         "sync: Parsed {} masterchain blocks, {} blocks total",
         maps.mc_block_ids.len(),
@@ -424,11 +424,11 @@ async fn save_archive(
     context: &mut SaveContext<'_>,
 ) -> Result<SyncStatus> {
     //todo store block maps in db
-    let lowest_id = match maps.lowest_id() {
+    let lowest_id = match maps.lowest_mc_id() {
         Some(a) => a,
         None => return Ok(SyncStatus::NoBlocksInArchive),
     };
-    let highest_id = match maps.highest_id() {
+    let highest_id = match maps.highest_mc_id() {
         Some(a) => a,
         None => return Ok(SyncStatus::NoBlocksInArchive),
     };

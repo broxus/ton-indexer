@@ -1,12 +1,8 @@
 use std::io::Write;
 
-use anyhow::Result;
-
-pub const ARCHIVE_PREFIX: [u8; 4] = PKG_HEADER_MAGIC.to_le_bytes();
-
 pub fn make_archive_segment(filename: &str, data: &[u8]) -> Result<Vec<u8>, std::io::Error> {
     let mut vec = Vec::with_capacity(2 + 2 + 4 + filename.len() + data.len());
-    vec.write_all(&ENTRY_HEADER_MAGIC.to_le_bytes())?;
+    vec.write_all(&ARCHIVE_ENTRY_PREFIX)?;
     vec.write_all(&(filename.len() as u16).to_le_bytes())?;
     vec.write_all(&(data.len() as u32).to_le_bytes())?;
     vec.write_all(filename.as_bytes())?;
@@ -20,34 +16,33 @@ pub struct ArchivePackageViewReader<'a> {
 }
 
 impl<'a> ArchivePackageViewReader<'a> {
-    pub fn new(data: &'a [u8]) -> Result<Self> {
+    pub fn new(data: &'a [u8]) -> Result<Self, ArchivePackageError> {
         let mut offset = 0;
         read_package_header(data, &mut offset)?;
         Ok(Self { data, offset })
     }
 
-    pub fn read_next(&mut self) -> Result<Option<ArchivePackageEntryView<'a>>> {
+    pub fn read_next(
+        &mut self,
+    ) -> Result<Option<ArchivePackageEntryView<'a>>, ArchivePackageError> {
         ArchivePackageEntryView::read_from_view(self.data, &mut self.offset)
     }
 }
 
-fn read_package_header(buf: &[u8], offset: &mut usize) -> Result<()> {
-    if buf.len() < *offset + 4 {
-        return Err(ArchivePackageError::UnexpectedArchiveEof.into());
+pub fn read_package_header(buf: &[u8], offset: &mut usize) -> Result<(), ArchivePackageError> {
+    let end = *offset;
+
+    // NOTE: `end > end + 4` is needed here because it eliminates useless
+    // bounds check with panic. It is not even included into result assembly
+    if buf.len() < end + 4 || end > end + 4 {
+        return Err(ArchivePackageError::UnexpectedArchiveEof);
     }
 
-    let magic = u32::from_le_bytes([
-        buf[*offset],
-        buf[*offset + 1],
-        buf[*offset + 2],
-        buf[*offset + 3],
-    ]);
-    *offset += 4;
-
-    if magic == PKG_HEADER_MAGIC {
+    if buf[end..end + 4] == ARCHIVE_PREFIX {
+        *offset += 4;
         Ok(())
     } else {
-        Err(ArchivePackageError::InvalidArchiveHeader.into())
+        Err(ArchivePackageError::InvalidArchiveHeader)
     }
 }
 
@@ -57,13 +52,16 @@ pub struct ArchivePackageEntryView<'a> {
 }
 
 impl<'a> ArchivePackageEntryView<'a> {
-    fn read_from_view(buf: &'a [u8], offset: &mut usize) -> Result<Option<Self>> {
+    fn read_from_view(
+        buf: &'a [u8],
+        offset: &mut usize,
+    ) -> Result<Option<Self>, ArchivePackageError> {
         if buf.len() < *offset + 8 {
             return Ok(None);
         }
 
-        if u16::from_le_bytes([buf[*offset], buf[*offset + 1]]) != ENTRY_HEADER_MAGIC {
-            return Err(ArchivePackageError::InvalidArchiveEntryHeader.into());
+        if buf[*offset..*offset + 2] != ARCHIVE_ENTRY_PREFIX {
+            return Err(ArchivePackageError::InvalidArchiveEntryHeader);
         }
         *offset += 2;
 
@@ -79,10 +77,11 @@ impl<'a> ArchivePackageEntryView<'a> {
         *offset += 4;
 
         if buf.len() < *offset + filename_size + data_size {
-            return Err(ArchivePackageError::UnexpectedEntryEof.into());
+            return Err(ArchivePackageError::UnexpectedEntryEof);
         }
 
-        let name = std::str::from_utf8(&buf[*offset..*offset + filename_size])?;
+        let name = std::str::from_utf8(&buf[*offset..*offset + filename_size])
+            .map_err(|_| ArchivePackageError::InvalidArchiveEntryName)?;
         *offset += filename_size;
 
         let data = &buf[*offset..*offset + data_size];
@@ -92,17 +91,134 @@ impl<'a> ArchivePackageEntryView<'a> {
     }
 }
 
-const PKG_HEADER_MAGIC: u32 = 0xae8fdd01;
-const ENTRY_HEADER_MAGIC: u16 = 0x1e8b;
+/// Archive data stream verifier
+pub enum ArchivePackageVerifier {
+    Start,
+    PackageEntryHeader {
+        buffer: [u8; ARCHIVE_ENTRY_HEADER_LEN],
+        filled: usize,
+    },
+    PackageFileName {
+        filename_len: usize,
+        data_len: usize,
+    },
+    PackageData {
+        data_len: usize,
+    },
+}
+
+impl ArchivePackageVerifier {
+    pub fn final_check(&self) -> Result<(), ArchivePackageError> {
+        if matches!(self, Self::PackageEntryHeader { filled: 0, .. }) {
+            Ok(())
+        } else {
+            Err(ArchivePackageError::UnexpectedArchiveEof)
+        }
+    }
+
+    pub fn verify(&mut self, part: &[u8]) -> Result<(), ArchivePackageError> {
+        let mut offset = 0;
+
+        let part_len = part.len();
+
+        while offset < part_len {
+            let remaining = part_len - offset;
+
+            match self {
+                Self::Start if part_len >= 4 => {
+                    read_package_header(part, &mut offset)?;
+                    *self = Self::PackageEntryHeader {
+                        buffer: Default::default(),
+                        filled: 0,
+                    }
+                }
+                Self::Start => return Err(ArchivePackageError::TooSmallInitialBatch),
+                Self::PackageEntryHeader { buffer, filled } => {
+                    let remaining = std::cmp::min(remaining, ARCHIVE_ENTRY_HEADER_LEN - *filled);
+
+                    // SAFETY:
+                    // - `offset < part.len()`
+                    // - `filled < buffer.len()`
+                    // - `offset + remaining < part.len() && `
+                    unsafe {
+                        std::ptr::copy_nonoverlapping(
+                            part.as_ptr().add(offset),
+                            buffer.as_mut_ptr().add(*filled),
+                            remaining,
+                        )
+                    };
+
+                    offset += remaining;
+                    *filled += remaining;
+
+                    if *filled == ARCHIVE_ENTRY_HEADER_LEN {
+                        if buffer[..2] != ARCHIVE_ENTRY_PREFIX {
+                            return Err(ArchivePackageError::InvalidArchiveEntryHeader);
+                        }
+
+                        *self = Self::PackageFileName {
+                            filename_len: u16::from_le_bytes([buffer[2], buffer[3]]) as usize,
+                            data_len: u32::from_le_bytes([
+                                buffer[4], buffer[5], buffer[6], buffer[7],
+                            ]) as usize,
+                        }
+                    }
+                }
+                Self::PackageFileName {
+                    filename_len,
+                    data_len,
+                } => {
+                    let remaining = std::cmp::min(remaining, *filename_len);
+                    *filename_len -= remaining;
+                    offset += remaining;
+
+                    if *filename_len == 0 {
+                        *self = Self::PackageData {
+                            data_len: *data_len,
+                        }
+                    }
+                }
+                Self::PackageData { data_len } => {
+                    let remaining = std::cmp::min(remaining, *data_len);
+                    *data_len -= remaining;
+                    offset += remaining;
+
+                    if *data_len == 0 {
+                        *self = Self::PackageEntryHeader {
+                            buffer: Default::default(),
+                            filled: 0,
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+}
+
+impl Default for ArchivePackageVerifier {
+    fn default() -> Self {
+        Self::Start
+    }
+}
 
 #[derive(thiserror::Error, Debug)]
-enum ArchivePackageError {
+pub enum ArchivePackageError {
     #[error("Invalid archive header")]
     InvalidArchiveHeader,
     #[error("Unexpected archive eof")]
     UnexpectedArchiveEof,
     #[error("Invalid archive entry header")]
     InvalidArchiveEntryHeader,
+    #[error("Invalid archive entry name")]
+    InvalidArchiveEntryName,
     #[error("Unexpected entry eof")]
     UnexpectedEntryEof,
+    #[error("Too small initial batch")]
+    TooSmallInitialBatch,
 }
+
+pub const ARCHIVE_PREFIX: [u8; 4] = u32::to_le_bytes(0xae8fdd01);
+const ARCHIVE_ENTRY_PREFIX: [u8; 2] = u16::to_le_bytes(0x1e8b);
+const ARCHIVE_ENTRY_HEADER_LEN: usize = ARCHIVE_ENTRY_PREFIX.len() + 2 + 4; // magic + filename len + data len

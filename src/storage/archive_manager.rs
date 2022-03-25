@@ -51,27 +51,10 @@ impl ArchiveManager {
                     .with_context(|| format!("Invalid archive key: {}", hex::encode(key)))?,
             );
 
-            let read = |value: &[u8]| -> Result<()> {
-                let mut reader = ArchivePackageViewReader::new(value)?;
-
-                let mut index = 0;
-
-                let fail_context = |index| {
-                    format!(
-                        "Failed to read archive entry {}. Index: {}",
-                        archive_id, index
-                    )
-                };
-
-                while reader
-                    .read_next()
-                    .with_context(|| fail_context(index))?
-                    .is_some()
-                {
-                    index += 1;
-                }
-
-                Ok(())
+            let read = |value: &[u8]| {
+                let mut verifier = ArchivePackageVerifier::default();
+                verifier.verify(value)?;
+                verifier.final_check()
             };
 
             if let Some(Err(e)) = value.map(read) {
