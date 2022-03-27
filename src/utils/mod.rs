@@ -6,6 +6,7 @@ pub use mapped_file::*;
 pub use shard_state::*;
 pub use shard_state_cache::*;
 pub use stream_utils::*;
+pub use trigger::*;
 
 mod block;
 mod block_proof;
@@ -13,5 +14,6 @@ mod mapped_file;
 mod shard_state;
 mod shard_state_cache;
 mod stream_utils;
+mod trigger;
 
 pub type ActivePeers = FxDashSet<AdnlNodeIdShort>;

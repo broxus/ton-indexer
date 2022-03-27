@@ -3,7 +3,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use futures::channel::mpsc;
 use futures::{SinkExt, Stream, StreamExt};
-use tiny_adnl::utils::*;
+use tokio_util::sync::CancellationToken;
 
 use super::block_maps::*;
 use crate::engine::Engine;
@@ -45,7 +45,7 @@ async fn process_maps<S>(
     mut stream: S,
     engine: &Arc<Engine>,
     active_peers: &Arc<ActivePeers>,
-    signal: TriggerReceiver,
+    signal: CancellationToken,
 ) -> Option<impl Stream<Item = Arc<BlockMaps>>>
 where
     S: Stream<Item = Arc<BlockMaps>> + Send + Unpin + 'static,
@@ -114,7 +114,7 @@ async fn download_gaps(
     next: u32,
     engine: &Arc<Engine>,
     active_peers: &Arc<ActivePeers>,
-    signal: &TriggerReceiver,
+    signal: &CancellationToken,
 ) -> Option<Vec<Arc<BlockMaps>>> {
     log::warn!("Finding archive for the gap {}..{}", from, next);
 
@@ -132,11 +132,11 @@ async fn download_gaps(
 pub async fn download_archive_maps(
     engine: &Arc<Engine>,
     active_peers: &Arc<ActivePeers>,
-    signal: &TriggerReceiver,
+    signal: &CancellationToken,
     mc_seq_no: u32,
 ) -> Option<Arc<BlockMaps>> {
     tokio::pin!(
-        let signal = signal.clone();
+        let signal = signal.cancelled();
     );
 
     loop {

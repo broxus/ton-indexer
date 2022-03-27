@@ -12,6 +12,7 @@ use anyhow::{Context, Result};
 use global_config::*;
 use tiny_adnl::utils::*;
 use tiny_adnl::*;
+use tokio_util::sync::CancellationToken;
 use ton_api::ton;
 
 pub use self::full_node_overlay_client::*;
@@ -316,23 +317,20 @@ pub struct NetworkMetrics {
 
 struct WorkingState {
     working: AtomicBool,
-    signal: TriggerReceiver,
-    trigger: Trigger,
+    cancellation_token: CancellationToken,
 }
 
 impl WorkingState {
     fn new() -> Self {
-        let (trigger, signal) = trigger();
         Self {
             working: AtomicBool::new(true),
-            signal,
-            trigger,
+            cancellation_token: Default::default(),
         }
     }
 
     fn shutdown(&self) {
         self.working.store(false, Ordering::Release);
-        self.trigger.trigger();
+        self.cancellation_token.cancel();
     }
 
     fn is_working(&self) -> bool {
@@ -343,7 +341,7 @@ impl WorkingState {
     async fn wait_or_complete(&self, duration: Duration) -> bool {
         tokio::select! {
             _ = tokio::time::sleep(duration) => false,
-            _ = self.signal.clone() => true,
+            _ = self.cancellation_token.cancelled() => true,
         }
     }
 }

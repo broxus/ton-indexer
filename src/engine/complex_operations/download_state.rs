@@ -9,9 +9,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use tiny_adnl::utils::*;
 use tiny_adnl::Neighbour;
 use tokio::sync::{mpsc, oneshot};
+use tokio_util::sync::CancellationToken;
 
 use crate::engine::Engine;
 use crate::network::*;
@@ -99,7 +99,7 @@ pub async fn download_state(
                     log::error!("Persistent state downloader failed: {:?}", e);
                 },
             },
-            _ = completion_signal => {}
+            _ = completion_signal.cancelled() => {}
         }
     });
 
@@ -153,7 +153,7 @@ struct Scheduler {
     max_size: usize,
     current_offset: usize,
     complete: Arc<AtomicBool>,
-    complete_trigger: Trigger,
+    cancellation_token: CancellationToken,
 }
 
 impl Scheduler {
@@ -168,7 +168,7 @@ impl Scheduler {
         let (response_tx, response_rx) = mpsc::channel(worker_count);
 
         let complete = Arc::new(AtomicBool::new(false));
-        let (complete_trigger, complete_signal) = trigger();
+        let cancellation_token = CancellationToken::new();
 
         let ctx = Arc::new(DownloadContext {
             overlay,
@@ -179,7 +179,7 @@ impl Scheduler {
             response_tx,
             peer_attempt: AtomicU32::new(0),
             complete: complete.clone(),
-            complete_signal,
+            cancellation_token: cancellation_token.clone(),
         });
 
         let mut offset_txs = Vec::with_capacity(worker_count);
@@ -204,7 +204,7 @@ impl Scheduler {
             max_size,
             current_offset: 0,
             complete,
-            complete_trigger,
+            cancellation_token,
         })
     }
 
@@ -264,7 +264,7 @@ impl Scheduler {
             if data.len() < self.max_size {
                 *packet = PacketStatus::Done;
                 self.complete.store(true, Ordering::Release);
-                self.complete_trigger.trigger();
+                self.cancellation_token.cancel();
             } else {
                 *offset += self.max_size * self.offset_txs.len();
                 self.offset_txs[worker_id]
@@ -292,11 +292,11 @@ struct DownloadContext {
     response_tx: ResponseTx,
     peer_attempt: AtomicU32,
     complete: Arc<AtomicBool>,
-    complete_signal: TriggerReceiver,
+    cancellation_token: CancellationToken,
 }
 
 async fn download_packet_worker(ctx: Arc<DownloadContext>, mut offsets_rx: OffsetsRx) {
-    tokio::pin!(let complete_signal = ctx.complete_signal.clone(););
+    tokio::pin!(let complete_signal = ctx.cancellation_token.cancelled(););
 
     'tasks: while let Some(offset) = offsets_rx.recv().await {
         let mut part_attempt = 0;
