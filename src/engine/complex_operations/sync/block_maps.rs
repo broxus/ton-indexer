@@ -1,3 +1,4 @@
+use std::cmp::Ordering;
 use std::hash::BuildHasherDefault;
 use std::sync::Arc;
 
@@ -8,17 +9,21 @@ use tiny_adnl::utils::*;
 use crate::storage::*;
 use crate::utils::*;
 
-#[derive(Default)]
 pub struct BlockMaps {
+    pub index: u32,
     pub mc_block_ids: BTreeMap<u32, ton_block::BlockIdExt>,
     pub blocks: BTreeMap<ton_block::BlockIdExt, BlockMapsEntry>,
 }
 
 impl BlockMaps {
-    pub fn new(data: &[u8]) -> Result<Arc<Self>> {
+    pub fn new(archive_seqno: u32, data: &[u8]) -> Result<Arc<Self>> {
         let mut reader = ArchivePackageViewReader::new(data)?;
 
-        let mut maps = BlockMaps::default();
+        let mut maps = BlockMaps {
+            index: archive_seqno,
+            mc_block_ids: Default::default(),
+            blocks: Default::default(),
+        };
 
         while let Some(entry) = reader.read_next()? {
             match PackageEntryId::from_filename(entry.name)? {
@@ -79,14 +84,14 @@ impl BlockMaps {
         self.mc_block_ids.values().rev().next()
     }
 
-    pub fn check(&self, archive_seqno: u32) -> Result<(), BlockMapsError> {
+    pub fn check(&self) -> Result<(), BlockMapsError> {
         let mc_block_count = self.mc_block_ids.len();
 
         let (left, right) = match (self.lowest_mc_id(), self.highest_mc_id()) {
             (Some(left), Some(right)) => {
                 log::info!(
                     "Archive {}. Blocks in masterchain: {} (from {} to {}). Total: {}",
-                    archive_seqno,
+                    self.index,
                     self.mc_block_ids.len(),
                     left.seq_no,
                     right.seq_no,
@@ -99,7 +104,6 @@ impl BlockMaps {
 
         // NOTE: blocks are stored in BTreeSet so keys are ordered integers
         if (left as usize) + mc_block_count != (right as usize) + 1 {
-            log::error!("LEFT {}, COUNT: {}, RIGHT: {}", left, mc_block_count, right);
             return Err(BlockMapsError::InconsistentMasterchainBlocks);
         }
 

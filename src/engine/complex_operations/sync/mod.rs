@@ -72,10 +72,9 @@ pub async fn sync(engine: &Arc<Engine>) -> Result<()> {
                 }
                 loop {
                     log::info!("sync: Force downloading archive");
-                    let data =
-                        download_archive_or_die(engine, &active_peers, mc_block_id.seq_no).await;
+                    let data = download_archive(engine, &active_peers, mc_block_id.seq_no).await;
 
-                    match BlockMaps::new(&data) {
+                    match BlockMaps::new(mc_block_id.seq_no, &data) {
                         Ok(parsed) => {
                             log::info!(
                                 "sync: Parsed {} masterchain blocks, {} blocks total",
@@ -122,7 +121,7 @@ pub async fn sync(engine: &Arc<Engine>) -> Result<()> {
         );
 
         let next_mc_seq_no = last_mc_block_id.seq_no + 1;
-        let data = download_archive_or_die(engine, &active_peers, next_mc_seq_no).await;
+        let data = download_archive(engine, &active_peers, next_mc_seq_no).await;
 
         if let Err(e) = apply(engine, &last_mc_block_id, next_mc_seq_no, data).await {
             log::error!(
@@ -143,7 +142,7 @@ async fn apply(
     data: Vec<u8>,
 ) -> Result<()> {
     log::info!("sync: Parsing archive for block {}", mc_seq_no);
-    let maps = BlockMaps::new(&data)?;
+    let maps = BlockMaps::new(mc_seq_no, &data)?;
     log::info!(
         "sync: Parsed {} masterchain blocks, {} blocks total",
         maps.mc_block_ids.len(),
