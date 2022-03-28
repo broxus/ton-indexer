@@ -1,4 +1,3 @@
-use std::cmp::Ordering;
 use std::hash::BuildHasherDefault;
 use std::sync::Arc;
 
@@ -65,15 +64,6 @@ impl BlockMaps {
         }
 
         Ok(Arc::new(maps))
-    }
-
-    pub fn get_first_utime(&self) -> Option<u32> {
-        for block in &self.blocks {
-            if let Some(a) = &block.1.block {
-                return Some(a.block().info.read_struct().ok()?.gen_utime().0);
-            }
-        }
-        None
     }
 
     pub fn lowest_mc_id(&self) -> Option<&ton_block::BlockIdExt> {

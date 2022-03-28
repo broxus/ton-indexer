@@ -1,12 +1,9 @@
-use std::cmp::{Ordering, Reverse};
+use std::cmp::Ordering;
 use std::collections::binary_heap::PeekMut;
 use std::collections::BinaryHeap;
 use std::ops::{Bound, Deref, DerefMut, RangeBounds};
 use std::sync::Arc;
 
-use anyhow::Result;
-use futures::channel::mpsc;
-use futures::{SinkExt, Stream, StreamExt};
 use parking_lot::Mutex;
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
@@ -22,15 +19,16 @@ pub struct ArchiveDownloader {
     new_archive_notification: Arc<Notify>,
     cancellation_token: CancellationToken,
     running: bool,
-    step: usize,
+    step: u32,
     next_mc_seq_no: u32,
+    max_mc_seq_no: u32,
     to: Option<u32>,
 }
 
 impl ArchiveDownloader {
     pub fn builder() -> ArchiveDownloaderBuilder {
         ArchiveDownloaderBuilder {
-            step: ARCHIVE_SLICE as usize,
+            step: ARCHIVE_SLICE,
             from: 0,
             to: None,
         }
@@ -41,18 +39,47 @@ impl ArchiveDownloader {
             return None;
         }
 
+        let mut has_gap = false;
+
         let block_maps = loop {
+            let next_index = self.next_mc_seq_no;
+
+            // Force fill gap
+            if has_gap {
+                self.start_downloading(next_index);
+                has_gap = false;
+                continue;
+            }
+
             // Get pending archive with max priority
             let notified = match self.pending_archives.peek_mut() {
                 // Process if this is an archive with required seq_no
-                Some(item) if item.index <= self.next_mc_seq_no => {
-                    // Acquire pending archive lock
-                    let data = item.block_maps.lock().take();
+                Some(item) if item.index < next_index + self.step => {
+                    let data = {
+                        let mut data = item.block_maps.lock();
+
+                        // Check lowest id without taking inner data
+                        if let Some(maps) = &*data {
+                            if matches!(maps.lowest_mc_id(), Some(id) if id.seq_no > next_index) {
+                                // Drop acquired lock and `PeekMut` object
+                                has_gap = true;
+                                continue;
+                            }
+                        }
+
+                        data.take()
+                    };
+
                     if let Some(data) = data {
                         // Remove this item from the queue
                         PeekMut::pop(item);
-                        // Result item is found
-                        break data;
+
+                        if let Err(e) = data.check() {
+                            log::error!("Retrying invalid archive {next_index}: {e:?}");
+                        } else {
+                            // Result item was found
+                            break data;
+                        }
                     }
 
                     // Create `Notified` future while lock is still acquired
@@ -63,8 +90,10 @@ impl ArchiveDownloader {
                     // Drop `PeekMut` with pending archive
                     drop(item);
 
+                    log::info!("GAP: {next_index}");
+
                     // Start downloading an archive with required seq_no
-                    self.start_downloading(self.next_mc_seq_no);
+                    self.start_downloading(next_index);
                     continue;
                 }
             };
@@ -72,6 +101,12 @@ impl ArchiveDownloader {
             // Wait until next archive is available
             notified.await;
         };
+
+        while self.pending_archives.len() < self.engine.parallel_archive_downloads
+            && !matches!(self.to, Some(to) if self.max_mc_seq_no + self.step > to)
+        {
+            self.start_downloading(self.max_mc_seq_no + self.step);
+        }
 
         Some(ReceivedBlockMaps {
             downloader: self,
@@ -93,6 +128,7 @@ impl ArchiveDownloader {
             index: mc_block_seq_no,
             block_maps: block_maps.clone(),
         });
+        self.max_mc_seq_no = std::cmp::max(self.max_mc_seq_no, mc_block_seq_no);
 
         // Prepare context
         let engine = self.engine.clone();
@@ -103,8 +139,7 @@ impl ArchiveDownloader {
         // Spawn downloader
         tokio::spawn(async move {
             if let Some(result) =
-                download_archive_maps(&engine, &active_peers, &cancellation_token, mc_block_seq_no)
-                    .await
+                download_archive(&engine, &active_peers, &cancellation_token, mc_block_seq_no).await
             {
                 *block_maps.lock() = Some(result);
                 new_archive_notification.notify_waiters();
@@ -120,13 +155,13 @@ impl Drop for ArchiveDownloader {
 }
 
 pub struct ArchiveDownloaderBuilder {
-    step: usize,
+    step: u32,
     from: u32,
     to: Option<u32>,
 }
 
 impl ArchiveDownloaderBuilder {
-    pub fn step(mut self, step: usize) -> Self {
+    pub fn step(mut self, step: u32) -> Self {
         self.step = step;
         self
     }
@@ -141,7 +176,7 @@ impl ArchiveDownloaderBuilder {
         self.to = match range.end_bound() {
             Bound::Included(&to) => Some(to),
             Bound::Excluded(&to) if to > 0 => Some(to - 1),
-            Bound::Excluded(&to) => Some(0),
+            Bound::Excluded(_) => Some(0),
             Bound::Unbounded => None,
         };
 
@@ -162,11 +197,12 @@ impl ArchiveDownloaderBuilder {
             running: true,
             step: self.step,
             next_mc_seq_no: self.from,
+            max_mc_seq_no: 0,
             to: self.to,
         };
 
         for mc_seq_no in (downloader.next_mc_seq_no..)
-            .step_by(downloader.step)
+            .step_by(downloader.step as usize)
             .take(engine.parallel_archive_downloads)
         {
             downloader.start_downloading(mc_seq_no);
@@ -239,127 +275,7 @@ impl Drop for ReceivedBlockMaps<'_> {
     }
 }
 
-pub async fn start_download<I>(
-    engine: &Arc<Engine>,
-    active_peers: &Arc<ActivePeers>,
-    step: u32,
-    range: I,
-) -> Option<(impl Stream<Item = Arc<BlockMaps>>, TriggerOnDrop)>
-where
-    I: IntoIterator<Item = u32> + Send + 'static,
-    <I as IntoIterator>::IntoIter: Send,
-{
-    let (trigger, signal) = trigger_on_drop();
-
-    let num_tasks = engine.parallel_archive_downloads;
-
-    let engine_clone = engine.clone();
-    let active_peers_clone = active_peers.clone();
-    let signal_clone = signal.clone();
-    let stream = futures::stream::iter(range.into_iter().step_by(step as usize))
-        .map(move |x| {
-            let engine = engine_clone.clone();
-            let active_peers = active_peers_clone.clone();
-            let signal = signal_clone.clone();
-            async move { download_archive_maps(&engine, &active_peers, &signal, x).await }
-        })
-        .buffered(num_tasks as usize)
-        .while_some();
-
-    process_maps(stream, engine, active_peers, signal)
-        .await
-        .map(|stream| (stream, trigger))
-}
-
-async fn process_maps<S>(
-    mut stream: S,
-    engine: &Arc<Engine>,
-    active_peers: &Arc<ActivePeers>,
-    signal: CancellationToken,
-) -> Option<impl Stream<Item = Arc<BlockMaps>>>
-where
-    S: Stream<Item = Arc<BlockMaps>> + Send + Unpin + 'static,
-{
-    let (mut tx, rx) = mpsc::channel(1);
-    let mut left: Arc<BlockMaps> = match stream.next().await {
-        Some(a) => a,
-        None => {
-            log::warn!("Archives stream is empty");
-            return None;
-        }
-    };
-
-    let engine = engine.clone();
-    let active_peers = active_peers.clone();
-
-    tokio::spawn(async move {
-        while let Some(right) = stream.next().await {
-            // Check if there are some gaps between two archives
-            match right.find_intersection(&left) {
-                BlockMapsIntersection::Contiguous => {
-                    // Send previous archive
-                    if tx.send(left).await.is_err() {
-                        log::warn!("Archive stream closed");
-                        return;
-                    }
-                }
-                BlockMapsIntersection::Gap { from, to } => {
-                    // Download gaps
-                    let gaps = match download_gaps(from, to, &engine, &active_peers, &signal).await
-                    {
-                        Some(gaps) => gaps,
-                        None => return,
-                    };
-
-                    // Send previous archive
-                    if tx.send(left).await.is_err() {
-                        log::warn!("Archive stream closed");
-                        return;
-                    }
-
-                    // Send archives for gaps
-                    for arch in gaps {
-                        if tx.send(arch).await.is_err() {
-                            log::warn!("Archive stream closed");
-                            return;
-                        }
-                    }
-                }
-                _ => continue,
-            }
-
-            left = right
-        }
-
-        if tx.send(left).await.is_err() {
-            log::warn!("Archive stream closed");
-        }
-    });
-
-    Some(rx)
-}
-
-async fn download_gaps(
-    mut from: u32,
-    to: u32,
-    engine: &Arc<Engine>,
-    active_peers: &Arc<ActivePeers>,
-    signal: &CancellationToken,
-) -> Option<Vec<Arc<BlockMaps>>> {
-    log::warn!("Finding archive for the gap {}..{}", from, to);
-
-    let mut arhives = Vec::with_capacity(1);
-    while from < to {
-        let archive = download_archive_maps(engine, active_peers, signal, from).await?;
-
-        from = archive.highest_mc_id().unwrap().seq_no + 1;
-        arhives.push(archive);
-    }
-
-    Some(arhives)
-}
-
-pub async fn download_archive_maps(
+pub async fn download_archive(
     engine: &Arc<Engine>,
     active_peers: &Arc<ActivePeers>,
     signal: &CancellationToken,
@@ -369,39 +285,27 @@ pub async fn download_archive_maps(
         let signal = signal.cancelled();
     );
 
-    loop {
-        let start = std::time::Instant::now();
-        let data = tokio::select! {
-            data = download_archive(engine, active_peers, mc_seq_no) => data,
-            _ = (&mut signal) => return None,
-        };
-        log::info!("Download took: {} ms", start.elapsed().as_millis());
-
-        match BlockMaps::new(mc_seq_no, &data) {
-            Ok(map) => match map.check() {
-                Ok(()) => break Some(map),
-                Err(e) => log::error!("Invalid archive: {:?}", e),
-            },
-            Err(e) => {
-                log::error!("Failed to parse archive: {:?}", e);
-            }
-        };
-    }
-}
-
-pub async fn download_archive(
-    engine: &Arc<Engine>,
-    active_peers: &Arc<ActivePeers>,
-    mc_seq_no: u32,
-) -> Vec<u8> {
     log::info!("sync: Downloading archive for block {mc_seq_no}");
 
     loop {
-        match engine.download_archive(mc_seq_no, active_peers).await {
+        let start = std::time::Instant::now();
+        let result = tokio::select! {
+            data = engine.download_archive(mc_seq_no, active_peers) => data,
+            _ = (&mut signal) => return None,
+        };
+        log::info!("sync: Download took: {} ms", start.elapsed().as_millis());
+
+        match result {
             Ok(Some(data)) => {
                 let len = data.len();
                 log::info!("sync: Downloaded archive for block {mc_seq_no}, size {len} bytes");
-                break data;
+
+                match BlockMaps::new(mc_seq_no, &data) {
+                    Ok(data) => break Some(data),
+                    Err(e) => {
+                        log::error!("sync: Failed to parse archive: {e:?}");
+                    }
+                }
             }
             Ok(None) => {
                 log::trace!("sync: No archive found for block {mc_seq_no}");
