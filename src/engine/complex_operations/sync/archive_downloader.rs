@@ -19,31 +19,64 @@ pub struct ArchiveDownloader {
     new_archive_notification: Arc<Notify>,
     cancellation_token: CancellationToken,
     running: bool,
-    step: u32,
     next_mc_seq_no: u32,
     max_mc_seq_no: u32,
     to: Option<u32>,
 }
 
 impl ArchiveDownloader {
-    pub fn builder() -> ArchiveDownloaderBuilder {
-        ArchiveDownloaderBuilder {
-            step: ARCHIVE_SLICE,
-            from: 0,
-            to: None,
+    pub fn new(engine: &Arc<Engine>, range: impl RangeBounds<u32>) -> ArchiveDownloader {
+        let from = match range.start_bound() {
+            Bound::Included(&from) => from,
+            Bound::Excluded(&from) => from + 1,
+            Bound::Unbounded => 0,
+        };
+
+        let mut to = match range.end_bound() {
+            Bound::Included(&to) => Some(to),
+            Bound::Excluded(&to) if to > 0 => Some(to - 1),
+            Bound::Excluded(_) => Some(0),
+            Bound::Unbounded => None,
+        };
+
+        if let Some(to) = &mut to {
+            *to = std::cmp::max(*to, from);
         }
+
+        let mut downloader = ArchiveDownloader {
+            engine: engine.clone(),
+            active_peers: Default::default(),
+            pending_archives: Default::default(),
+            new_archive_notification: Default::default(),
+            cancellation_token: Default::default(),
+            running: true,
+            next_mc_seq_no: from,
+            max_mc_seq_no: 0,
+            to,
+        };
+
+        for mc_seq_no in (downloader.next_mc_seq_no..)
+            .step_by(BlockMaps::MAX_MC_BLOCK_COUNT)
+            .take(engine.parallel_archive_downloads)
+        {
+            downloader.start_downloading(mc_seq_no);
+        }
+
+        downloader
     }
 
+    /// Wait next archive
     pub async fn recv(&'_ mut self) -> Option<ReceivedBlockMaps<'_>> {
+        const STEP: u32 = BlockMaps::MAX_MC_BLOCK_COUNT as u32;
+
         if !self.running {
             return None;
         }
 
+        let next_index = self.next_mc_seq_no;
         let mut has_gap = false;
 
         let block_maps = loop {
-            let next_index = self.next_mc_seq_no;
-
             // Force fill gap
             if has_gap {
                 self.start_downloading(next_index);
@@ -54,15 +87,15 @@ impl ArchiveDownloader {
             // Get pending archive with max priority
             let notified = match self.pending_archives.peek_mut() {
                 // Process if this is an archive with required seq_no
-                Some(item) if item.index < next_index + self.step => {
+                Some(item) if item.index < next_index + STEP => {
                     let data = {
                         let mut data = item.block_maps.lock();
 
                         // Check lowest id without taking inner data
                         if let Some(maps) = &*data {
                             if matches!(maps.lowest_mc_id(), Some(id) if id.seq_no > next_index) {
-                                // Drop acquired lock and `PeekMut` object
                                 has_gap = true;
+                                // Drop acquired lock and `PeekMut` object
                                 continue;
                             }
                         }
@@ -74,7 +107,7 @@ impl ArchiveDownloader {
                         // Remove this item from the queue
                         PeekMut::pop(item);
 
-                        if let Err(e) = data.check() {
+                        if let Err(e) = data.check(next_index) {
                             log::error!("Retrying invalid archive {next_index}: {e:?}");
                         } else {
                             // Result item was found
@@ -86,14 +119,9 @@ impl ArchiveDownloader {
                     self.new_archive_notification.notified()
                 }
                 // Queue is empty or there is a gap
-                item => {
-                    // Drop `PeekMut` with pending archive
-                    drop(item);
-
-                    log::info!("GAP: {next_index}");
-
-                    // Start downloading an archive with required seq_no
-                    self.start_downloading(next_index);
+                _ => {
+                    has_gap = true;
+                    // Drop `PeekMut` object
                     continue;
                 }
             };
@@ -103,21 +131,17 @@ impl ArchiveDownloader {
         };
 
         while self.pending_archives.len() < self.engine.parallel_archive_downloads
-            && !matches!(self.to, Some(to) if self.max_mc_seq_no + self.step > to)
+            && !matches!(self.to, Some(to) if self.max_mc_seq_no + STEP > to)
         {
-            self.start_downloading(self.max_mc_seq_no + self.step);
+            self.start_downloading(self.max_mc_seq_no + STEP);
         }
 
         Some(ReceivedBlockMaps {
             downloader: self,
+            index: next_index,
             block_maps,
             accepted: false,
         })
-    }
-
-    pub async fn stop(&mut self) {
-        self.cancellation_token.cancel();
-        self.running = false;
     }
 
     fn start_downloading(&mut self, mc_block_seq_no: u32) {
@@ -154,64 +178,6 @@ impl Drop for ArchiveDownloader {
     }
 }
 
-pub struct ArchiveDownloaderBuilder {
-    step: u32,
-    from: u32,
-    to: Option<u32>,
-}
-
-impl ArchiveDownloaderBuilder {
-    pub fn step(mut self, step: u32) -> Self {
-        self.step = step;
-        self
-    }
-
-    pub fn range(mut self, range: impl RangeBounds<u32>) -> Self {
-        self.from = match range.start_bound() {
-            Bound::Included(&from) => from,
-            Bound::Excluded(&from) => from + 1,
-            Bound::Unbounded => 0,
-        };
-
-        self.to = match range.end_bound() {
-            Bound::Included(&to) => Some(to),
-            Bound::Excluded(&to) if to > 0 => Some(to - 1),
-            Bound::Excluded(_) => Some(0),
-            Bound::Unbounded => None,
-        };
-
-        if let Some(to) = &mut self.to {
-            *to = std::cmp::max(*to, self.from);
-        }
-
-        self
-    }
-
-    pub fn start(self, engine: &Arc<Engine>, active_peers: &Arc<ActivePeers>) -> ArchiveDownloader {
-        let mut downloader = ArchiveDownloader {
-            engine: engine.clone(),
-            active_peers: active_peers.clone(),
-            pending_archives: Default::default(),
-            new_archive_notification: Default::default(),
-            cancellation_token: Default::default(),
-            running: true,
-            step: self.step,
-            next_mc_seq_no: self.from,
-            max_mc_seq_no: 0,
-            to: self.to,
-        };
-
-        for mc_seq_no in (downloader.next_mc_seq_no..)
-            .step_by(downloader.step as usize)
-            .take(engine.parallel_archive_downloads)
-        {
-            downloader.start_downloading(mc_seq_no);
-        }
-
-        downloader
-    }
-}
-
 struct PendingBlockMaps {
     index: u32,
     block_maps: Arc<Mutex<Option<Arc<BlockMaps>>>>,
@@ -240,6 +206,7 @@ impl Ord for PendingBlockMaps {
 
 pub struct ReceivedBlockMaps<'a> {
     downloader: &'a mut ArchiveDownloader,
+    index: u32,
     block_maps: Arc<BlockMaps>,
     accepted: bool,
 }
@@ -300,7 +267,7 @@ pub async fn download_archive(
                 let len = data.len();
                 log::info!("sync: Downloaded archive for block {mc_seq_no}, size {len} bytes");
 
-                match BlockMaps::new(mc_seq_no, &data) {
+                match BlockMaps::new(&data) {
                     Ok(data) => break Some(data),
                     Err(e) => {
                         log::error!("sync: Failed to parse archive: {e:?}");

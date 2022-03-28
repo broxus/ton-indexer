@@ -9,17 +9,17 @@ use crate::storage::*;
 use crate::utils::*;
 
 pub struct BlockMaps {
-    pub index: u32,
     pub mc_block_ids: BTreeMap<u32, ton_block::BlockIdExt>,
     pub blocks: BTreeMap<ton_block::BlockIdExt, BlockMapsEntry>,
 }
 
 impl BlockMaps {
-    pub fn new(archive_seqno: u32, data: &[u8]) -> Result<Arc<Self>> {
+    pub const MAX_MC_BLOCK_COUNT: usize = 100;
+
+    pub fn new(data: &[u8]) -> Result<Arc<Self>> {
         let mut reader = ArchivePackageViewReader::new(data)?;
 
         let mut maps = BlockMaps {
-            index: archive_seqno,
             mc_block_ids: Default::default(),
             blocks: Default::default(),
         };
@@ -74,17 +74,16 @@ impl BlockMaps {
         self.mc_block_ids.values().rev().next()
     }
 
-    pub fn check(&self) -> Result<(), BlockMapsError> {
+    pub fn check(&self, index: u32) -> Result<(), BlockMapsError> {
         let mc_block_count = self.mc_block_ids.len();
 
         let (left, right) = match (self.lowest_mc_id(), self.highest_mc_id()) {
             (Some(left), Some(right)) => {
                 log::info!(
-                    "Archive {}. Blocks in masterchain: {} (from {} to {}). Total: {}",
-                    self.index,
-                    self.mc_block_ids.len(),
+                    "Archive {index} [{}..{}]. Blocks in masterchain: {}. Total: {}",
                     left.seq_no,
                     right.seq_no,
+                    mc_block_count,
                     self.blocks.len()
                 );
                 (left.seq_no, right.seq_no)
@@ -133,49 +132,6 @@ impl BlockMaps {
         // Archive is not empty and all blocks are contiguous
         Ok(())
     }
-
-    pub fn find_intersection(&self, prev: &Self) -> BlockMapsIntersection {
-        let prev_highest_seqno = prev.mc_block_ids.keys().rev().next();
-
-        let lowest_seqno = self.mc_block_ids.keys().next();
-        let highest_seqno = self.mc_block_ids.keys().rev().next();
-
-        match (prev_highest_seqno, lowest_seqno, highest_seqno) {
-            // |-----------|
-            //  ..------|
-            (Some(prev_highest_seqno), _, Some(highest_seqno))
-                if highest_seqno <= prev_highest_seqno =>
-            {
-                BlockMapsIntersection::FullOverlap
-            }
-            // |-----------|
-            //          |--------|
-            (Some(prev_highest_seqno), Some(lowest_seqno), _)
-                if prev_highest_seqno + 1 >= *lowest_seqno =>
-            {
-                BlockMapsIntersection::Contiguous
-            }
-            // |-----------|    |--------|
-            (Some(prev_highest_seqno), Some(lowest_seqno), _) => BlockMapsIntersection::Gap {
-                from: prev_highest_seqno + 1,
-                to: lowest_seqno - 1,
-            },
-            // One of archives is empty
-            _ => BlockMapsIntersection::Undefined,
-        }
-    }
-}
-
-#[derive(Debug, Copy, Clone, Eq, PartialEq)]
-pub enum BlockMapsIntersection {
-    /// Archive is fully included into other
-    FullOverlap,
-    /// Archive has some new blocks
-    Contiguous,
-    /// There is a gap between archives
-    Gap { from: u32, to: u32 },
-    /// Archives are invalid (mostly due to emptiness)
-    Undefined,
 }
 
 #[derive(Default)]
@@ -250,5 +206,3 @@ pub enum BlockMapsError {
     #[error("Block proof not found in archive")]
     BlockProofNotFound,
 }
-
-pub const ARCHIVE_SLICE: u32 = 100;
