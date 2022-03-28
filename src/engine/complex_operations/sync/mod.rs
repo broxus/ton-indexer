@@ -21,8 +21,15 @@ pub async fn sync(engine: &Arc<Engine>) -> Result<()> {
 
     let mut archives_stream = ArchiveDownloader::new(engine, last_mc_block_id.seq_no + 1..);
 
+    let mut last_gen_utime = 0;
     while let Some(archive) = archives_stream.recv().await {
-        if let Err(e) = import_package_with_apply(engine, archive.clone(), &last_mc_block_id).await
+        if let Err(e) = import_package_with_apply(
+            engine,
+            archive.clone(),
+            &last_mc_block_id,
+            &mut last_gen_utime,
+        )
+        .await
         {
             log::error!("sync: Failed to apply queued archive for block {last_mc_block_id}: {e:?}");
             continue;
@@ -33,7 +40,7 @@ pub async fn sync(engine: &Arc<Engine>) -> Result<()> {
         }
 
         last_mc_block_id = engine.last_applied_block()?;
-        archive.accept();
+        archive.accept_with_time(last_gen_utime);
     }
 
     Ok(())
@@ -43,6 +50,7 @@ async fn import_package_with_apply(
     engine: &Arc<Engine>,
     maps: Arc<BlockMaps>,
     last_mc_block_id: &ton_block::BlockIdExt,
+    last_gen_utime: &mut u32,
 ) -> Result<()> {
     if maps.mc_block_ids.is_empty() {
         return Err(SyncError::EmptyArchivePackage.into());
@@ -50,7 +58,7 @@ async fn import_package_with_apply(
 
     let import_start = std::time::Instant::now();
 
-    import_mc_blocks_with_apply(engine, maps.clone(), last_mc_block_id).await?;
+    import_mc_blocks_with_apply(engine, maps.clone(), last_mc_block_id, last_gen_utime).await?;
     import_shard_blocks_with_apply(engine, maps).await?;
 
     let elapsed = import_start.elapsed().as_millis();
@@ -63,6 +71,7 @@ async fn import_mc_blocks_with_apply(
     engine: &Arc<Engine>,
     maps: Arc<BlockMaps>,
     mut last_mc_block_id: &ton_block::BlockIdExt,
+    last_gen_utime: &mut u32,
 ) -> Result<()> {
     for id in maps.mc_block_ids.values() {
         if id.seq_no <= last_mc_block_id.seq_no {
@@ -92,6 +101,8 @@ async fn import_mc_blocks_with_apply(
 
         let (block, block_proof) = entry.get_data()?;
         let handle = save_block(engine, last_mc_block_id, block, block_proof, None).await?;
+
+        *last_gen_utime = handle.meta().gen_utime();
 
         engine
             .apply_block_ext(&handle, block, last_mc_block_id.seq_no, false, 0)

@@ -5,6 +5,7 @@ use std::ops::{Bound, Deref, DerefMut, RangeBounds};
 use std::sync::Arc;
 
 use parking_lot::Mutex;
+use tiny_adnl::utils::*;
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
@@ -18,7 +19,7 @@ pub struct ArchiveDownloader {
     pending_archives: BinaryHeap<PendingBlockMaps>,
     new_archive_notification: Arc<Notify>,
     cancellation_token: CancellationToken,
-    running: bool,
+    prefetch_enabled: bool,
     next_mc_seq_no: u32,
     max_mc_seq_no: u32,
     to: Option<u32>,
@@ -49,7 +50,7 @@ impl ArchiveDownloader {
             pending_archives: Default::default(),
             new_archive_notification: Default::default(),
             cancellation_token: Default::default(),
-            running: true,
+            prefetch_enabled: true,
             next_mc_seq_no: from,
             max_mc_seq_no: 0,
             to,
@@ -68,10 +69,6 @@ impl ArchiveDownloader {
     /// Wait next archive
     pub async fn recv(&'_ mut self) -> Option<ReceivedBlockMaps<'_>> {
         const STEP: u32 = BlockMaps::MAX_MC_BLOCK_COUNT as u32;
-
-        if !self.running {
-            return None;
-        }
 
         let next_index = self.next_mc_seq_no;
         let mut has_gap = false;
@@ -130,7 +127,8 @@ impl ArchiveDownloader {
             notified.await;
         };
 
-        while self.pending_archives.len() < self.engine.parallel_archive_downloads
+        while self.prefetch_enabled
+            && self.pending_archives.len() < self.engine.parallel_archive_downloads
             && !matches!(self.to, Some(to) if self.max_mc_seq_no + STEP > to)
         {
             self.start_downloading(self.max_mc_seq_no + STEP);
@@ -218,6 +216,11 @@ impl ReceivedBlockMaps<'_> {
             self.downloader.next_mc_seq_no = highest_mc_id.seq_no + 1;
         }
     }
+
+    pub fn accept_with_time(self, time: u32) {
+        self.downloader.prefetch_enabled = time + ARCHIVE_EXISTENCE_THRESHOLD <= now() as u32;
+        self.accept();
+    }
 }
 
 impl Deref for ReceivedBlockMaps<'_> {
@@ -283,3 +286,5 @@ pub async fn download_archive(
         }
     }
 }
+
+const ARCHIVE_EXISTENCE_THRESHOLD: u32 = 1800;
