@@ -2,234 +2,207 @@ use std::hash::BuildHasherDefault;
 use std::sync::Arc;
 
 use anyhow::Result;
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
 use tiny_adnl::utils::*;
 
 use crate::storage::*;
 use crate::utils::*;
 
-pub const ARCHIVE_SLICE: u32 = 100;
-
-pub fn parse_archive(data: Vec<u8>) -> Result<Arc<BlockMaps>> {
-    let mut reader = ArchivePackageViewReader::new(&data)?;
-
-    let mut maps = BlockMaps::default();
-
-    while let Some(entry) = reader.read_next()? {
-        match PackageEntryId::from_filename(entry.name)? {
-            PackageEntryId::Block(id) => {
-                maps.blocks
-                    .entry(id.clone())
-                    .or_insert_with(BlocksEntry::default)
-                    .block = Some(BlockStuff::deserialize_checked(
-                    id.clone(),
-                    entry.data.to_vec(),
-                )?);
-                if id.is_masterchain() {
-                    maps.mc_block_ids.insert(id.seq_no, id);
-                }
-            }
-            PackageEntryId::Proof(id) => {
-                if !id.is_masterchain() {
-                    continue;
-                }
-                maps.blocks
-                    .entry(id.clone())
-                    .or_insert_with(BlocksEntry::default)
-                    .proof = Some(BlockProofStuff::deserialize(
-                    id.clone(),
-                    entry.data.to_vec(),
-                    false,
-                )?);
-                maps.mc_block_ids.insert(id.seq_no, id);
-            }
-            PackageEntryId::ProofLink(id) => {
-                if id.is_masterchain() {
-                    continue;
-                }
-                maps.blocks
-                    .entry(id.clone())
-                    .or_insert_with(BlocksEntry::default)
-                    .proof = Some(BlockProofStuff::deserialize(
-                    id.clone(),
-                    entry.data.to_vec(),
-                    true,
-                )?);
-            }
-        }
-    }
-    Ok(Arc::new(maps))
-}
-
-#[derive(Default)]
 pub struct BlockMaps {
     pub mc_block_ids: BTreeMap<u32, ton_block::BlockIdExt>,
-    pub blocks: BTreeMap<ton_block::BlockIdExt, BlocksEntry>,
+    pub blocks: BTreeMap<ton_block::BlockIdExt, BlockMapsEntry>,
 }
-
-impl PartialEq for BlockMaps {
-    fn eq(&self, other: &Self) -> bool {
-        if self.mc_block_ids.is_empty() || other.mc_block_ids.is_empty() {
-            return false;
-        }
-        //checked upper
-        self.lowest_id().unwrap() == other.lowest_id().unwrap()
-    }
-}
-
-impl Eq for BlockMaps {}
 
 impl BlockMaps {
-    pub fn get_first_utime(&self) -> Option<u32> {
-        for block in &self.blocks {
-            if let Some(a) = &block.1.block {
-                return Some(a.block().info.read_struct().ok()?.gen_utime().0);
+    pub const MAX_MC_BLOCK_COUNT: usize = 100;
+
+    pub fn new(data: &[u8]) -> Result<Arc<Self>> {
+        let mut reader = ArchivePackageViewReader::new(data)?;
+
+        let mut maps = BlockMaps {
+            mc_block_ids: Default::default(),
+            blocks: Default::default(),
+        };
+
+        while let Some(entry) = reader.read_next()? {
+            match PackageEntryId::from_filename(entry.name)? {
+                PackageEntryId::Block(id) => {
+                    maps.blocks
+                        .entry(id.clone())
+                        .or_insert_with(BlockMapsEntry::default)
+                        .block = Some(BlockStuff::deserialize_checked(
+                        id.clone(),
+                        entry.data.to_vec(),
+                    )?);
+                    if id.is_masterchain() {
+                        maps.mc_block_ids.insert(id.seq_no, id);
+                    }
+                }
+                PackageEntryId::Proof(id) if id.is_masterchain() => {
+                    maps.blocks
+                        .entry(id.clone())
+                        .or_insert_with(BlockMapsEntry::default)
+                        .proof = Some(BlockProofStuff::deserialize(
+                        id.clone(),
+                        entry.data.to_vec(),
+                        false,
+                    )?);
+                    maps.mc_block_ids.insert(id.seq_no, id);
+                }
+                PackageEntryId::ProofLink(id) if !id.is_masterchain() => {
+                    maps.blocks
+                        .entry(id.clone())
+                        .or_insert_with(BlockMapsEntry::default)
+                        .proof = Some(BlockProofStuff::deserialize(
+                        id.clone(),
+                        entry.data.to_vec(),
+                        true,
+                    )?);
+                }
+                _ => continue,
             }
         }
-        None
+
+        Ok(Arc::new(maps))
     }
 
-    pub fn is_valid(&self, archive_seqno: u32) -> Option<()> {
-        log::info!(
-            "Archive {}. Blocks in masterchain: {}. Total: {}",
-            archive_seqno,
-            self.mc_block_ids.len(),
-            self.blocks.len()
-        );
-        if self.mc_block_ids.is_empty() {
-            log::error!(
-                "Expected archive len: {}. Got: {}",
-                ARCHIVE_SLICE - 1,
-                self.mc_block_ids.len()
-            );
-            return None;
-        }
-        let left = self.lowest_id()?.seq_no;
-        let right = self.highest_id()?.seq_no;
-        log::info!(
-            "Archive_id: {}. Left: {}. Right: {}",
-            archive_seqno,
-            left,
-            right
-        );
-        let mc_blocks = self.mc_block_ids.iter().map(|x| x.1.seq_no);
-        for (expected, got) in (left..right).zip(mc_blocks) {
-            if expected != got {
-                log::error!("Bad mc blocks {}", archive_seqno);
-                return None;
+    pub fn lowest_mc_id(&self) -> Option<&ton_block::BlockIdExt> {
+        self.mc_block_ids.values().next()
+    }
+
+    pub fn highest_mc_id(&self) -> Option<&ton_block::BlockIdExt> {
+        self.mc_block_ids.values().rev().next()
+    }
+
+    pub fn check(&self, index: u32) -> Result<(), BlockMapsError> {
+        let mc_block_count = self.mc_block_ids.len();
+
+        let (left, right) = match (self.lowest_mc_id(), self.highest_mc_id()) {
+            (Some(left), Some(right)) => {
+                log::info!(
+                    "Archive {index} [{}..{}]. Blocks in masterchain: {}. Total: {}",
+                    left.seq_no,
+                    right.seq_no,
+                    mc_block_count,
+                    self.blocks.len()
+                );
+                (left.seq_no, right.seq_no)
             }
+            _ => return Err(BlockMapsError::EmptyArchive),
+        };
+
+        // NOTE: blocks are stored in BTreeSet so keys are ordered integers
+        if (left as usize) + mc_block_count != (right as usize) + 1 {
+            return Err(BlockMapsError::InconsistentMasterchainBlocks);
         }
 
+        // Group all block ids by shards
         let mut map = FxHashMap::with_capacity_and_hasher(16, BuildHasherDefault::default());
-        for blk in self.blocks.keys() {
-            map.entry(blk.shard_id)
+        for block_id in self.blocks.keys() {
+            map.entry(block_id.shard_id)
                 .or_insert_with(BTreeSet::new)
-                .insert(blk.seq_no);
+                .insert(block_id.seq_no);
         }
 
-        fn find_block(
-            map: &FxHashMap<ton_block::ShardIdent, BTreeSet<u32>>,
-            shard_ident: &ton_block::ShardIdent,
-            prev_seqno: u32,
-        ) -> bool {
-            if let Ok((left, right)) = shard_ident.split() {
-                // Check case after merge in the same archive in the left child
-                if let Some(ids) = map.get(&left) {
-                    // Search prev seqno in the left shard
-                    if ids.contains(&prev_seqno) {
-                        return true;
-                    }
-                }
-
-                // Check case after merge in the same archive in the right child
-                if let Some(ids) = map.get(&right) {
-                    // Search prev seqno in the right shard
-                    if ids.contains(&prev_seqno) {
-                        return true;
-                    }
-                }
-            }
-
-            if let Ok(parent) = shard_ident.merge() {
-                // Check case after second split in the same archive
-                if let Some(ids) = map.get(&parent) {
-                    // Search prev shard in the parent shard
-                    if ids.contains(&prev_seqno) {
-                        return true;
-                    }
-                }
-            }
-
-            false
-        }
-
+        // Check consistency
         for (shard_ident, blocks) in &map {
             let mut block_seqnos = blocks.iter();
-            let mut prev = *block_seqnos.next()?;
 
+            // Skip empty shards
+            let mut prev = match block_seqnos.next() {
+                Some(seqno) => *seqno,
+                None => continue,
+            };
+
+            // Iterate through all blocks in shard
             for &seqno in block_seqnos {
-                if seqno != prev + 1 && !find_block(&map, shard_ident, seqno - 1) {
-                    log::error!("Bad shard blocks {shard_ident}:{seqno}. Prev: {prev}",);
-                    return None;
+                // Search either for the previous known block in the same shard
+                // or in other shards in case of merge/split
+                if seqno != prev + 1 && !contains_previous_block(&map, shard_ident, seqno - 1) {
+                    return Err(BlockMapsError::InconsistentShardchainBlock {
+                        shard_ident: *shard_ident,
+                        seqno,
+                    });
                 }
+                // Update last known seqno for this shard
                 prev = seqno;
             }
         }
-        Some(())
-    }
 
-    pub fn lowest_id(&self) -> Option<&ton_block::BlockIdExt> {
-        self.mc_block_ids.iter().map(|x| x.1).min()
-    }
-
-    pub fn highest_id(&self) -> Option<&ton_block::BlockIdExt> {
-        self.mc_block_ids.iter().map(|x| x.1).max()
-    }
-
-    pub fn is_contiguous(left: &Self, right: &Self) -> bool {
-        let left_blocks: HashSet<u32> = left.mc_block_ids.iter().map(|x| x.1.seq_no).collect();
-        let right_blocks: HashSet<u32> = right.mc_block_ids.iter().map(|x| x.1.seq_no).collect();
-        if left_blocks.intersection(&right_blocks).next().is_some() {
-            return true;
-        }
-
-        match (left.highest_id(), right.lowest_id()) {
-            (Some(left), Some(right)) => left.seq_no + 1 >= right.seq_no,
-            _ => true,
-        }
-    }
-
-    pub fn distance_to(&self, right: &Self) -> Option<(u32, u32)> {
-        let left_highest = self.highest_id()?.seq_no;
-        let right_lowest = right.lowest_id()?.seq_no;
-        Some((left_highest, right_lowest))
+        // Archive is not empty and all blocks are contiguous
+        Ok(())
     }
 }
 
 #[derive(Default)]
-pub struct BlocksEntry {
+pub struct BlockMapsEntry {
     pub block: Option<BlockStuff>,
     pub proof: Option<BlockProofStuff>,
 }
 
-impl BlocksEntry {
-    pub fn get_data(&self) -> Result<(&BlockStuff, &BlockProofStuff)> {
+impl BlockMapsEntry {
+    pub fn get_data(&self) -> Result<(&BlockStuff, &BlockProofStuff), BlockMapsError> {
         let block = match &self.block {
             Some(block) => block,
-            None => return Err(SyncError::BlockNotFound.into()),
+            None => return Err(BlockMapsError::BlockDataNotFound),
         };
         let block_proof = match &self.proof {
             Some(proof) => proof,
-            None => return Err(SyncError::BlockProofNotFound.into()),
+            None => return Err(BlockMapsError::BlockProofNotFound),
         };
         Ok((block, block_proof))
     }
 }
 
+fn contains_previous_block(
+    map: &FxHashMap<ton_block::ShardIdent, BTreeSet<u32>>,
+    shard_ident: &ton_block::ShardIdent,
+    prev_seqno: u32,
+) -> bool {
+    if let Ok((left, right)) = shard_ident.split() {
+        // Check case after merge in the same archive in the left child
+        if let Some(ids) = map.get(&left) {
+            // Search prev seqno in the left shard
+            if ids.contains(&prev_seqno) {
+                return true;
+            }
+        }
+
+        // Check case after merge in the same archive in the right child
+        if let Some(ids) = map.get(&right) {
+            // Search prev seqno in the right shard
+            if ids.contains(&prev_seqno) {
+                return true;
+            }
+        }
+    }
+
+    if let Ok(parent) = shard_ident.merge() {
+        // Check case after second split in the same archive
+        if let Some(ids) = map.get(&parent) {
+            // Search prev shard in the parent shard
+            if ids.contains(&prev_seqno) {
+                return true;
+            }
+        }
+    }
+
+    false
+}
+
 #[derive(thiserror::Error, Debug)]
-enum SyncError {
+pub enum BlockMapsError {
+    #[error("Empty archive")]
+    EmptyArchive,
+    #[error("Inconsistent masterchain blocks")]
+    InconsistentMasterchainBlocks,
+    #[error("Inconsistent masterchain block {shard_ident}:{seqno}")]
+    InconsistentShardchainBlock {
+        shard_ident: ton_block::ShardIdent,
+        seqno: u32,
+    },
     #[error("Block not found in archive")]
-    BlockNotFound,
+    BlockDataNotFound,
     #[error("Block proof not found in archive")]
     BlockProofNotFound,
 }

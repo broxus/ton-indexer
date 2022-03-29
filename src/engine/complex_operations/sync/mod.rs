@@ -1,18 +1,7 @@
-/// This file is a modified copy of the file from https://github.com/tonlabs/ton-labs-node
-///
-/// Changes:
-/// - replaced old `failure` crate with `anyhow`
-/// - greatly improved sync speed
-/// - added sync from old blocks
-///
-///
-/// TODO: rewrite stream items handling 🌚
 use std::borrow::Cow;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use futures::StreamExt;
-use tiny_adnl::utils::*;
 
 use crate::engine::Engine;
 use crate::storage::*;
@@ -24,159 +13,65 @@ use self::block_maps::*;
 mod archive_downloader;
 mod block_maps;
 
-const FAST_SYNC_THRESHOLD: u32 = 1800;
-
 pub async fn sync(engine: &Arc<Engine>) -> Result<()> {
-    log::info!("Started sync");
+    log::info!("sync: Started sync");
 
-    let active_peers = Arc::new(ActivePeers::default());
-    let last_applied = engine.last_applied_block()?.seq_no;
+    let mut last_mc_block_id = engine.last_applied_block()?;
+    log::info!("sync: Creating archives stream from {last_mc_block_id}");
 
-    log::info!("Creating archives stream from {}", last_applied);
-    let archives_stream =
-        start_download(engine, &active_peers, ARCHIVE_SLICE, last_applied..).await;
+    let mut archives_stream = ArchiveDownloader::new(engine, last_mc_block_id.seq_no + 1..);
 
-    if let Some((mut archives_stream, _trigger)) = archives_stream {
-        log::info!("sync: Starting fast sync");
-        let mut prev_step = std::time::Instant::now();
-
-        while let Some(mut archive) = archives_stream.next().await {
-            log::info!(
-                "sync: Time from prev step: {} ms",
-                prev_step.elapsed().as_millis()
-            );
-            prev_step = std::time::Instant::now();
-
-            let mc_block_id = engine.last_applied_block()?;
-
-            let mut first_utime = archive.get_first_utime();
-            let import_start = std::time::Instant::now();
-
-            'import_loop: loop {
-                match import_package(engine, archive, &mc_block_id).await {
-                    Ok(()) => {
-                        log::info!(
-                            "sync: Imported archive package for block {}. Took: {} ms",
-                            mc_block_id.seq_no,
-                            import_start.elapsed().as_millis()
-                        );
-                        break 'import_loop;
-                    }
-                    Err(e) => {
-                        log::error!(
-                            "sync: Failed to apply queued archive for block {}: {:?}",
-                            mc_block_id.seq_no,
-                            e
-                        );
-                    }
-                }
-                loop {
-                    log::info!("sync: Force downloading archive");
-                    let data =
-                        download_archive_or_die(engine, &active_peers, mc_block_id.seq_no).await;
-
-                    match parse_archive(data) {
-                        Ok(parsed) => {
-                            log::info!(
-                                "sync: Parsed {} masterchain blocks, {} blocks total",
-                                parsed.mc_block_ids.len(),
-                                parsed.blocks.len()
-                            );
-                            first_utime = parsed.get_first_utime();
-                            archive = parsed;
-                            break;
-                        }
-                        Err(e) => {
-                            log::error!(
-                                "sync: Failed to parse archive for block {}: {:?}",
-                                mc_block_id.seq_no,
-                                e
-                            );
-                        }
-                    }
-                }
-            }
-
-            log::info!(
-                "sync: Full cycle took: {} ms",
-                prev_step.elapsed().as_millis()
-            );
-
-            match first_utime {
-                Some(first_utime) if first_utime + FAST_SYNC_THRESHOLD <= now() as u32 => {}
-                _ => {
-                    log::info!("sync: Stopping fast sync");
-                    break;
-                }
-            }
+    let mut last_gen_utime = 0;
+    while let Some(archive) = archives_stream.recv().await {
+        if let Err(e) = import_package_with_apply(
+            engine,
+            archive.clone(),
+            &last_mc_block_id,
+            &mut last_gen_utime,
+        )
+        .await
+        {
+            log::error!("sync: Failed to apply queued archive for block {last_mc_block_id}: {e:?}");
+            continue;
         }
-    }
-    log::info!("sync: Finished fast sync");
 
-    while !engine.is_synced()? {
-        let last_mc_block_id = engine.last_applied_block()?;
-
-        log::info!(
-            "sync: Start iteration for last masterchain block id: {}",
-            last_mc_block_id.seq_no
-        );
-
-        let next_mc_seq_no = last_mc_block_id.seq_no + 1;
-        let data = download_archive_or_die(engine, &active_peers, next_mc_seq_no).await;
-
-        if let Err(e) = apply(engine, &last_mc_block_id, next_mc_seq_no, data).await {
-            log::error!(
-                "sync: Failed to apply queued archive for block {}: {:?}",
-                next_mc_seq_no,
-                e
-            );
+        if engine.is_synced()? {
+            break;
         }
+
+        last_mc_block_id = engine.last_applied_block()?;
+        archive.accept_with_time(last_gen_utime);
     }
 
     Ok(())
 }
 
-async fn apply(
-    engine: &Arc<Engine>,
-    last_mc_block_id: &ton_block::BlockIdExt,
-    mc_seq_no: u32,
-    data: Vec<u8>,
-) -> Result<()> {
-    log::info!("sync: Parsing archive for block {}", mc_seq_no);
-    let maps = parse_archive(data)?;
-    log::info!(
-        "sync: Parsed {} masterchain blocks, {} blocks total",
-        maps.mc_block_ids.len(),
-        maps.blocks.len()
-    );
-    import_package(engine, maps, last_mc_block_id).await?;
-    log::info!("sync: Imported archive package for block {}", mc_seq_no);
-    Ok(())
-}
-
-async fn import_package(
+async fn import_package_with_apply(
     engine: &Arc<Engine>,
     maps: Arc<BlockMaps>,
     last_mc_block_id: &ton_block::BlockIdExt,
+    last_gen_utime: &mut u32,
 ) -> Result<()> {
     if maps.mc_block_ids.is_empty() {
         return Err(SyncError::EmptyArchivePackage.into());
     }
-    profl::start!(t);
-    import_mc_blocks(engine, maps.clone(), last_mc_block_id).await?;
-    profl::tick!(t =>"import_mc_blocks");
-    profl::span!(
-        "import_shard_blocks",
-        import_shard_blocks(engine, maps).await?
-    );
-    profl::tick!(t =>"import_package");
+
+    let import_start = std::time::Instant::now();
+
+    import_mc_blocks_with_apply(engine, maps.clone(), last_mc_block_id, last_gen_utime).await?;
+    import_shard_blocks_with_apply(engine, maps).await?;
+
+    let elapsed = import_start.elapsed().as_millis();
+    log::info!("sync: Imported archive package for block {last_mc_block_id}. Took: {elapsed} ms");
+
     Ok(())
 }
 
-async fn import_mc_blocks(
+async fn import_mc_blocks_with_apply(
     engine: &Arc<Engine>,
     maps: Arc<BlockMaps>,
     mut last_mc_block_id: &ton_block::BlockIdExt,
+    last_gen_utime: &mut u32,
 ) -> Result<()> {
     for id in maps.mc_block_ids.values() {
         if id.seq_no <= last_mc_block_id.seq_no {
@@ -188,7 +83,7 @@ async fn import_mc_blocks(
 
         if id.seq_no != last_mc_block_id.seq_no + 1 {
             log::error!(
-                "Seqno: {}, expected: {}",
+                "sync: Failed to apply mc block. Seqno: {}, expected: {}",
                 id.seq_no,
                 last_mc_block_id.seq_no + 1
             );
@@ -207,27 +102,27 @@ async fn import_mc_blocks(
         let (block, block_proof) = entry.get_data()?;
         let handle = save_block(engine, last_mc_block_id, block, block_proof, None).await?;
 
+        *last_gen_utime = handle.meta().gen_utime();
+
         engine
             .apply_block_ext(&handle, block, last_mc_block_id.seq_no, false, 0)
             .await?;
     }
 
-    log::info!("Last applied masterchain block id: {}", last_mc_block_id);
+    log::info!("sync: Last applied masterchain block id: {last_mc_block_id}");
     Ok(())
 }
 
-async fn import_shard_blocks(engine: &Arc<Engine>, maps: Arc<BlockMaps>) -> Result<()> {
+async fn import_shard_blocks_with_apply(engine: &Arc<Engine>, maps: Arc<BlockMaps>) -> Result<()> {
+    // Save all shardchain blocks
     for (id, entry) in &maps.blocks {
         if !id.shard_id.is_masterchain() {
             let (block, block_proof) = entry.get_data()?;
-
-            profl::span!(
-                "save_shard_block",
-                save_block(engine, id, block, block_proof, None).await?
-            );
+            save_block(engine, id, block, block_proof, None).await?;
         }
     }
 
+    // Iterate through all masterchain blocks in archive
     let mut last_applied_mc_block_id = engine.load_shards_client_mc_block_id()?;
     for mc_block_id in maps.mc_block_ids.values() {
         let mc_seq_no = mc_block_id.seq_no;
@@ -235,12 +130,14 @@ async fn import_shard_blocks(engine: &Arc<Engine>, maps: Arc<BlockMaps>) -> Resu
             continue;
         }
 
+        // Load masterchain block data and top shardchain blocks
         let masterchain_handle = engine
             .load_block_handle(mc_block_id)?
             .ok_or(SyncError::MasterchainBlockNotFound)?;
         let masterchain_block = engine.load_block_data(&masterchain_handle).await?;
         let shard_blocks = masterchain_block.shards_blocks()?;
 
+        // Start applying blocks for each shard
         let mut tasks = Vec::with_capacity(shard_blocks.len());
         for (_, id) in shard_blocks {
             let engine = engine.clone();
@@ -249,15 +146,19 @@ async fn import_shard_blocks(engine: &Arc<Engine>, maps: Arc<BlockMaps>) -> Resu
                 let handle = engine
                     .load_block_handle(&id)?
                     .ok_or(SyncError::ShardchainBlockHandleNotFound)?;
+
+                // Skip applied blocks
                 if handle.meta().is_applied() {
                     return Ok(());
                 }
 
+                // Special case for zerostate blocks
                 if id.seq_no == 0 {
                     super::boot::download_zero_state(&engine, &id).await?;
                     return Ok(());
                 }
 
+                // Get block data wor load it from db
                 let block = match maps.blocks.get(&id) {
                     Some(entry) => match &entry.block {
                         Some(block) => Some(Cow::Borrowed(block)),
@@ -266,6 +167,7 @@ async fn import_shard_blocks(engine: &Arc<Engine>, maps: Arc<BlockMaps>) -> Resu
                     None => engine.load_block_data(&handle).await.ok().map(Cow::Owned),
                 };
 
+                // Apply shardchain blocks recursively
                 match block {
                     Some(block) => {
                         engine
@@ -273,7 +175,7 @@ async fn import_shard_blocks(engine: &Arc<Engine>, maps: Arc<BlockMaps>) -> Resu
                             .await
                     }
                     None => {
-                        log::info!("Downloading sc block for {}", mc_seq_no);
+                        log::info!("sync: Downloading shardchain block for {}", mc_seq_no);
                         engine
                             .download_and_apply_block(handle.id(), mc_seq_no, false, 0)
                             .await
@@ -293,6 +195,89 @@ async fn import_shard_blocks(engine: &Arc<Engine>, maps: Arc<BlockMaps>) -> Resu
     }
 
     Ok(())
+}
+
+pub async fn background_sync(engine: &Arc<Engine>, from_seqno: u32) -> Result<()> {
+    let (from, to) = engine.background_sync_range(from_seqno)?;
+
+    log::info!("sync: Started background sync from {from} to {to}");
+
+    let mut ctx = BackgroundSyncContext {
+        engine,
+        to,
+        prev_key_block_id: &mut engine.load_prev_key_block(from).await?,
+    };
+
+    let mut archive_downloader = ArchiveDownloader::new(engine, from..=to);
+    while let Some(archive) = archive_downloader.recv().await {
+        if ctx.handle(archive.clone()).await? == SyncStatus::Done {
+            break;
+        }
+        archive.accept();
+    }
+
+    log::info!("sync: Background sync complete");
+    Ok(())
+}
+
+struct BackgroundSyncContext<'a> {
+    engine: &'a Arc<Engine>,
+    to: u32,
+    prev_key_block_id: &'a mut ton_block::BlockIdExt,
+}
+
+impl BackgroundSyncContext<'_> {
+    async fn handle(&mut self, maps: Arc<BlockMaps>) -> Result<SyncStatus> {
+        let (lowest_id, highest_id) = match (maps.lowest_mc_id(), maps.highest_mc_id()) {
+            (Some(lowest), Some(highest)) => (lowest, highest),
+            _ => return Ok(SyncStatus::NoBlocksInArchive),
+        };
+        log::debug!("sync: Saving archive. Low id: {lowest_id}. High id: {highest_id}");
+
+        for (id, entry) in &maps.blocks {
+            let (block, proof) = entry.get_data()?;
+
+            let handle = match self.engine.load_block_handle(block.id())? {
+                Some(handle) => handle,
+                None => profl::span!(
+                    "save_background_sync_block",
+                    save_block(self.engine, id, block, proof, Some(self.prev_key_block_id))
+                        .await
+                        .context("Failed saving block")?
+                ),
+            };
+
+            self.engine
+                .notify_subscribers_with_archive_block(&handle, block, proof)
+                .await
+                .context("Failed to process archive block")?;
+
+            if handle.is_key_block() {
+                *self.prev_key_block_id = id.clone();
+            }
+        }
+
+        self.engine
+            .db
+            .background_sync_store()
+            .store_low_key_block(highest_id)?;
+        log::info!("sync: Saved archive from {} to {}", lowest_id, highest_id);
+
+        Ok({
+            if highest_id.seq_no >= self.to {
+                SyncStatus::Done
+            } else {
+                SyncStatus::InProgress
+            }
+        })
+    }
+}
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+enum SyncStatus {
+    Done,
+    InProgress,
+    NoBlocksInArchive,
 }
 
 async fn save_block(
@@ -344,142 +329,6 @@ async fn save_block(
     Ok(handle)
 }
 
-pub async fn background_sync(engine: &Arc<Engine>, from_seqno: u32) -> Result<()> {
-    let store = engine.db.background_sync_store();
-
-    log::info!("Download previous history sync since block {}", from_seqno);
-
-    let high = store.load_high_key_block()?.seq_no;
-    let low = match store.load_low_key_block()? {
-        Some(low) => {
-            log::warn!(
-                "Ignoring `from_seqno` param, using saved seqno: {}",
-                low.seq_no
-            );
-            low.seq_no
-        }
-        None => from_seqno,
-    };
-
-    let prev_key_block = engine.load_prev_key_block(low).await?;
-
-    log::info!("Started background sync from {} to {}", low, high);
-    download_archives(engine, low, high, prev_key_block)
-        .await
-        .context("Failed downloading archives")?;
-
-    log::info!("Background sync complete");
-    Ok(())
-}
-
-async fn download_archives(
-    engine: &Arc<Engine>,
-    low_seqno: u32,
-    high_seqno: u32,
-    mut prev_key_block_id: ton_block::BlockIdExt,
-) -> Result<()> {
-    let mut context = SaveContext {
-        peers: Arc::new(Default::default()),
-        high_seqno,
-        prev_key_block_id: &mut prev_key_block_id,
-    };
-    let (mut stream, _trigger) = start_download(
-        engine,
-        &context.peers,
-        ARCHIVE_SLICE,
-        low_seqno..=high_seqno,
-    )
-    .await
-    .context("To small bounds")?;
-
-    while let Some(a) = stream.next().await {
-        let res = profl::span!(
-            "save_background_sync_archive",
-            save_archive(engine, a, &mut context).await?
-        );
-
-        if let SyncStatus::Done = res {
-            return Ok(());
-        }
-    }
-
-    Ok(())
-}
-
-enum SyncStatus {
-    Done,
-    InProgress,
-    NoBlocksInArchive,
-}
-
-struct SaveContext<'a> {
-    peers: Arc<ActivePeers>,
-    high_seqno: u32,
-    prev_key_block_id: &'a mut ton_block::BlockIdExt,
-}
-
-async fn save_archive(
-    engine: &Arc<Engine>,
-    maps: Arc<BlockMaps>,
-    context: &mut SaveContext<'_>,
-) -> Result<SyncStatus> {
-    //todo store block maps in db
-    let lowest_id = match maps.lowest_id() {
-        Some(a) => a,
-        None => return Ok(SyncStatus::NoBlocksInArchive),
-    };
-    let highest_id = match maps.highest_id() {
-        Some(a) => a,
-        None => return Ok(SyncStatus::NoBlocksInArchive),
-    };
-    log::debug!(
-        "Saving archive. Low id: {}. High id: {}",
-        lowest_id,
-        highest_id.seq_no
-    );
-
-    for (id, entry) in &maps.blocks {
-        let (block, proof) = entry.get_data()?;
-
-        let handle = match engine.load_block_handle(block.id())? {
-            Some(handle) => handle,
-            None => profl::span!(
-                "save_background_sync_block",
-                save_block(engine, id, block, proof, Some(context.prev_key_block_id))
-                    .await
-                    .context("Failed saving block")?
-            ),
-        };
-
-        engine
-            .notify_subscribers_with_archive_block(&handle, block, proof)
-            .await
-            .context("Failed to process archive block")?;
-
-        if handle.is_key_block() {
-            *context.prev_key_block_id = id.clone();
-        }
-    }
-
-    Ok({
-        engine
-            .db
-            .background_sync_store()
-            .store_low_key_block(highest_id)?;
-        log::info!(
-            "Background sync: Saved archive from {} to {}",
-            lowest_id,
-            highest_id
-        );
-
-        if highest_id.seq_no >= context.high_seqno {
-            SyncStatus::Done
-        } else {
-            SyncStatus::InProgress
-        }
-    })
-}
-
 impl Engine {
     fn last_applied_block(&self) -> Result<ton_block::BlockIdExt> {
         let mc_block_id = self.load_last_applied_mc_block_id()?;
@@ -491,6 +340,27 @@ impl Engine {
             (mc_block_id, sc_block_id) if mc_block_id.seq_no > sc_block_id.seq_no => sc_block_id,
             (mc_block_id, _) => mc_block_id,
         })
+    }
+
+    fn background_sync_range(&self, from_seqno: u32) -> Result<(u32, u32)> {
+        let store = self.db.background_sync_store();
+
+        log::info!("sync: Download previous history sync since block {from_seqno}");
+
+        let low = match store.load_low_key_block()? {
+            Some(low) => {
+                log::warn!(
+                    "sync: Ignoring `from_seqno` param, using saved seqno: {}",
+                    low.seq_no
+                );
+                low.seq_no
+            }
+            None => from_seqno,
+        };
+
+        let high = store.load_high_key_block()?.seq_no;
+
+        Ok((low, high))
     }
 }
 

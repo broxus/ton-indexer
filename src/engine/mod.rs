@@ -92,7 +92,7 @@ pub struct Engine {
     last_known_key_block_seqno: AtomicU32,
     hard_forks: FxHashSet<ton_block::BlockIdExt>,
 
-    parallel_archive_downloads: u32,
+    parallel_archive_downloads: usize,
 
     shard_states_operations: OperationsPool<ton_block::BlockIdExt, Arc<ShardStateStuff>>,
     block_applying_operations: OperationsPool<ton_block::BlockIdExt, ()>,
@@ -182,7 +182,7 @@ impl Engine {
             init_mc_block_id,
             last_known_key_block_seqno: AtomicU32::new(0),
             hard_forks,
-            parallel_archive_downloads: config.parallel_archive_downloads,
+            parallel_archive_downloads: config.parallel_archive_downloads as usize,
             shard_states_operations: OperationsPool::new("shard_states_operations"),
             block_applying_operations: OperationsPool::new("block_applying_operations"),
             next_block_applying_operations: OperationsPool::new("next_block_applying_operations"),
