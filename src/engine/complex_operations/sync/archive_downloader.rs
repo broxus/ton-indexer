@@ -44,24 +44,23 @@ impl ArchiveDownloader {
             *to = std::cmp::max(*to, from);
         }
 
+        // Enable prefetch only for background sync when range end is known
+        let prefetch_enabled = to.is_some();
+
         let mut downloader = ArchiveDownloader {
             engine: engine.clone(),
             active_peers: Default::default(),
             pending_archives: Default::default(),
             new_archive_notification: Default::default(),
             cancellation_token: Default::default(),
-            prefetch_enabled: true,
+            prefetch_enabled,
             next_mc_seq_no: from,
             max_mc_seq_no: 0,
             to,
         };
 
-        for mc_seq_no in (downloader.next_mc_seq_no..)
-            .step_by(BlockMaps::MAX_MC_BLOCK_COUNT)
-            .take(engine.parallel_archive_downloads)
-        {
-            downloader.start_downloading(mc_seq_no);
-        }
+        // Start with only the first archive
+        downloader.start_downloading(downloader.next_mc_seq_no);
 
         downloader
     }
@@ -127,9 +126,19 @@ impl ArchiveDownloader {
             notified.await;
         };
 
+        // NOTE: when `to` is Some, then we need to prefetch until
+        // `max_mc_seq_no` will be at least `STEP` greater than `to`.
+        // That's because archives must overlap:
+        //
+        //                  to -.          / discarded \
+        // |--------*-----|-----*---*----|---------*----|
+        //       mS ^       mS+STEP ^    mS+2*STEP ^
+        //
+        // > where mS is `max_mc_seq_no`
+        //
         while self.prefetch_enabled
             && self.pending_archives.len() < self.engine.parallel_archive_downloads
-            && !matches!(self.to, Some(to) if self.max_mc_seq_no + STEP > to)
+            && !matches!(self.to, Some(to) if self.max_mc_seq_no + 2 * STEP > to)
         {
             self.start_downloading(self.max_mc_seq_no + STEP);
         }
@@ -263,12 +272,14 @@ pub async fn download_archive(
             data = engine.download_archive(mc_seq_no, active_peers) => data,
             _ = (&mut signal) => return None,
         };
-        log::info!("sync: Download took: {} ms", start.elapsed().as_millis());
 
         match result {
             Ok(Some(data)) => {
-                let len = data.len();
-                log::info!("sync: Downloaded archive for block {mc_seq_no}, size {len} bytes");
+                log::info!(
+                    "sync: Downloaded archive for block {mc_seq_no}, size {} bytes. Took: {} ms",
+                    data.len(),
+                    start.elapsed().as_millis()
+                );
 
                 match BlockMaps::new(&data) {
                     Ok(data) => break Some(data),
