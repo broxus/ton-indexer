@@ -33,6 +33,8 @@ mod replace_transaction;
 pub struct ShardStateStorage {
     downloads_dir: Arc<PathBuf>,
     state: Arc<ShardStateStorageState>,
+    max_new_mc_cell_count: AtomicUsize,
+    max_new_sc_cell_count: AtomicUsize,
 }
 
 impl ShardStateStorage {
@@ -46,7 +48,16 @@ impl ShardStateStorage {
         Ok(Self {
             downloads_dir,
             state: Arc::new(ShardStateStorageState::new(db).await?),
+            max_new_mc_cell_count: AtomicUsize::new(0),
+            max_new_sc_cell_count: AtomicUsize::new(0),
         })
+    }
+
+    pub fn metrics(&self) -> ShardStateStorageMetrics {
+        ShardStateStorageMetrics {
+            max_new_mc_cell_count: self.max_new_mc_cell_count.swap(0, Ordering::AcqRel),
+            max_new_sc_cell_count: self.max_new_sc_cell_count.swap(0, Ordering::AcqRel),
+        }
     }
 
     pub async fn store_state(
@@ -60,9 +71,16 @@ impl ShardStateStorage {
 
         let mut batch = rocksdb::WriteBatch::default();
 
-        self.state
+        let len = self
+            .state
             .cell_storage
             .store_dynamic_boc(&mut batch, *current_marker, root)?;
+
+        if block_id.shard_id.is_masterchain() {
+            self.max_new_mc_cell_count.fetch_max(len, Ordering::Release);
+        } else {
+            self.max_new_sc_cell_count.fetch_max(len, Ordering::Release);
+        }
 
         batch.put_cf(
             &self.state.shard_state_db.get_cf()?,
@@ -125,6 +143,12 @@ impl ShardStateStorage {
         );
         Ok(())
     }
+}
+
+#[derive(Debug, Copy, Clone)]
+pub struct ShardStateStorageMetrics {
+    pub max_new_mc_cell_count: usize,
+    pub max_new_sc_cell_count: usize,
 }
 
 struct ShardStateStorageState {

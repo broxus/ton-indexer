@@ -141,6 +141,12 @@ impl Db {
         &self.db
     }
 
+    pub fn metrics(&self) -> DbMetrics {
+        DbMetrics {
+            shard_state_storage: self.shard_state_storage.metrics(),
+        }
+    }
+
     pub fn get_memory_usage_stats(&self) -> Result<RocksdbStats> {
         let caches = &[&self.block_cache, &self.uncompressed_block_cache];
         let whole_db_stats =
@@ -579,6 +585,11 @@ total_handles_removed: {}
         // Done
         Ok(())
     }
+}
+
+#[derive(Debug, Copy, Clone)]
+pub struct DbMetrics {
+    pub shard_state_storage: ShardStateStorageMetrics,
 }
 
 fn check_version(db: &Arc<rocksdb::DB>) -> Result<()> {

@@ -15,7 +15,7 @@ use tiny_adnl::utils::*;
 use tiny_adnl::OverlayShardMetrics;
 use ton_api::ton;
 
-pub use db::RocksdbStats;
+pub use db::{DbMetrics, RocksdbStats};
 use global_config::GlobalConfig;
 
 use crate::config::*;
@@ -332,6 +332,10 @@ impl Engine {
 
     pub fn is_working(&self) -> bool {
         self.is_working.load(Ordering::Acquire)
+    }
+
+    pub fn get_db_metrics(&self) -> DbMetrics {
+        self.db.metrics()
     }
 
     pub fn get_memory_usage_stats(&self) -> Result<RocksdbStats> {

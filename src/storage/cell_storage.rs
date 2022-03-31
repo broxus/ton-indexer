@@ -32,15 +32,16 @@ impl CellStorage {
         batch: &mut rocksdb::WriteBatch,
         marker: u8,
         root: ton_types::Cell,
-    ) -> Result<()> {
+    ) -> Result<usize> {
         let transaction = self.prepare_tree_of_cells(marker, root)?;
+        let len = transaction.len();
 
         let cf = self.cells.get_cf()?;
-        for (cell_id, data) in &transaction {
+        for (cell_id, data) in transaction {
             batch.put_cf(&cf, cell_id, data);
         }
 
-        Ok(())
+        Ok(len)
     }
 
     pub fn load_cell(self: &Arc<Self>, hash: UInt256) -> Result<Arc<StorageCell>> {
