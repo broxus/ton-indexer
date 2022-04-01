@@ -113,6 +113,14 @@ impl NodeNetwork {
         }
     }
 
+    pub fn neighbour_metrics(
+        &self,
+    ) -> impl Iterator<Item = (OverlayIdShort, NeighboursMetrics)> + '_ {
+        self.overlays
+            .iter()
+            .map(|item| (*item.key(), item.neighbour_metrics()))
+    }
+
     pub fn overlay_metrics(
         &self,
     ) -> impl Iterator<Item = (OverlayIdShort, OverlayShardMetrics)> + '_ {

@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use anyhow::{anyhow, Result};
 use tiny_adnl::utils::*;
-use tiny_adnl::{Neighbour, OverlayClient};
+use tiny_adnl::{Neighbour, NeighboursMetrics, OverlayClient};
 use ton_api::ton::{self, TLObject};
 use ton_api::Deserializer;
 
@@ -16,6 +16,8 @@ use crate::utils::*;
 
 #[async_trait::async_trait]
 pub trait FullNodeOverlayClient: Send + Sync {
+    fn neighbour_metrics(&self) -> NeighboursMetrics;
+
     async fn broadcast_external_message(&self, message: &[u8]) -> Result<()>;
 
     async fn check_persistent_state(
@@ -74,6 +76,10 @@ pub trait FullNodeOverlayClient: Send + Sync {
 
 #[async_trait::async_trait]
 impl FullNodeOverlayClient for OverlayClient {
+    fn neighbour_metrics(&self) -> NeighboursMetrics {
+        self.neighbours().metrics()
+    }
+
     async fn broadcast_external_message(&self, message: &[u8]) -> Result<()> {
         let broadcast = serialize_boxed(ton::ton_node::broadcast::ExternalMessageBroadcast {
             message: ton::ton_node::externalmessage::ExternalMessage {
