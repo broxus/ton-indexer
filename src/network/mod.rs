@@ -431,9 +431,9 @@ async fn process_overlay_peers(
     overlay: &OverlayNode,
     overlay_id: &OverlayIdShort,
 ) -> Result<()> {
-    let peers = overlay.wait_for_peers(overlay_id).await?;
+    let peers = overlay.take_new_peers(overlay_id)?;
 
-    for peer in peers {
+    for peer in peers.into_values() {
         let peer_id = match AdnlNodeIdFull::try_from(&peer.id)
             .and_then(|full_id| full_id.compute_short_id())
         {
