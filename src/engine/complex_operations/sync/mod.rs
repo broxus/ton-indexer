@@ -248,7 +248,7 @@ impl BackgroundSyncContext<'_> {
             };
 
             self.engine
-                .notify_subscribers_with_archive_block(&handle, block, proof)
+                .notify_subscribers_with_archive_block(&handle, block)
                 .await
                 .context("Failed to process archive block")?;
 

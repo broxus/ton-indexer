@@ -98,14 +98,8 @@ struct LoggerSubscriber {
 
 #[async_trait::async_trait]
 impl ton_indexer::Subscriber for LoggerSubscriber {
-    async fn process_block(
-        &self,
-        meta: BriefBlockMeta,
-        block: &BlockStuff,
-        _block_proof: Option<&BlockProofStuff>,
-        shard_state: &ShardStateStuff,
-    ) -> Result<()> {
-        if block.id().is_masterchain() {
+    async fn process_block(&self, ctx: ProcessBlockContext<'_>) -> Result<()> {
+        if ctx.id().is_masterchain() {
             return Ok(());
         }
 
@@ -113,24 +107,26 @@ impl ton_indexer::Subscriber for LoggerSubscriber {
             return Ok(());
         }
 
-        let created_at = meta.gen_utime() as i64;
+        let created_at = ctx.meta().gen_utime() as i64;
 
-        block.block().read_info()?;
-        block.block().read_value_flow()?;
+        ctx.block().read_info()?;
+        ctx.block().read_value_flow()?;
 
         log::info!("TIME_DIFF: {}", now() as i64 - created_at);
-        let state = shard_state.state().read_accounts()?;
 
-        state
-            .iterate_slices(|ref mut key, ref mut value| {
-                UInt256::construct_from(key)?;
-                DepthBalanceInfo::construct_from(value)?;
-                let shard_acc = ShardAccount::construct_from(value)?;
-                let _acc = shard_acc.read_account()?;
+        if let Some(state) = ctx.shard_state() {
+            let state = state.read_accounts()?;
+            state
+                .iterate_slices(|ref mut key, ref mut value| {
+                    UInt256::construct_from(key)?;
+                    DepthBalanceInfo::construct_from(value)?;
+                    let shard_acc = ShardAccount::construct_from(value)?;
+                    let _acc = shard_acc.read_account()?;
 
-                Ok(true)
-            })
-            .ok();
+                    Ok(true)
+                })
+                .ok();
+        }
 
         Ok(())
     }

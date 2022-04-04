@@ -41,6 +41,7 @@ impl BlockStuff {
         Ok(Self { id, block, root })
     }
 
+    #[inline(always)]
     pub fn block(&self) -> &ton_block::Block {
         &self.block
     }
@@ -49,6 +50,7 @@ impl BlockStuff {
         self.block
     }
 
+    #[inline(always)]
     pub fn id(&self) -> &ton_block::BlockIdExt {
         &self.id
     }

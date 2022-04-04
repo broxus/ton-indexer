@@ -40,44 +40,6 @@ pub enum EngineStatus {
     Synced,
 }
 
-#[async_trait::async_trait]
-pub trait Subscriber: Send + Sync {
-    async fn engine_status_changed(&self, status: EngineStatus) {
-        let _unused_by_default = status;
-    }
-
-    async fn process_block(
-        &self,
-        meta: BriefBlockMeta,
-        block: &BlockStuff,
-        block_proof: Option<&BlockProofStuff>,
-        shard_state: &ShardStateStuff,
-    ) -> Result<()> {
-        let _unused_by_default = meta;
-        let _unused_by_default = block;
-        let _unused_by_default = block_proof;
-        let _unused_by_default = shard_state;
-        Ok(())
-    }
-
-    async fn process_archive_block(
-        &self,
-        meta: BriefBlockMeta,
-        block: &BlockStuff,
-        block_proof: Option<&BlockProofStuff>,
-    ) -> Result<()> {
-        let _unused_by_default = meta;
-        let _unused_by_default = block;
-        let _unused_by_default = block_proof;
-        Ok(())
-    }
-
-    async fn process_full_state(&self, state: &ShardStateStuff) -> Result<()> {
-        let _unused_by_default = state;
-        Ok(())
-    }
-}
-
 pub struct Engine {
     is_working: AtomicBool,
     db: Arc<Db>,
@@ -1009,6 +971,14 @@ impl Engine {
         let meta = handle.meta().brief();
         let time_diff = now() as i64 - meta.gen_utime() as i64;
 
+        let ctx = ProcessBlockContext {
+            engine: self,
+            meta,
+            handle,
+            block,
+            shard_state: Some(shard_state),
+        };
+
         if handle.id().shard().is_masterchain() {
             self.metrics
                 .mc_time_diff
@@ -1017,11 +987,8 @@ impl Engine {
                 .last_mc_utime
                 .store(meta.gen_utime(), Ordering::Release);
 
-            let block_proof = self.load_block_proof(handle, false).await?;
             for subscriber in &self.subscribers {
-                subscriber
-                    .process_block(meta, block, Some(&block_proof), shard_state)
-                    .await?;
+                subscriber.process_block(ctx).await?;
             }
         } else {
             self.metrics
@@ -1029,9 +996,7 @@ impl Engine {
                 .store(time_diff, Ordering::Release);
 
             for subscriber in &self.subscribers {
-                subscriber
-                    .process_block(meta, block, None, shard_state)
-                    .await?;
+                subscriber.process_block(ctx).await?;
             }
         }
 
@@ -1042,19 +1007,24 @@ impl Engine {
         &self,
         handle: &Arc<BlockHandle>,
         block: &BlockStuff,
-        block_proof: &BlockProofStuff,
     ) -> Result<()> {
         let meta = handle.meta().brief();
 
+        let ctx = ProcessBlockContext {
+            engine: self,
+            meta,
+            handle,
+            block,
+            shard_state: None,
+        };
+
         if handle.id().shard().is_masterchain() {
             for subscriber in &self.subscribers {
-                subscriber
-                    .process_archive_block(meta, block, Some(block_proof))
-                    .await?;
+                subscriber.process_block(ctx).await?;
             }
         } else {
             for subscriber in &self.subscribers {
-                subscriber.process_archive_block(meta, block, None).await?;
+                subscriber.process_block(ctx).await?;
             }
         }
 
@@ -1133,6 +1103,80 @@ impl Engine {
             db: self.db.as_ref(),
             downloader,
         })
+    }
+}
+
+#[async_trait::async_trait]
+pub trait Subscriber: Send + Sync {
+    async fn engine_status_changed(&self, status: EngineStatus) {
+        let _unused_by_default = status;
+    }
+
+    async fn process_block(&self, ctx: ProcessBlockContext<'_>) -> Result<()> {
+        let _unused_by_default = ctx;
+        Ok(())
+    }
+
+    async fn process_full_state(&self, state: &ShardStateStuff) -> Result<()> {
+        let _unused_by_default = state;
+        Ok(())
+    }
+}
+
+#[derive(Copy, Clone)]
+pub struct ProcessBlockContext<'a> {
+    engine: &'a Engine,
+    meta: BriefBlockMeta,
+    handle: &'a Arc<BlockHandle>,
+    block: &'a BlockStuff,
+    shard_state: Option<&'a ShardStateStuff>,
+}
+
+impl ProcessBlockContext<'_> {
+    #[inline(always)]
+    pub fn id(&self) -> &ton_block::BlockIdExt {
+        self.handle.id()
+    }
+
+    #[inline(always)]
+    pub fn meta(&self) -> BriefBlockMeta {
+        self.meta
+    }
+
+    #[inline(always)]
+    pub fn block(&self) -> &ton_block::Block {
+        self.block.block()
+    }
+
+    #[inline(always)]
+    pub fn block_stuff(&self) -> &BlockStuff {
+        self.block
+    }
+
+    #[inline(always)]
+    pub fn shard_state(&self) -> Option<&ton_block::ShardStateUnsplit> {
+        self.shard_state.map(ShardStateStuff::state)
+    }
+
+    #[inline(always)]
+    pub fn shard_state_stuff(&self) -> Option<&ShardStateStuff> {
+        self.shard_state
+    }
+
+    #[inline(always)]
+    pub fn is_from_archive(&self) -> bool {
+        self.shard_state.is_none()
+    }
+
+    pub async fn load_block_data(&self) -> Result<Vec<u8>> {
+        self.engine.db.load_block_data_raw(self.handle).await
+    }
+
+    pub async fn load_block_proof_data(&self) -> Result<Vec<u8>> {
+        self.engine
+            .db
+            .load_block_proof_raw(self.handle, !self.handle.id().is_masterchain())
+            .await
     }
 }
 
