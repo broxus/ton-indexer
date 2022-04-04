@@ -16,14 +16,17 @@ impl<'a, T> DownloadContext<'a, T> {
     async fn load_full_block(
         &self,
         block_id: &ton_block::BlockIdExt,
-    ) -> Result<Option<(BlockStuff, BlockProofStuff)>> {
+    ) -> Result<Option<(BlockStuffAug, BlockProofStuffAug)>> {
         Ok(match self.db.load_block_handle(block_id)? {
             Some(handle) => {
                 let mut is_link = false;
                 if handle.meta().has_data() && handle.has_proof_or_link(&mut is_link) {
                     let block = self.db.load_block_data(&handle).await?;
                     let block_proof = self.db.load_block_proof(&handle, is_link).await?;
-                    Some((block, block_proof))
+                    Some((
+                        BlockStuffAug::loaded(block),
+                        BlockProofStuffAug::loaded(block_proof),
+                    ))
                 } else {
                     None
                 }
@@ -37,7 +40,7 @@ pub struct BlockDownloader;
 
 #[async_trait::async_trait]
 impl Downloader for BlockDownloader {
-    type Item = (BlockStuff, BlockProofStuff);
+    type Item = (BlockStuffAug, BlockProofStuffAug);
 
     async fn try_download(
         &self,
@@ -58,7 +61,7 @@ pub struct BlockProofDownloader {
 
 #[async_trait::async_trait]
 impl Downloader for BlockProofDownloader {
-    type Item = BlockProofStuff;
+    type Item = BlockProofStuffAug;
 
     async fn try_download(
         &self,
@@ -67,7 +70,8 @@ impl Downloader for BlockProofDownloader {
         if let Some(handle) = context.db.load_block_handle(context.block_id)? {
             let mut is_link = false;
             if handle.has_proof_or_link(&mut is_link) {
-                return Ok(Some(context.db.load_block_proof(&handle, is_link).await?));
+                let proof = context.db.load_block_proof(&handle, is_link).await?;
+                return Ok(Some(Self::Item::loaded(proof)));
             }
         }
 
@@ -82,7 +86,7 @@ pub struct NextBlockDownloader;
 
 #[async_trait::async_trait]
 impl Downloader for NextBlockDownloader {
-    type Item = (BlockStuff, BlockProofStuff);
+    type Item = (BlockStuffAug, BlockProofStuffAug);
 
     async fn try_download(
         &self,
@@ -137,7 +141,7 @@ pub struct DownloadContext<'a, T> {
     pub max_attempts: Option<u32>,
     pub timeouts: Option<DownloaderTimeouts>,
 
-    pub client: Arc<dyn FullNodeOverlayClient>,
+    pub client: FullNodeOverlayClient,
     pub db: &'a Db,
 
     pub downloader: Arc<dyn Downloader<Item = T>>,

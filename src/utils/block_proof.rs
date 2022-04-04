@@ -8,6 +8,9 @@ use ton_block::Deserializable;
 use ton_types::{Cell, HashmapType};
 
 use super::{BlockIdExtExtension, ShardStateStuff};
+use crate::utils::*;
+
+pub type BlockProofStuffAug = WithArchiveData<BlockProofStuff>;
 
 #[derive(Debug, Default, Clone, Eq, PartialEq)]
 pub struct BlockProofStuff {
@@ -15,16 +18,15 @@ pub struct BlockProofStuff {
     root: Cell,
     is_link: bool,
     id: ton_block::BlockIdExt,
-    data: Vec<u8>,
 }
 
 impl BlockProofStuff {
     pub fn deserialize(
         block_id: ton_block::BlockIdExt,
-        data: Vec<u8>,
+        mut data: &[u8],
         is_link: bool,
     ) -> Result<Self> {
-        let root = ton_types::deserialize_tree_of_cells(&mut data.as_slice())?;
+        let root = ton_types::deserialize_tree_of_cells(&mut data)?;
         let proof = ton_block::BlockProof::construct_from(&mut root.clone().into())?;
 
         if proof.proof_for != block_id {
@@ -44,7 +46,6 @@ impl BlockProofStuff {
             root,
             is_link,
             id: block_id,
-            data,
         })
     }
 
@@ -80,10 +81,6 @@ impl BlockProofStuff {
 
     pub fn id(&self) -> &ton_block::BlockIdExt {
         &self.id
-    }
-
-    pub fn data(&self) -> &[u8] {
-        &self.data
     }
 
     pub fn get_cur_validators_set(

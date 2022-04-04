@@ -27,37 +27,32 @@ impl BlockMaps {
         while let Some(entry) = reader.read_next()? {
             match PackageEntryId::from_filename(entry.name)? {
                 PackageEntryId::Block(id) => {
+                    let block = BlockStuff::deserialize_checked(id.clone(), entry.data)?;
+
                     maps.blocks
                         .entry(id.clone())
                         .or_insert_with(BlockMapsEntry::default)
-                        .block = Some(BlockStuff::deserialize_checked(
-                        id.clone(),
-                        entry.data.to_vec(),
-                    )?);
+                        .block = Some(BlockStuffAug::new(block, entry.data.to_vec()));
                     if id.is_masterchain() {
                         maps.mc_block_ids.insert(id.seq_no, id);
                     }
                 }
                 PackageEntryId::Proof(id) if id.is_masterchain() => {
+                    let proof = BlockProofStuff::deserialize(id.clone(), entry.data, false)?;
+
                     maps.blocks
                         .entry(id.clone())
                         .or_insert_with(BlockMapsEntry::default)
-                        .proof = Some(BlockProofStuff::deserialize(
-                        id.clone(),
-                        entry.data.to_vec(),
-                        false,
-                    )?);
+                        .proof = Some(BlockProofStuffAug::new(proof, entry.data.to_vec()));
                     maps.mc_block_ids.insert(id.seq_no, id);
                 }
                 PackageEntryId::ProofLink(id) if !id.is_masterchain() => {
+                    let proof = BlockProofStuff::deserialize(id.clone(), entry.data, true)?;
+
                     maps.blocks
                         .entry(id.clone())
                         .or_insert_with(BlockMapsEntry::default)
-                        .proof = Some(BlockProofStuff::deserialize(
-                        id.clone(),
-                        entry.data.to_vec(),
-                        true,
-                    )?);
+                        .proof = Some(BlockProofStuffAug::new(proof, entry.data.to_vec()));
                 }
                 _ => continue,
             }
@@ -136,12 +131,12 @@ impl BlockMaps {
 
 #[derive(Default)]
 pub struct BlockMapsEntry {
-    pub block: Option<BlockStuff>,
-    pub proof: Option<BlockProofStuff>,
+    pub block: Option<BlockStuffAug>,
+    pub proof: Option<BlockProofStuffAug>,
 }
 
 impl BlockMapsEntry {
-    pub fn get_data(&self) -> Result<(&BlockStuff, &BlockProofStuff), BlockMapsError> {
+    pub fn get_data(&self) -> Result<(&BlockStuffAug, &BlockProofStuffAug), BlockMapsError> {
         let block = match &self.block {
             Some(block) => block,
             None => return Err(BlockMapsError::BlockDataNotFound),

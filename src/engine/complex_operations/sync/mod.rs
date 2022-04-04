@@ -158,10 +158,10 @@ async fn import_shard_blocks_with_apply(engine: &Arc<Engine>, maps: Arc<BlockMap
                     return Ok(());
                 }
 
-                // Get block data wor load it from db
+                // Get block data or load it from db
                 let block = match maps.blocks.get(&id) {
                     Some(entry) => match &entry.block {
-                        Some(block) => Some(Cow::Borrowed(block)),
+                        Some(block) => Some(Cow::Borrowed(&block.data)),
                         None => engine.load_block_data(&handle).await.ok().map(Cow::Owned),
                     },
                     None => engine.load_block_data(&handle).await.ok().map(Cow::Owned),
@@ -283,8 +283,8 @@ enum SyncStatus {
 async fn save_block(
     engine: &Arc<Engine>,
     block_id: &ton_block::BlockIdExt,
-    block: &BlockStuff,
-    block_proof: &BlockProofStuff,
+    block: &BlockStuffAug,
+    block_proof: &BlockProofStuffAug,
     prev_key_block_id: Option<&ton_block::BlockIdExt>,
 ) -> Result<Arc<BlockHandle>> {
     if block_proof.is_link() {

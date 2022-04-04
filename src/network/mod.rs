@@ -31,7 +31,7 @@ pub struct NodeNetwork {
     masterchain_overlay_short_id: OverlayIdShort,
     masterchain_overlay_id: OverlayIdFull,
     overlays: Arc<FxDashMap<OverlayIdShort, Arc<OverlayClient>>>,
-    overlay_awaiters: OperationsPool<OverlayIdShort, Arc<dyn FullNodeOverlayClient>>,
+    overlay_awaiters: OperationsPool<OverlayIdShort, FullNodeOverlayClient>,
     working_state: Arc<WorkingState>,
 }
 
@@ -118,7 +118,7 @@ impl NodeNetwork {
     ) -> impl Iterator<Item = (OverlayIdShort, NeighboursMetrics)> + '_ {
         self.overlays
             .iter()
-            .map(|item| (*item.key(), item.neighbour_metrics()))
+            .map(|item| (*item.key(), item.neighbours().metrics()))
     }
 
     pub fn overlay_metrics(
@@ -127,7 +127,7 @@ impl NodeNetwork {
         self.overlay.metrics()
     }
 
-    pub async fn start(self: &Arc<Self>) -> Result<Arc<dyn FullNodeOverlayClient>> {
+    pub async fn start(self: &Arc<Self>) -> Result<FullNodeOverlayClient> {
         self.adnl
             .start(vec![
                 self.dht.clone(),
@@ -175,10 +175,10 @@ impl NodeNetwork {
         self: &Arc<Self>,
         overlay_full_id: OverlayIdFull,
         overlay_id: OverlayIdShort,
-    ) -> Result<Arc<dyn FullNodeOverlayClient>> {
+    ) -> Result<FullNodeOverlayClient> {
         loop {
             if let Some(overlay) = self.overlays.get(&overlay_id) {
-                return Ok(overlay.value().clone() as Arc<dyn FullNodeOverlayClient>);
+                return Ok(FullNodeOverlayClient(overlay.value().clone()));
             }
 
             let overlay_opt = self
@@ -200,7 +200,7 @@ impl NodeNetwork {
         self: &Arc<Self>,
         overlay_full_id: OverlayIdFull,
         overlay_id: OverlayIdShort,
-    ) -> Result<Arc<dyn FullNodeOverlayClient>> {
+    ) -> Result<FullNodeOverlayClient> {
         self.overlay
             .add_public_overlay(&overlay_id, self.overlay_shard_options)?;
         let node = self.overlay.get_signed_node(&overlay_id)?;
@@ -252,7 +252,7 @@ impl NodeNetwork {
             .or_insert(overlay_client)
             .clone();
 
-        Ok(result as Arc<dyn FullNodeOverlayClient>)
+        Ok(FullNodeOverlayClient(result))
     }
 
     fn start_updating_peers(self: &Arc<Self>, overlay_client: &Arc<OverlayClient>) {

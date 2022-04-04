@@ -212,16 +212,18 @@ impl Db {
         self.block_handle_storage.key_block_iterator(since)
     }
 
-    pub async fn store_block_data(&self, block: &BlockStuff) -> Result<StoreBlockResult> {
+    pub async fn store_block_data(&self, block: &BlockStuffAug) -> Result<StoreBlockResult> {
         let (handle, status) =
             self.create_or_load_block_handle(block.id(), Some(block.block()), None)?;
 
         let archive_id = PackageEntryId::Block(handle.id());
         let mut updated = false;
         if !handle.meta().has_data() || !self.archive_manager.has_data(&archive_id)? {
+            let data = block.new_archive_data()?;
+
             let _lock = handle.block_data_lock().write().await;
             if !handle.meta().has_data() || !self.archive_manager.has_data(&archive_id)? {
-                self.archive_manager.add_data(&archive_id, block.data())?;
+                self.archive_manager.add_data(&archive_id, data)?;
                 if handle.meta().set_has_data() {
                     self.block_handle_storage.store_handle(&handle)?;
                     updated = true;
@@ -237,8 +239,8 @@ impl Db {
     }
 
     pub async fn load_block_data(&self, handle: &BlockHandle) -> Result<BlockStuff> {
-        let raw_block = self.load_block_data_raw(handle).await?;
-        BlockStuff::deserialize(handle.id().clone(), raw_block)
+        let raw_block = self.load_block_data_raw_ref(handle).await?;
+        BlockStuff::deserialize(handle.id().clone(), raw_block.as_ref())
     }
 
     pub async fn load_block_data_raw(&self, handle: &BlockHandle) -> Result<Vec<u8>> {
@@ -250,11 +252,23 @@ impl Db {
             .await
     }
 
+    pub async fn load_block_data_raw_ref<'a>(
+        &'a self,
+        handle: &'a BlockHandle,
+    ) -> Result<BlockContentsLock<'a>> {
+        if !handle.meta().has_data() {
+            return Err(DbError::BlockDataNotFound.into());
+        }
+        self.archive_manager
+            .get_data_ref(handle, &PackageEntryId::Block(handle.id()))
+            .await
+    }
+
     pub async fn store_block_proof(
         &self,
         block_id: &ton_block::BlockIdExt,
         handle: Option<Arc<BlockHandle>>,
-        proof: &BlockProofStuff,
+        proof: &BlockProofStuffAug,
     ) -> Result<StoreBlockResult> {
         if matches!(&handle, Some(handle) if handle.id() != block_id) {
             return Err(DbError::BlockHandleIdMismatch.into());
@@ -277,9 +291,11 @@ impl Db {
         if proof.is_link() {
             let archive_id = PackageEntryId::ProofLink(block_id);
             if !handle.meta().has_proof_link() || !self.archive_manager.has_data(&archive_id)? {
+                let data = proof.new_archive_data()?;
+
                 let _lock = handle.proof_data_lock().write().await;
                 if !handle.meta().has_proof_link() || !self.archive_manager.has_data(&archive_id)? {
-                    self.archive_manager.add_data(&archive_id, proof.data())?;
+                    self.archive_manager.add_data(&archive_id, data)?;
                     if handle.meta().set_has_proof_link() {
                         self.block_handle_storage.store_handle(&handle)?;
                         updated = true;
@@ -289,9 +305,11 @@ impl Db {
         } else {
             let archive_id = PackageEntryId::Proof(block_id);
             if !handle.meta().has_proof() || !self.archive_manager.has_data(&archive_id)? {
+                let data = proof.new_archive_data()?;
+
                 let _lock = handle.proof_data_lock().write().await;
                 if !handle.meta().has_proof() || !self.archive_manager.has_data(&archive_id)? {
-                    self.archive_manager.add_data(&archive_id, proof.data())?;
+                    self.archive_manager.add_data(&archive_id, data)?;
                     if handle.meta().set_has_proof() {
                         self.block_handle_storage.store_handle(&handle)?;
                         updated = true;
@@ -312,8 +330,8 @@ impl Db {
         handle: &BlockHandle,
         is_link: bool,
     ) -> Result<BlockProofStuff> {
-        let raw_proof = self.load_block_proof_raw(handle, is_link).await?;
-        BlockProofStuff::deserialize(handle.id().clone(), raw_proof, is_link)
+        let raw_proof = self.load_block_proof_raw_ref(handle, is_link).await?;
+        BlockProofStuff::deserialize(handle.id().clone(), raw_proof.as_ref(), is_link)
     }
 
     pub async fn load_block_proof_raw(
@@ -338,6 +356,30 @@ impl Db {
         }
 
         self.archive_manager.get_data(handle, &archive_id).await
+    }
+
+    pub async fn load_block_proof_raw_ref<'a>(
+        &'a self,
+        handle: &'a BlockHandle,
+        is_link: bool,
+    ) -> Result<BlockContentsLock<'_>> {
+        let (archive_id, exists) = if is_link {
+            (
+                PackageEntryId::ProofLink(handle.id()),
+                handle.meta().has_proof_link(),
+            )
+        } else {
+            (
+                PackageEntryId::Proof(handle.id()),
+                handle.meta().has_proof(),
+            )
+        };
+
+        if !exists {
+            return Err(DbError::BlockProofNotFound.into());
+        }
+
+        self.archive_manager.get_data_ref(handle, &archive_id).await
     }
 
     pub async fn store_shard_state(

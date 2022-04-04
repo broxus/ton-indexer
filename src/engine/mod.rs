@@ -94,14 +94,20 @@ pub struct Engine {
 
     parallel_archive_downloads: usize,
 
-    shard_states_operations: OperationsPool<ton_block::BlockIdExt, Arc<ShardStateStuff>>,
-    block_applying_operations: OperationsPool<ton_block::BlockIdExt, ()>,
-    next_block_applying_operations: OperationsPool<ton_block::BlockIdExt, ton_block::BlockIdExt>,
-    download_block_operations: OperationsPool<ton_block::BlockIdExt, (BlockStuff, BlockProofStuff)>,
+    shard_states_operations: ShardStatesOperationsPool,
+    block_applying_operations: BlockApplyingOperationsPool,
+    next_block_applying_operations: NextBlockApplyingOperationsPool,
+    download_block_operations: DownloadBlockOperationsPool,
     last_blocks: BlockCaches,
 
     metrics: Arc<EngineMetrics>,
 }
+
+type ShardStatesOperationsPool = OperationsPool<ton_block::BlockIdExt, Arc<ShardStateStuff>>;
+type BlockApplyingOperationsPool = OperationsPool<ton_block::BlockIdExt, ()>;
+type NextBlockApplyingOperationsPool = OperationsPool<ton_block::BlockIdExt, ton_block::BlockIdExt>;
+type DownloadBlockOperationsPool =
+    OperationsPool<ton_block::BlockIdExt, (BlockStuffAug, BlockProofStuffAug)>;
 
 struct BlockCaches {
     pub last_mc: LastMcBlockId,
@@ -403,7 +409,7 @@ impl Engine {
             < seqno
     }
 
-    async fn get_masterchain_overlay(&self) -> Result<Arc<dyn FullNodeOverlayClient>> {
+    async fn get_masterchain_overlay(&self) -> Result<FullNodeOverlayClient> {
         self.get_full_node_overlay(ton_block::MASTERCHAIN_ID, ton_block::SHARD_FULL)
             .await
     }
@@ -412,7 +418,7 @@ impl Engine {
         &self,
         workchain: i32,
         shard: u64,
-    ) -> Result<Arc<dyn FullNodeOverlayClient>> {
+    ) -> Result<FullNodeOverlayClient> {
         let (full_id, short_id) = self.network.compute_overlay_id(workchain, shard)?;
         self.network.get_overlay(full_id, short_id).await
     }
@@ -473,7 +479,7 @@ impl Engine {
         &self,
         prev_block_id: &ton_block::BlockIdExt,
         max_attempts: Option<u32>,
-    ) -> Result<(BlockStuff, BlockProofStuff)> {
+    ) -> Result<(BlockStuffAug, BlockProofStuffAug)> {
         if !prev_block_id.is_masterchain() {
             return Err(EngineError::NonMasterchainNextBlock.into());
         }
@@ -498,7 +504,7 @@ impl Engine {
         &self,
         block_id: &ton_block::BlockIdExt,
         max_attempts: Option<u32>,
-    ) -> Result<(BlockStuff, BlockProofStuff)> {
+    ) -> Result<(BlockStuffAug, BlockProofStuffAug)> {
         loop {
             if let Some(handle) = self.load_block_handle(block_id)? {
                 if handle.meta().has_data() {
@@ -506,7 +512,11 @@ impl Engine {
                     let block_proof = self
                         .load_block_proof(&handle, !block_id.shard().is_masterchain())
                         .await?;
-                    return Ok((block, block_proof));
+
+                    return Ok((
+                        WithArchiveData::loaded(block),
+                        WithArchiveData::loaded(block_proof),
+                    ));
                 }
             }
 
@@ -530,7 +540,7 @@ impl Engine {
         is_link: bool,
         is_key_block: bool,
         max_attempts: Option<u32>,
-    ) -> Result<BlockProofStuff> {
+    ) -> Result<BlockProofStuffAug> {
         self.create_download_context(
             "create_download_context",
             Arc::new(BlockProofDownloader {
@@ -708,7 +718,7 @@ impl Engine {
         self.db.load_block_data(handle.as_ref()).await
     }
 
-    async fn store_block_data(&self, block: &BlockStuff) -> Result<StoreBlockResult> {
+    async fn store_block_data(&self, block: &BlockStuffAug) -> Result<StoreBlockResult> {
         let store_block_result = self.db.store_block_data(block).await?;
 
         let handle = &store_block_result.handle;
@@ -731,7 +741,7 @@ impl Engine {
         &self,
         block_id: &ton_block::BlockIdExt,
         handle: Option<Arc<BlockHandle>>,
-        proof: &BlockProofStuff,
+        proof: &BlockProofStuffAug,
     ) -> Result<StoreBlockResult> {
         self.db.store_block_proof(block_id, handle, proof).await
     }
@@ -1088,7 +1098,7 @@ impl Engine {
         block_id: &ton_block::BlockIdExt,
         max_attempts: Option<u32>,
         timeouts: Option<DownloaderTimeouts>,
-    ) -> Result<(BlockStuff, BlockProofStuff)> {
+    ) -> Result<(BlockStuffAug, BlockProofStuffAug)> {
         self.create_download_context(
             "download_block",
             Arc::new(BlockDownloader),

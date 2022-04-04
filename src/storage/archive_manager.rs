@@ -100,6 +100,27 @@ impl ArchiveManager {
         }
     }
 
+    pub async fn get_data_ref<'a, I>(
+        &'a self,
+        handle: &'a BlockHandle,
+        id: &PackageEntryId<I>,
+    ) -> Result<BlockContentsLock<'a>>
+    where
+        I: Borrow<ton_block::BlockIdExt> + Hash,
+    {
+        let lock = match id {
+            PackageEntryId::Block(_) => handle.block_data_lock().read().await,
+            PackageEntryId::Proof(_) | PackageEntryId::ProofLink(_) => {
+                handle.proof_data_lock().read().await
+            }
+        };
+
+        match self.package_entries.get(id.to_vec()?)? {
+            Some(data) => Ok(BlockContentsLock { _lock: lock, data }),
+            None => Err(ArchiveManagerError::InvalidBlockData.into()),
+        }
+    }
+
     pub fn gc(
         &self,
         max_blocks_per_batch: Option<usize>,
@@ -337,6 +358,17 @@ pub struct BlockGcStats {
     pub mc_package_entries_removed: usize,
     pub total_package_entries_removed: usize,
     pub total_handles_removed: usize,
+}
+
+pub struct BlockContentsLock<'a> {
+    _lock: tokio::sync::RwLockReadGuard<'a, ()>,
+    data: rocksdb::DBPinnableSlice<'a>,
+}
+
+impl<'a> AsRef<[u8]> for BlockContentsLock<'a> {
+    fn as_ref(&self) -> &[u8] {
+        self.data.as_ref()
+    }
 }
 
 pub const ARCHIVE_PACKAGE_SIZE: u32 = 100;

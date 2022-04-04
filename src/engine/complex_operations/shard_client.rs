@@ -169,7 +169,7 @@ pub async fn process_block_broadcast(
 
     let proof = BlockProofStuff::deserialize(
         block_id.clone(),
-        broadcast.proof.0.clone(),
+        &broadcast.proof.0,
         !block_id.shard_id.is_masterchain(),
     )?;
     let block_info = proof.virtualize_block()?.0.read_info()?;
@@ -195,7 +195,8 @@ pub async fn process_block_broadcast(
         proof.check_proof_link()?;
     }
 
-    let block = BlockStuff::deserialize_checked(block_id, broadcast.data.0)?;
+    let block = BlockStuff::deserialize_checked(block_id.clone(), &broadcast.data)?;
+    let block = BlockStuffAug::new(block, broadcast.data.0);
     let mut handle = match engine.store_block_data(&block).await? {
         result if result.updated => result.handle,
         // Skipped apply for block broadcast because the block is already being processed
@@ -204,7 +205,11 @@ pub async fn process_block_broadcast(
 
     if !handle.meta().has_proof() {
         handle = match engine
-            .store_block_proof(block.id(), Some(handle), &proof)
+            .store_block_proof(
+                &block_id,
+                Some(handle),
+                &BlockProofStuffAug::new(proof, broadcast.proof.0),
+            )
             .await?
         {
             result if result.updated => result.handle,
@@ -213,8 +218,8 @@ pub async fn process_block_broadcast(
         };
     }
 
-    if block.id().shard_id.is_masterchain() {
-        if block.id().seq_no == last_applied_mc_block_id.seq_no + 1 {
+    if block_id.shard_id.is_masterchain() {
+        if block_id.seq_no == last_applied_mc_block_id.seq_no + 1 {
             engine
                 .apply_block_ext(&handle, &block, block.id().seq_no, false, 0)
                 .await?;
