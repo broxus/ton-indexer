@@ -104,7 +104,7 @@ impl ArchiveManager {
         &'a self,
         handle: &'a BlockHandle,
         id: &PackageEntryId<I>,
-    ) -> Result<BlockContentsLock<'a>>
+    ) -> Result<impl AsRef<[u8]> + 'a>
     where
         I: Borrow<ton_block::BlockIdExt> + Hash,
     {
@@ -360,7 +360,7 @@ pub struct BlockGcStats {
     pub total_handles_removed: usize,
 }
 
-pub struct BlockContentsLock<'a> {
+struct BlockContentsLock<'a> {
     _lock: tokio::sync::RwLockReadGuard<'a, ()>,
     data: rocksdb::DBPinnableSlice<'a>,
 }

@@ -255,7 +255,7 @@ impl Db {
     pub async fn load_block_data_raw_ref<'a>(
         &'a self,
         handle: &'a BlockHandle,
-    ) -> Result<BlockContentsLock<'a>> {
+    ) -> Result<impl AsRef<[u8]> + 'a> {
         if !handle.meta().has_data() {
             return Err(DbError::BlockDataNotFound.into());
         }
@@ -362,7 +362,7 @@ impl Db {
         &'a self,
         handle: &'a BlockHandle,
         is_link: bool,
-    ) -> Result<BlockContentsLock<'_>> {
+    ) -> Result<impl AsRef<[u8]> + 'a> {
         let (archive_id, exists) = if is_link {
             (
                 PackageEntryId::ProofLink(handle.id()),
