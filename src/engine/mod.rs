@@ -40,44 +40,6 @@ pub enum EngineStatus {
     Synced,
 }
 
-#[async_trait::async_trait]
-pub trait Subscriber: Send + Sync {
-    async fn engine_status_changed(&self, status: EngineStatus) {
-        let _unused_by_default = status;
-    }
-
-    async fn process_block(
-        &self,
-        meta: BriefBlockMeta,
-        block: &BlockStuff,
-        block_proof: Option<&BlockProofStuff>,
-        shard_state: &ShardStateStuff,
-    ) -> Result<()> {
-        let _unused_by_default = meta;
-        let _unused_by_default = block;
-        let _unused_by_default = block_proof;
-        let _unused_by_default = shard_state;
-        Ok(())
-    }
-
-    async fn process_archive_block(
-        &self,
-        meta: BriefBlockMeta,
-        block: &BlockStuff,
-        block_proof: Option<&BlockProofStuff>,
-    ) -> Result<()> {
-        let _unused_by_default = meta;
-        let _unused_by_default = block;
-        let _unused_by_default = block_proof;
-        Ok(())
-    }
-
-    async fn process_full_state(&self, state: &ShardStateStuff) -> Result<()> {
-        let _unused_by_default = state;
-        Ok(())
-    }
-}
-
 pub struct Engine {
     is_working: AtomicBool,
     db: Arc<Db>,
@@ -94,14 +56,20 @@ pub struct Engine {
 
     parallel_archive_downloads: usize,
 
-    shard_states_operations: OperationsPool<ton_block::BlockIdExt, Arc<ShardStateStuff>>,
-    block_applying_operations: OperationsPool<ton_block::BlockIdExt, ()>,
-    next_block_applying_operations: OperationsPool<ton_block::BlockIdExt, ton_block::BlockIdExt>,
-    download_block_operations: OperationsPool<ton_block::BlockIdExt, (BlockStuff, BlockProofStuff)>,
+    shard_states_operations: ShardStatesOperationsPool,
+    block_applying_operations: BlockApplyingOperationsPool,
+    next_block_applying_operations: NextBlockApplyingOperationsPool,
+    download_block_operations: DownloadBlockOperationsPool,
     last_blocks: BlockCaches,
 
     metrics: Arc<EngineMetrics>,
 }
+
+type ShardStatesOperationsPool = OperationsPool<ton_block::BlockIdExt, Arc<ShardStateStuff>>;
+type BlockApplyingOperationsPool = OperationsPool<ton_block::BlockIdExt, ()>;
+type NextBlockApplyingOperationsPool = OperationsPool<ton_block::BlockIdExt, ton_block::BlockIdExt>;
+type DownloadBlockOperationsPool =
+    OperationsPool<ton_block::BlockIdExt, (BlockStuffAug, BlockProofStuffAug)>;
 
 struct BlockCaches {
     pub last_mc: LastMcBlockId,
@@ -403,7 +371,7 @@ impl Engine {
             < seqno
     }
 
-    async fn get_masterchain_overlay(&self) -> Result<Arc<dyn FullNodeOverlayClient>> {
+    async fn get_masterchain_overlay(&self) -> Result<FullNodeOverlayClient> {
         self.get_full_node_overlay(ton_block::MASTERCHAIN_ID, ton_block::SHARD_FULL)
             .await
     }
@@ -412,7 +380,7 @@ impl Engine {
         &self,
         workchain: i32,
         shard: u64,
-    ) -> Result<Arc<dyn FullNodeOverlayClient>> {
+    ) -> Result<FullNodeOverlayClient> {
         let (full_id, short_id) = self.network.compute_overlay_id(workchain, shard)?;
         self.network.get_overlay(full_id, short_id).await
     }
@@ -473,7 +441,7 @@ impl Engine {
         &self,
         prev_block_id: &ton_block::BlockIdExt,
         max_attempts: Option<u32>,
-    ) -> Result<(BlockStuff, BlockProofStuff)> {
+    ) -> Result<(BlockStuffAug, BlockProofStuffAug)> {
         if !prev_block_id.is_masterchain() {
             return Err(EngineError::NonMasterchainNextBlock.into());
         }
@@ -498,7 +466,7 @@ impl Engine {
         &self,
         block_id: &ton_block::BlockIdExt,
         max_attempts: Option<u32>,
-    ) -> Result<(BlockStuff, BlockProofStuff)> {
+    ) -> Result<(BlockStuffAug, BlockProofStuffAug)> {
         loop {
             if let Some(handle) = self.load_block_handle(block_id)? {
                 if handle.meta().has_data() {
@@ -506,7 +474,11 @@ impl Engine {
                     let block_proof = self
                         .load_block_proof(&handle, !block_id.shard().is_masterchain())
                         .await?;
-                    return Ok((block, block_proof));
+
+                    return Ok((
+                        WithArchiveData::loaded(block),
+                        WithArchiveData::loaded(block_proof),
+                    ));
                 }
             }
 
@@ -530,7 +502,7 @@ impl Engine {
         is_link: bool,
         is_key_block: bool,
         max_attempts: Option<u32>,
-    ) -> Result<BlockProofStuff> {
+    ) -> Result<BlockProofStuffAug> {
         self.create_download_context(
             "create_download_context",
             Arc::new(BlockProofDownloader {
@@ -708,7 +680,7 @@ impl Engine {
         self.db.load_block_data(handle.as_ref()).await
     }
 
-    async fn store_block_data(&self, block: &BlockStuff) -> Result<StoreBlockResult> {
+    async fn store_block_data(&self, block: &BlockStuffAug) -> Result<StoreBlockResult> {
         let store_block_result = self.db.store_block_data(block).await?;
 
         let handle = &store_block_result.handle;
@@ -731,7 +703,7 @@ impl Engine {
         &self,
         block_id: &ton_block::BlockIdExt,
         handle: Option<Arc<BlockHandle>>,
-        proof: &BlockProofStuff,
+        proof: &BlockProofStuffAug,
     ) -> Result<StoreBlockResult> {
         self.db.store_block_proof(block_id, handle, proof).await
     }
@@ -999,6 +971,14 @@ impl Engine {
         let meta = handle.meta().brief();
         let time_diff = now() as i64 - meta.gen_utime() as i64;
 
+        let ctx = ProcessBlockContext {
+            engine: self,
+            meta,
+            handle,
+            block,
+            shard_state: Some(shard_state),
+        };
+
         if handle.id().shard().is_masterchain() {
             self.metrics
                 .mc_time_diff
@@ -1007,11 +987,8 @@ impl Engine {
                 .last_mc_utime
                 .store(meta.gen_utime(), Ordering::Release);
 
-            let block_proof = self.load_block_proof(handle, false).await?;
             for subscriber in &self.subscribers {
-                subscriber
-                    .process_block(meta, block, Some(&block_proof), shard_state)
-                    .await?;
+                subscriber.process_block(ctx).await?;
             }
         } else {
             self.metrics
@@ -1019,9 +996,7 @@ impl Engine {
                 .store(time_diff, Ordering::Release);
 
             for subscriber in &self.subscribers {
-                subscriber
-                    .process_block(meta, block, None, shard_state)
-                    .await?;
+                subscriber.process_block(ctx).await?;
             }
         }
 
@@ -1032,19 +1007,24 @@ impl Engine {
         &self,
         handle: &Arc<BlockHandle>,
         block: &BlockStuff,
-        block_proof: &BlockProofStuff,
     ) -> Result<()> {
         let meta = handle.meta().brief();
 
+        let ctx = ProcessBlockContext {
+            engine: self,
+            meta,
+            handle,
+            block,
+            shard_state: None,
+        };
+
         if handle.id().shard().is_masterchain() {
             for subscriber in &self.subscribers {
-                subscriber
-                    .process_archive_block(meta, block, Some(block_proof))
-                    .await?;
+                subscriber.process_block(ctx).await?;
             }
         } else {
             for subscriber in &self.subscribers {
-                subscriber.process_archive_block(meta, block, None).await?;
+                subscriber.process_block(ctx).await?;
             }
         }
 
@@ -1088,7 +1068,7 @@ impl Engine {
         block_id: &ton_block::BlockIdExt,
         max_attempts: Option<u32>,
         timeouts: Option<DownloaderTimeouts>,
-    ) -> Result<(BlockStuff, BlockProofStuff)> {
+    ) -> Result<(BlockStuffAug, BlockProofStuffAug)> {
         self.create_download_context(
             "download_block",
             Arc::new(BlockDownloader),
@@ -1123,6 +1103,92 @@ impl Engine {
             db: self.db.as_ref(),
             downloader,
         })
+    }
+}
+
+#[async_trait::async_trait]
+pub trait Subscriber: Send + Sync {
+    async fn engine_status_changed(&self, status: EngineStatus) {
+        let _unused_by_default = status;
+    }
+
+    async fn process_block(&self, ctx: ProcessBlockContext<'_>) -> Result<()> {
+        let _unused_by_default = ctx;
+        Ok(())
+    }
+
+    async fn process_full_state(&self, state: &ShardStateStuff) -> Result<()> {
+        let _unused_by_default = state;
+        Ok(())
+    }
+}
+
+#[derive(Copy, Clone)]
+pub struct ProcessBlockContext<'a> {
+    engine: &'a Engine,
+    meta: BriefBlockMeta,
+    handle: &'a Arc<BlockHandle>,
+    block: &'a BlockStuff,
+    shard_state: Option<&'a ShardStateStuff>,
+}
+
+impl ProcessBlockContext<'_> {
+    #[inline(always)]
+    pub fn id(&self) -> &ton_block::BlockIdExt {
+        self.handle.id()
+    }
+
+    #[inline(always)]
+    pub fn meta(&self) -> BriefBlockMeta {
+        self.meta
+    }
+
+    #[inline(always)]
+    pub fn block(&self) -> &ton_block::Block {
+        self.block.block()
+    }
+
+    #[inline(always)]
+    pub fn block_stuff(&self) -> &BlockStuff {
+        self.block
+    }
+
+    #[inline(always)]
+    pub fn shard_state(&self) -> Option<&ton_block::ShardStateUnsplit> {
+        self.shard_state.map(ShardStateStuff::state)
+    }
+
+    #[inline(always)]
+    pub fn shard_state_stuff(&self) -> Option<&ShardStateStuff> {
+        self.shard_state
+    }
+
+    #[inline(always)]
+    pub fn is_masterchain(&self) -> bool {
+        self.handle.id().shard_id.workchain_id() == ton_block::MASTERCHAIN_ID
+    }
+
+    #[inline(always)]
+    pub fn is_from_archive(&self) -> bool {
+        self.shard_state.is_none()
+    }
+
+    pub async fn load_block_data(&self) -> Result<Vec<u8>> {
+        self.engine.db.load_block_data_raw(self.handle).await
+    }
+
+    pub async fn load_block_proof(&self) -> Result<BlockProofStuff> {
+        self.engine
+            .db
+            .load_block_proof(self.handle, !self.is_masterchain())
+            .await
+    }
+
+    pub async fn load_block_proof_data(&self) -> Result<Vec<u8>> {
+        self.engine
+            .db
+            .load_block_proof_raw(self.handle, !self.is_masterchain())
+            .await
     }
 }
 

@@ -158,7 +158,7 @@ struct Scheduler {
 
 impl Scheduler {
     async fn with_slots(
-        overlay: Arc<dyn FullNodeOverlayClient>,
+        overlay: FullNodeOverlayClient,
         block_id: ton_block::BlockIdExt,
         masterchain_block_id: ton_block::BlockIdExt,
         neighbour: Arc<Neighbour>,
@@ -284,7 +284,7 @@ impl Scheduler {
 }
 
 struct DownloadContext {
-    overlay: Arc<dyn FullNodeOverlayClient>,
+    overlay: FullNodeOverlayClient,
     block_id: ton_block::BlockIdExt,
     masterchain_block_id: ton_block::BlockIdExt,
     neighbour: Arc<Neighbour>,

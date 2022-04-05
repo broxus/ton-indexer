@@ -166,7 +166,7 @@ async fn prepare_cold_boot_data(engine: &Arc<Engine>) -> Result<ColdBootData> {
 
         Ok(ColdBootData::KeyBlock {
             handle,
-            proof: Box::new(proof),
+            proof: Box::new(proof.data),
         })
     }
 }
@@ -301,7 +301,7 @@ async fn download_key_block_proof(
                     .store_block_proof(block_id, None, &proof)
                     .await?
                     .handle;
-                return Ok((handle, proof));
+                return Ok((handle, proof.data));
             }
             Err(e) => {
                 log::warn!("Got invalid key block proof: {}", e);
@@ -442,7 +442,7 @@ async fn download_block_and_state(
                     .await?
                     .handle;
             }
-            (block, handle)
+            (block.data, handle)
         }
     };
 
