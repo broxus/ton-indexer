@@ -11,6 +11,7 @@ use self::archive_downloader::*;
 use self::block_maps::*;
 
 mod archive_downloader;
+mod archive_writers_pool;
 mod block_maps;
 
 pub async fn sync(engine: &Arc<Engine>) -> Result<()> {

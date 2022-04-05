@@ -393,15 +393,8 @@ async fn download_start_blocks_and_states(
     engine: &Arc<Engine>,
     masterchain_block_id: &ton_block::BlockIdExt,
 ) -> Result<()> {
-    let active_peers = Arc::new(ActivePeers::default());
-
-    let (_, init_mc_block) = download_block_and_state(
-        engine,
-        masterchain_block_id,
-        masterchain_block_id,
-        &active_peers,
-    )
-    .await?;
+    let (_, init_mc_block) =
+        download_block_and_state(engine, masterchain_block_id, masterchain_block_id).await?;
 
     log::info!("Downloaded init mc block state: {}", init_mc_block.id());
 
@@ -409,8 +402,7 @@ async fn download_start_blocks_and_states(
         if block_id.seq_no == 0 {
             download_zero_state(engine, &block_id).await?;
         } else {
-            download_block_and_state(engine, &block_id, masterchain_block_id, &active_peers)
-                .await?;
+            download_block_and_state(engine, &block_id, masterchain_block_id).await?;
         };
     }
 
@@ -421,7 +413,6 @@ async fn download_block_and_state(
     engine: &Arc<Engine>,
     block_id: &ton_block::BlockIdExt,
     masterchain_block_id: &ton_block::BlockIdExt,
-    active_peers: &Arc<ActivePeers>,
 ) -> Result<(Arc<BlockHandle>, BlockStuff)> {
     let handle = engine
         .load_block_handle(block_id)?
@@ -459,7 +450,6 @@ async fn download_block_and_state(
             handle.id(),
             masterchain_block_id,
             handle.id().is_masterchain(),
-            active_peers,
         )
         .await?;
         log::info!("Downloaded state");

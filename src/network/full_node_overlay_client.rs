@@ -3,15 +3,17 @@
 /// Changes:
 /// - replaced old `failure` crate with `anyhow`
 ///
+use std::io::Write;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use tiny_adnl::utils::*;
 use tiny_adnl::{Neighbour, OverlayClient};
 use ton_api::ton::{self, TLObject};
 use ton_api::Deserializer;
 
+use crate::storage::ArchivePackageVerifier;
 use crate::utils::*;
 
 #[derive(Clone)]
@@ -35,7 +37,6 @@ impl FullNodeOverlayClient {
         &self,
         block_id: &ton_block::BlockIdExt,
         masterchain_block_id: &ton_block::BlockIdExt,
-        active_peers: &Arc<ActivePeers>,
     ) -> Result<Option<Arc<Neighbour>>> {
         let this = &self.0;
 
@@ -47,7 +48,7 @@ impl FullNodeOverlayClient {
                 }),
                 None,
                 Some(TIMEOUT_PREPARE),
-                Some(active_peers),
+                None,
             )
             .await?;
 
@@ -55,10 +56,7 @@ impl FullNodeOverlayClient {
 
         match prepare {
             ton::ton_node::PreparedState::TonNode_PreparedState => Ok(Some(neighbour)),
-            ton::ton_node::PreparedState::TonNode_NotFoundState => {
-                active_peers.remove(neighbour.peer_id());
-                Ok(None)
-            }
+            ton::ton_node::PreparedState::TonNode_NotFoundState => Ok(None),
         }
     }
 
@@ -342,8 +340,8 @@ impl FullNodeOverlayClient {
     pub async fn download_archive(
         &self,
         masterchain_seqno: u32,
-        active_peers: &Arc<ActivePeers>,
-    ) -> Result<Option<Vec<u8>>> {
+        output: &mut dyn Write,
+    ) -> Result<ArchiveDownloadStatus> {
         const CHUNK_SIZE: i32 = 1 << 21; // 2 MB
 
         let this = &self.0;
@@ -364,12 +362,12 @@ impl FullNodeOverlayClient {
         let info = match archive_info {
             ton::ton_node::ArchiveInfo::TonNode_ArchiveInfo(info) => info,
             ton::ton_node::ArchiveInfo::TonNode_ArchiveNotFound => {
-                active_peers.remove(neighbour.peer_id());
-                return Ok(None);
+                return Ok(ArchiveDownloadStatus::NotFound);
             }
         };
 
-        let mut result = Vec::new();
+        let mut verifier = ArchivePackageVerifier::Start;
+
         let mut offset = 0;
         let mut part_attempt = 0;
         let mut peer_attempt = 0;
@@ -388,16 +386,25 @@ impl FullNodeOverlayClient {
             )
             .await
             {
-                Ok(Ok(mut chunk)) => {
-                    let chunk_len = chunk.len() as i32;
-                    result.append(&mut chunk);
+                Ok(Ok(chunk)) => {
+                    let is_last = chunk.len() < CHUNK_SIZE as usize;
 
-                    if chunk_len < CHUNK_SIZE {
-                        active_peers.remove(neighbour.peer_id());
-                        return Ok(Some(result));
+                    verifier
+                        .verify(&chunk)
+                        .context("Received invalid archive chunk")?;
+                    if is_last {
+                        verifier.final_check().context("Received invalid archive")?;
                     }
 
-                    offset += chunk_len as i64;
+                    output
+                        .write_all(&chunk)
+                        .context("Failed to write archive chunk")?;
+
+                    if is_last {
+                        return Ok(ArchiveDownloadStatus::Downloaded(chunk.len()));
+                    }
+
+                    offset += chunk.len() as i64;
                     part_attempt = 0;
                 }
                 Ok(Err(e)) => {
@@ -412,7 +419,6 @@ impl FullNodeOverlayClient {
                     );
 
                     if part_attempt > 2 {
-                        active_peers.remove(neighbour.peer_id());
                         return Err(anyhow!(
                             "Failed to download archive after {} attempts: {}",
                             part_attempt,
@@ -424,7 +430,6 @@ impl FullNodeOverlayClient {
                     peer_attempt += 1;
                     part_attempt += 1;
                     if part_attempt > 2 {
-                        active_peers.remove(neighbour.peer_id());
                         return Err(anyhow!(
                             "Failed to download archive after {} attempts: timeout",
                             part_attempt,
@@ -451,6 +456,12 @@ impl FullNodeOverlayClient {
             }
         }
     }
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+pub enum ArchiveDownloadStatus {
+    Downloaded(usize),
+    NotFound,
 }
 
 const TIMEOUT_PREPARE: u64 = 6000; // Milliseconds

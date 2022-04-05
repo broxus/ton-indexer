@@ -26,7 +26,6 @@ pub async fn download_state(
     block_id: &ton_block::BlockIdExt,
     masterchain_block_id: &ton_block::BlockIdExt,
     clear_db: bool,
-    active_peers: &Arc<ActivePeers>,
 ) -> Result<Arc<ShardStateStuff>> {
     let overlay = engine
         .get_full_node_overlay(
@@ -37,7 +36,7 @@ pub async fn download_state(
 
     let neighbour = loop {
         match overlay
-            .check_persistent_state(block_id, masterchain_block_id, active_peers)
+            .check_persistent_state(block_id, masterchain_block_id)
             .await
         {
             Ok(Some(peer)) => break peer,

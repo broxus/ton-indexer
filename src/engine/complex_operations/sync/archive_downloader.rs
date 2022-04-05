@@ -3,19 +3,21 @@ use std::collections::binary_heap::PeekMut;
 use std::collections::BinaryHeap;
 use std::ops::{Bound, Deref, DerefMut, RangeBounds};
 use std::sync::Arc;
+use std::time::Duration;
 
 use parking_lot::Mutex;
 use tiny_adnl::utils::*;
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
+use super::archive_writers_pool::*;
 use super::block_maps::*;
 use crate::engine::Engine;
-use crate::utils::*;
+use crate::network::ArchiveDownloadStatus;
 
 pub struct ArchiveDownloader {
     engine: Arc<Engine>,
-    active_peers: Arc<ActivePeers>,
+    writers_pool: Arc<ArchiveWritersPool>,
     pending_archives: BinaryHeap<PendingBlockMaps>,
     new_archive_notification: Arc<Notify>,
     cancellation_token: CancellationToken,
@@ -49,7 +51,7 @@ impl ArchiveDownloader {
 
         let mut downloader = ArchiveDownloader {
             engine: engine.clone(),
-            active_peers: Default::default(),
+            writers_pool: Default::default(),
             pending_archives: Default::default(),
             new_archive_notification: Default::default(),
             cancellation_token: Default::default(),
@@ -163,16 +165,16 @@ impl ArchiveDownloader {
 
         // Prepare context
         let engine = self.engine.clone();
-        let active_peers = self.active_peers.clone();
         let cancellation_token = self.cancellation_token.clone();
         let new_archive_notification = self.new_archive_notification.clone();
+        let writers_pool = self.writers_pool.clone();
 
         // Spawn downloader
         tokio::spawn(async move {
-            if let Some(result) =
-                download_archive(&engine, &active_peers, &cancellation_token, mc_block_seq_no).await
+            if let Some(writer) =
+                download_archive(engine, writers_pool, cancellation_token, mc_block_seq_no).await
             {
-                *block_maps.lock() = Some(result);
+                *block_maps.lock() = Some(writer);
                 new_archive_notification.notify_waiters();
             }
         });
@@ -187,7 +189,7 @@ impl Drop for ArchiveDownloader {
 
 struct PendingBlockMaps {
     index: u32,
-    block_maps: Arc<Mutex<Option<Arc<BlockMaps>>>>,
+    block_maps: Arc<Mutex<Option<Box<dyn AcquiredArchiveWriter>>>>,
 }
 
 impl PartialEq for PendingBlockMaps {
@@ -208,6 +210,17 @@ impl Ord for PendingBlockMaps {
     fn cmp(&self, other: &Self) -> Ordering {
         // NOTE: reverse comparison here because `BinaryHeap` is a max-heap
         other.index.cmp(&self.index)
+    }
+}
+
+enum BlockMapsData {
+    Loaded(Arc<BlockMaps>),
+    NotLoaded(Box<dyn AcquiredArchiveWriter>),
+}
+
+impl BlockMapsData {
+    fn preload(&mut self) -> Result<&Arc<BlockMaps>> {
+        todo!()
     }
 }
 
@@ -255,11 +268,11 @@ impl Drop for ReceivedBlockMaps<'_> {
 }
 
 pub async fn download_archive(
-    engine: &Arc<Engine>,
-    active_peers: &Arc<ActivePeers>,
-    signal: &CancellationToken,
+    engine: Arc<Engine>,
+    writers_pool: Arc<ArchiveWritersPool>,
+    signal: CancellationToken,
     mc_seq_no: u32,
-) -> Option<Arc<BlockMaps>> {
+) -> Option<Box<dyn AcquiredArchiveWriter>> {
     tokio::pin!(
         let signal = signal.cancelled();
     );
@@ -267,28 +280,31 @@ pub async fn download_archive(
     log::info!("sync: Downloading archive for block {mc_seq_no}");
 
     loop {
+        let mut writer = match writers_pool.acquire() {
+            Ok(writer) => writer,
+            Err(e) => {
+                log::error!("sync: Failed to acquire archive writer: {e:?}");
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                continue;
+            }
+        };
+
         let start = std::time::Instant::now();
         let result = tokio::select! {
-            data = engine.download_archive(mc_seq_no, active_peers) => data,
+            status = engine.download_archive(mc_seq_no, &mut writer) => status,
             _ = (&mut signal) => return None,
         };
 
         match result {
-            Ok(Some(data)) => {
+            Ok(ArchiveDownloadStatus::Downloaded(data_len)) => {
                 log::info!(
                     "sync: Downloaded archive for block {mc_seq_no}, size {} bytes. Took: {} ms",
-                    data.len(),
+                    data_len,
                     start.elapsed().as_millis()
                 );
-
-                match BlockMaps::new(&data) {
-                    Ok(data) => break Some(data),
-                    Err(e) => {
-                        log::error!("sync: Failed to parse archive: {e:?}");
-                    }
-                }
+                break Some(writer);
             }
-            Ok(None) => {
+            Ok(ArchiveDownloadStatus::NotFound) => {
                 log::trace!("sync: No archive found for block {mc_seq_no}");
             }
             Err(e) => {

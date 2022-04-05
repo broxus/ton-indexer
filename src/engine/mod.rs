@@ -5,6 +5,7 @@
 /// - removed validator stuff
 /// - slightly changed application of blocks
 ///
+use std::io::Write;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -529,12 +530,10 @@ impl Engine {
     async fn download_archive(
         &self,
         mc_block_seq_no: u32,
-        active_peers: &Arc<ActivePeers>,
-    ) -> Result<Option<Vec<u8>>> {
+        output: &mut dyn Write,
+    ) -> Result<ArchiveDownloadStatus> {
         let mc_overlay = self.get_masterchain_overlay().await?;
-        mc_overlay
-            .download_archive(mc_block_seq_no, active_peers)
-            .await
+        mc_overlay.download_archive(mc_block_seq_no, output).await
     }
 
     pub(crate) fn load_block_handle(
