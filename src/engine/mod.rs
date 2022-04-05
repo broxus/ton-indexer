@@ -1164,6 +1164,11 @@ impl ProcessBlockContext<'_> {
     }
 
     #[inline(always)]
+    pub fn is_masterchain(&self) -> bool {
+        self.handle.id().shard_id.workchain_id() == ton_block::MASTERCHAIN_ID
+    }
+
+    #[inline(always)]
     pub fn is_from_archive(&self) -> bool {
         self.shard_state.is_none()
     }
@@ -1172,10 +1177,17 @@ impl ProcessBlockContext<'_> {
         self.engine.db.load_block_data_raw(self.handle).await
     }
 
+    pub async fn load_block_proof(&self) -> Result<BlockProofStuff> {
+        self.engine
+            .db
+            .load_block_proof(self.handle, !self.is_masterchain())
+            .await
+    }
+
     pub async fn load_block_proof_data(&self) -> Result<Vec<u8>> {
         self.engine
             .db
-            .load_block_proof_raw(self.handle, !self.handle.id().is_masterchain())
+            .load_block_proof_raw(self.handle, !self.is_masterchain())
             .await
     }
 }
