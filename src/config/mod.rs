@@ -24,10 +24,9 @@ pub struct NodeConfig {
     pub shard_state_cache_options: Option<ShardStateCacheOptions>,
     pub archives_enabled: bool,
 
-    pub old_blocks_policy: OldBlocksPolicy,
     pub max_db_memory_usage: usize,
 
-    pub parallel_archive_downloads: u32,
+    pub sync_options: SyncOptions,
 
     pub adnl_options: AdnlNodeOptions,
     pub rldp_options: RldpNodeOptions,
@@ -47,14 +46,34 @@ impl Default for NodeConfig {
             blocks_gc_options: None,
             shard_state_cache_options: Some(Default::default()),
             archives_enabled: false,
-            old_blocks_policy: Default::default(),
             max_db_memory_usage: default_max_db_memory_usage(),
-            parallel_archive_downloads: 16,
+            sync_options: Default::default(),
             adnl_options: Default::default(),
             rldp_options: Default::default(),
             dht_options: Default::default(),
             neighbours_options: Default::default(),
             overlay_shard_options: Default::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SyncOptions {
+    /// Whether to sync very old blocks
+    pub old_blocks_policy: OldBlocksPolicy,
+    /// Default: 16
+    pub parallel_archive_downloads: usize,
+    /// Default: 1073741824 (1 GB)
+    pub save_to_disk_threshold: usize,
+}
+
+impl Default for SyncOptions {
+    fn default() -> Self {
+        Self {
+            old_blocks_policy: Default::default(),
+            parallel_archive_downloads: 16,
+            save_to_disk_threshold: 1024 * 1024 * 1024,
         }
     }
 }

@@ -1,6 +1,6 @@
 use std::fs::File;
 use std::io::{IoSlice, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
@@ -8,14 +8,23 @@ use anyhow::{Context, Result};
 
 use super::block_maps::*;
 
-#[derive(Default)]
 pub struct ArchiveWritersPool {
     save_to_disk_threshold: usize,
     acquired_memory: Arc<AtomicUsize>,
     temp_file_index: AtomicUsize,
+    base_path: PathBuf,
 }
 
 impl ArchiveWritersPool {
+    pub fn new(base_path: impl AsRef<Path>, save_to_disk_threshold: usize) -> Self {
+        Self {
+            save_to_disk_threshold,
+            acquired_memory: Arc::new(Default::default()),
+            temp_file_index: Default::default(),
+            base_path: base_path.as_ref().to_path_buf(),
+        }
+    }
+
     pub fn acquire(&self) -> Result<Box<dyn AcquiredArchiveWriter>> {
         let acquired_memory = self.acquired_memory.load(Ordering::Acquire);
         if acquired_memory < self.save_to_disk_threshold {
@@ -26,9 +35,9 @@ impl ArchiveWritersPool {
         }
 
         let temp_file_index = self.temp_file_index.fetch_add(1, Ordering::AcqRel);
-        let path = PathBuf::from(format!("archive{temp_file_index:04}"));
+        let path = self.base_path.join(format!("archive{temp_file_index:04}"));
 
-        let mut file = std::fs::OpenOptions::new()
+        let file = std::fs::OpenOptions::new()
             .write(true)
             .create(true)
             .truncate(true)
@@ -40,7 +49,7 @@ impl ArchiveWritersPool {
 }
 
 pub trait AcquiredArchiveWriter: Write + Send + Sync + 'static {
-    fn into_block_maps(self) -> Result<Arc<BlockMaps>>;
+    fn parse_block_maps(&self) -> Result<Arc<BlockMaps>>;
 }
 
 struct FileWriter {
@@ -49,7 +58,7 @@ struct FileWriter {
 }
 
 impl AcquiredArchiveWriter for FileWriter {
-    fn into_block_maps(mut self) -> Result<Arc<BlockMaps>> {
+    fn parse_block_maps(&self) -> Result<Arc<BlockMaps>> {
         let mapped_file =
             FileWriterView::new(&self.file).context("Failed to map temp archive file")?;
 
@@ -84,7 +93,7 @@ impl Write for FileWriter {
 }
 
 struct FileWriterView<'a> {
-    file: &'a File,
+    _file: &'a File,
     length: usize,
     ptr: *mut libc::c_void,
 }
@@ -114,7 +123,11 @@ impl<'a> FileWriterView<'a> {
             return Err(std::io::Error::last_os_error());
         }
 
-        Ok(Self { file, length, ptr })
+        Ok(Self {
+            _file: file,
+            length,
+            ptr,
+        })
     }
 
     fn as_slice(&self) -> &[u8] {
@@ -139,7 +152,7 @@ struct InMemoryWriter {
 }
 
 impl AcquiredArchiveWriter for InMemoryWriter {
-    fn into_block_maps(self) -> Result<Arc<BlockMaps>> {
+    fn parse_block_maps(&self) -> Result<Arc<BlockMaps>> {
         BlockMaps::new(&self.buffer)
     }
 }
@@ -178,5 +191,3 @@ impl Write for InMemoryWriter {
         Ok(())
     }
 }
-
-const SAVE_TO_DISK_THRESHOLD: usize = 100;

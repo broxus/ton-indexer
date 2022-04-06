@@ -340,7 +340,7 @@ impl FullNodeOverlayClient {
     pub async fn download_archive(
         &self,
         masterchain_seqno: u32,
-        output: &mut dyn Write,
+        output: &mut (dyn Write + Send),
     ) -> Result<ArchiveDownloadStatus> {
         const CHUNK_SIZE: i32 = 1 << 21; // 2 MB
 
