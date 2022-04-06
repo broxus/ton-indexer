@@ -58,7 +58,7 @@ impl Default for NodeConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(default, deny_unknown_fields)]
 pub struct SyncOptions {
     /// Whether to sync very old blocks
     pub old_blocks_policy: OldBlocksPolicy,
