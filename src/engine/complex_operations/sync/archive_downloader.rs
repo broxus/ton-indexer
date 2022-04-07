@@ -17,7 +17,7 @@ use crate::network::ArchiveDownloadStatus;
 
 pub struct ArchiveDownloader {
     engine: Arc<Engine>,
-    writers_pool: Arc<ArchiveWritersPool>,
+    writers_pool: ArchiveWritersPool,
     pending_archives: BinaryHeap<PendingBlockMaps>,
     new_archive_notification: Arc<Notify>,
     cancellation_token: CancellationToken,
@@ -51,10 +51,10 @@ impl ArchiveDownloader {
 
         let mut downloader = ArchiveDownloader {
             engine: engine.clone(),
-            writers_pool: Arc::new(ArchiveWritersPool::new(
+            writers_pool: ArchiveWritersPool::new(
                 engine.db.file_db_path(),
                 engine.sync_options.save_to_disk_threshold,
-            )),
+            ),
             pending_archives: Default::default(),
             new_archive_notification: Default::default(),
             cancellation_token: Default::default(),
@@ -306,7 +306,7 @@ impl Drop for ReceivedBlockMaps<'_> {
 
 pub async fn download_archive(
     engine: Arc<Engine>,
-    writers_pool: Arc<ArchiveWritersPool>,
+    writers_pool: ArchiveWritersPool,
     signal: CancellationToken,
     mc_seq_no: u32,
 ) -> Option<ArchiveWriter> {

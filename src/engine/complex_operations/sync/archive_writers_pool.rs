@@ -46,7 +46,9 @@ struct ArchiveWritersPoolState {
 impl ArchiveWritersPoolState {
     fn acquire_file(&self) -> std::io::Result<(PathBuf, File)> {
         let temp_file_index = self.temp_file_index.fetch_add(1, Ordering::AcqRel);
-        let path = self.base_path.join(format!("archive{temp_file_index:04}"));
+        let path = self
+            .base_path
+            .join(format!("temp_archive{temp_file_index:04}"));
 
         let file = std::fs::OpenOptions::new()
             .write(true)
