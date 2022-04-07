@@ -205,7 +205,7 @@ pub async fn background_sync(engine: &Arc<Engine>, from_seqno: u32) -> Result<()
     let mut ctx = BackgroundSyncContext {
         engine,
         to,
-        prev_key_block_id: &mut engine.load_prev_key_block(from).await?,
+        prev_key_block_id: None,
     };
 
     let mut archive_downloader = ArchiveDownloader::new(engine, from..=to);
@@ -223,7 +223,7 @@ pub async fn background_sync(engine: &Arc<Engine>, from_seqno: u32) -> Result<()
 struct BackgroundSyncContext<'a> {
     engine: &'a Arc<Engine>,
     to: u32,
-    prev_key_block_id: &'a mut ton_block::BlockIdExt,
+    prev_key_block_id: Option<ton_block::BlockIdExt>,
 }
 
 impl BackgroundSyncContext<'_> {
@@ -241,9 +241,15 @@ impl BackgroundSyncContext<'_> {
                 Some(handle) => handle,
                 None => profl::span!(
                     "save_background_sync_block",
-                    save_block(self.engine, id, block, proof, Some(self.prev_key_block_id))
-                        .await
-                        .context("Failed saving block")?
+                    save_block(
+                        self.engine,
+                        id,
+                        block,
+                        proof,
+                        self.prev_key_block_id.as_ref()
+                    )
+                    .await
+                    .context("Failed saving block")?
                 ),
             };
 
@@ -253,7 +259,7 @@ impl BackgroundSyncContext<'_> {
                 .context("Failed to process archive block")?;
 
             if handle.is_key_block() {
-                *self.prev_key_block_id = id.clone();
+                self.prev_key_block_id = Some(id.clone());
             }
         }
 
