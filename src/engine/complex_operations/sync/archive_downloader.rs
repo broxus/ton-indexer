@@ -3,7 +3,6 @@ use std::collections::binary_heap::PeekMut;
 use std::collections::BinaryHeap;
 use std::ops::{Bound, Deref, DerefMut, RangeBounds};
 use std::sync::Arc;
-use std::time::Duration;
 
 use anyhow::{Context, Result};
 use parking_lot::Mutex;
@@ -241,7 +240,7 @@ impl Ord for PendingBlockMaps {
 
 struct BlockMapsData {
     loaded: Option<Arc<BlockMaps>>,
-    writer: Option<Box<dyn AcquiredArchiveWriter>>,
+    writer: Option<ArchiveWriter>,
 }
 
 impl BlockMapsData {
@@ -310,7 +309,7 @@ pub async fn download_archive(
     writers_pool: Arc<ArchiveWritersPool>,
     signal: CancellationToken,
     mc_seq_no: u32,
-) -> Option<Box<dyn AcquiredArchiveWriter>> {
+) -> Option<ArchiveWriter> {
     tokio::pin!(
         let signal = signal.cancelled();
     );
@@ -318,14 +317,7 @@ pub async fn download_archive(
     log::info!("sync: Downloading archive for block {mc_seq_no}");
 
     loop {
-        let mut writer = match writers_pool.acquire() {
-            Ok(writer) => writer,
-            Err(e) => {
-                log::error!("sync: Failed to acquire archive writer: {e:?}");
-                tokio::time::sleep(Duration::from_secs(1)).await;
-                continue;
-            }
-        };
+        let mut writer = writers_pool.acquire();
 
         let start = std::time::Instant::now();
         let result = tokio::select! {

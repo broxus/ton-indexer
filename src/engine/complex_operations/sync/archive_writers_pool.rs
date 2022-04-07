@@ -5,35 +5,46 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
+use parking_lot::Mutex;
 
 use super::block_maps::*;
 
+#[derive(Clone)]
 pub struct ArchiveWritersPool {
-    save_to_disk_threshold: usize,
-    acquired_memory: Arc<AtomicUsize>,
-    temp_file_index: AtomicUsize,
-    base_path: PathBuf,
+    state: Arc<ArchiveWritersPoolState>,
 }
 
 impl ArchiveWritersPool {
     pub fn new(base_path: impl AsRef<Path>, save_to_disk_threshold: usize) -> Self {
         Self {
-            save_to_disk_threshold,
-            acquired_memory: Arc::new(Default::default()),
-            temp_file_index: Default::default(),
-            base_path: base_path.as_ref().to_path_buf(),
+            state: Arc::new(ArchiveWritersPoolState {
+                save_to_disk_threshold,
+                acquired_memory: Default::default(),
+                temp_file_index: Default::default(),
+                base_path: base_path.as_ref().to_path_buf(),
+            }),
         }
     }
 
-    pub fn acquire(&self) -> Result<Box<dyn AcquiredArchiveWriter>> {
-        let acquired_memory = self.acquired_memory.load(Ordering::Acquire);
-        if acquired_memory < self.save_to_disk_threshold {
-            return Ok(Box::new(InMemoryWriter {
-                acquired_memory: self.acquired_memory.clone(),
-                buffer: Vec::new(),
-            }));
+    pub fn acquire(&self) -> ArchiveWriter {
+        ArchiveWriter {
+            pool_state: self.state.clone(),
+            state: ArchiveWriterState::InMemory(Vec::new()),
         }
+    }
+}
 
+struct ArchiveWritersPoolState {
+    save_to_disk_threshold: usize,
+    // NOTE: `AtomicUsize` is not used here because there is a complex
+    // InMemory-to-File transition
+    acquired_memory: Mutex<usize>,
+    temp_file_index: AtomicUsize,
+    base_path: PathBuf,
+}
+
+impl ArchiveWritersPoolState {
+    fn acquire_file(&self) -> std::io::Result<(PathBuf, File)> {
         let temp_file_index = self.temp_file_index.fetch_add(1, Ordering::AcqRel);
         let path = self.base_path.join(format!("archive{temp_file_index:04}"));
 
@@ -42,55 +53,108 @@ impl ArchiveWritersPool {
             .read(true)
             .create(true)
             .truncate(true)
-            .open(&path)
-            .context("Failed to create file writer")?;
+            .open(&path)?;
 
-        Ok(Box::new(FileWriter { path, file }))
+        Ok((path, file))
     }
 }
 
-pub trait AcquiredArchiveWriter: Write + Send + Sync + 'static {
-    fn parse_block_maps(&self) -> Result<Arc<BlockMaps>>;
+pub struct ArchiveWriter {
+    pool_state: Arc<ArchiveWritersPoolState>,
+    state: ArchiveWriterState,
 }
 
-struct FileWriter {
-    path: PathBuf,
-    file: File,
-}
+impl ArchiveWriter {
+    pub fn parse_block_maps(&self) -> Result<Arc<BlockMaps>> {
+        match &self.state {
+            ArchiveWriterState::InMemory(buffer) => BlockMaps::new(buffer),
+            ArchiveWriterState::File { file, .. } => {
+                let mapped_file =
+                    FileWriterView::new(file).context("Failed to map temp archive file")?;
 
-impl AcquiredArchiveWriter for FileWriter {
-    fn parse_block_maps(&self) -> Result<Arc<BlockMaps>> {
-        let mapped_file =
-            FileWriterView::new(&self.file).context("Failed to map temp archive file")?;
+                BlockMaps::new(mapped_file.as_slice())
+            }
+        }
+    }
 
-        BlockMaps::new(mapped_file.as_slice())
+    fn acquire_memory(&mut self, additional: usize) -> std::io::Result<()> {
+        if let ArchiveWriterState::InMemory(buffer) = &self.state {
+            let move_to_file = {
+                let mut acquired_memory = self.pool_state.acquired_memory.lock();
+                if *acquired_memory + additional > self.pool_state.save_to_disk_threshold {
+                    *acquired_memory -= buffer.len();
+                    true
+                } else {
+                    *acquired_memory += additional;
+                    false
+                }
+            };
+
+            if move_to_file {
+                let (path, mut file) = self.pool_state.acquire_file()?;
+                file.write_all(buffer)?;
+                self.state = ArchiveWriterState::File { path, file };
+            }
+        }
+
+        Ok(())
     }
 }
 
-impl Drop for FileWriter {
+impl Drop for ArchiveWriter {
     fn drop(&mut self) {
-        if let Err(e) = std::fs::remove_file(&self.path) {
-            log::error!("Failed to remove temp archive file {:?}: {e:?}", self.path);
+        match &self.state {
+            ArchiveWriterState::InMemory(buffer) => {
+                *self.pool_state.acquired_memory.lock() -= buffer.len();
+            }
+            ArchiveWriterState::File { path, .. } => {
+                if let Err(e) = std::fs::remove_file(&path) {
+                    log::error!("Failed to remove temp archive file {path:?}: {e:?}");
+                }
+            }
         }
     }
 }
 
-// NOTE: buffered writer is not needed here because we are going to write big chunks of data
-impl Write for FileWriter {
-    #[inline(always)]
+impl Write for ArchiveWriter {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.file.write(buf)
+        self.acquire_memory(buf.len())?;
+
+        match &mut self.state {
+            ArchiveWriterState::InMemory(buffer) => buffer.write(buf),
+            ArchiveWriterState::File { file, .. } => file.write(buf),
+        }
     }
 
-    #[inline(always)]
     fn write_vectored(&mut self, bufs: &[IoSlice<'_>]) -> std::io::Result<usize> {
-        self.file.write_vectored(bufs)
+        let len = bufs.iter().map(|b| b.len()).sum();
+
+        self.acquire_memory(len)?;
+
+        match &mut self.state {
+            ArchiveWriterState::InMemory(buffer) => {
+                buffer.reserve(len);
+                for buf in bufs {
+                    buffer.extend_from_slice(buf);
+                }
+                Ok(len)
+            }
+            ArchiveWriterState::File { file, .. } => file.write_vectored(bufs),
+        }
     }
 
     #[inline(always)]
     fn flush(&mut self) -> std::io::Result<()> {
-        self.file.flush()
+        match &mut self.state {
+            ArchiveWriterState::InMemory(_) => Ok(()),
+            ArchiveWriterState::File { file, .. } => file.flush(),
+        }
     }
+}
+
+enum ArchiveWriterState {
+    InMemory(Vec<u8>),
+    File { path: PathBuf, file: File },
 }
 
 struct FileWriterView<'a> {
@@ -144,51 +208,5 @@ impl Drop for FileWriterView<'_> {
             let error = std::io::Error::last_os_error();
             panic!("failed to unmap temp archive file: {error}");
         }
-    }
-}
-
-struct InMemoryWriter {
-    acquired_memory: Arc<AtomicUsize>,
-    buffer: Vec<u8>,
-}
-
-impl AcquiredArchiveWriter for InMemoryWriter {
-    fn parse_block_maps(&self) -> Result<Arc<BlockMaps>> {
-        BlockMaps::new(&self.buffer)
-    }
-}
-
-impl Drop for InMemoryWriter {
-    fn drop(&mut self) {
-        self.acquired_memory
-            .fetch_sub(self.buffer.len(), Ordering::Release);
-    }
-}
-
-impl Write for InMemoryWriter {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.acquired_memory.fetch_add(buf.len(), Ordering::Release);
-        self.buffer.extend_from_slice(buf);
-        Ok(buf.len())
-    }
-
-    fn write_vectored(&mut self, bufs: &[IoSlice<'_>]) -> std::io::Result<usize> {
-        let len = bufs.iter().map(|b| b.len()).sum();
-        self.acquired_memory.fetch_add(len, Ordering::Release);
-        self.buffer.reserve(len);
-        for buf in bufs {
-            self.buffer.extend_from_slice(buf);
-        }
-        Ok(len)
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-
-    fn write_all(&mut self, buf: &[u8]) -> std::io::Result<()> {
-        self.acquired_memory.fetch_add(buf.len(), Ordering::Release);
-        self.buffer.extend_from_slice(buf);
-        Ok(())
     }
 }
