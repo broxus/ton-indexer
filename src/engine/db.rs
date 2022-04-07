@@ -492,7 +492,9 @@ impl Db {
     }
 
     pub async fn archive_block(&self, handle: &Arc<BlockHandle>) -> Result<()> {
-        self.archive_manager.move_into_archive(handle).await
+        profl::span!("move_into_archive", {
+            self.archive_manager.move_into_archive(handle).await
+        })
     }
 
     pub fn find_last_key_block(&self) -> Result<Arc<BlockHandle>> {

@@ -259,8 +259,10 @@ impl ArchiveManager {
         // Prepare archive
         let ref_seqno = handle.masterchain_ref_seqno();
 
-        let mut archive_id =
-            self.compute_archive_id(&storage_cf, ref_seqno, handle.meta().is_key_block())?;
+        let mut archive_id = profl::span!("compute_archive_id", {
+            self.compute_archive_id(&storage_cf, ref_seqno, handle.meta().is_key_block())?
+        });
+
         if ref_seqno.saturating_sub(archive_id) >= ARCHIVE_PACKAGE_SIZE {
             archive_id = ref_seqno;
         }
