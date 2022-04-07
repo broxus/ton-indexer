@@ -5,6 +5,7 @@
 /// - removed validator stuff
 /// - slightly changed application of blocks
 ///
+use std::io::Write;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -54,7 +55,7 @@ pub struct Engine {
     last_known_key_block_seqno: AtomicU32,
     hard_forks: FxHashSet<ton_block::BlockIdExt>,
 
-    parallel_archive_downloads: usize,
+    sync_options: SyncOptions,
 
     shard_states_operations: ShardStatesOperationsPool,
     block_applying_operations: BlockApplyingOperationsPool,
@@ -95,7 +96,7 @@ impl Engine {
         global_config: GlobalConfig,
         subscribers: Vec<Arc<dyn Subscriber>>,
     ) -> Result<Arc<Self>> {
-        let old_blocks_policy = config.old_blocks_policy;
+        let old_blocks_policy = config.sync_options.old_blocks_policy;
         let db = Db::new(
             &config.rocks_db_path,
             &config.file_db_path,
@@ -150,7 +151,7 @@ impl Engine {
             init_mc_block_id,
             last_known_key_block_seqno: AtomicU32::new(0),
             hard_forks,
-            parallel_archive_downloads: config.parallel_archive_downloads as usize,
+            sync_options: config.sync_options,
             shard_states_operations: OperationsPool::new("shard_states_operations"),
             block_applying_operations: OperationsPool::new("block_applying_operations"),
             next_block_applying_operations: OperationsPool::new("next_block_applying_operations"),
@@ -529,12 +530,10 @@ impl Engine {
     async fn download_archive(
         &self,
         mc_block_seq_no: u32,
-        active_peers: &Arc<ActivePeers>,
-    ) -> Result<Option<Vec<u8>>> {
+        output: &mut (dyn Write + Send),
+    ) -> Result<ArchiveDownloadStatus> {
         let mc_overlay = self.get_masterchain_overlay().await?;
-        mc_overlay
-            .download_archive(mc_block_seq_no, active_peers)
-            .await
+        mc_overlay.download_archive(mc_block_seq_no, output).await
     }
 
     pub(crate) fn load_block_handle(

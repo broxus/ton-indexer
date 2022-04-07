@@ -4,18 +4,20 @@ use std::collections::BinaryHeap;
 use std::ops::{Bound, Deref, DerefMut, RangeBounds};
 use std::sync::Arc;
 
+use anyhow::{Context, Result};
 use parking_lot::Mutex;
 use tiny_adnl::utils::*;
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
+use super::archive_writers_pool::*;
 use super::block_maps::*;
 use crate::engine::Engine;
-use crate::utils::*;
+use crate::network::ArchiveDownloadStatus;
 
 pub struct ArchiveDownloader {
     engine: Arc<Engine>,
-    active_peers: Arc<ActivePeers>,
+    writers_pool: ArchiveWritersPool,
     pending_archives: BinaryHeap<PendingBlockMaps>,
     new_archive_notification: Arc<Notify>,
     cancellation_token: CancellationToken,
@@ -49,7 +51,10 @@ impl ArchiveDownloader {
 
         let mut downloader = ArchiveDownloader {
             engine: engine.clone(),
-            active_peers: Default::default(),
+            writers_pool: ArchiveWritersPool::new(
+                engine.db.file_db_path(),
+                engine.sync_options.save_to_disk_threshold,
+            ),
             pending_archives: Default::default(),
             new_archive_notification: Default::default(),
             cancellation_token: Default::default(),
@@ -88,26 +93,45 @@ impl ArchiveDownloader {
                         let mut data = item.block_maps.lock();
 
                         // Check lowest id without taking inner data
-                        if let Some(maps) = &*data {
-                            if matches!(maps.lowest_mc_id(), Some(id) if id.seq_no > next_index) {
-                                has_gap = true;
-                                // Drop acquired lock and `PeekMut` object
-                                continue;
+                        if let Some(maps) = &mut *data {
+                            match maps.preload(next_index) {
+                                Ok(maps) => {
+                                    if matches!(
+                                        maps.lowest_mc_id(),
+                                        Some(id) if id.seq_no > next_index
+                                    ) {
+                                        has_gap = true;
+                                        // Drop acquired lock and `PeekMut` object
+                                        continue;
+                                    }
+                                }
+                                Err(e) => {
+                                    log::error!(
+                                        "Failed to preload archive for mc block {next_index}: {e:?}"
+                                    );
+                                }
                             }
                         }
 
                         data.take()
                     };
 
+                    // By this point when data is `Some`, `data.loaded` will be either `Some` if it
+                    // was successfully loaded, or `None` if there was a preload error
+
                     if let Some(data) = data {
                         // Remove this item from the queue
                         PeekMut::pop(item);
 
-                        if let Err(e) = data.check(next_index) {
-                            log::error!("Retrying invalid archive {next_index}: {e:?}");
-                        } else {
-                            // Result item was found
-                            break data;
+                        match data.loaded {
+                            Some(data) => {
+                                // Result item was found
+                                break data;
+                            }
+                            None => {
+                                log::error!("Retrying invalid archive for mc block {next_index}");
+                                continue;
+                            }
                         }
                     }
 
@@ -137,7 +161,7 @@ impl ArchiveDownloader {
         // > where mS is `max_mc_seq_no`
         //
         while self.prefetch_enabled
-            && self.pending_archives.len() < self.engine.parallel_archive_downloads
+            && self.pending_archives.len() < self.engine.sync_options.parallel_archive_downloads
             && !matches!(self.to, Some(to) if self.max_mc_seq_no + 2 * STEP > to)
         {
             self.start_downloading(self.max_mc_seq_no + STEP);
@@ -163,16 +187,19 @@ impl ArchiveDownloader {
 
         // Prepare context
         let engine = self.engine.clone();
-        let active_peers = self.active_peers.clone();
         let cancellation_token = self.cancellation_token.clone();
         let new_archive_notification = self.new_archive_notification.clone();
+        let writers_pool = self.writers_pool.clone();
 
         // Spawn downloader
         tokio::spawn(async move {
-            if let Some(result) =
-                download_archive(&engine, &active_peers, &cancellation_token, mc_block_seq_no).await
+            if let Some(writer) =
+                download_archive(engine, writers_pool, cancellation_token, mc_block_seq_no).await
             {
-                *block_maps.lock() = Some(result);
+                *block_maps.lock() = Some(BlockMapsData {
+                    writer: Some(writer),
+                    loaded: None,
+                });
                 new_archive_notification.notify_waiters();
             }
         });
@@ -187,7 +214,7 @@ impl Drop for ArchiveDownloader {
 
 struct PendingBlockMaps {
     index: u32,
-    block_maps: Arc<Mutex<Option<Arc<BlockMaps>>>>,
+    block_maps: Arc<Mutex<Option<BlockMapsData>>>,
 }
 
 impl PartialEq for PendingBlockMaps {
@@ -208,6 +235,29 @@ impl Ord for PendingBlockMaps {
     fn cmp(&self, other: &Self) -> Ordering {
         // NOTE: reverse comparison here because `BinaryHeap` is a max-heap
         other.index.cmp(&self.index)
+    }
+}
+
+struct BlockMapsData {
+    loaded: Option<Arc<BlockMaps>>,
+    writer: Option<ArchiveWriter>,
+}
+
+impl BlockMapsData {
+    fn preload(&mut self, next_index: u32) -> Result<Arc<BlockMaps>> {
+        if let Some(loaded) = &self.loaded {
+            return Ok(loaded.clone());
+        }
+
+        if let Some(writer) = self.writer.take() {
+            let block_maps = writer
+                .parse_block_maps()
+                .context("Failed to load block maps")?;
+            block_maps.check(next_index)?;
+            return Ok(self.loaded.insert(block_maps).clone());
+        }
+
+        Err(ArchiveDownloaderError::EmptyBlockMapsData.into())
     }
 }
 
@@ -255,11 +305,11 @@ impl Drop for ReceivedBlockMaps<'_> {
 }
 
 pub async fn download_archive(
-    engine: &Arc<Engine>,
-    active_peers: &Arc<ActivePeers>,
-    signal: &CancellationToken,
+    engine: Arc<Engine>,
+    writers_pool: ArchiveWritersPool,
+    signal: CancellationToken,
     mc_seq_no: u32,
-) -> Option<Arc<BlockMaps>> {
+) -> Option<ArchiveWriter> {
     tokio::pin!(
         let signal = signal.cancelled();
     );
@@ -267,28 +317,24 @@ pub async fn download_archive(
     log::info!("sync: Downloading archive for block {mc_seq_no}");
 
     loop {
+        let mut writer = writers_pool.acquire();
+
         let start = std::time::Instant::now();
         let result = tokio::select! {
-            data = engine.download_archive(mc_seq_no, active_peers) => data,
+            status = engine.download_archive(mc_seq_no, &mut writer) => status,
             _ = (&mut signal) => return None,
         };
 
         match result {
-            Ok(Some(data)) => {
+            Ok(ArchiveDownloadStatus::Downloaded(data_len)) => {
                 log::info!(
                     "sync: Downloaded archive for block {mc_seq_no}, size {} bytes. Took: {} ms",
-                    data.len(),
+                    data_len,
                     start.elapsed().as_millis()
                 );
-
-                match BlockMaps::new(&data) {
-                    Ok(data) => break Some(data),
-                    Err(e) => {
-                        log::error!("sync: Failed to parse archive: {e:?}");
-                    }
-                }
+                break Some(writer);
             }
-            Ok(None) => {
+            Ok(ArchiveDownloadStatus::NotFound) => {
                 log::trace!("sync: No archive found for block {mc_seq_no}");
             }
             Err(e) => {
@@ -296,6 +342,12 @@ pub async fn download_archive(
             }
         }
     }
+}
+
+#[derive(Debug, thiserror::Error)]
+enum ArchiveDownloaderError {
+    #[error("Empty block maps data")]
+    EmptyBlockMapsData,
 }
 
 const ARCHIVE_EXISTENCE_THRESHOLD: u32 = 1800;

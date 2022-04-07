@@ -4,7 +4,7 @@
 /// - replaced old `failure` crate with `anyhow`
 /// - slightly changed db structure
 ///
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::Context;
@@ -22,6 +22,7 @@ use crate::BlocksGcKind;
 const CURRENT_VERSION: [u8; 3] = [2, 0, 6];
 
 pub struct Db {
+    file_db_path: PathBuf,
     block_cache: Cache,
     uncompressed_block_cache: Cache,
     block_handle_storage: BlockHandleStorage,
@@ -123,6 +124,7 @@ impl Db {
         let background_sync_meta_store = BackgroundSyncMetaStore::new(&db)?;
 
         Ok(Arc::new(Self {
+            file_db_path: file_db_path.as_ref().to_path_buf(),
             block_cache,
             uncompressed_block_cache: compressed_block_cache,
             block_handle_storage,
@@ -135,6 +137,10 @@ impl Db {
             next2_block_db: Tree::new(&db)?,
             db,
         }))
+    }
+
+    pub fn file_db_path(&self) -> &Path {
+        &self.file_db_path
     }
 
     pub fn raw(&self) -> &Arc<rocksdb::DB> {
