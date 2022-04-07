@@ -25,7 +25,7 @@ pub struct ArchiveManager {
     package_entries: Tree<columns::PackageEntries>,
     block_handles: Tree<columns::BlockHandles>,
     key_blocks: Tree<columns::KeyBlocks>,
-    latest_archives: RwLock<BTreeSet<u32>>,
+    archive_ids: RwLock<BTreeSet<u32>>,
 }
 
 impl ArchiveManager {
@@ -36,15 +36,15 @@ impl ArchiveManager {
             package_entries: Tree::new(db)?,
             block_handles: Tree::new(db)?,
             key_blocks: Tree::new(db)?,
-            latest_archives: Default::default(),
+            archive_ids: Default::default(),
         };
 
-        manager.self_check()?;
+        manager.preload()?;
 
         Ok(manager)
     }
 
-    fn self_check(&self) -> Result<()> {
+    fn preload(&self) -> Result<()> {
         fn check_archive(value: &[u8]) -> Result<(), ArchivePackageError> {
             let mut verifier = ArchivePackageVerifier::default();
             verifier.verify(value)?;
@@ -54,6 +54,8 @@ impl ArchiveManager {
         let archives_cf = self.archives.get_cf()?;
         let mut iter = self.db.raw_iterator_cf(&archives_cf);
         iter.seek_to_first();
+
+        let mut archive_ids = self.archive_ids.write();
 
         while let (Some(key), value) = (iter.key(), iter.value()) {
             let archive_id = u32::from_be_bytes(
@@ -65,6 +67,7 @@ impl ArchiveManager {
                 log::error!("Failed to read archive {archive_id}: {e:?}")
             }
 
+            archive_ids.insert(archive_id);
             iter.next();
         }
 
@@ -257,16 +260,7 @@ impl ArchiveManager {
         let handle_cf = self.block_handles.get_cf()?;
 
         // Prepare archive
-        let ref_seqno = handle.masterchain_ref_seqno();
-
-        let mut archive_id = profl::span!("compute_archive_id", {
-            self.compute_archive_id(&storage_cf, ref_seqno, handle.meta().is_key_block())?
-        });
-
-        if ref_seqno.saturating_sub(archive_id) >= ARCHIVE_PACKAGE_SIZE {
-            archive_id = ref_seqno;
-        }
-
+        let archive_id = self.compute_archive_id(handle)?;
         let archive_id_bytes = archive_id.to_be_bytes();
 
         // 0. Create transaction
@@ -296,16 +290,12 @@ impl ArchiveManager {
         Ok(())
     }
 
-    pub fn get_archive_id(&self, mc_seq_no: u32) -> Result<Option<u64>> {
-        let storage_cf = self.archives.get_cf()?;
-
-        let mut iterator = self.db.raw_iterator_cf(&storage_cf);
-        iterator.seek_for_prev(&mc_seq_no.to_be_bytes());
-        Ok(if let Some(prev_id) = iterator.key() {
-            Some(u64::from_be_bytes(prev_id.try_into()?))
-        } else {
-            None
-        })
+    pub fn get_archive_id(&self, mc_seq_no: u32) -> Option<u32> {
+        self.archive_ids
+            .read()
+            .range(..=mc_seq_no)
+            .next_back()
+            .cloned()
     }
 
     pub fn get_archive_slice(
@@ -324,40 +314,30 @@ impl ArchiveManager {
         }
     }
 
-    fn compute_archive_id(
-        &self,
-        storage_cf: &Arc<rocksdb::BoundColumnFamily<'_>>,
-        mc_seq_no: u32,
-        is_key_block: bool,
-    ) -> Result<u32> {
-        if is_key_block {
-            self.latest_archives.write().insert(mc_seq_no);
+    fn compute_archive_id(&self, handle: &BlockHandle) -> Result<u32> {
+        let mc_seq_no = handle.masterchain_ref_seqno();
+
+        if handle.meta().is_key_block() {
+            self.archive_ids.write().insert(mc_seq_no);
             return Ok(mc_seq_no);
         }
 
         let mut archive_id = mc_seq_no - mc_seq_no % ARCHIVE_SLICE_SIZE;
 
-        let mut prev_id = {
-            let latest_archives = self.latest_archives.read();
+        let prev_id = {
+            let latest_archives = self.archive_ids.read();
             latest_archives.range(..=mc_seq_no).next_back().cloned()
         };
-
-        if prev_id.is_none() {
-            let mut iterator = self.db.raw_iterator_cf(storage_cf);
-            iterator.seek_for_prev(&mc_seq_no.to_be_bytes());
-            if let Some(stored_prev_id) = iterator.key() {
-                let archive_id = u32::from_be_bytes(stored_prev_id.try_into()?);
-                drop(iterator);
-
-                self.latest_archives.write().insert(archive_id);
-                prev_id = Some(archive_id);
-            }
-        }
 
         if let Some(prev_id) = prev_id {
             if archive_id < prev_id {
                 archive_id = prev_id;
             }
+        }
+
+        if mc_seq_no.saturating_sub(archive_id) >= ARCHIVE_PACKAGE_SIZE {
+            self.archive_ids.write().insert(mc_seq_no);
+            archive_id = mc_seq_no;
         }
 
         Ok(archive_id)

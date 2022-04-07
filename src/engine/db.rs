@@ -512,7 +512,7 @@ impl Db {
         Ok(())
     }
 
-    pub fn get_archive_id(&self, mc_seq_no: u32) -> Result<Option<u64>> {
+    pub fn get_archive_id(&self, mc_seq_no: u32) -> Option<u32> {
         self.archive_manager.get_archive_id(mc_seq_no)
     }
 

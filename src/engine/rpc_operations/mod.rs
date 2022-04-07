@@ -371,7 +371,7 @@ impl RpcService for Engine {
             return Ok(ton::ton_node::ArchiveInfo::TonNode_ArchiveNotFound);
         }
 
-        self.db.get_archive_id(mc_seq_no).map(|id| match id {
+        Ok(match self.db.get_archive_id(mc_seq_no) {
             Some(id) => ton::ton_node::ArchiveInfo::TonNode_ArchiveInfo(Box::new(
                 ton::ton_node::archiveinfo::ArchiveInfo { id: id as i64 },
             )),
