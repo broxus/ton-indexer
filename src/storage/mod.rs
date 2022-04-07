@@ -37,7 +37,7 @@ pub mod columns {
     use super::{archive_data_merge, Column};
 
     /// Stores prepared archives
-    /// - Key: `u64 (BE)` (archive id)
+    /// - Key: `u32 (BE)` (archive id)
     /// - Value: `Vec<u8>` (archive data)
     pub struct Archives;
     impl Column for Archives {

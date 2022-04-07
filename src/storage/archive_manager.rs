@@ -6,11 +6,13 @@
 /// - removed all temporary unused code
 ///
 use std::borrow::Borrow;
+use std::collections::BTreeSet;
 use std::convert::TryInto;
 use std::hash::Hash;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
+use parking_lot::RwLock;
 
 use super::archive_package::*;
 use super::block_handle::*;
@@ -23,6 +25,7 @@ pub struct ArchiveManager {
     package_entries: Tree<columns::PackageEntries>,
     block_handles: Tree<columns::BlockHandles>,
     key_blocks: Tree<columns::KeyBlocks>,
+    latest_archives: RwLock<BTreeSet<u32>>,
 }
 
 impl ArchiveManager {
@@ -33,6 +36,7 @@ impl ArchiveManager {
             package_entries: Tree::new(db)?,
             block_handles: Tree::new(db)?,
             key_blocks: Tree::new(db)?,
+            latest_archives: Default::default(),
         };
 
         manager.self_check()?;
@@ -41,24 +45,24 @@ impl ArchiveManager {
     }
 
     fn self_check(&self) -> Result<()> {
-        let storage_cf = self.archives.get_cf()?;
-        let mut iter = self.db.raw_iterator_cf(&storage_cf);
+        fn check_archive(value: &[u8]) -> Result<(), ArchivePackageError> {
+            let mut verifier = ArchivePackageVerifier::default();
+            verifier.verify(value)?;
+            verifier.final_check()
+        }
+
+        let archives_cf = self.archives.get_cf()?;
+        let mut iter = self.db.raw_iterator_cf(&archives_cf);
         iter.seek_to_first();
 
         while let (Some(key), value) = (iter.key(), iter.value()) {
-            let archive_id = u64::from_be_bytes(
+            let archive_id = u32::from_be_bytes(
                 key.try_into()
                     .with_context(|| format!("Invalid archive key: {}", hex::encode(key)))?,
             );
 
-            let read = |value: &[u8]| {
-                let mut verifier = ArchivePackageVerifier::default();
-                verifier.verify(value)?;
-                verifier.final_check()
-            };
-
-            if let Some(Err(e)) = value.map(read) {
-                log::error!("Failed to read archive {}: {:?}", archive_id, e)
+            if let Some(Err(e)) = value.map(check_archive) {
+                log::error!("Failed to read archive {archive_id}: {e:?}")
             }
 
             iter.next();
@@ -257,8 +261,8 @@ impl ArchiveManager {
 
         let mut archive_id =
             self.compute_archive_id(&storage_cf, ref_seqno, handle.meta().is_key_block())?;
-        if (ref_seqno as u64).saturating_sub(archive_id) >= (ARCHIVE_PACKAGE_SIZE as u64) {
-            archive_id = ref_seqno as u64;
+        if ref_seqno.saturating_sub(archive_id) >= ARCHIVE_PACKAGE_SIZE {
+            archive_id = ref_seqno;
         }
 
         let archive_id_bytes = archive_id.to_be_bytes();
@@ -284,7 +288,7 @@ impl ArchiveManager {
         // 5. Execute transaction
         self.db.write(batch)?;
 
-        // TODO: remove block
+        // Block will be removed after blocks gc
 
         // Done
         Ok(())
@@ -294,7 +298,7 @@ impl ArchiveManager {
         let storage_cf = self.archives.get_cf()?;
 
         let mut iterator = self.db.raw_iterator_cf(&storage_cf);
-        iterator.seek_for_prev(&(mc_seq_no as u64).to_be_bytes());
+        iterator.seek_for_prev(&mc_seq_no.to_be_bytes());
         Ok(if let Some(prev_id) = iterator.key() {
             Some(u64::from_be_bytes(prev_id.try_into()?))
         } else {
@@ -304,7 +308,7 @@ impl ArchiveManager {
 
     pub fn get_archive_slice(
         &self,
-        id: u64,
+        id: u32,
         offset: usize,
         limit: usize,
     ) -> Result<Option<Vec<u8>>> {
@@ -323,17 +327,32 @@ impl ArchiveManager {
         storage_cf: &Arc<rocksdb::BoundColumnFamily<'_>>,
         mc_seq_no: u32,
         is_key_block: bool,
-    ) -> Result<u64> {
+    ) -> Result<u32> {
         if is_key_block {
-            return Ok(mc_seq_no as u64);
+            self.latest_archives.write().insert(mc_seq_no);
+            return Ok(mc_seq_no);
         }
 
-        let mut archive_id = (mc_seq_no - mc_seq_no % ARCHIVE_SLICE_SIZE) as u64;
+        let mut archive_id = mc_seq_no - mc_seq_no % ARCHIVE_SLICE_SIZE;
 
-        let mut iterator = self.db.raw_iterator_cf(storage_cf);
-        iterator.seek_for_prev(&(mc_seq_no as u64).to_be_bytes());
-        if let Some(prev_id) = iterator.key() {
-            let prev_id = u64::from_be_bytes(prev_id.try_into()?);
+        let mut prev_id = {
+            let latest_archives = self.latest_archives.read();
+            latest_archives.range(..=mc_seq_no).next_back().cloned()
+        };
+
+        if prev_id.is_none() {
+            let mut iterator = self.db.raw_iterator_cf(storage_cf);
+            iterator.seek_for_prev(&mc_seq_no.to_be_bytes());
+            if let Some(stored_prev_id) = iterator.key() {
+                let archive_id = u32::from_be_bytes(stored_prev_id.try_into()?);
+                drop(iterator);
+
+                self.latest_archives.write().insert(archive_id);
+                prev_id = Some(archive_id);
+            }
+        }
+
+        if let Some(prev_id) = prev_id {
             if archive_id < prev_id {
                 archive_id = prev_id;
             }

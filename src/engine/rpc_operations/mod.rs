@@ -385,7 +385,7 @@ impl RpcService for Engine {
     ) -> Result<Vec<u8>> {
         Ok(
             match self.db.get_archive_slice(
-                query.archive_id as u64,
+                query.archive_id as u32,
                 query.offset as usize,
                 query.max_size as usize,
             )? {

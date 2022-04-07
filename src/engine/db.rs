@@ -516,7 +516,7 @@ impl Db {
 
     pub fn get_archive_slice(
         &self,
-        id: u64,
+        id: u32,
         offset: usize,
         limit: usize,
     ) -> Result<Option<Vec<u8>>> {
