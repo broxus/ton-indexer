@@ -291,11 +291,13 @@ impl ArchiveManager {
     }
 
     pub fn get_archive_id(&self, mc_seq_no: u32) -> Option<u32> {
-        self.archive_ids
-            .read()
-            .range(..=mc_seq_no)
-            .next_back()
-            .cloned()
+        match self.archive_ids.read().range(..=mc_seq_no).next_back() {
+            // NOTE: handles case when mc_seq_no is far in the future.
+            // However if there is a key block between `id` and `mc_seq_no`,
+            // this will return an archive without that specified block.
+            Some(id) if mc_seq_no < id + ARCHIVE_PACKAGE_SIZE => Some(*id),
+            _ => None,
+        }
     }
 
     pub fn get_archive_slice(
