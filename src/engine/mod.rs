@@ -6,6 +6,7 @@
 /// - slightly changed application of blocks
 ///
 use std::io::Write;
+use std::ops::RangeBounds;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -49,12 +50,12 @@ pub struct Engine {
     subscribers: Vec<Arc<dyn Subscriber>>,
     network: Arc<NodeNetwork>,
     old_blocks_policy: OldBlocksPolicy,
-    archives_enabled: bool,
     zero_state_id: ton_block::BlockIdExt,
     init_mc_block_id: ton_block::BlockIdExt,
     last_known_key_block_seqno: AtomicU32,
     hard_forks: FxHashSet<ton_block::BlockIdExt>,
 
+    archive_options: Option<ArchiveOptions>,
     sync_options: SyncOptions,
 
     shard_states_operations: ShardStatesOperationsPool,
@@ -146,11 +147,11 @@ impl Engine {
             subscribers,
             network,
             old_blocks_policy,
-            archives_enabled: config.archives_enabled,
             zero_state_id,
             init_mc_block_id,
             last_known_key_block_seqno: AtomicU32::new(0),
             hard_forks,
+            archive_options: config.archive_options,
             sync_options: config.sync_options,
             shard_states_operations: OperationsPool::new("shard_states_operations"),
             block_applying_operations: OperationsPool::new("block_applying_operations"),
@@ -237,27 +238,42 @@ impl Engine {
         let last_mc_block_id = self.load_last_applied_mc_block_id()?;
         let shards_client_mc_block_id = self.load_shards_client_mc_block_id()?;
 
-        // Start walking through the blocks
+        // Start walking through the masterchain blocks
         tokio::spawn({
             let engine = self.clone();
             async move {
                 if let Err(e) = walk_masterchain_blocks(&engine, last_mc_block_id).await {
-                    log::error!(
-                        "FATAL ERROR while walking though masterchain blocks: {:?}",
-                        e
-                    );
+                    log::error!("FATAL ERROR while walking though masterchain blocks: {e:?}");
                 }
             }
         });
 
+        // Start walking through the shards blocks
         tokio::spawn({
             let engine = self.clone();
             async move {
                 if let Err(e) = walk_shard_blocks(&engine, shards_client_mc_block_id).await {
-                    log::error!("FATAL ERROR while walking though shard blocks: {:?}", e);
+                    log::error!("FATAL ERROR while walking though shard blocks: {e:?}");
                 }
             }
         });
+
+        // if let Some(options) = &self.archive_options {
+        //     let engine = Arc::downgrade(self);
+        //     let (interval, check_persistent_states) =
+        //         Duration::from_secs(match options.gc_interval {
+        //             // Check persistent state every minute
+        //             ArchivesGcInterval::PersistentStates => (60, true),
+        //             // Check persistent state every specified number of seconds
+        //             ArchivesGcInterval::Timeout { seconds } => (seconds, false),
+        //         });
+        //
+        //     tokio::spawn(async move {
+        //         loop {
+        //             tokio::time::sleep(interval).await;
+        //         }
+        //     });
+        // }
 
         if let Some(options) = &self.states_gc_options {
             let engine = Arc::downgrade(self);
@@ -349,6 +365,13 @@ impl Engine {
             .get_full_node_overlay(to.workchain_id, to.prefix)
             .await?;
         overlay.broadcast_external_message(data).await
+    }
+
+    pub fn get_archives(
+        &self,
+        range: impl RangeBounds<u32> + 'static,
+    ) -> Result<impl Iterator<Item = (u32, Vec<u8>)> + '_> {
+        self.db.get_archives(range)
     }
 
     pub fn init_mc_block_id(&self) -> &ton_block::BlockIdExt {
@@ -780,7 +803,7 @@ impl Engine {
         }
         self.db.assign_mc_ref_seq_no(handle, mc_seq_no)?;
 
-        if self.archives_enabled {
+        if self.archive_options.is_some() {
             self.db.archive_block(handle).await?;
         }
 

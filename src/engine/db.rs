@@ -1,3 +1,4 @@
+use std::ops::RangeBounds;
 /// This file is a modified copy of the file from https://github.com/tonlabs/ton-labs-node
 ///
 /// Changes:
@@ -516,6 +517,13 @@ impl Db {
         self.archive_manager.get_archive_id(mc_seq_no)
     }
 
+    pub fn get_archives(
+        &self,
+        range: impl RangeBounds<u32> + 'static,
+    ) -> Result<impl Iterator<Item = (u32, Vec<u8>)> + '_> {
+        self.archive_manager.get_archives(range)
+    }
+
     pub fn get_archive_slice(
         &self,
         id: u32,
@@ -527,6 +535,10 @@ impl Db {
 
     pub fn background_sync_store(&self) -> &BackgroundSyncMetaStore {
         &self.background_sync_meta_store
+    }
+
+    pub fn remove_outdated_archives(&self, until_id: u32) -> Result<()> {
+        self.archive_manager.remove_outdated_archives(until_id)
     }
 
     pub async fn remove_outdated_states(

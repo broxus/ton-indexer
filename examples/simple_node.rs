@@ -1,5 +1,5 @@
 use std::net::SocketAddrV4;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
@@ -89,6 +89,17 @@ async fn start(node_config: NodeConfig, global_config: GlobalConfig) -> Result<(
         vec![Arc::new(LoggerSubscriber::default()) as Arc<dyn ton_indexer::Subscriber>];
 
     let engine = Engine::new(node_config, global_config, subscribers).await?;
+
+    for (archive_id, archive) in engine.get_archives(..)? {
+        log::info!("ARCHIVE ID {archive_id}: {} bytes", archive.len());
+        std::fs::write(
+            PathBuf::from("db")
+                .join("file")
+                .join(format!("archive{archive_id}")),
+            archive,
+        )?;
+    }
+
     engine.start().await?;
 
     futures::future::pending().await

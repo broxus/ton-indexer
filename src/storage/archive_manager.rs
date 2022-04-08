@@ -9,6 +9,7 @@ use std::borrow::Borrow;
 use std::collections::BTreeSet;
 use std::convert::TryInto;
 use std::hash::Hash;
+use std::ops::{Bound, RangeBounds};
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
@@ -51,8 +52,7 @@ impl ArchiveManager {
             verifier.final_check()
         }
 
-        let archives_cf = self.archives.get_cf()?;
-        let mut iter = self.db.raw_iterator_cf(&archives_cf);
+        let mut iter = self.archives.raw_iterator()?;
         iter.seek_to_first();
 
         let mut archive_ids = self.archive_ids.write();
@@ -300,6 +300,58 @@ impl ArchiveManager {
         }
     }
 
+    pub fn get_archives(
+        &self,
+        range: impl RangeBounds<u32> + 'static,
+    ) -> Result<impl Iterator<Item = (u32, Vec<u8>)> + '_> {
+        struct ArchivesIterator<'a> {
+            first: bool,
+            ids: (Bound<u32>, Bound<u32>),
+            iter: rocksdb::DBRawIterator<'a>,
+        }
+
+        impl<'a> Iterator for ArchivesIterator<'a> {
+            type Item = (u32, Vec<u8>);
+
+            fn next(&mut self) -> Option<Self::Item> {
+                if self.first {
+                    match self.ids.0 {
+                        Bound::Included(id) => {
+                            self.iter.seek(id.to_be_bytes());
+                        }
+                        Bound::Excluded(id) => {
+                            self.iter.seek((id + 1).to_be_bytes());
+                        }
+                        Bound::Unbounded => {
+                            self.iter.seek_to_first();
+                        }
+                    }
+                    self.first = false;
+                } else {
+                    self.iter.next();
+                }
+
+                match (self.iter.key(), self.iter.value()) {
+                    (Some(key), Some(value)) => {
+                        let id = u32::from_be_bytes(key.try_into().unwrap_or_default());
+                        match self.ids.1 {
+                            Bound::Included(bound_id) if id > bound_id => None,
+                            Bound::Excluded(bound_id) if id >= bound_id => None,
+                            _ => Some((id, value.to_vec())),
+                        }
+                    }
+                    _ => None,
+                }
+            }
+        }
+
+        Ok(ArchivesIterator {
+            first: true,
+            ids: (range.start_bound().cloned(), range.end_bound().cloned()),
+            iter: self.archives.raw_iterator()?,
+        })
+    }
+
     pub fn get_archive_slice(
         &self,
         id: u32,
@@ -314,6 +366,47 @@ impl ArchiveManager {
             Some(_) => Err(ArchiveManagerError::InvalidOffset.into()),
             None => Ok(None),
         }
+    }
+
+    pub fn remove_outdated_archives(&self, until_id: u32) -> Result<()> {
+        let mut archive_ids = self.archive_ids.write();
+
+        let retained_ids = match archive_ids.iter().rev().find(|&id| *id < until_id).cloned() {
+            // Splits `archive_ids` into two parts - [..until_id] and [until_id..]
+            // `archive_ids` will now contain [..until_id]
+            Some(until_id) => archive_ids.split_off(&until_id),
+            None => {
+                log::info!("Archives GC: nothing to remove");
+                return Ok(());
+            }
+        };
+        // so we must swap maps to retain [until_id..] and get ids to remove
+        let removed_ids = std::mem::replace(&mut *archive_ids, retained_ids);
+
+        // Print removed range bounds
+        match (removed_ids.iter().next(), removed_ids.iter().next_back()) {
+            (Some(first), Some(last)) => {
+                let len = removed_ids.len();
+                log::info!("Archives GC: removing {len} archives (from {first} to {last})...");
+            }
+            _ => {
+                log::info!("Archives GC: nothing to remove");
+                return Ok(());
+            }
+        }
+
+        // Remove archives
+        let archives_cf = self.archives.get_cf()?;
+
+        let mut batch = rocksdb::WriteBatch::default();
+        for id in removed_ids {
+            batch.delete_cf(&archives_cf, id.to_be_bytes());
+        }
+
+        self.db.write(batch)?;
+
+        log::info!("Archives GC: done");
+        Ok(())
     }
 
     fn compute_archive_id(&self, handle: &BlockHandle) -> Result<u32> {
