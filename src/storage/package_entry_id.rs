@@ -7,7 +7,6 @@
 ///
 use std::borrow::Borrow;
 use std::hash::Hash;
-use std::io::Write;
 use std::str::FromStr;
 
 use anyhow::Result;
@@ -53,7 +52,7 @@ where
         }
     }
 
-    pub fn to_vec(&self) -> Result<SmallVec<[u8; 96]>> {
+    pub fn to_vec(&self) -> SmallVec<[u8; 96]> {
         let mut result = SmallVec::with_capacity(84);
         let (block_id, ty) = match self {
             Self::Block(id) => (id, 0),
@@ -61,10 +60,9 @@ where
             Self::ProofLink(id) => (id, 2),
         };
 
-        block_id.borrow().serialize(&mut result)?;
-        result.write_all(&[ty])?;
-
-        Ok(result)
+        block_id.borrow().serialize(&mut result);
+        result.extend_from_slice(&[ty]);
+        result
     }
 }
 

@@ -22,10 +22,10 @@ pub struct NodeConfig {
     pub state_gc_options: Option<StateGcOptions>,
     pub blocks_gc_options: Option<BlocksGcOptions>,
     pub shard_state_cache_options: Option<ShardStateCacheOptions>,
-    pub archives_enabled: bool,
 
     pub max_db_memory_usage: usize,
 
+    pub archive_options: Option<ArchiveOptions>,
     pub sync_options: SyncOptions,
 
     pub adnl_options: AdnlNodeOptions,
@@ -45,7 +45,7 @@ impl Default for NodeConfig {
             state_gc_options: None,
             blocks_gc_options: None,
             shard_state_cache_options: Some(Default::default()),
-            archives_enabled: false,
+            archive_options: Some(Default::default()),
             max_db_memory_usage: default_max_db_memory_usage(),
             sync_options: Default::default(),
             adnl_options: Default::default(),
@@ -54,6 +54,30 @@ impl Default for NodeConfig {
             neighbours_options: Default::default(),
             overlay_shard_options: Default::default(),
         }
+    }
+}
+
+#[derive(Default, Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ArchiveOptions {
+    pub gc_interval: ArchivesGcInterval,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, tag = "type", rename_all = "snake_case")]
+pub enum ArchivesGcInterval {
+    /// Do not perform archives GC
+    Manual,
+    /// Archives GC triggers on each persistent state
+    PersistentStates {
+        /// Remove archives after this interval after the new persistent state
+        offset_sec: u64,
+    },
+}
+
+impl Default for ArchivesGcInterval {
+    fn default() -> Self {
+        Self::PersistentStates { offset_sec: 300 }
     }
 }
 

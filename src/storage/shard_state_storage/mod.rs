@@ -5,7 +5,7 @@
 /// - rewritten initial state processing logic using files and stream processing
 /// - replaced recursions with dfs to prevent stack overflow
 ///
-use std::io::{Read, Write};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -23,7 +23,7 @@ use self::files_context::*;
 use self::replace_transaction::*;
 use super::tree::*;
 use crate::storage::cell_storage::*;
-use crate::storage::{columns, StoredValue, TopBlocks};
+use crate::storage::{columns, StoredValue, StoredValueBuffer, TopBlocks};
 
 mod entries_buffer;
 mod files_context;
@@ -84,7 +84,7 @@ impl ShardStateStorage {
 
         batch.put_cf(
             &self.state.shard_state_db.get_cf()?,
-            block_id.to_vec()?,
+            block_id.to_vec(),
             cell_id.as_slice(),
         );
 
@@ -94,7 +94,7 @@ impl ShardStateStorage {
     }
 
     pub async fn load_state(&self, block_id: &ton_block::BlockIdExt) -> Result<ton_types::Cell> {
-        let shard_state = self.state.shard_state_db.get(block_id.to_vec()?)?;
+        let shard_state = self.state.shard_state_db.get(block_id.to_vec())?;
         match shard_state {
             Some(root) => {
                 let cell_id = UInt256::from_be_bytes(&root);
@@ -280,8 +280,8 @@ impl ShardStateStorageState {
                         let last_block = last_blocks.get(&shard_ident).cloned();
 
                         // Compute iteration bounds
-                        let lower_bound = make_block_id_bound(&shard_ident, 0x00)?;
-                        let upper_bound = make_block_id_bound(&shard_ident, 0xff)?;
+                        let lower_bound = make_block_id_bound(&shard_ident, 0x00);
+                        let upper_bound = make_block_id_bound(&shard_ident, 0xff);
 
                         // Prepare shard states read options
                         let mut read_options = rocksdb::ReadOptions::default();
@@ -290,16 +290,16 @@ impl ShardStateStorageState {
                         read_options.set_iterate_lower_bound(lower_bound);
 
                         // Compute intermediate state key
-                        let last_shard_block_key = LastShardBlockKey(shard_ident).to_vec()?;
+                        let last_shard_block_key = LastShardBlockKey(shard_ident).to_vec();
 
-                        Ok(ShardTask {
+                        ShardTask {
                             last_block,
                             upper_bound,
                             read_options,
                             last_shard_block_key,
-                        })
+                        }
                     })
-                    .collect::<Result<Vec<_>>>()?;
+                    .collect::<Vec<_>>();
 
                 // Spawn task
                 tasks.push(tokio::task::spawn_blocking(move || {
@@ -506,7 +506,7 @@ impl ShardStateStorageState {
             let block_id = ton_block::BlockIdExt::deserialize(&mut key)?;
             shard_idents.push(block_id.shard_id);
 
-            iter.seek_for_prev(&make_block_id_bound(&block_id.shard_id, 0x00)?);
+            iter.seek_for_prev(&make_block_id_bound(&block_id.shard_id, 0x00));
         }
 
         Ok(shard_idents)
@@ -544,7 +544,7 @@ impl GcStateStorage {
 
     fn update(&self, state: &GcState) -> Result<()> {
         self.node_states
-            .insert(STATES_GC_STATE_KEY, state.to_vec()?)
+            .insert(STATES_GC_STATE_KEY, state.to_vec())
             .context("Failed to update shards GC state")
     }
 
@@ -574,11 +574,11 @@ impl GcStateStorage {
     }
 }
 
-fn make_block_id_bound(shard_ident: &ton_block::ShardIdent, value: u8) -> Result<Vec<u8>> {
+fn make_block_id_bound(shard_ident: &ton_block::ShardIdent, value: u8) -> Vec<u8> {
     let mut result = Vec::with_capacity(ton_block::BlockIdExt::SIZE_HINT);
-    shard_ident.serialize(&mut result)?;
+    shard_ident.serialize(&mut result);
     result.resize(ton_block::BlockIdExt::SIZE_HINT, value);
-    Ok(result)
+    result
 }
 
 /// Returns serialized upper bound for [ton_block::BlockIdExt]
@@ -600,20 +600,18 @@ impl StoredValue for GcState {
 
     type OnStackSlice = [u8; 512];
 
-    fn serialize<W: Write>(&self, writer: &mut W) -> Result<()> {
+    fn serialize<T: StoredValueBuffer>(&self, buffer: &mut T) {
         let (step, blocks) = match &self.step {
             Step::Wait => (0, None),
             Step::Mark(blocks) => (1, Some(blocks)),
             Step::SweepCells(blocks) => (2, Some(blocks)),
             Step::SweepBlocks(blocks) => (3, Some(blocks)),
         };
-        writer.write_all(&[self.current_marker, step])?;
+        buffer.write_raw_slice(&[self.current_marker, step]);
 
         if let Some(blocks) = blocks {
-            blocks.serialize(writer)?;
+            blocks.serialize(buffer);
         }
-
-        Ok(())
     }
 
     fn deserialize(reader: &mut &[u8]) -> Result<Self>
@@ -662,9 +660,10 @@ impl StoredValue for LastShardBlockKey {
 
     type OnStackSlice = [u8; Self::SIZE_HINT];
 
-    fn serialize<W: Write>(&self, writer: &mut W) -> Result<()> {
-        writer.write_all(GC_LAST_BLOCK_KEY)?;
-        self.0.serialize(writer)
+    #[inline(always)]
+    fn serialize<T: StoredValueBuffer>(&self, buffer: &mut T) {
+        buffer.write_raw_slice(GC_LAST_BLOCK_KEY);
+        self.0.serialize(buffer);
     }
 
     fn deserialize(reader: &mut &[u8]) -> Result<Self>
@@ -701,7 +700,7 @@ mod tests {
         );
 
         let mut data = Vec::new();
-        key.serialize(&mut data).unwrap();
+        key.serialize(&mut data);
 
         let deserialized_key = LastShardBlockKey::from_slice(&data).unwrap();
         assert_eq!(deserialized_key.0, key.0);

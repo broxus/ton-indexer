@@ -1,3 +1,4 @@
+use std::ops::RangeBounds;
 /// This file is a modified copy of the file from https://github.com/tonlabs/ton-labs-node
 ///
 /// Changes:
@@ -492,11 +493,21 @@ impl Db {
     }
 
     pub async fn archive_block(&self, handle: &Arc<BlockHandle>) -> Result<()> {
-        self.archive_manager.move_into_archive(handle).await
+        profl::span!("move_into_archive", {
+            self.archive_manager.move_into_archive(handle).await
+        })
     }
 
     pub fn find_last_key_block(&self) -> Result<Arc<BlockHandle>> {
         self.block_handle_storage.find_last_key_block()
+    }
+
+    pub fn find_prev_persistent_key_block(
+        &self,
+        block_id: &ton_block::BlockIdExt,
+    ) -> Result<Option<Arc<BlockHandle>>> {
+        self.block_handle_storage
+            .find_prev_persistent_key_block(block_id.seq_no)
     }
 
     pub fn assign_mc_ref_seq_no(
@@ -510,13 +521,20 @@ impl Db {
         Ok(())
     }
 
-    pub fn get_archive_id(&self, mc_seq_no: u32) -> Result<Option<u64>> {
+    pub fn get_archive_id(&self, mc_seq_no: u32) -> Option<u32> {
         self.archive_manager.get_archive_id(mc_seq_no)
+    }
+
+    pub fn get_archives(
+        &self,
+        range: impl RangeBounds<u32> + 'static,
+    ) -> Result<impl Iterator<Item = (u32, Vec<u8>)> + '_> {
+        self.archive_manager.get_archives(range)
     }
 
     pub fn get_archive_slice(
         &self,
-        id: u64,
+        id: u32,
         offset: usize,
         limit: usize,
     ) -> Result<Option<Vec<u8>>> {
@@ -525,6 +543,10 @@ impl Db {
 
     pub fn background_sync_store(&self) -> &BackgroundSyncMetaStore {
         &self.background_sync_meta_store
+    }
+
+    pub fn remove_outdated_archives(&self, until_id: u32) -> Result<()> {
+        self.archive_manager.remove_outdated_archives(until_id)
     }
 
     pub async fn remove_outdated_states(

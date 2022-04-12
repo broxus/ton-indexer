@@ -18,7 +18,7 @@ impl BackgroundSyncMetaStore {
     }
 
     pub fn store_low_key_block(&self, id: &BlockIdExt) -> Result<()> {
-        self.db.insert(LOW_ID, id.to_vec()?)
+        self.db.insert(LOW_ID, id.to_vec())
     }
 
     pub fn load_low_key_block(&self) -> Result<Option<BlockIdExt>> {
@@ -29,7 +29,7 @@ impl BackgroundSyncMetaStore {
     }
 
     pub fn store_high_key_block(&self, id: &BlockIdExt) -> Result<()> {
-        self.db.insert(HIGH_ID, id.to_vec()?)
+        self.db.insert(HIGH_ID, id.to_vec())
     }
 
     pub fn load_high_key_block(&self) -> Result<BlockIdExt> {

@@ -56,11 +56,11 @@ impl BlockHandleStorage {
         let id = handle.id();
 
         self.block_handles
-            .insert(id.root_hash.as_slice(), handle.meta().to_vec()?)?;
+            .insert(id.root_hash.as_slice(), handle.meta().to_vec())?;
 
         if handle.is_key_block() {
             self.key_blocks
-                .insert(handle.id().seq_no.to_be_bytes(), handle.id().to_vec()?)?;
+                .insert(handle.id().seq_no.to_be_bytes(), handle.id().to_vec())?;
         }
 
         Ok(())
@@ -95,7 +95,6 @@ impl BlockHandleStorage {
         })
     }
 
-    #[allow(unused)]
     pub fn find_prev_key_block(&self, seq_no: u32) -> Result<Option<Arc<BlockHandle>>> {
         if seq_no == 0 {
             return Ok(None);

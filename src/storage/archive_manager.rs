@@ -6,11 +6,14 @@
 /// - removed all temporary unused code
 ///
 use std::borrow::Borrow;
+use std::collections::BTreeSet;
 use std::convert::TryInto;
 use std::hash::Hash;
+use std::ops::{Bound, RangeBounds};
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
+use parking_lot::RwLock;
 
 use super::archive_package::*;
 use super::block_handle::*;
@@ -23,6 +26,7 @@ pub struct ArchiveManager {
     package_entries: Tree<columns::PackageEntries>,
     block_handles: Tree<columns::BlockHandles>,
     key_blocks: Tree<columns::KeyBlocks>,
+    archive_ids: RwLock<BTreeSet<u32>>,
 }
 
 impl ArchiveManager {
@@ -33,34 +37,37 @@ impl ArchiveManager {
             package_entries: Tree::new(db)?,
             block_handles: Tree::new(db)?,
             key_blocks: Tree::new(db)?,
+            archive_ids: Default::default(),
         };
 
-        manager.self_check()?;
+        manager.preload()?;
 
         Ok(manager)
     }
 
-    fn self_check(&self) -> Result<()> {
-        let storage_cf = self.archives.get_cf()?;
-        let mut iter = self.db.raw_iterator_cf(&storage_cf);
+    fn preload(&self) -> Result<()> {
+        fn check_archive(value: &[u8]) -> Result<(), ArchivePackageError> {
+            let mut verifier = ArchivePackageVerifier::default();
+            verifier.verify(value)?;
+            verifier.final_check()
+        }
+
+        let mut iter = self.archives.raw_iterator()?;
         iter.seek_to_first();
 
+        let mut archive_ids = self.archive_ids.write();
+
         while let (Some(key), value) = (iter.key(), iter.value()) {
-            let archive_id = u64::from_be_bytes(
+            let archive_id = u32::from_be_bytes(
                 key.try_into()
                     .with_context(|| format!("Invalid archive key: {}", hex::encode(key)))?,
             );
 
-            let read = |value: &[u8]| {
-                let mut verifier = ArchivePackageVerifier::default();
-                verifier.verify(value)?;
-                verifier.final_check()
-            };
-
-            if let Some(Err(e)) = value.map(read) {
-                log::error!("Failed to read archive {}: {:?}", archive_id, e)
+            if let Some(Err(e)) = value.map(check_archive) {
+                log::error!("Failed to read archive {archive_id}: {e:?}")
             }
 
+            archive_ids.insert(archive_id);
             iter.next();
         }
 
@@ -72,15 +79,14 @@ impl ArchiveManager {
     where
         I: Borrow<ton_block::BlockIdExt> + Hash,
     {
-        self.package_entries.insert(id.to_vec()?, data)?;
-        Ok(())
+        self.package_entries.insert(id.to_vec(), data)
     }
 
     pub fn has_data<I>(&self, id: &PackageEntryId<I>) -> Result<bool>
     where
         I: Borrow<ton_block::BlockIdExt> + Hash,
     {
-        self.package_entries.contains_key(id.to_vec()?)
+        self.package_entries.contains_key(id.to_vec())
     }
 
     pub async fn get_data<I>(&self, handle: &BlockHandle, id: &PackageEntryId<I>) -> Result<Vec<u8>>
@@ -94,7 +100,7 @@ impl ArchiveManager {
             }
         };
 
-        match self.package_entries.get(id.to_vec()?)? {
+        match self.package_entries.get(id.to_vec())? {
             Some(a) => Ok(a.to_vec()),
             None => Err(ArchiveManagerError::InvalidBlockData.into()),
         }
@@ -115,7 +121,7 @@ impl ArchiveManager {
             }
         };
 
-        match self.package_entries.get(id.to_vec()?)? {
+        match self.package_entries.get(id.to_vec())? {
             Some(data) => Ok(BlockContentsLock { _lock: lock, data }),
             None => Err(ArchiveManagerError::InvalidBlockData.into()),
         }
@@ -253,14 +259,7 @@ impl ArchiveManager {
         let handle_cf = self.block_handles.get_cf()?;
 
         // Prepare archive
-        let ref_seqno = handle.masterchain_ref_seqno();
-
-        let mut archive_id =
-            self.compute_archive_id(&storage_cf, ref_seqno, handle.meta().is_key_block())?;
-        if (ref_seqno as u64).saturating_sub(archive_id) >= (ARCHIVE_PACKAGE_SIZE as u64) {
-            archive_id = ref_seqno as u64;
-        }
-
+        let archive_id = self.compute_archive_id(handle)?;
         let archive_id_bytes = archive_id.to_be_bytes();
 
         // 0. Create transaction
@@ -278,33 +277,83 @@ impl ArchiveManager {
             batch.put_cf(
                 &handle_cf,
                 handle.id().root_hash.as_slice(),
-                handle.meta().to_vec()?,
+                handle.meta().to_vec(),
             );
         }
         // 5. Execute transaction
         self.db.write(batch)?;
 
-        // TODO: remove block
+        // Block will be removed after blocks gc
 
         // Done
         Ok(())
     }
 
-    pub fn get_archive_id(&self, mc_seq_no: u32) -> Result<Option<u64>> {
-        let storage_cf = self.archives.get_cf()?;
+    pub fn get_archive_id(&self, mc_seq_no: u32) -> Option<u32> {
+        match self.archive_ids.read().range(..=mc_seq_no).next_back() {
+            // NOTE: handles case when mc_seq_no is far in the future.
+            // However if there is a key block between `id` and `mc_seq_no`,
+            // this will return an archive without that specified block.
+            Some(id) if mc_seq_no < id + ARCHIVE_PACKAGE_SIZE => Some(*id),
+            _ => None,
+        }
+    }
 
-        let mut iterator = self.db.raw_iterator_cf(&storage_cf);
-        iterator.seek_for_prev(&(mc_seq_no as u64).to_be_bytes());
-        Ok(if let Some(prev_id) = iterator.key() {
-            Some(u64::from_be_bytes(prev_id.try_into()?))
-        } else {
-            None
+    pub fn get_archives(
+        &self,
+        range: impl RangeBounds<u32> + 'static,
+    ) -> Result<impl Iterator<Item = (u32, Vec<u8>)> + '_> {
+        struct ArchivesIterator<'a> {
+            first: bool,
+            ids: (Bound<u32>, Bound<u32>),
+            iter: rocksdb::DBRawIterator<'a>,
+        }
+
+        impl<'a> Iterator for ArchivesIterator<'a> {
+            type Item = (u32, Vec<u8>);
+
+            fn next(&mut self) -> Option<Self::Item> {
+                if self.first {
+                    match self.ids.0 {
+                        Bound::Included(id) => {
+                            self.iter.seek(id.to_be_bytes());
+                        }
+                        Bound::Excluded(id) => {
+                            self.iter.seek((id + 1).to_be_bytes());
+                        }
+                        Bound::Unbounded => {
+                            self.iter.seek_to_first();
+                        }
+                    }
+                    self.first = false;
+                } else {
+                    self.iter.next();
+                }
+
+                match (self.iter.key(), self.iter.value()) {
+                    (Some(key), Some(value)) => {
+                        let id = u32::from_be_bytes(key.try_into().unwrap_or_default());
+                        match self.ids.1 {
+                            Bound::Included(bound_id) if id > bound_id => None,
+                            Bound::Excluded(bound_id) if id >= bound_id => None,
+                            _ => Some((id, value.to_vec())),
+                        }
+                    }
+                    _ => None,
+                }
+            }
+        }
+
+        Ok(ArchivesIterator {
+            first: true,
+            ids: (range.start_bound().cloned(), range.end_bound().cloned()),
+            iter: self.archives.raw_iterator()?,
         })
     }
 
     pub fn get_archive_slice(
         &self,
-        id: u64,
+        id: u32,
         offset: usize,
         limit: usize,
     ) -> Result<Option<Vec<u8>>> {
@@ -318,25 +367,71 @@ impl ArchiveManager {
         }
     }
 
-    fn compute_archive_id(
-        &self,
-        storage_cf: &Arc<rocksdb::BoundColumnFamily<'_>>,
-        mc_seq_no: u32,
-        is_key_block: bool,
-    ) -> Result<u64> {
-        if is_key_block {
-            return Ok(mc_seq_no as u64);
+    pub fn remove_outdated_archives(&self, until_id: u32) -> Result<()> {
+        let mut archive_ids = self.archive_ids.write();
+
+        let retained_ids = match archive_ids.iter().rev().find(|&id| *id < until_id).cloned() {
+            // Splits `archive_ids` into two parts - [..until_id] and [until_id..]
+            // `archive_ids` will now contain [..until_id]
+            Some(until_id) => archive_ids.split_off(&until_id),
+            None => {
+                log::info!("Archives GC: nothing to remove");
+                return Ok(());
+            }
+        };
+        // so we must swap maps to retain [until_id..] and get ids to remove
+        let removed_ids = std::mem::replace(&mut *archive_ids, retained_ids);
+
+        // Print removed range bounds
+        match (removed_ids.iter().next(), removed_ids.iter().next_back()) {
+            (Some(first), Some(last)) => {
+                let len = removed_ids.len();
+                log::info!("Archives GC: removing {len} archives (from {first} to {last})...");
+            }
+            _ => {
+                log::info!("Archives GC: nothing to remove");
+                return Ok(());
+            }
         }
 
-        let mut archive_id = (mc_seq_no - mc_seq_no % ARCHIVE_SLICE_SIZE) as u64;
+        // Remove archives
+        let archives_cf = self.archives.get_cf()?;
 
-        let mut iterator = self.db.raw_iterator_cf(storage_cf);
-        iterator.seek_for_prev(&(mc_seq_no as u64).to_be_bytes());
-        if let Some(prev_id) = iterator.key() {
-            let prev_id = u64::from_be_bytes(prev_id.try_into()?);
+        let mut batch = rocksdb::WriteBatch::default();
+        for id in removed_ids {
+            batch.delete_cf(&archives_cf, id.to_be_bytes());
+        }
+
+        self.db.write(batch)?;
+
+        log::info!("Archives GC: done");
+        Ok(())
+    }
+
+    fn compute_archive_id(&self, handle: &BlockHandle) -> Result<u32> {
+        let mc_seq_no = handle.masterchain_ref_seqno();
+
+        if handle.meta().is_key_block() {
+            self.archive_ids.write().insert(mc_seq_no);
+            return Ok(mc_seq_no);
+        }
+
+        let mut archive_id = mc_seq_no - mc_seq_no % ARCHIVE_SLICE_SIZE;
+
+        let prev_id = {
+            let latest_archives = self.archive_ids.read();
+            latest_archives.range(..=mc_seq_no).next_back().cloned()
+        };
+
+        if let Some(prev_id) = prev_id {
             if archive_id < prev_id {
                 archive_id = prev_id;
             }
+        }
+
+        if mc_seq_no.saturating_sub(archive_id) >= ARCHIVE_PACKAGE_SIZE {
+            self.archive_ids.write().insert(mc_seq_no);
+            archive_id = mc_seq_no;
         }
 
         Ok(archive_id)
@@ -346,7 +441,7 @@ impl ArchiveManager {
     where
         I: Borrow<ton_block::BlockIdExt> + Hash,
     {
-        match self.package_entries.get(entry_id.to_vec()?)? {
+        match self.package_entries.get(entry_id.to_vec())? {
             Some(data) => make_archive_segment(&entry_id.filename(), &data).map_err(From::from),
             None => Err(ArchiveManagerError::InvalidBlockData.into()),
         }
