@@ -194,7 +194,7 @@ impl<'a> ShardStateReplaceTransaction<'a> {
 
             log::info!("DONE PROCESSING: {} bytes", total_size);
 
-            let block_id_key = block_id.to_vec()?;
+            let block_id_key = block_id.to_vec();
 
             // Current entry contains root cell
             let current_entry = entries_buffer.split_children(&[]).0;

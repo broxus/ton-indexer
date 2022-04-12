@@ -79,15 +79,14 @@ impl ArchiveManager {
     where
         I: Borrow<ton_block::BlockIdExt> + Hash,
     {
-        self.package_entries.insert(id.to_vec()?, data)?;
-        Ok(())
+        self.package_entries.insert(id.to_vec(), data)
     }
 
     pub fn has_data<I>(&self, id: &PackageEntryId<I>) -> Result<bool>
     where
         I: Borrow<ton_block::BlockIdExt> + Hash,
     {
-        self.package_entries.contains_key(id.to_vec()?)
+        self.package_entries.contains_key(id.to_vec())
     }
 
     pub async fn get_data<I>(&self, handle: &BlockHandle, id: &PackageEntryId<I>) -> Result<Vec<u8>>
@@ -101,7 +100,7 @@ impl ArchiveManager {
             }
         };
 
-        match self.package_entries.get(id.to_vec()?)? {
+        match self.package_entries.get(id.to_vec())? {
             Some(a) => Ok(a.to_vec()),
             None => Err(ArchiveManagerError::InvalidBlockData.into()),
         }
@@ -122,7 +121,7 @@ impl ArchiveManager {
             }
         };
 
-        match self.package_entries.get(id.to_vec()?)? {
+        match self.package_entries.get(id.to_vec())? {
             Some(data) => Ok(BlockContentsLock { _lock: lock, data }),
             None => Err(ArchiveManagerError::InvalidBlockData.into()),
         }
@@ -278,7 +277,7 @@ impl ArchiveManager {
             batch.put_cf(
                 &handle_cf,
                 handle.id().root_hash.as_slice(),
-                handle.meta().to_vec()?,
+                handle.meta().to_vec(),
             );
         }
         // 5. Execute transaction
@@ -442,7 +441,7 @@ impl ArchiveManager {
     where
         I: Borrow<ton_block::BlockIdExt> + Hash,
     {
-        match self.package_entries.get(entry_id.to_vec()?)? {
+        match self.package_entries.get(entry_id.to_vec())? {
             Some(data) => make_archive_segment(&entry_id.filename(), &data).map_err(From::from),
             None => Err(ArchiveManagerError::InvalidBlockData.into()),
         }

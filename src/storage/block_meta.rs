@@ -5,13 +5,12 @@
 /// - moved all flags here from block handle
 /// - removed temporary unused flags
 ///
-use std::io::Write;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::Result;
 use ton_types::ByteOrderRead;
 
-use super::StoredValue;
+use super::{StoredValue, StoredValueBuffer};
 
 #[derive(Debug, Default)]
 pub struct BlockMeta {
@@ -175,14 +174,12 @@ impl StoredValue for BlockMeta {
 
     type OnStackSlice = [u8; Self::SIZE_HINT];
 
-    fn serialize<W: Write>(&self, writer: &mut W) -> Result<()> {
+    fn serialize<T: StoredValueBuffer>(&self, buffer: &mut T) {
         const FLAGS_MASK: u64 = 0x0000_ffff_ffff_ffff;
         let flags = self.flags.load(Ordering::Acquire) & FLAGS_MASK;
 
-        writer.write_all(&flags.to_le_bytes())?;
-        writer.write_all(&self.gen_utime.to_le_bytes())?;
-
-        Ok(())
+        buffer.write_raw_slice(&flags.to_le_bytes());
+        buffer.write_raw_slice(&self.gen_utime.to_le_bytes());
     }
 
     fn deserialize(reader: &mut &[u8]) -> Result<Self>

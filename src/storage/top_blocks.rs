@@ -1,10 +1,8 @@
-use std::io::Write;
-
 use anyhow::Result;
 use tiny_adnl::utils::FxHashMap;
 use ton_types::ByteOrderRead;
 
-use super::StoredValue;
+use super::{StoredValue, StoredValueBuffer};
 use crate::utils::*;
 
 #[derive(Debug, Clone)]
@@ -51,16 +49,14 @@ impl StoredValue for TopBlocks {
 
     type OnStackSlice = [u8; 512];
 
-    fn serialize<W: Write>(&self, writer: &mut W) -> Result<()> {
-        self.target_mc_block.serialize(writer)?;
+    fn serialize<T: StoredValueBuffer>(&self, buffer: &mut T) {
+        self.target_mc_block.serialize(buffer);
 
-        writer.write_all(&(self.shard_heights.len() as u32).to_le_bytes())?;
+        buffer.write_raw_slice(&(self.shard_heights.len() as u32).to_le_bytes());
         for (shard, top_block) in &self.shard_heights {
-            shard.serialize(writer)?;
-            writer.write_all(&top_block.to_le_bytes())?;
+            shard.serialize(buffer);
+            buffer.write_raw_slice(&top_block.to_le_bytes());
         }
-
-        Ok(())
     }
 
     fn deserialize(reader: &mut &[u8]) -> Result<Self>

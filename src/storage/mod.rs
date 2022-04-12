@@ -1,5 +1,3 @@
-use std::io::Write;
-
 use anyhow::Result;
 use rocksdb::MergeOperands;
 use smallvec::SmallVec;
@@ -147,12 +145,44 @@ fn archive_data_merge(
     Some(result)
 }
 
+pub trait StoredValueBuffer {
+    fn write_byte(&mut self, byte: u8);
+    fn write_raw_slice(&mut self, data: &[u8]);
+}
+
+impl StoredValueBuffer for Vec<u8> {
+    #[inline(always)]
+    fn write_byte(&mut self, byte: u8) {
+        self.push(byte);
+    }
+
+    #[inline(always)]
+    fn write_raw_slice(&mut self, data: &[u8]) {
+        self.extend_from_slice(data);
+    }
+}
+
+impl<T> StoredValueBuffer for smallvec::SmallVec<T>
+where
+    T: smallvec::Array<Item = u8>,
+{
+    #[inline(always)]
+    fn write_byte(&mut self, byte: u8) {
+        self.push(byte);
+    }
+
+    #[inline(always)]
+    fn write_raw_slice(&mut self, data: &[u8]) {
+        self.extend_from_slice(data);
+    }
+}
+
 pub trait StoredValue {
     const SIZE_HINT: usize;
 
     type OnStackSlice: smallvec::Array<Item = u8>;
 
-    fn serialize<W: Write>(&self, writer: &mut W) -> Result<()>;
+    fn serialize<T: StoredValueBuffer>(&self, buffer: &mut T);
 
     fn deserialize(reader: &mut &[u8]) -> Result<Self>
     where
@@ -166,10 +196,10 @@ pub trait StoredValue {
         Self::deserialize(&mut data)
     }
 
-    fn to_vec(&self) -> Result<SmallVec<Self::OnStackSlice>> {
+    fn to_vec(&self) -> SmallVec<Self::OnStackSlice> {
         let mut result = SmallVec::with_capacity(Self::SIZE_HINT);
-        self.serialize(&mut result)?;
-        Ok(result)
+        self.serialize(&mut result);
+        result
     }
 }
 
@@ -184,12 +214,11 @@ impl StoredValue for ton_block::BlockIdExt {
     /// 96 is minimal suitable for `smallvec::Array` and `SIZE_HINT`
     type OnStackSlice = [u8; 96];
 
-    fn serialize<W: Write>(&self, writer: &mut W) -> Result<()> {
-        self.shard_id.serialize(writer)?;
-        writer.write_all(&self.seq_no.to_be_bytes())?;
-        writer.write_all(self.root_hash.as_slice())?;
-        writer.write_all(self.file_hash.as_slice())?;
-        Ok(())
+    fn serialize<T: StoredValueBuffer>(&self, buffer: &mut T) {
+        self.shard_id.serialize(buffer);
+        buffer.write_raw_slice(&self.seq_no.to_be_bytes());
+        buffer.write_raw_slice(self.root_hash.as_slice());
+        buffer.write_raw_slice(self.file_hash.as_slice());
     }
 
     fn deserialize(reader: &mut &[u8]) -> Result<Self>
@@ -211,10 +240,10 @@ impl StoredValue for ton_block::ShardIdent {
 
     type OnStackSlice = [u8; Self::SIZE_HINT];
 
-    fn serialize<W: Write>(&self, writer: &mut W) -> Result<()> {
-        writer.write_all(&self.workchain_id().to_be_bytes())?;
-        writer.write_all(&self.shard_prefix_with_tag().to_be_bytes())?;
-        Ok(())
+    #[inline(always)]
+    fn serialize<T: StoredValueBuffer>(&self, buffer: &mut T) {
+        buffer.write_raw_slice(&self.workchain_id().to_be_bytes());
+        buffer.write_raw_slice(&self.shard_prefix_with_tag().to_be_bytes());
     }
 
     fn deserialize(reader: &mut &[u8]) -> Result<Self>
