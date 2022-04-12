@@ -251,12 +251,6 @@ fn choose_key_block(mut key_blocks: Vec<Arc<BlockHandle>>) -> Result<Arc<BlockHa
             continue;
         }
 
-        let ttl = persistent_state_ttl(handle_utime);
-        let time_to_download = 3600;
-        if ttl < now() as u32 + time_to_download {
-            log::info!("Best key block is expiring shortly: expire_at={}", ttl);
-        }
-
         log::info!("Best key block handle is {}", handle.id());
         return Ok(handle);
     }

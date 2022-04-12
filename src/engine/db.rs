@@ -502,6 +502,14 @@ impl Db {
         self.block_handle_storage.find_last_key_block()
     }
 
+    pub fn find_prev_persistent_key_block(
+        &self,
+        block_id: &ton_block::BlockIdExt,
+    ) -> Result<Option<Arc<BlockHandle>>> {
+        self.block_handle_storage
+            .find_prev_persistent_key_block(block_id.seq_no)
+    }
+
     pub fn assign_mc_ref_seq_no(
         &self,
         handle: &Arc<BlockHandle>,

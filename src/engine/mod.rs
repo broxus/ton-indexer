@@ -29,11 +29,13 @@ use self::complex_operations::*;
 use self::db::*;
 use self::downloader::*;
 use self::node_state::*;
+use self::persistent_state_keeper::*;
 
 pub mod complex_operations;
 mod db;
 mod downloader;
 mod node_state;
+mod persistent_state_keeper;
 pub mod rpc_operations;
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
@@ -62,6 +64,7 @@ pub struct Engine {
     block_applying_operations: BlockApplyingOperationsPool,
     next_block_applying_operations: NextBlockApplyingOperationsPool,
     download_block_operations: DownloadBlockOperationsPool,
+    persistent_state_keeper: Arc<PersistentStateKeeper>,
     last_blocks: BlockCaches,
 
     metrics: Arc<EngineMetrics>,
@@ -157,6 +160,7 @@ impl Engine {
             block_applying_operations: OperationsPool::new("block_applying_operations"),
             next_block_applying_operations: OperationsPool::new("next_block_applying_operations"),
             download_block_operations: OperationsPool::new("download_block_operations"),
+            persistent_state_keeper: Arc::new(Default::default()),
             last_blocks: BlockCaches {
                 last_mc: LastMcBlockId::new(db.raw())?,
                 init_block,
@@ -226,87 +230,146 @@ impl Engine {
         self.notify_subscribers_with_status(EngineStatus::Synced)
             .await;
 
-        if let Some(blocks_gc) = &self.blocks_gc_state {
-            blocks_gc.enabled.store(true, Ordering::Release);
+        self.prepare_blocks_gc().await?;
+        self.start_archives_gc()?;
+        self.start_walking_blocks()?;
+        self.start_states_gc();
 
-            let handle = self.db.find_last_key_block()?;
-            self.db
-                .remove_outdated_blocks(handle.id(), blocks_gc.max_blocks_per_batch, blocks_gc.ty)
-                .await?;
+        // Engine started
+        Ok(())
+    }
+
+    async fn prepare_blocks_gc(self: &Arc<Self>) -> Result<()> {
+        let blocks_gc_state = match &self.blocks_gc_state {
+            Some(state) => state,
+            None => return Ok(()),
+        };
+
+        blocks_gc_state.enabled.store(true, Ordering::Release);
+
+        let handle = self.db.find_last_key_block()?;
+        self.db
+            .remove_outdated_blocks(
+                handle.id(),
+                blocks_gc_state.max_blocks_per_batch,
+                blocks_gc_state.ty,
+            )
+            .await
+    }
+
+    fn start_archives_gc(self: &Arc<Self>) -> Result<()> {
+        let options = match &self.archive_options {
+            Some(options) => options,
+            None => return Ok(()),
+        };
+
+        match options.gc_interval {
+            ArchivesGcInterval::Manual => Ok(()),
+            ArchivesGcInterval::PersistentStates { offset_sec } => {
+                // Get current persistent state
+                let last_key_block = self.db.find_last_key_block()?;
+                let prev_persistent_key_block = self
+                    .db
+                    .find_prev_persistent_key_block(last_key_block.id())?;
+
+                let engine = self.clone();
+                tokio::spawn(async move {
+                    loop {
+                        tokio::pin!(let new_state_found = engine.persistent_state_keeper.new_state_found(););
+
+                        let (until_id, untile_time) = match engine.persistent_state_keeper.current()
+                        {
+                            Some(state) => {
+                                let untile_time = state.meta().gen_utime() as u64 + offset_sec;
+                                (state.id().seq_no, untile_time)
+                            }
+                            None => {
+                                new_state_found.await;
+                                continue;
+                            }
+                        };
+
+                        if let Some(interval) = untile_time.checked_sub(now() as u64) {
+                            tokio::select!(
+                                _ = tokio::time::sleep(Duration::from_secs(interval)) => {},
+                                _ = &mut new_state_found => continue,
+                            );
+                        }
+
+                        if let Err(e) = engine.db.remove_outdated_archives(until_id) {
+                            log::error!("Failed to remove outdated archives: {e:?}");
+                        }
+
+                        new_state_found.await;
+                    }
+                });
+
+                if let Some(prev_persistent_key_block) = prev_persistent_key_block {
+                    self.persistent_state_keeper
+                        .update(&prev_persistent_key_block);
+                }
+
+                Ok(())
+            }
         }
+    }
 
+    fn start_walking_blocks(self: &Arc<Self>) -> Result<()> {
         let last_mc_block_id = self.load_last_applied_mc_block_id()?;
         let shards_client_mc_block_id = self.load_shards_client_mc_block_id()?;
 
         // Start walking through the masterchain blocks
-        tokio::spawn({
-            let engine = self.clone();
-            async move {
-                if let Err(e) = walk_masterchain_blocks(&engine, last_mc_block_id).await {
-                    log::error!("FATAL ERROR while walking though masterchain blocks: {e:?}");
-                }
+        let engine = self.clone();
+        tokio::spawn(async move {
+            if let Err(e) = walk_masterchain_blocks(&engine, last_mc_block_id).await {
+                log::error!("FATAL ERROR while walking though masterchain blocks: {e:?}");
             }
         });
 
         // Start walking through the shards blocks
-        tokio::spawn({
-            let engine = self.clone();
-            async move {
-                if let Err(e) = walk_shard_blocks(&engine, shards_client_mc_block_id).await {
-                    log::error!("FATAL ERROR while walking though shard blocks: {e:?}");
-                }
+        let engine = self.clone();
+        tokio::spawn(async move {
+            if let Err(e) = walk_shard_blocks(&engine, shards_client_mc_block_id).await {
+                log::error!("FATAL ERROR while walking though shard blocks: {e:?}");
             }
         });
 
-        // if let Some(options) = &self.archive_options {
-        //     let engine = Arc::downgrade(self);
-        //     let (interval, check_persistent_states) =
-        //         Duration::from_secs(match options.gc_interval {
-        //             // Check persistent state every minute
-        //             ArchivesGcInterval::PersistentStates => (60, true),
-        //             // Check persistent state every specified number of seconds
-        //             ArchivesGcInterval::Timeout { seconds } => (seconds, false),
-        //         });
-        //
-        //     tokio::spawn(async move {
-        //         loop {
-        //             tokio::time::sleep(interval).await;
-        //         }
-        //     });
-        // }
+        Ok(())
+    }
 
-        if let Some(options) = &self.states_gc_options {
-            let engine = Arc::downgrade(self);
-            let offset = Duration::from_secs(options.offset_sec);
-            let interval = Duration::from_secs(options.interval_sec);
-
-            tokio::spawn(async move {
-                tokio::time::sleep(offset).await;
-                loop {
-                    tokio::time::sleep(interval).await;
-
-                    let engine = match engine.upgrade() {
-                        Some(engine) => engine,
-                        None => return,
-                    };
-
-                    let block_id = match engine.load_shards_client_mc_block_id() {
-                        Ok(block_id) => block_id,
-                        Err(e) => {
-                            log::error!("Failed to load last shards client block: {:?}", e);
-                            continue;
-                        }
-                    };
-
-                    if let Err(e) = engine.db.remove_outdated_states(&block_id).await {
-                        log::error!("Failed to GC state: {:?}", e);
-                    }
-                }
-            });
+    fn start_states_gc(self: &Arc<Self>) {
+        let options = match &self.states_gc_options {
+            Some(options) => options,
+            None => return,
         };
 
-        // Engine started
-        Ok(())
+        let engine = Arc::downgrade(self);
+        let offset = Duration::from_secs(options.offset_sec);
+        let interval = Duration::from_secs(options.interval_sec);
+
+        tokio::spawn(async move {
+            tokio::time::sleep(offset).await;
+            loop {
+                tokio::time::sleep(interval).await;
+
+                let engine = match engine.upgrade() {
+                    Some(engine) => engine,
+                    None => return,
+                };
+
+                let block_id = match engine.load_shards_client_mc_block_id() {
+                    Ok(block_id) => block_id,
+                    Err(e) => {
+                        log::error!("Failed to load last shards client block: {:?}", e);
+                        continue;
+                    }
+                };
+
+                if let Err(e) = engine.db.remove_outdated_states(&block_id).await {
+                    log::error!("Failed to GC state: {:?}", e);
+                }
+            }
+        });
     }
 
     /// Initiates shutdown
@@ -821,6 +884,8 @@ impl Engine {
                         .await?
                 }
             }
+
+            self.persistent_state_keeper.update(handle);
         }
 
         Ok(applied)
