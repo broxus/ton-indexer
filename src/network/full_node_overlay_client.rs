@@ -340,6 +340,7 @@ impl FullNodeOverlayClient {
     pub async fn download_archive(
         &self,
         masterchain_seqno: u32,
+        neighbour: Option<&Arc<tiny_adnl::Neighbour>>,
         output: &mut (dyn Write + Send),
     ) -> Result<ArchiveDownloadStatus> {
         const CHUNK_SIZE: i32 = 1 << 21; // 2 MB
@@ -354,7 +355,7 @@ impl FullNodeOverlayClient {
                 },
                 Some(2),
                 Some(TIMEOUT_ARCHIVE),
-                None,
+                neighbour,
             )
             .await?;
 
@@ -401,7 +402,10 @@ impl FullNodeOverlayClient {
                         .context("Failed to write archive chunk")?;
 
                     if is_last {
-                        return Ok(ArchiveDownloadStatus::Downloaded(chunk.len()));
+                        return Ok(ArchiveDownloadStatus::Downloaded {
+                            neighbour,
+                            len: chunk.len(),
+                        });
                     }
 
                     offset += chunk.len() as i64;
@@ -458,9 +462,12 @@ impl FullNodeOverlayClient {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+#[derive(Clone)]
 pub enum ArchiveDownloadStatus {
-    Downloaded(usize),
+    Downloaded {
+        neighbour: Arc<Neighbour>,
+        len: usize,
+    },
     NotFound,
 }
 

@@ -616,10 +616,13 @@ impl Engine {
     async fn download_archive(
         &self,
         mc_block_seq_no: u32,
+        neighbour: Option<&Arc<tiny_adnl::Neighbour>>,
         output: &mut (dyn Write + Send),
     ) -> Result<ArchiveDownloadStatus> {
         let mc_overlay = self.get_masterchain_overlay().await?;
-        mc_overlay.download_archive(mc_block_seq_no, output).await
+        mc_overlay
+            .download_archive(mc_block_seq_no, neighbour, output)
+            .await
     }
 
     pub(crate) fn load_block_handle(

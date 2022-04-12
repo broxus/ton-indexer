@@ -7,6 +7,7 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use parking_lot::Mutex;
 use tiny_adnl::utils::*;
+use tiny_adnl::Neighbour;
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
@@ -16,11 +17,8 @@ use crate::engine::Engine;
 use crate::network::ArchiveDownloadStatus;
 
 pub struct ArchiveDownloader {
-    engine: Arc<Engine>,
-    writers_pool: ArchiveWritersPool,
+    ctx: Arc<DownloaderContext>,
     pending_archives: BinaryHeap<PendingBlockMaps>,
-    new_archive_notification: Arc<Notify>,
-    cancellation_token: CancellationToken,
     prefetch_enabled: bool,
     next_mc_seq_no: u32,
     max_mc_seq_no: u32,
@@ -50,14 +48,17 @@ impl ArchiveDownloader {
         let prefetch_enabled = to.is_some();
 
         let mut downloader = ArchiveDownloader {
-            engine: engine.clone(),
-            writers_pool: ArchiveWritersPool::new(
-                engine.db.file_db_path(),
-                engine.sync_options.save_to_disk_threshold,
-            ),
+            ctx: Arc::new(DownloaderContext {
+                engine: engine.clone(),
+                writers_pool: ArchiveWritersPool::new(
+                    engine.db.file_db_path(),
+                    engine.sync_options.save_to_disk_threshold,
+                ),
+                new_archive_notification: Default::default(),
+                cancellation_token: Default::default(),
+                good_peers: Default::default(),
+            }),
             pending_archives: Default::default(),
-            new_archive_notification: Default::default(),
-            cancellation_token: Default::default(),
             prefetch_enabled,
             next_mc_seq_no: from,
             max_mc_seq_no: 0,
@@ -136,7 +137,7 @@ impl ArchiveDownloader {
                     }
 
                     // Create `Notified` future while lock is still acquired
-                    self.new_archive_notification.notified()
+                    self.ctx.new_archive_notification.notified()
                 }
                 // Queue is empty or there is a gap
                 _ => {
@@ -161,7 +162,7 @@ impl ArchiveDownloader {
         // > where mS is `max_mc_seq_no`
         //
         while self.prefetch_enabled
-            && self.pending_archives.len() < self.engine.sync_options.parallel_archive_downloads
+            && self.pending_archives.len() < self.ctx.engine.sync_options.parallel_archive_downloads
             && !matches!(self.to, Some(to) if self.max_mc_seq_no + 2 * STEP > to)
         {
             self.start_downloading(self.max_mc_seq_no + STEP);
@@ -186,21 +187,16 @@ impl ArchiveDownloader {
         self.max_mc_seq_no = std::cmp::max(self.max_mc_seq_no, mc_block_seq_no);
 
         // Prepare context
-        let engine = self.engine.clone();
-        let cancellation_token = self.cancellation_token.clone();
-        let new_archive_notification = self.new_archive_notification.clone();
-        let writers_pool = self.writers_pool.clone();
+        let ctx = self.ctx.clone();
 
         // Spawn downloader
         tokio::spawn(async move {
-            if let Some(writer) =
-                download_archive(engine, writers_pool, cancellation_token, mc_block_seq_no).await
-            {
+            if let Some(writer) = download_archive(&ctx, mc_block_seq_no).await {
                 *block_maps.lock() = Some(BlockMapsData {
                     writer: Some(writer),
                     loaded: None,
                 });
-                new_archive_notification.notify_waiters();
+                ctx.new_archive_notification.notify_waiters();
             }
         });
     }
@@ -208,7 +204,37 @@ impl ArchiveDownloader {
 
 impl Drop for ArchiveDownloader {
     fn drop(&mut self) {
-        self.cancellation_token.cancel();
+        self.ctx.cancellation_token.cancel();
+    }
+}
+
+struct DownloaderContext {
+    engine: Arc<Engine>,
+    writers_pool: ArchiveWritersPool,
+    new_archive_notification: Notify,
+    cancellation_token: CancellationToken,
+    good_peers: GoodPeers,
+}
+
+#[derive(Default)]
+struct GoodPeers {
+    neighbour: parking_lot::RwLock<Option<Arc<Neighbour>>>,
+}
+
+impl GoodPeers {
+    fn add(&self, neighbour: Arc<Neighbour>) {
+        *self.neighbour.write() = Some(neighbour);
+    }
+
+    fn remove(&self, bad_neighbour: &Arc<Neighbour>) {
+        let mut good_neigbour = self.neighbour.write();
+        if matches!(&*good_neigbour, Some(n) if n.peer_id() == bad_neighbour.peer_id()) {
+            *good_neigbour = None;
+        }
+    }
+
+    fn get(&self) -> Option<Arc<Neighbour>> {
+        self.neighbour.read().clone()
     }
 }
 
@@ -304,40 +330,44 @@ impl Drop for ReceivedBlockMaps<'_> {
     }
 }
 
-pub async fn download_archive(
-    engine: Arc<Engine>,
-    writers_pool: ArchiveWritersPool,
-    signal: CancellationToken,
-    mc_seq_no: u32,
-) -> Option<ArchiveWriter> {
+async fn download_archive(ctx: &DownloaderContext, mc_seq_no: u32) -> Option<ArchiveWriter> {
     tokio::pin!(
-        let signal = signal.cancelled();
+        let signal = ctx.cancellation_token.cancelled();
     );
 
     log::info!("sync: Downloading archive for block {mc_seq_no}");
 
     loop {
-        let mut writer = writers_pool.acquire();
+        let mut writer = ctx.writers_pool.acquire();
+
+        let good_peer = ctx.good_peers.get();
 
         let start = std::time::Instant::now();
         let result = tokio::select! {
-            status = engine.download_archive(mc_seq_no, &mut writer) => status,
+            result = ctx.engine.download_archive(mc_seq_no, good_peer.as_ref(), &mut writer) => result,
             _ = (&mut signal) => return None,
         };
 
         match result {
-            Ok(ArchiveDownloadStatus::Downloaded(data_len)) => {
+            Ok(ArchiveDownloadStatus::Downloaded { neighbour, len }) => {
+                ctx.good_peers.add(neighbour);
                 log::info!(
                     "sync: Downloaded archive for block {mc_seq_no}, size {} bytes. Took: {} ms",
-                    data_len,
+                    len,
                     start.elapsed().as_millis()
                 );
                 break Some(writer);
             }
             Ok(ArchiveDownloadStatus::NotFound) => {
+                if let Some(neighbour) = &good_peer {
+                    ctx.good_peers.remove(neighbour);
+                }
                 log::trace!("sync: No archive found for block {mc_seq_no}");
             }
             Err(e) => {
+                if let Some(neighbour) = &good_peer {
+                    ctx.good_peers.remove(neighbour);
+                }
                 log::warn!("sync: Failed to download archive for block {mc_seq_no}: {e:?}")
             }
         }
