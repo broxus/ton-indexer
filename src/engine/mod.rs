@@ -437,6 +437,10 @@ impl Engine {
         self.db.get_archives(range)
     }
 
+    pub fn remove_outdated_archives(&self, until_id: u32) -> Result<()> {
+        self.db.remove_outdated_archives(until_id)
+    }
+
     pub fn init_mc_block_id(&self) -> &ton_block::BlockIdExt {
         &self.init_mc_block_id
     }
