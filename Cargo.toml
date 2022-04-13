@@ -6,7 +6,7 @@ edition = "2021"
 rust-version = "1.56"
 
 [workspace]
-members = ["ton-indexer-alloc", "global-config"]
+members = ["ton-indexer-alloc", "global-config", "archive-uploader"]
 
 [[example]]
 name = "simple_node"
@@ -53,6 +53,7 @@ tiny-adnl = { git = "https://github.com/broxus/tiny-adnl.git" }
 ton_block = { git = "https://github.com/broxus/ton-labs-block.git" }
 ton_types = { git = "https://github.com/broxus/ton-labs-types.git" }
 
+archive-uploader = { path = "archive-uploader", optional = true }
 ton-indexer-alloc = { path = "ton-indexer-alloc" }
 global-config = { path = "global-config" }
 
@@ -68,5 +69,5 @@ human-panic = "1.0.3"
 
 [features]
 default = []
-profile-light = ['countme/enable', "ton_types/profile"]
-profile = ["profl/active", "profile-light"]
+count-cells = ['countme/enable', "ton_types/profile"]
+profile = ["profl/active"]

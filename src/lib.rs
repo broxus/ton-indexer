@@ -6,6 +6,8 @@ pub use crate::engine::{
 pub use crate::network::NetworkMetrics;
 pub use crate::storage::BriefBlockMeta;
 
+#[cfg(feature = "archive-uploader")]
+pub use archive_uploader;
 pub use global_config::*;
 pub use storage::StorageCell;
 pub use ton_indexer_alloc as alloc;

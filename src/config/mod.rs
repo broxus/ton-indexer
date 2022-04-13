@@ -61,6 +61,8 @@ impl Default for NodeConfig {
 #[serde(deny_unknown_fields)]
 pub struct ArchiveOptions {
     pub gc_interval: ArchivesGcInterval,
+    #[cfg(feature = "archive-uploader")]
+    pub uploader_options: Option<archive_uploader::ArchiveUploaderConfig>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]

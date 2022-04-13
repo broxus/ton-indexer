@@ -1,0 +1,18 @@
+[package]
+name = "archive-uploader"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1.0.56"
+base64 = "0.13.0"
+bytes = "1.1.0"
+futures-util = "0.3.21"
+log = "0.4.16"
+md5 = "0.7.0"
+rusoto_core = "0.47.0"
+rusoto_credential = "0.47.0"
+rusoto_s3 = "0.47.0"
+rusoto_signature = "0.47.0"
+serde = { version = "1.0.136", features = ["derive"] }
+tokio = { version = "1", features = ["time"] }
