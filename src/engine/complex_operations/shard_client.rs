@@ -180,17 +180,36 @@ pub async fn process_block_broadcast(
         return Ok(());
     }
 
+    #[allow(clippy::large_enum_variant)]
+    enum CheckWith {
+        State(Arc<ShardStateStuff>),
+        KeyBlock(BlockProofStuff),
+    }
+
     let (key_block_proof, validator_set, catchain_config) = {
         let handle = engine.db.load_key_block_handle(prev_key_block_seqno)?;
-        let proof = engine.load_block_proof(&handle, false).await?;
-        let (validator_set, catchain_config) = proof.get_cur_validators_set()?;
-        (proof, validator_set, catchain_config)
+        if handle.id().seq_no == 0 {
+            let zerostate = engine.load_mc_zero_state().await?;
+            let config_params = zerostate.config_params()?;
+            let validator_set = config_params.validator_set()?;
+            let catchain_config = config_params.catchain_config()?;
+            (CheckWith::State(zerostate), validator_set, catchain_config)
+        } else {
+            let proof = engine.load_block_proof(&handle, false).await?;
+            let (validator_set, catchain_config) = proof.get_cur_validators_set()?;
+            (CheckWith::KeyBlock(proof), validator_set, catchain_config)
+        }
     };
 
     validate_broadcast(&broadcast, &block_id, &validator_set, &catchain_config)?;
 
     if block_id.shard_id.is_masterchain() {
-        proof.check_with_prev_key_block_proof(&key_block_proof)?;
+        match key_block_proof {
+            CheckWith::KeyBlock(key_block_proof) => {
+                proof.check_with_prev_key_block_proof(&key_block_proof)?
+            }
+            CheckWith::State(state) => proof.check_with_master_state(&state)?,
+        }
     } else {
         proof.check_proof_link()?;
     }
