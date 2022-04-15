@@ -24,13 +24,10 @@ pub struct BootData {
 
 pub async fn boot(engine: &Arc<Engine>) -> Result<BootData> {
     log::info!("Starting boot");
-    let last_mc_block_id = match engine.last_blocks.last_mc.load_from_db() {
-        Ok(block_id) => {
-            let last_mc_block_id = convert_block_id_ext_api2blk(&block_id)?;
-            warm_boot(engine, last_mc_block_id).await?
-        }
+    let last_mc_block_id = match engine.load_last_applied_mc_block_id() {
+        Ok(block_id) => warm_boot(engine, block_id).await?,
         Err(e) => {
-            log::warn!("Failed to load last masterchain block id: {}", e);
+            log::warn!("Failed to load last masterchain block id: {e:?}");
             let last_mc_block_id = cold_boot(engine).await?;
 
             engine.store_last_applied_mc_block_id(&last_mc_block_id)?;
@@ -38,14 +35,14 @@ pub async fn boot(engine: &Arc<Engine>) -> Result<BootData> {
             engine
                 .db
                 .background_sync_store()
-                .store_high_key_block(&last_mc_block_id)?;
+                .store_background_sync_end(&last_mc_block_id)?;
 
             last_mc_block_id
         }
     };
 
-    let shards_client_mc_block_id = match engine.last_blocks.shard_client_mc_block.load_from_db() {
-        Ok(block_id) => convert_block_id_ext_api2blk(&block_id)?,
+    let shards_client_mc_block_id = match engine.load_shards_client_mc_block_id() {
+        Ok(block_id) => block_id,
         Err(_) => {
             engine.store_shards_client_mc_block_id(&last_mc_block_id)?;
             last_mc_block_id.clone()
@@ -201,7 +198,7 @@ async fn get_key_blocks(
                 let (next_handle, proof) =
                     download_key_block_proof(engine, block_id, &boot_data).await?;
                 if is_persistent_state(next_handle.meta().gen_utime(), prev_utime) {
-                    engine.set_init_mc_block_id(block_id);
+                    engine.set_init_mc_block_id(block_id)?;
                 }
 
                 handle = next_handle;

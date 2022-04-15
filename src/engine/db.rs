@@ -29,7 +29,7 @@ pub struct Db {
     block_handle_storage: BlockHandleStorage,
     shard_state_storage: ShardStateStorage,
     archive_manager: ArchiveManager,
-    background_sync_meta_store: BackgroundSyncMetaStore,
+    node_state_storage: NodeStateStorage,
 
     prev1_block_db: Tree<columns::Prev1>,
     prev2_block_db: Tree<columns::Prev2>,
@@ -122,7 +122,7 @@ impl Db {
         let block_handle_storage = BlockHandleStorage::with_db(&db)?;
         let shard_state_storage = ShardStateStorage::with_db(&db, &file_db_path).await?;
         let archive_manager = ArchiveManager::with_db(&db)?;
-        let background_sync_meta_store = BackgroundSyncMetaStore::new(&db)?;
+        let node_state_storage = NodeStateStorage::new(&db)?;
 
         Ok(Arc::new(Self {
             file_db_path: file_db_path.as_ref().to_path_buf(),
@@ -131,7 +131,7 @@ impl Db {
             block_handle_storage,
             shard_state_storage,
             archive_manager,
-            background_sync_meta_store,
+            node_state_storage,
             prev1_block_db: Tree::new(&db)?,
             prev2_block_db: Tree::new(&db)?,
             next1_block_db: Tree::new(&db)?,
@@ -140,12 +140,14 @@ impl Db {
         }))
     }
 
+    #[inline(always)]
     pub fn file_db_path(&self) -> &Path {
         &self.file_db_path
     }
 
-    pub fn raw(&self) -> &Arc<rocksdb::DB> {
-        &self.db
+    #[inline(always)]
+    pub fn node_state(&self) -> &NodeStateStorage {
+        &self.node_state_storage
     }
 
     pub fn metrics(&self) -> DbMetrics {
@@ -541,8 +543,8 @@ impl Db {
         self.archive_manager.get_archive_slice(id, offset, limit)
     }
 
-    pub fn background_sync_store(&self) -> &BackgroundSyncMetaStore {
-        &self.background_sync_meta_store
+    pub fn background_sync_store(&self) -> &NodeStateStorage {
+        &self.node_state_storage
     }
 
     pub fn remove_outdated_archives(&self, until_id: u32) -> Result<()> {

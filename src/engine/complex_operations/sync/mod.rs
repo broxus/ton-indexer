@@ -267,7 +267,7 @@ impl BackgroundSyncContext<'_> {
         self.engine
             .db
             .background_sync_store()
-            .store_low_key_block(highest_id)?;
+            .store_background_sync_start(highest_id)?;
         log::info!("sync: Saved archive from {} to {}", lowest_id, highest_id);
 
         Ok({
@@ -354,7 +354,7 @@ impl Engine {
 
         log::info!("sync: Download previous history sync since block {from_seqno}");
 
-        let low = match store.load_low_key_block()? {
+        let low = match store.load_background_sync_start()? {
             Some(low) => {
                 log::warn!(
                     "sync: Ignoring `from_seqno` param, using saved seqno: {}",
@@ -365,7 +365,7 @@ impl Engine {
             None => from_seqno,
         };
 
-        let high = store.load_high_key_block()?.seq_no;
+        let high = store.load_background_sync_end()?.seq_no;
 
         Ok((low, high))
     }

@@ -1,10 +1,3 @@
-/// This file is a modified copy of the file from https://github.com/tonlabs/ton-labs-node
-///
-/// Changes:
-/// - replaced old `failure` crate with `anyhow`
-/// - rewritten initial state processing logic using files and stream processing
-/// - replaced recursions with dfs to prevent stack overflow
-///
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};

@@ -28,13 +28,11 @@ use crate::utils::*;
 use self::complex_operations::*;
 use self::db::*;
 use self::downloader::*;
-use self::node_state::*;
 use self::persistent_state_keeper::*;
 
 pub mod complex_operations;
 mod db;
 mod downloader;
-mod node_state;
 mod persistent_state_keeper;
 pub mod rpc_operations;
 
@@ -65,7 +63,6 @@ pub struct Engine {
     next_block_applying_operations: NextBlockApplyingOperationsPool,
     download_block_operations: DownloadBlockOperationsPool,
     persistent_state_keeper: Arc<PersistentStateKeeper>,
-    last_blocks: BlockCaches,
 
     metrics: Arc<EngineMetrics>,
 }
@@ -75,12 +72,6 @@ type BlockApplyingOperationsPool = OperationsPool<ton_block::BlockIdExt, ()>;
 type NextBlockApplyingOperationsPool = OperationsPool<ton_block::BlockIdExt, ton_block::BlockIdExt>;
 type DownloadBlockOperationsPool =
     OperationsPool<ton_block::BlockIdExt, (BlockStuffAug, BlockProofStuffAug)>;
-
-struct BlockCaches {
-    pub last_mc: LastMcBlockId,
-    pub init_block: InitMcBlockId,
-    pub shard_client_mc_block: ShardsClientMcBlockId,
-}
 
 struct BlocksGcState {
     ty: BlocksGcKind,
@@ -112,11 +103,9 @@ impl Engine {
         let zero_state_id = global_config.zero_state.clone();
 
         let mut init_mc_block_id = zero_state_id.clone();
-        let init_block =
-            InitMcBlockId::new(db.raw()).context("Failed to get init masterchain block")?;
-        if let Ok(block_id) = init_block.load_from_db() {
-            if block_id.seqno > init_mc_block_id.seq_no as i32 {
-                init_mc_block_id = convert_block_id_ext_api2blk(&block_id)?;
+        if let Ok(block_id) = db.node_state().load_init_mc_block_id() {
+            if block_id.seq_no > init_mc_block_id.seq_no {
+                init_mc_block_id = block_id;
             }
         }
 
@@ -161,11 +150,6 @@ impl Engine {
             next_block_applying_operations: OperationsPool::new("next_block_applying_operations"),
             download_block_operations: OperationsPool::new("download_block_operations"),
             persistent_state_keeper: Arc::new(Default::default()),
-            last_blocks: BlockCaches {
-                last_mc: LastMcBlockId::new(db.raw())?,
-                init_block,
-                shard_client_mc_block: ShardsClientMcBlockId::new(db.raw())?,
-            },
             metrics: Arc::new(Default::default()),
         });
 
@@ -445,11 +429,11 @@ impl Engine {
         &self.init_mc_block_id
     }
 
-    fn set_init_mc_block_id(&self, block_id: &ton_block::BlockIdExt) {
-        self.last_blocks
-            .init_block
-            .store_into_db(convert_block_id_ext_blk2api(block_id))
-            .ok();
+    fn set_init_mc_block_id(&self, block_id: &ton_block::BlockIdExt) -> Result<()> {
+        self.db
+            .node_state()
+            .store_init_mc_block_id(block_id)
+            .context("Failed to set init mc block id")
     }
 
     fn is_hard_fork(&self, block_id: &ton_block::BlockIdExt) -> bool {
@@ -899,13 +883,11 @@ impl Engine {
     }
 
     pub fn load_last_applied_mc_block_id(&self) -> Result<ton_block::BlockIdExt> {
-        convert_block_id_ext_api2blk(&self.last_blocks.last_mc.load_from_db()?)
+        self.db.node_state().load_last_mc_block_id()
     }
 
     fn store_last_applied_mc_block_id(&self, block_id: &ton_block::BlockIdExt) -> Result<()> {
-        self.last_blocks
-            .last_mc
-            .store_into_db(convert_block_id_ext_blk2api(block_id))?;
+        self.db.node_state().store_last_mc_block_id(block_id)?;
         self.metrics
             .last_mc_block_seqno
             .store(block_id.seq_no, Ordering::Release);
@@ -913,13 +895,13 @@ impl Engine {
     }
 
     pub fn load_shards_client_mc_block_id(&self) -> Result<ton_block::BlockIdExt> {
-        convert_block_id_ext_api2blk(&self.last_blocks.shard_client_mc_block.load_from_db()?)
+        self.db.node_state().load_shards_client_mc_block_id()
     }
 
     fn store_shards_client_mc_block_id(&self, block_id: &ton_block::BlockIdExt) -> Result<()> {
-        self.last_blocks
-            .shard_client_mc_block
-            .store_into_db(convert_block_id_ext_blk2api(block_id))?;
+        self.db
+            .node_state()
+            .store_shards_client_mc_block_id(block_id)?;
         self.metrics
             .last_shard_client_mc_block_seqno
             .store(block_id.seq_no, Ordering::Release);
