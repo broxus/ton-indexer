@@ -3,7 +3,7 @@ name = "ton-indexer"
 version = "0.1.0"
 authors = ["Ivan Kalinin <i.kalinin@dexpa.io>"]
 edition = "2021"
-rust-version = "1.56"
+rust-version = "1.60"
 
 [workspace]
 members = ["ton-indexer-alloc", "global-config"]
