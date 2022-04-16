@@ -64,10 +64,17 @@ impl ShardStateStorage {
 
         let mut batch = rocksdb::WriteBatch::default();
 
+        let marker = match block_id.seq_no {
+            // Mark zero state as persistent
+            0 => 0,
+            // Mark all other states with current marker
+            _ => *current_marker,
+        };
+
         let len = self
             .state
             .cell_storage
-            .store_dynamic_boc(&mut batch, *current_marker, root)?;
+            .store_dynamic_boc(&mut batch, marker, root)?;
 
         if block_id.shard_id.is_masterchain() {
             self.max_new_mc_cell_count.fetch_max(len, Ordering::Release);
@@ -76,7 +83,7 @@ impl ShardStateStorage {
         }
 
         batch.put_cf(
-            &self.state.shard_state_db.get_cf()?,
+            &self.state.shard_state_db.get_cf(),
             block_id.to_vec(),
             cell_id.as_slice(),
         );
@@ -542,7 +549,7 @@ impl GcStateStorage {
     }
 
     fn clear_last_blocks(&self) -> Result<()> {
-        let iter = self.node_states.prefix_iterator(GC_LAST_BLOCK_KEY)?;
+        let iter = self.node_states.prefix_iterator(GC_LAST_BLOCK_KEY);
         for (key, _) in iter.filter(|(key, _)| key.starts_with(GC_LAST_BLOCK_KEY)) {
             self.node_states.remove(key)?
         }
@@ -552,7 +559,7 @@ impl GcStateStorage {
     fn load_last_blocks(&self) -> Result<FxHashMap<ton_block::ShardIdent, u32>> {
         let mut result = FxHashMap::default();
 
-        let iter = self.node_states.prefix_iterator(GC_LAST_BLOCK_KEY)?;
+        let iter = self.node_states.prefix_iterator(GC_LAST_BLOCK_KEY);
         for (key, value) in iter.filter(|(key, _)| key.starts_with(GC_LAST_BLOCK_KEY)) {
             let shard_ident = LastShardBlockKey::from_slice(&key)
                 .context("Failed to load last shard id")?

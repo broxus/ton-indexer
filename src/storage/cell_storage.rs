@@ -36,7 +36,7 @@ impl CellStorage {
         let transaction = self.prepare_tree_of_cells(marker, root)?;
         let len = transaction.len();
 
-        let cf = self.cells.get_cf()?;
+        let cf = self.cells.get_cf();
         for (cell_id, data) in transaction {
             batch.put_cf(&cf, cell_id, data);
         }
@@ -134,7 +134,7 @@ impl CellStorage {
         force: bool,
     ) -> Result<usize> {
         // Prepare handles
-        let cf = self.cells.get_cf()?;
+        let cf = self.cells.get_cf();
         let read_config = self.cells.read_config();
         let write_config = self.cells.write_config();
         let db = self.cells.raw_db_handle();
@@ -214,7 +214,7 @@ impl CellStorage {
         cell: ton_types::Cell,
     ) -> Result<FxHashMap<UInt256, Vec<u8>>> {
         // Prepare handles
-        let cf = self.cells.get_cf()?;
+        let cf = self.cells.get_cf();
         let db = self.cells.raw_db_handle();
         let read_options = self.cells.read_config();
 

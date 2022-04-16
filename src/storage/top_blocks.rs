@@ -16,7 +16,7 @@ impl TopBlocks {
         Ok(Self {
             target_mc_block: block_data.id().clone(),
             shard_heights: block_data
-                .shards_blocks()?
+                .shard_blocks()?
                 .into_iter()
                 .map(|(key, value)| (key, value.seq_no))
                 .collect(),

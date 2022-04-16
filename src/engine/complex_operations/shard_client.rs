@@ -126,7 +126,7 @@ async fn load_shard_blocks(
 ) -> Result<()> {
     let mc_seq_no = masterchain_block.id().seq_no;
     let mut tasks = Vec::new();
-    for (_, shard_block_id) in masterchain_block.shards_blocks()? {
+    for (_, shard_block_id) in masterchain_block.shard_blocks()? {
         if let Some(handle) = engine.load_block_handle(&shard_block_id)? {
             if handle.meta().is_applied() {
                 continue;

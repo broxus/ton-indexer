@@ -80,7 +80,7 @@ impl BlockHandleStorage {
     }
 
     pub fn find_last_key_block(&self) -> Result<Arc<BlockHandle>> {
-        let mut iter = self.key_blocks.raw_iterator()?;
+        let mut iter = self.key_blocks.raw_iterator();
         iter.seek_to_last();
 
         // Load key block from current iterator value
@@ -101,7 +101,7 @@ impl BlockHandleStorage {
         }
 
         // Create iterator and move it to the previous key block before the specified
-        let mut iter = self.key_blocks.raw_iterator()?;
+        let mut iter = self.key_blocks.raw_iterator();
         iter.seek_for_prev((seq_no - 1u32).to_be_bytes());
 
         // Load key block from current iterator value
@@ -122,7 +122,7 @@ impl BlockHandleStorage {
         }
 
         // Create iterator and move it to the previous key block before the specified
-        let mut iter = self.key_blocks.raw_iterator()?;
+        let mut iter = self.key_blocks.raw_iterator();
         iter.seek_for_prev((seq_no - 1u32).to_be_bytes());
 
         // Loads key block from current iterator value and moves it backward
@@ -171,16 +171,16 @@ impl BlockHandleStorage {
         Ok(None)
     }
 
-    pub fn key_block_iterator(&self, since: Option<u32>) -> Result<KeyBlocksIterator> {
+    pub fn key_block_iterator(&self, since: Option<u32>) -> KeyBlocksIterator {
         let mut iterator = KeyBlocksIterator {
-            raw_iterator: self.key_blocks.raw_iterator()?,
+            raw_iterator: self.key_blocks.raw_iterator(),
         };
         if let Some(seq_no) = since {
             iterator.seek(seq_no);
         } else {
             iterator.raw_iterator.seek_to_first();
         }
-        Ok(iterator)
+        iterator
     }
 
     pub fn create_handle(
@@ -216,8 +216,11 @@ impl BlockHandleStorage {
                 }
             };
 
-            if block_id.is_masterchain() && value.is_key_block() || top_blocks.contains(block_id) {
-                // Keep key blocks and latest blocks
+            if block_id.seq_no == 0
+                || block_id.is_masterchain() && value.is_key_block()
+                || top_blocks.contains(block_id)
+            {
+                // Keep zero state, key blocks and latest blocks
                 true
             } else {
                 // Remove all outdated

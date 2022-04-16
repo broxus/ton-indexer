@@ -100,7 +100,7 @@ impl BlockStuff {
         }
     }
 
-    pub fn shards_blocks(&self) -> Result<HashMap<ton_block::ShardIdent, ton_block::BlockIdExt>> {
+    pub fn shard_blocks(&self) -> Result<HashMap<ton_block::ShardIdent, ton_block::BlockIdExt>> {
         let mut shards = HashMap::new();
         self.block()
             .read_extra()?

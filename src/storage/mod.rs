@@ -251,6 +251,6 @@ impl StoredValue for ton_block::ShardIdent {
     {
         let workchain_id = reader.read_be_u32()? as i32;
         let shard_prefix_tagged = reader.read_be_u64()?;
-        Self::with_tagged_prefix(workchain_id, shard_prefix_tagged)
+        Ok(unsafe { Self::with_tagged_prefix_unchecked(workchain_id, shard_prefix_tagged) })
     }
 }

@@ -136,7 +136,7 @@ async fn import_shard_blocks_with_apply(engine: &Arc<Engine>, maps: Arc<BlockMap
             .load_block_handle(mc_block_id)?
             .ok_or(SyncError::MasterchainBlockNotFound)?;
         let masterchain_block = engine.load_block_data(&masterchain_handle).await?;
-        let shard_blocks = masterchain_block.shards_blocks()?;
+        let shard_blocks = masterchain_block.shard_blocks()?;
 
         // Start applying blocks for each shard
         let mut tasks = Vec::with_capacity(shard_blocks.len());
@@ -305,15 +305,24 @@ async fn save_block(
                 .context("Prev key block not found")?,
             None => {
                 let prev_key_block_seqno = virt_block_info.prev_key_block_seqno();
-                engine.db.load_key_block_handle(prev_key_block_seqno)?
+                engine
+                    .db
+                    .load_key_block_handle(prev_key_block_seqno)
+                    .context("Failed to load key block handle")?
             }
         };
 
         if handle.id().seq_no == 0 {
-            let zero_state = engine.load_mc_zero_state().await?;
+            let zero_state = engine
+                .load_mc_zero_state()
+                .await
+                .context("Failed to load mc zero state")?;
             block_proof.check_with_master_state(&zero_state)?;
         } else {
-            let prev_key_block_proof = engine.load_block_proof(&handle, false).await?;
+            let prev_key_block_proof = engine
+                .load_block_proof(&handle, false)
+                .await
+                .context("Failed to load prev key block proof")?;
             if let Err(e) = check_with_prev_key_block_proof(
                 block_proof,
                 &prev_key_block_proof,

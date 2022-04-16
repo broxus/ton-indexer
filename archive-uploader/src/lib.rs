@@ -11,20 +11,33 @@ use serde::{Deserialize, Serialize};
 pub struct ArchiveUploaderConfig {
     /// Name of the endpoint (e.g. `"eu-east-2"`)
     pub name: String,
+
     /// Endpoint to be used. For instance, `"https://s3.my-provider.net"` or just
     /// `"s3.my-provider.net"` (default scheme is https).
     pub endpoint: String,
+
     /// The bucket name
     pub bucket: String,
+
     /// Archive prefix before its id (Default: empty)
     #[serde(default)]
     pub archive_key_prefix: String,
+
+    /// Interval of polling for new archives (Default: 600)
+    #[serde(default = "default_archives_search_interval_sec")]
+    pub archives_search_interval_sec: u64,
+
     /// Retry interval in case of failure (Default: 1000)
     #[serde(default = "default_retry_interval_ms")]
     pub retry_interval_ms: u64,
+
     /// AWS API access credentials
     #[serde(default)]
     pub credentials: Option<AwsCredentials>,
+}
+
+fn default_archives_search_interval_sec() -> u64 {
+    600
 }
 
 fn default_retry_interval_ms() -> u64 {
@@ -35,9 +48,9 @@ fn default_retry_interval_ms() -> u64 {
 #[serde(deny_unknown_fields)]
 pub struct AwsCredentials {
     /// Access key id
-    pub key_id: String,
+    pub access_key: String,
     /// Secret access key
-    pub secret: String,
+    pub secret_key: String,
     /// Session token
     #[serde(default)]
     pub token: Option<String>,
@@ -55,8 +68,8 @@ impl ArchiveUploader {
 
         let credentials = rusoto_credential::StaticProvider::from(match config.credentials {
             Some(credentials) => rusoto_credential::AwsCredentials::new(
-                credentials.key_id,
-                credentials.secret,
+                credentials.access_key,
+                credentials.secret_key,
                 credentials.token,
                 None,
             ),

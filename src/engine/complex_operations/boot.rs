@@ -7,7 +7,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use tiny_adnl::utils::*;
 
 use crate::engine::Engine;
@@ -24,6 +24,7 @@ pub struct BootData {
 
 pub async fn boot(engine: &Arc<Engine>) -> Result<BootData> {
     log::info!("Starting boot");
+
     let last_mc_block_id = match engine.load_last_applied_mc_block_id() {
         Ok(block_id) => warm_boot(engine, block_id).await?,
         Err(e) => {
@@ -357,9 +358,18 @@ pub async fn download_zero_state(
     engine: &Arc<Engine>,
     block_id: &ton_block::BlockIdExt,
 ) -> Result<(Arc<BlockHandle>, Arc<ShardStateStuff>)> {
-    if let Some(handle) = engine.load_block_handle(block_id)? {
+    if let Some(handle) = engine
+        .load_block_handle(block_id)
+        .context("Failed to load zerostate handle")?
+    {
         if handle.meta().has_state() {
-            return Ok((handle, engine.load_state(block_id).await?));
+            return Ok((
+                handle,
+                engine
+                    .load_state(block_id)
+                    .await
+                    .context("Failed to load zerostate")?,
+            ));
         }
     }
 
@@ -389,7 +399,7 @@ async fn download_start_blocks_and_states(
 
     log::info!("Downloaded init mc block state: {}", init_mc_block.id());
 
-    for (_, block_id) in init_mc_block.shards_blocks()? {
+    for (_, block_id) in init_mc_block.shard_blocks()? {
         if block_id.seq_no == 0 {
             download_zero_state(engine, &block_id).await?;
         } else {

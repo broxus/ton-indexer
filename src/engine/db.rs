@@ -217,7 +217,7 @@ impl Db {
         self.block_handle_storage.load_key_block_handle(seq_no)
     }
 
-    pub fn key_block_iterator(&self, since: Option<u32>) -> Result<KeyBlocksIterator<'_>> {
+    pub fn key_block_iterator(&self, since: Option<u32>) -> KeyBlocksIterator<'_> {
         self.block_handle_storage.key_block_iterator(since)
     }
 
@@ -530,7 +530,7 @@ impl Db {
     pub fn get_archives(
         &self,
         range: impl RangeBounds<u32> + 'static,
-    ) -> Result<impl Iterator<Item = (u32, Vec<u8>)> + '_> {
+    ) -> impl Iterator<Item = (u32, Vec<u8>)> + '_ {
         self.archive_manager.get_archives(range)
     }
 
@@ -669,7 +669,7 @@ fn check_version(db: &Arc<rocksdb::DB>) -> Result<()> {
 
     let state = Tree::<columns::NodeStates>::new(db)?;
     let is_empty = state
-        .iterator(rocksdb::IteratorMode::Start)?
+        .iterator(rocksdb::IteratorMode::Start)
         .next()
         .is_none();
 

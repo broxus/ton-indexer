@@ -71,7 +71,7 @@ async fn main() -> Result<()> {
             init_logger(&config.logger_settings)?;
 
             if let Err(e) = start(config.indexer, global_config).await {
-                eprintln!("{:?}", e);
+                eprintln!("{e:?}");
                 std::process::exit(1);
             }
         }

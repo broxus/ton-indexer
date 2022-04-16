@@ -52,7 +52,7 @@ impl ArchiveManager {
             verifier.final_check()
         }
 
-        let mut iter = self.archives.raw_iterator()?;
+        let mut iter = self.archives.raw_iterator();
         iter.seek_to_first();
 
         let mut archive_ids = self.archive_ids.write();
@@ -135,9 +135,9 @@ impl ArchiveManager {
         let mut stats = BlockGcStats::default();
 
         // Cache cfs before loop
-        let blocks_cf = self.package_entries.get_cf()?;
-        let block_handles_cf = self.block_handles.get_cf()?;
-        let key_blocks_cf = self.key_blocks.get_cf()?;
+        let blocks_cf = self.package_entries.get_cf();
+        let block_handles_cf = self.block_handles.get_cf();
+        let key_blocks_cf = self.key_blocks.get_cf();
         let raw_db = self.package_entries.raw_db_handle().clone();
 
         // Create batch
@@ -145,9 +145,7 @@ impl ArchiveManager {
         let mut batch_len = 0;
 
         // Iterate all entries and find expired items
-        let blocks_iter = self
-            .package_entries
-            .iterator(rocksdb::IteratorMode::Start)?;
+        let blocks_iter = self.package_entries.iterator(rocksdb::IteratorMode::Start);
         for (key, _) in blocks_iter {
             // Read only prefix with shard ident and seqno
             let prefix = PackageEntryIdPrefix::from_slice(key.as_ref())?;
@@ -255,8 +253,8 @@ impl ArchiveManager {
         };
 
         // Prepare cf
-        let storage_cf = self.archives.get_cf()?;
-        let handle_cf = self.block_handles.get_cf()?;
+        let storage_cf = self.archives.get_cf();
+        let handle_cf = self.block_handles.get_cf();
 
         // Prepare archive
         let archive_id = self.compute_archive_id(handle)?;
@@ -302,7 +300,7 @@ impl ArchiveManager {
     pub fn get_archives(
         &self,
         range: impl RangeBounds<u32> + 'static,
-    ) -> Result<impl Iterator<Item = (u32, Vec<u8>)> + '_> {
+    ) -> impl Iterator<Item = (u32, Vec<u8>)> + '_ {
         struct ArchivesIterator<'a> {
             first: bool,
             ids: (Bound<u32>, Bound<u32>),
@@ -344,11 +342,11 @@ impl ArchiveManager {
             }
         }
 
-        Ok(ArchivesIterator {
+        ArchivesIterator {
             first: true,
             ids: (range.start_bound().cloned(), range.end_bound().cloned()),
-            iter: self.archives.raw_iterator()?,
-        })
+            iter: self.archives.raw_iterator(),
+        }
     }
 
     pub fn get_archive_slice(
@@ -395,7 +393,7 @@ impl ArchiveManager {
         }
 
         // Remove archives
-        let archives_cf = self.archives.get_cf()?;
+        let archives_cf = self.archives.get_cf();
 
         let mut batch = rocksdb::WriteBatch::default();
         for id in removed_ids {

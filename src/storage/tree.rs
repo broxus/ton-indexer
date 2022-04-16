@@ -110,7 +110,7 @@ where
     }
 
     pub fn get<K: AsRef<[u8]>>(&self, key: K) -> Result<Option<DBPinnableSlice>> {
-        let cf = self.get_cf()?;
+        let cf = self.get_cf();
         Ok(self.db.get_pinned_cf_opt(&cf, key, &self.read_config)?)
     }
 
@@ -120,13 +120,13 @@ where
         K: AsRef<[u8]>,
         V: AsRef<[u8]>,
     {
-        let cf = self.get_cf()?;
+        let cf = self.get_cf();
         Ok(self.db.put_cf_opt(&cf, key, value, &self.write_config)?)
     }
 
     #[allow(dead_code)]
     pub fn remove<K: AsRef<[u8]>>(&self, key: K) -> Result<()> {
-        let cf = self.get_cf()?;
+        let cf = self.get_cf();
         Ok(self.db.delete_cf_opt(&cf, key, &self.write_config)?)
     }
 
@@ -141,7 +141,7 @@ where
     }
 
     pub fn contains_key<K: AsRef<[u8]>>(&self, key: K) -> Result<bool> {
-        let cf = self.get_cf()?;
+        let cf = self.get_cf();
         Ok(self
             .db
             .get_pinned_cf_opt(&cf, key, &self.read_config)?
@@ -154,33 +154,33 @@ where
 
     /// Note. get_cf Usually took p999 511ns,
     /// So we are not storing it in any way
-    pub fn get_cf(&self) -> Result<Arc<BoundColumnFamily>> {
-        self.db.cf_handle(T::NAME).context("No cf")
+    pub fn get_cf(&self) -> Arc<BoundColumnFamily> {
+        self.db.cf_handle(T::NAME).expect("Shouldn't fail")
     }
 
-    pub fn iterator(&'_ self, mode: IteratorMode) -> Result<DBIterator> {
-        let cf = self.get_cf()?;
+    pub fn iterator(&'_ self, mode: IteratorMode) -> DBIterator {
+        let cf = self.get_cf();
 
         let mut read_config = Default::default();
         T::read_options(&mut read_config);
 
-        Ok(self.db.iterator_cf_opt(&cf, read_config, mode))
+        self.db.iterator_cf_opt(&cf, read_config, mode)
     }
 
-    pub fn prefix_iterator<P>(&'_ self, prefix: P) -> Result<DBIterator>
+    pub fn prefix_iterator<P>(&'_ self, prefix: P) -> DBIterator
     where
         P: AsRef<[u8]>,
     {
-        let cf = self.get_cf()?;
-        Ok(self.db.prefix_iterator_cf(&cf, prefix))
+        let cf = self.get_cf();
+        self.db.prefix_iterator_cf(&cf, prefix)
     }
 
-    pub fn raw_iterator(&'_ self) -> Result<DBRawIterator> {
-        let cf = self.get_cf()?;
+    pub fn raw_iterator(&'_ self) -> DBRawIterator {
+        let cf = self.get_cf();
 
         let mut read_config = Default::default();
         T::read_options(&mut read_config);
 
-        Ok(self.db.raw_iterator_cf_opt(&cf, read_config))
+        self.db.raw_iterator_cf_opt(&cf, read_config)
     }
 }

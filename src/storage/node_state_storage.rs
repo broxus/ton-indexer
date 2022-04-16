@@ -45,6 +45,20 @@ impl NodeStateStorage {
         ton_block::BlockIdExt::from_slice(data.as_ref())
     }
 
+    pub fn store_last_uploaded_archive(&self, archive_id: u32) -> Result<()> {
+        self.db
+            .insert(LAST_UPLOADED_ARCHIVE, archive_id.to_le_bytes())
+    }
+
+    pub fn load_last_uploaded_archive(&self) -> Result<Option<u32>> {
+        Ok(match self.db.get(LAST_UPLOADED_ARCHIVE)? {
+            Some(data) if data.len() >= 4 => {
+                Some(u32::from_le_bytes(data[..4].try_into().unwrap()))
+            }
+            _ => None,
+        })
+    }
+
     pub fn store_last_mc_block_id(&self, id: &ton_block::BlockIdExt) -> Result<()> {
         self.store_block_id(&self.last_mc_block_id, id)
     }
@@ -153,8 +167,10 @@ enum NodeStateStoreError {
 
 type BlockIdCache = (Mutex<Option<ton_block::BlockIdExt>>, &'static [u8]);
 
-const BACKGROUND_SYNC_LOW: &str = "background_sync_low";
-const BACKGROUND_SYNC_HIGH: &str = "background_sync_high";
+const BACKGROUND_SYNC_LOW: &[u8] = b"background_sync_low";
+const BACKGROUND_SYNC_HIGH: &[u8] = b"background_sync_high";
+
+const LAST_UPLOADED_ARCHIVE: &[u8] = b"last_uploaded_archive";
 
 const LAST_MC_BLOCK_ID: &[u8] = b"LastMcBlockId";
 const INIT_MC_BLOCK_ID: &[u8] = b"InitMcBlockId";

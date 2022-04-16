@@ -204,7 +204,7 @@ impl RpcService for Engine {
 
             let mut iterator = self
                 .db
-                .key_block_iterator(Some(start_block_id.seq_no))?
+                .key_block_iterator(Some(start_block_id.seq_no))
                 .take(limit)
                 .peekable();
 

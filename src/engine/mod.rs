@@ -6,7 +6,6 @@
 /// - slightly changed application of blocks
 ///
 use std::io::Write;
-use std::ops::RangeBounds;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -107,7 +106,12 @@ impl Engine {
             if block_id.seq_no > init_mc_block_id.seq_no {
                 init_mc_block_id = block_id;
             }
+        } else if let Some(block_id) = &global_config.init_block {
+            if block_id.seq_no > init_mc_block_id.seq_no {
+                init_mc_block_id = block_id.clone();
+            }
         }
+        log::info!("Init MC block id: {init_mc_block_id}");
 
         let hard_forks = global_config.hard_forks.clone().into_iter().collect();
 
@@ -176,6 +180,7 @@ impl Engine {
             .network
             .compute_overlay_id(ton_block::BASE_WORKCHAIN_ID, ton_block::SHARD_FULL)?;
         self.network.add_subscriber(basechain_overlay_id, service);
+
         // Boot
         let BootData {
             last_mc_block_id,
@@ -199,13 +204,16 @@ impl Engine {
         )?)
         .await?;
 
+        // Start archives gc
+        self.start_archives_gc().await?;
+
+        // Synchronize
         match self.old_blocks_policy {
             OldBlocksPolicy::Ignore => { /* do nothing */ }
             OldBlocksPolicy::Sync { from_seqno } => {
                 background_sync(self, from_seqno).await?;
             }
         }
-        // Synchronize
         if !self.is_synced()? {
             sync(self).await?;
         }
@@ -215,7 +223,6 @@ impl Engine {
             .await;
 
         self.prepare_blocks_gc().await?;
-        self.start_archives_gc()?;
         self.start_walking_blocks()?;
         self.start_states_gc();
 
@@ -241,11 +248,81 @@ impl Engine {
             .await
     }
 
-    fn start_archives_gc(self: &Arc<Self>) -> Result<()> {
+    async fn start_archives_gc(self: &Arc<Self>) -> Result<()> {
         let options = match &self.archive_options {
             Some(options) => options,
             None => return Ok(()),
         };
+
+        #[cfg(feature = "archive-uploader")]
+        if let Some(options) = options.uploader_options.clone() {
+            async fn get_latest_mc_block_seq_no(engine: &Engine) -> Result<u32> {
+                let block_id = engine.load_shards_client_mc_block_id()?;
+                let handle = engine
+                    .load_block_handle(&block_id)?
+                    .context("Min ref block handle not found")?;
+                let block = engine.load_block_data(&handle).await?;
+                let info = block.block().read_info()?;
+                Ok(info.min_ref_mc_seqno())
+            }
+
+            let interval = Duration::from_secs(options.archives_search_interval_sec);
+            let uploader = archive_uploader::ArchiveUploader::new(options)
+                .await
+                .context("Failed to create archive uploader")?;
+
+            let mut last_uploaded_archive = self.db.node_state().load_last_uploaded_archive()?;
+
+            let engine = self.clone();
+            tokio::spawn(async move {
+                let node_state = engine.db.node_state();
+
+                loop {
+                    let until_id = match get_latest_mc_block_seq_no(&engine).await {
+                        Ok(seqno) => seqno,
+                        Err(e) => {
+                            log::error!("Failed to compute latest archive id: {e:?}");
+                            tokio::time::sleep(Duration::from_millis(100)).await;
+                            continue;
+                        }
+                    };
+
+                    log::info!("Started uploading archives until {until_id}");
+
+                    let range = match last_uploaded_archive {
+                        // Exclude last uploaded archive
+                        Some(archive_id) => (archive_id + 1)..until_id,
+                        // Include all archives
+                        None => 0..until_id,
+                    };
+
+                    let mut archives_iter = engine.db.get_archives(range).peekable();
+                    while let Some((archive_id, archive_data)) = archives_iter.next() {
+                        // Skip latest archive
+                        if archives_iter.peek().is_none() {
+                            break;
+                        }
+
+                        let data_len = archive_data.len();
+
+                        let now = std::time::Instant::now();
+                        uploader.upload(archive_id, archive_data).await;
+
+                        if let Err(e) = node_state.store_last_uploaded_archive(archive_id) {
+                            log::error!("Failed to store last uploaded archive: {e:?}");
+                        }
+                        last_uploaded_archive = Some(archive_id);
+
+                        log::info!(
+                            "Uploading archive {archive_id} of length {data_len} bytes. Took {}s",
+                            now.elapsed().as_secs_f64()
+                        );
+                    }
+
+                    tokio::time::sleep(interval).await;
+                }
+            });
+        }
 
         match options.gc_interval {
             ArchivesGcInterval::Manual => Ok(()),
@@ -412,13 +489,6 @@ impl Engine {
             .get_full_node_overlay(to.workchain_id, to.prefix)
             .await?;
         overlay.broadcast_external_message(data).await
-    }
-
-    pub fn get_archives(
-        &self,
-        range: impl RangeBounds<u32> + 'static,
-    ) -> Result<impl Iterator<Item = (u32, Vec<u8>)> + '_> {
-        self.db.get_archives(range)
     }
 
     pub fn remove_outdated_archives(&self, until_id: u32) -> Result<()> {
