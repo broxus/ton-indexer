@@ -254,3 +254,49 @@ impl StoredValue for ton_block::ShardIdent {
         Ok(unsafe { Self::with_tagged_prefix_unchecked(workchain_id, shard_prefix_tagged) })
     }
 }
+
+/// Writes BlockIdExt in little-endian format
+pub fn write_block_id_le(block_id: &ton_block::BlockIdExt) -> [u8; 80] {
+    let mut bytes = [0u8; 80];
+    bytes[..4].copy_from_slice(&block_id.shard_id.workchain_id().to_le_bytes());
+    bytes[4..12].copy_from_slice(&block_id.shard_id.shard_prefix_with_tag().to_le_bytes());
+    bytes[12..16].copy_from_slice(&block_id.seq_no.to_le_bytes());
+    bytes[16..48].copy_from_slice(block_id.root_hash.as_slice());
+    bytes[48..80].copy_from_slice(block_id.file_hash.as_slice());
+    bytes
+}
+
+/// Reads BlockIdExt in little-endian format
+pub fn read_block_id_le(data: &[u8]) -> Option<ton_block::BlockIdExt> {
+    if data.len() < 80 {
+        return None;
+    }
+
+    let mut workchain_id = [0; 4];
+    workchain_id.copy_from_slice(&data[0..4]);
+    let workchain_id = i32::from_le_bytes(workchain_id);
+
+    let mut shard_id = [0; 8];
+    shard_id.copy_from_slice(&data[4..12]);
+    let shard_id = u64::from_le_bytes(shard_id);
+
+    let mut seq_no = [0; 4];
+    seq_no.copy_from_slice(&data[12..16]);
+    let seq_no = u32::from_le_bytes(seq_no);
+
+    let mut root_hash = [0; 32];
+    root_hash.copy_from_slice(&data[16..48]);
+
+    let mut file_hash = [0; 32];
+    file_hash.copy_from_slice(&data[48..80]);
+
+    let shard_id =
+        unsafe { ton_block::ShardIdent::with_tagged_prefix_unchecked(workchain_id, shard_id) };
+
+    Some(ton_block::BlockIdExt {
+        shard_id,
+        seq_no,
+        root_hash: root_hash.into(),
+        file_hash: file_hash.into(),
+    })
+}

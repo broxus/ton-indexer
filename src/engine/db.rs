@@ -13,7 +13,6 @@ use anyhow::Result;
 use rlimit::Resource;
 use rocksdb::perf::MemoryUsageStats;
 use rocksdb::{BlockBasedOptions, Cache, DBCompressionType, DataBlockIndexType};
-use ton_api::ton;
 use ton_block::HashmapAugType;
 
 use crate::storage::*;
@@ -707,8 +706,10 @@ fn store_block_connection_impl<T>(
 where
     T: Column,
 {
-    let value = bincode::serialize(&convert_block_id_ext_blk2api(block_id))?;
-    db.insert(handle.id().root_hash.as_slice(), value)
+    db.insert(
+        handle.id().root_hash.as_slice(),
+        write_block_id_le(block_id),
+    )
 }
 
 #[inline]
@@ -719,14 +720,12 @@ fn load_block_connection_impl<T>(
 where
     T: Column,
 {
-    let value = match db.get(block_id.root_hash.as_slice())? {
+    match db.get(block_id.root_hash.as_slice())? {
         Some(value) => {
-            bincode::deserialize::<ton::ton_node::blockidext::BlockIdExt>(value.as_ref())?
+            read_block_id_le(value.as_ref()).ok_or_else(|| DbError::InvalidBlockId.into())
         }
-        None => return Err(DbError::NotFound.into()),
-    };
-
-    convert_block_id_ext_api2blk(&value)
+        None => Err(DbError::NotFound.into()),
+    }
 }
 
 pub struct StoreBlockResult {
@@ -757,6 +756,8 @@ enum DbError {
     VersionNotFound,
     #[error("Not found")]
     NotFound,
+    #[error("Invalid block id")]
+    InvalidBlockId,
     #[error("Failed to create zero state block handle")]
     FailedToCreateZerostateHandle,
     #[error("Failed to create block handle")]

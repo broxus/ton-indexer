@@ -3,7 +3,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use parking_lot::Mutex;
 
-use crate::storage::{columns, StoredValue, Tree};
+use crate::storage::{self, columns, StoredValue, Tree};
 
 pub struct NodeStateStorage {
     db: Tree<columns::NodeStates>,
@@ -91,7 +91,7 @@ impl NodeStateStorage {
         (cache, key): &BlockIdCache,
         block_id: &ton_block::BlockIdExt,
     ) -> Result<()> {
-        self.db.insert(key, write_block_id_le(block_id))?;
+        self.db.insert(key, storage::write_block_id_le(block_id))?;
         *cache.lock() = Some(block_id.clone());
         Ok(())
     }
@@ -103,58 +103,14 @@ impl NodeStateStorage {
         }
 
         let value = match self.db.get(key)? {
-            Some(data) => read_block_id_le(&data)?,
+            Some(data) => {
+                storage::read_block_id_le(&data).ok_or(NodeStateStoreError::InvalidBlockId)?
+            }
             None => return Err(NodeStateStoreError::ParamNotFound.into()),
         };
         *cache.lock() = Some(value.clone());
         Ok(value)
     }
-}
-
-/// Writes BlockIdExt in little-endian format
-fn write_block_id_le(block_id: &ton_block::BlockIdExt) -> [u8; 80] {
-    let mut bytes = [0u8; 80];
-    bytes[..4].copy_from_slice(&block_id.shard_id.workchain_id().to_le_bytes());
-    bytes[4..12].copy_from_slice(&block_id.shard_id.shard_prefix_with_tag().to_le_bytes());
-    bytes[12..16].copy_from_slice(&block_id.seq_no.to_le_bytes());
-    bytes[16..48].copy_from_slice(block_id.root_hash.as_slice());
-    bytes[48..80].copy_from_slice(block_id.file_hash.as_slice());
-    bytes
-}
-
-/// Reads BlockIdExt in little-endian format
-fn read_block_id_le(data: &[u8]) -> Result<ton_block::BlockIdExt, NodeStateStoreError> {
-    if data.len() < 80 {
-        return Err(NodeStateStoreError::InvalidBlockId);
-    }
-
-    let mut workchain_id = [0; 4];
-    workchain_id.copy_from_slice(&data[0..4]);
-    let workchain_id = i32::from_le_bytes(workchain_id);
-
-    let mut shard_id = [0; 8];
-    shard_id.copy_from_slice(&data[4..12]);
-    let shard_id = u64::from_le_bytes(shard_id);
-
-    let mut seq_no = [0; 4];
-    seq_no.copy_from_slice(&data[12..16]);
-    let seq_no = u32::from_le_bytes(seq_no);
-
-    let mut root_hash = [0; 32];
-    root_hash.copy_from_slice(&data[16..48]);
-
-    let mut file_hash = [0; 32];
-    file_hash.copy_from_slice(&data[48..80]);
-
-    let shard_id =
-        unsafe { ton_block::ShardIdent::with_tagged_prefix_unchecked(workchain_id, shard_id) };
-
-    Ok(ton_block::BlockIdExt {
-        shard_id,
-        seq_no,
-        root_hash: root_hash.into(),
-        file_hash: file_hash.into(),
-    })
 }
 
 #[derive(thiserror::Error, Debug)]
