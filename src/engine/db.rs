@@ -527,6 +527,7 @@ impl Db {
         self.archive_manager.get_archive_id(mc_seq_no)
     }
 
+    #[allow(unused)]
     pub fn get_archives(
         &self,
         range: impl RangeBounds<u32> + 'static,

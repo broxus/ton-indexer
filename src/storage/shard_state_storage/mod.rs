@@ -108,13 +108,7 @@ impl ShardStateStorage {
     pub async fn begin_replace(
         &'_ self,
         block_id: &ton_block::BlockIdExt,
-        clear_db: bool,
     ) -> Result<(ShardStateReplaceTransaction<'_>, FilesContext)> {
-        if clear_db {
-            self.state.shard_state_db.clear()?;
-            self.state.cell_storage.clear()?;
-        }
-
         let ctx = FilesContext::new(self.downloads_dir.as_ref(), block_id).await?;
 
         Ok((
@@ -457,7 +451,8 @@ impl ShardStateStorageState {
             let mut total = 0;
             for (key, _) in iter {
                 let block_id = ton_block::BlockIdExt::deserialize(&mut &*key)?;
-                if top_blocks.contains(&block_id) {
+                // Skip blocks from zero state and top blocks
+                if block_id.seq_no == 0 || top_blocks.contains(&block_id) {
                     continue;
                 }
 

@@ -25,7 +25,6 @@ pub async fn download_state(
     engine: &Arc<Engine>,
     block_id: &ton_block::BlockIdExt,
     masterchain_block_id: &ton_block::BlockIdExt,
-    clear_db: bool,
 ) -> Result<Arc<ShardStateStuff>> {
     let overlay = engine
         .get_full_node_overlay(
@@ -57,7 +56,7 @@ pub async fn download_state(
     tokio::spawn({
         let engine = engine.clone();
         let block_id = block_id.clone();
-        async move { result_tx.send(background_process(&engine, block_id, clear_db, packets_rx).await) }
+        async move { result_tx.send(background_process(&engine, block_id, packets_rx).await) }
     });
 
     let block_id = block_id.clone();
@@ -108,13 +107,12 @@ pub async fn download_state(
 async fn background_process(
     engine: &Arc<Engine>,
     block_id: ton_block::BlockIdExt,
-    clear_db: bool,
     mut packets_rx: PacketsRx,
 ) -> Result<Arc<ShardStateStuff>> {
     let (mut transaction, mut ctx) = engine
         .db
         .shard_state_storage()
-        .begin_replace(&block_id, clear_db)
+        .begin_replace(&block_id)
         .await?;
 
     let mut full = false;

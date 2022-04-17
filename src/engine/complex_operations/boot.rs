@@ -446,13 +446,7 @@ async fn download_block_and_state(
             masterchain_block_id
         );
 
-        let shard_state = download_state(
-            engine,
-            handle.id(),
-            masterchain_block_id,
-            handle.id().is_masterchain(),
-        )
-        .await?;
+        let shard_state = download_state(engine, handle.id(), masterchain_block_id).await?;
         log::info!("Downloaded state");
 
         let state_hash = shard_state.root_cell().repr_hash();

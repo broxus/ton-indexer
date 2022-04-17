@@ -156,14 +156,15 @@ impl ArchiveManager {
             }
 
             // Additionally check whether this item is a key block
-            if prefix.shard_ident.is_masterchain()
-                && raw_db
-                    .get_pinned_cf_opt(
-                        &key_blocks_cf,
-                        prefix.seq_no.to_be_bytes(),
-                        self.key_blocks.read_config(),
-                    )?
-                    .is_some()
+            if prefix.seq_no == 0
+                || prefix.shard_ident.is_masterchain()
+                    && raw_db
+                        .get_pinned_cf_opt(
+                            &key_blocks_cf,
+                            prefix.seq_no.to_be_bytes(),
+                            self.key_blocks.read_config(),
+                        )?
+                        .is_some()
             {
                 // Don't remove key blocks
                 continue;
@@ -297,6 +298,7 @@ impl ArchiveManager {
         }
     }
 
+    #[allow(unused)]
     pub fn get_archives(
         &self,
         range: impl RangeBounds<u32> + 'static,

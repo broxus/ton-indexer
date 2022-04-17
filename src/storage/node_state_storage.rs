@@ -45,11 +45,13 @@ impl NodeStateStorage {
         ton_block::BlockIdExt::from_slice(data.as_ref())
     }
 
+    #[allow(unused)]
     pub fn store_last_uploaded_archive(&self, archive_id: u32) -> Result<()> {
         self.db
             .insert(LAST_UPLOADED_ARCHIVE, archive_id.to_le_bytes())
     }
 
+    #[allow(unused)]
     pub fn load_last_uploaded_archive(&self) -> Result<Option<u32>> {
         Ok(match self.db.get(LAST_UPLOADED_ARCHIVE)? {
             Some(data) if data.len() >= 4 => {
