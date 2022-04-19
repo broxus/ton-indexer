@@ -105,7 +105,7 @@ impl ArchiveUploader {
         PreparedArchiveUpload {
             state: self.0.clone(),
             archive_id,
-            key: format!("{}{archive_id}", self.0.archive_key_prefix),
+            key: format!("{}{archive_id:09}", self.0.archive_key_prefix),
             content_md5,
             content_length,
             body,

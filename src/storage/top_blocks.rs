@@ -15,11 +15,7 @@ impl TopBlocks {
     pub fn from_mc_block(block_data: &BlockStuff) -> Result<Self> {
         Ok(Self {
             target_mc_block: block_data.id().clone(),
-            shard_heights: block_data
-                .shard_blocks()?
-                .into_iter()
-                .map(|(key, value)| (key, value.seq_no))
-                .collect(),
+            shard_heights: block_data.shard_blocks_seq_no()?,
         })
     }
 

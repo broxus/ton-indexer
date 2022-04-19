@@ -3,9 +3,7 @@
 /// Changes:
 /// - replaced old `failure` crate with `anyhow`
 ///
-use std::collections::HashMap;
-
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use ton_api::ton;
 use ton_block::Deserializable;
 use ton_types::{Cell, UInt256};
@@ -100,25 +98,38 @@ impl BlockStuff {
         }
     }
 
-    pub fn shard_blocks(&self) -> Result<HashMap<ton_block::ShardIdent, ton_block::BlockIdExt>> {
-        let mut shards = HashMap::new();
+    pub fn shard_blocks(&self) -> Result<FxHashMap<ton_block::ShardIdent, ton_block::BlockIdExt>> {
+        let mut shards = FxHashMap::default();
         self.block()
             .read_extra()?
             .read_custom()?
-            .ok_or_else(|| anyhow!("Given block is not a master block."))?
+            .context("Given block is not a master block.")?
             .hashes()
-            .iterate_shards(
-                |ident: ton_block::ShardIdent, descr: ton_block::ShardDescr| {
-                    let last_shard_block = ton_block::BlockIdExt {
-                        shard_id: ident,
-                        seq_no: descr.seq_no,
-                        root_hash: descr.root_hash,
-                        file_hash: descr.file_hash,
-                    };
-                    shards.insert(ident, last_shard_block);
-                    Ok(true)
-                },
-            )?;
+            .iterate_shards(|ident, descr| {
+                let last_shard_block = ton_block::BlockIdExt {
+                    shard_id: ident,
+                    seq_no: descr.seq_no,
+                    root_hash: descr.root_hash,
+                    file_hash: descr.file_hash,
+                };
+                shards.insert(ident, last_shard_block);
+                Ok(true)
+            })?;
+
+        Ok(shards)
+    }
+
+    pub fn shard_blocks_seq_no(&self) -> Result<FxHashMap<ton_block::ShardIdent, u32>> {
+        let mut shards = FxHashMap::default();
+        self.block()
+            .read_extra()?
+            .read_custom()?
+            .context("Given block is not a master block")?
+            .hashes()
+            .iterate_shards(|ident, descr| {
+                shards.insert(ident, descr.seq_no);
+                Ok(true)
+            })?;
 
         Ok(shards)
     }

@@ -21,17 +21,31 @@ pub struct ArchiveDownloader {
     pending_archives: BinaryHeap<PendingBlockMaps>,
     prefetch_enabled: bool,
     next_mc_seq_no: u32,
+    last_blocks: Option<BlockMapsEdge>,
+    /// The seq_no of the last archive that started downloading
     max_mc_seq_no: u32,
     to: Option<u32>,
 }
 
 impl ArchiveDownloader {
-    pub fn new(engine: &Arc<Engine>, range: impl RangeBounds<u32>) -> ArchiveDownloader {
+    /// `last_blocks` is a map of shard_id -> block_id of the last known shard block.
+    /// Each of blocks of the first downloaded archive is expected to start with
+    /// the next block of the last known shard block.
+    ///
+    /// NOTE: this check is disabled when `last_blocks` is `None`
+    pub fn new(
+        engine: &Arc<Engine>,
+        range: impl RangeBounds<u32>,
+        last_blocks: Option<BlockMapsEdge>,
+    ) -> ArchiveDownloader {
         let from = match range.start_bound() {
             Bound::Included(&from) => from,
             Bound::Excluded(&from) => from + 1,
             Bound::Unbounded => 0,
         };
+
+        // Archive stream cannot start from zero block
+        let from = std::cmp::max(from, 1);
 
         let mut to = match range.end_bound() {
             Bound::Included(&to) => Some(to),
@@ -61,6 +75,7 @@ impl ArchiveDownloader {
             pending_archives: Default::default(),
             prefetch_enabled,
             next_mc_seq_no: from,
+            last_blocks,
             max_mc_seq_no: 0,
             to,
         };
@@ -95,7 +110,7 @@ impl ArchiveDownloader {
 
                         // Check lowest id without taking inner data
                         if let Some(maps) = &mut *data {
-                            match maps.preload(next_index) {
+                            match maps.preload(next_index, &self.last_blocks) {
                                 Ok(maps) => {
                                     if matches!(
                                         maps.lowest_mc_id(),
@@ -270,7 +285,7 @@ struct BlockMapsData {
 }
 
 impl BlockMapsData {
-    fn preload(&mut self, next_index: u32) -> Result<Arc<BlockMaps>> {
+    fn preload(&mut self, next_index: u32, edge: &Option<BlockMapsEdge>) -> Result<Arc<BlockMaps>> {
         if let Some(loaded) = &self.loaded {
             return Ok(loaded.clone());
         }
@@ -279,7 +294,7 @@ impl BlockMapsData {
             let block_maps = writer
                 .parse_block_maps()
                 .context("Failed to load block maps")?;
-            block_maps.check(next_index)?;
+            block_maps.check(next_index, edge)?;
             return Ok(self.loaded.insert(block_maps).clone());
         }
 

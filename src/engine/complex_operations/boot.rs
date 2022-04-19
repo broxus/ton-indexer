@@ -87,13 +87,17 @@ async fn warm_boot(
 
     let state = engine.load_state(&last_mc_block_id).await?;
     if last_mc_block_id.seq_no != 0 && !handle.meta().is_key_block() {
+        log::info!("Started from non-key block");
+
         last_mc_block_id = state
             .shard_state_extra()?
             .last_key_block
             .clone()
             .ok_or(BootError::MasterchainStateNotFound)?
             .master_block_id()
-            .1
+            .1;
+
+        log::info!("LAST KEY BLOCK: {last_mc_block_id}");
     }
     log::info!("Warm boot finished");
     Ok(last_mc_block_id)
