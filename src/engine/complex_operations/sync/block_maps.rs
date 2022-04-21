@@ -436,14 +436,18 @@ impl BlockMapsEdgeShardVerification<'_, '_> {
         use std::collections::hash_map::Entry;
 
         // There is at least one block in shard
-        self.empty = false;
+        self.empty = match &self.target {
+            Some(TargetSeqNo::Ancestor { after_seq_no, .. }) => seq_no < *after_seq_no,
+            Some(target) => seq_no < target.seq_no(),
+            None => false,
+        };
 
         match &self.target {
             // Any shard after the edge means that it had to split
             Some(TargetSeqNo::Ancestor {
                 after_seq_no,
                 shard,
-            }) if seq_no > *after_seq_no => {
+            }) if seq_no >= *after_seq_no => {
                 match self.possible_edge.top_shard_blocks.entry(*shard) {
                     Entry::Occupied(mut entry) => {
                         if entry.get().is_empty() {
@@ -635,4 +639,80 @@ pub enum BlockMapsEdgeVerificationError {
     NextMasterchainBlockNotFound,
     #[error("Next shard block not found")]
     NextBlockNotFound,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_masterchain(
+        seqnos: impl IntoIterator<Item = u32>,
+    ) -> (ton_block::ShardIdent, BTreeSet<u32>) {
+        (
+            ton_block::ShardIdent::masterchain(),
+            seqnos.into_iter().collect(),
+        )
+    }
+
+    fn make_shard(
+        id: u64,
+        seqnos: impl IntoIterator<Item = u32>,
+    ) -> (ton_block::ShardIdent, BTreeSet<u32>) {
+        let shard_ident = ton_block::ShardIdent::with_tagged_prefix(0, id << 28).unwrap();
+        (shard_ident, seqnos.into_iter().collect())
+    }
+
+    fn make_edge(mc_seq_no: u32, shards: impl IntoIterator<Item = (u64, u32)>) -> BlockMapsEdge {
+        BlockMapsEdge {
+            mc_block_seq_no: mc_seq_no,
+            top_shard_blocks: shards
+                .into_iter()
+                .map(|(id, seq_no)| {
+                    (
+                        ton_block::ShardIdent::with_tagged_prefix(0, id << 28).unwrap(),
+                        seq_no,
+                    )
+                })
+                .collect(),
+        }
+    }
+
+    fn check_block_maps(
+        shards: impl IntoIterator<Item = (ton_block::ShardIdent, BTreeSet<u32>)>,
+        edge: &Option<BlockMapsEdge>,
+    ) -> Result<()> {
+        let mut possible_edge = BlockMapsEdgeVerification::new(edge);
+
+        let shards = shards.into_iter().collect::<BTreeMap<_, _>>();
+        for (shard_ident, ids) in shards.into_iter() {
+            let mut possible_edge = possible_edge.begin_shard(&shard_ident);
+            for seqno in ids {
+                possible_edge.update(seqno)?;
+            }
+            possible_edge.end()?;
+        }
+        possible_edge.final_check()?;
+        Ok(())
+    }
+
+    #[test]
+    fn correct_edge_detection() {
+        let edge = Some(make_edge(
+            5,
+            [
+                (0b0100, 5), //
+                (0b1100, 5), //
+            ],
+        ));
+
+        check_block_maps(
+            [
+                make_masterchain(0..10),
+                make_shard(0b0100, 0..10),
+                make_shard(0b1100, 0..3),
+            ],
+            &edge,
+        )
+        .unwrap();
+    }
 }
