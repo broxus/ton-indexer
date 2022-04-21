@@ -41,7 +41,7 @@ pub async fn sync(engine: &Arc<Engine>) -> Result<()> {
         }
 
         last_mc_block_id = engine.last_applied_block()?;
-        archive.accept_with_time(last_gen_utime);
+        archive.accept_with_time(last_gen_utime, None); // TODO
     }
 
     Ok(())
@@ -220,10 +220,11 @@ pub async fn background_sync(engine: &Arc<Engine>, from_seqno: u32) -> Result<()
 
     let mut archive_downloader = ArchiveDownloader::new(engine, from..=to, None);
     while let Some(archive) = archive_downloader.recv().await {
-        if ctx.handle(archive.clone()).await? == SyncStatus::Done {
-            break;
+        match ctx.handle(archive.clone()).await? {
+            SyncStatus::Done => break,
+            SyncStatus::InProgress(edge) => archive.accept(Some(edge)),
+            SyncStatus::NoBlocksInArchive => continue,
         }
-        archive.accept();
     }
 
     log::info!("sync: Background sync complete");
@@ -244,6 +245,8 @@ impl BackgroundSyncContext<'_> {
         };
         log::debug!("sync: Saving archive. Low id: {lowest_id}. High id: {highest_id}");
 
+        let block_edge = maps.build_block_maps_edge(highest_id)?;
+
         self.import_mc_blocks(&maps).await?;
         self.import_shard_blocks(&maps).await?;
 
@@ -257,7 +260,7 @@ impl BackgroundSyncContext<'_> {
             if highest_id.seq_no >= self.to {
                 SyncStatus::Done
             } else {
-                SyncStatus::InProgress
+                SyncStatus::InProgress(block_edge)
             }
         })
     }
@@ -363,10 +366,10 @@ impl BackgroundSyncContext<'_> {
     }
 }
 
-#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+#[derive(Debug, Clone)]
 enum SyncStatus {
     Done,
-    InProgress,
+    InProgress(BlockMapsEdge),
     NoBlocksInArchive,
 }
 

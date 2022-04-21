@@ -310,16 +310,17 @@ pub struct ReceivedBlockMaps<'a> {
 }
 
 impl ReceivedBlockMaps<'_> {
-    pub fn accept(mut self) {
+    pub fn accept(mut self, edge: Option<BlockMapsEdge>) {
         self.accepted = true;
         if let Some(highest_mc_id) = self.block_maps.highest_mc_id() {
+            self.downloader.last_blocks = edge;
             self.downloader.next_mc_seq_no = highest_mc_id.seq_no + 1;
         }
     }
 
-    pub fn accept_with_time(self, time: u32) {
+    pub fn accept_with_time(self, time: u32, edge: Option<BlockMapsEdge>) {
         self.downloader.prefetch_enabled = time + ARCHIVE_EXISTENCE_THRESHOLD <= now() as u32;
-        self.accept();
+        self.accept(edge);
     }
 }
 

@@ -141,6 +141,25 @@ impl BlockMaps {
         // Archive is not empty and all blocks are contiguous
         Ok(())
     }
+
+    pub fn build_block_maps_edge(
+        &self,
+        id: &ton_block::BlockIdExt,
+    ) -> Result<BlockMapsEdge, BlockMapsError> {
+        let entry = self.blocks.get(id).ok_or(BlockMapsError::BlockNotFound)?;
+        let block = &entry
+            .block
+            .as_ref()
+            .ok_or(BlockMapsError::BlockDataNotFound)?
+            .data;
+
+        Ok(BlockMapsEdge {
+            mc_block_seq_no: id.seq_no,
+            top_shard_blocks: block
+                .shard_blocks_seq_no()
+                .map_err(|_| BlockMapsError::InvalidMasterchainBlock)?,
+        })
+    }
 }
 
 #[derive(Default)]
@@ -623,10 +642,14 @@ pub enum BlockMapsError {
         shard_ident: ton_block::ShardIdent,
         seqno: u32,
     },
+    #[error("Block not found")]
+    BlockNotFound,
     #[error("Block not found in archive")]
     BlockDataNotFound,
     #[error("Block proof not found in archive")]
     BlockProofNotFound,
+    #[error("Invalid masterchain block")]
+    InvalidMasterchainBlock,
     #[error("Invalid block maps edge")]
     InvalidBlockMapsEdge(#[from] BlockMapsEdgeVerificationError),
 }
@@ -730,6 +753,21 @@ mod tests {
             &edge,
         )
         .unwrap();
+
+        // 2.2.3. Several splits after one shard
+        check_block_maps(
+            [
+                make_masterchain(0..10),
+                make_shard(0b0_100, 0..10),
+                make_shard(0b100_1, 7..10),
+                make_shard(0b101_1, 7..10),
+                make_shard(0b10_10, 6..7),
+                make_shard(0b1_100, 0..5),
+                make_shard(0b11_10, 6..7),
+            ],
+            &edge,
+        )
+        .unwrap();
     }
 
     #[test]
@@ -784,6 +822,19 @@ mod tests {
                     make_masterchain(0..10),
                     make_shard(0b0_100, 0..10),
                     make_shard(0b10_10, 8..10),
+                ],
+                &edge,
+            ),
+            Err(BlockMapsEdgeVerificationError::NextBlockNotFound)
+        ));
+
+        // 1.5. Far child
+        assert!(matches!(
+            check_block_maps(
+                [
+                    make_masterchain(0..10),
+                    make_shard(0b0_100, 0..10),
+                    make_shard(0b100_1, 8..10),
                 ],
                 &edge,
             ),
