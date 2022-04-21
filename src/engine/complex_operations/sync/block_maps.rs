@@ -557,11 +557,15 @@ impl BlockMapsEdgeShardVerification<'_, '_> {
             // This shard is in the on of the split shards
             TargetSeqNo::AfterSplit { parent, side, .. } => {
                 if let Entry::Occupied(mut entry) = edge.top_shard_blocks.entry(parent) {
-                    if let EdgeBlockStatus::FoundSplit { left, right } = entry.get_mut() {
-                        match side {
+                    match entry.get_mut() {
+                        entry if entry.is_empty() => {
+                            *entry = EdgeBlockStatus::NotFound;
+                        }
+                        EdgeBlockStatus::FoundSplit { left, right } => match side {
                             AfterSplitSide::Left => *left = EdgeBlockSplitStatus::NotFound,
                             AfterSplitSide::Right => *right = EdgeBlockSplitStatus::NotFound,
-                        }
+                        },
+                        _ => { /* Do nothing */ }
                     }
                 }
             }
@@ -645,6 +649,148 @@ pub enum BlockMapsEdgeVerificationError {
 mod tests {
     use super::*;
 
+    #[test]
+    fn correct_block_maps_edge() {
+        let edge = Some(make_edge(5, [(0b0_100, 5), (0b1_100, 5)]));
+
+        // 1. Normal cases
+
+        // 1.1. Next block in the same shard
+        check_block_maps(
+            [
+                make_masterchain(0..10),
+                make_shard(0b0_100, 0..10),
+                make_shard(0b1_100, 0..10),
+            ],
+            &edge,
+        )
+        .unwrap();
+
+        // 1.2. Next split block
+        check_block_maps(
+            [
+                make_masterchain(0..10),
+                make_shard(0b0_100, 0..10),
+                make_shard(0b10_10, 6..10),
+                make_shard(0b1_100, 0..5),
+                make_shard(0b11_10, 6..10),
+            ],
+            &edge,
+        )
+        .unwrap();
+
+        // 1.3. Next merged block
+        check_block_maps([make_masterchain(0..10), make_shard(0b_1000, 6..10)], &edge).unwrap();
+
+        // 2. Cases with empty shards
+
+        // 2.1.1. One shard is missing completely
+        check_block_maps([make_masterchain(0..10), make_shard(0b0_100, 0..10)], &edge).unwrap();
+
+        // 2.1.2. One shard is missing partially
+        check_block_maps(
+            [
+                make_masterchain(0..10),
+                make_shard(0b0_100, 0..10),
+                make_shard(0b1_100, 0..5),
+            ],
+            &edge,
+        )
+        .unwrap();
+
+        // 2.2.1. Split shard is missing partially (left)
+        check_block_maps(
+            [
+                make_masterchain(0..10),
+                make_shard(0b0_100, 0..10),
+                make_shard(0b10_10, 6..10),
+            ],
+            &edge,
+        )
+        .unwrap();
+
+        // 2.2.2. Split shard is missing partially (right)
+        check_block_maps(
+            [
+                make_masterchain(0..10),
+                make_shard(0b0_100, 0..10),
+                make_shard(0b11_10, 6..10),
+            ],
+            &edge,
+        )
+        .unwrap();
+
+        // 2.2.2. Split shard is missing partially (right)
+        check_block_maps(
+            [
+                make_masterchain(0..10),
+                make_shard(0b0_100, 0..10),
+                make_shard(0b11_10, 6..10),
+            ],
+            &edge,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn incorrect_block_maps_edge() {
+        let edge = Some(make_edge(5, [(0b0_100, 5), (0b1_100, 5)]));
+
+        // 1. Simple cases
+
+        // 1.1. Next block is missing in first shard
+        assert!(matches!(
+            check_block_maps(
+                [
+                    make_masterchain(0..10),
+                    make_shard(0b0_100, 7..10),
+                    make_shard(0b1_100, 0..10),
+                ],
+                &edge,
+            ),
+            Err(BlockMapsEdgeVerificationError::NextBlockNotFound)
+        ));
+
+        // 1.2. Next block is missing in second shard
+        assert!(matches!(
+            check_block_maps(
+                [
+                    make_masterchain(0..10),
+                    make_shard(0b0_100, 0..10),
+                    make_shard(0b1_100, 7..10),
+                ],
+                &edge,
+            ),
+            Err(BlockMapsEdgeVerificationError::NextBlockNotFound)
+        ));
+
+        // 1.3. Next block is missing as a sequence hole
+        assert!(matches!(
+            check_block_maps(
+                [
+                    make_masterchain(0..10),
+                    make_shard(0b0_100, 0..10),
+                    make_shard(0b1_100, (0..5).chain(7..10)),
+                ],
+                &edge,
+            ),
+            Err(BlockMapsEdgeVerificationError::NextBlockNotFound)
+        ));
+
+        // 1.4. There is no next block, but there is a child shard
+        assert!(matches!(
+            check_block_maps(
+                [
+                    make_masterchain(0..10),
+                    make_shard(0b0_100, 0..10),
+                    make_shard(0b10_10, 8..10),
+                ],
+                &edge,
+            ),
+            Err(BlockMapsEdgeVerificationError::NextBlockNotFound)
+        ));
+    }
+
     fn make_masterchain(
         seqnos: impl IntoIterator<Item = u32>,
     ) -> (ton_block::ShardIdent, BTreeSet<u32>) {
@@ -680,7 +826,7 @@ mod tests {
     fn check_block_maps(
         shards: impl IntoIterator<Item = (ton_block::ShardIdent, BTreeSet<u32>)>,
         edge: &Option<BlockMapsEdge>,
-    ) -> Result<()> {
+    ) -> Result<(), BlockMapsEdgeVerificationError> {
         let mut possible_edge = BlockMapsEdgeVerification::new(edge);
 
         let shards = shards.into_iter().collect::<BTreeMap<_, _>>();
@@ -693,26 +839,5 @@ mod tests {
         }
         possible_edge.final_check()?;
         Ok(())
-    }
-
-    #[test]
-    fn correct_edge_detection() {
-        let edge = Some(make_edge(
-            5,
-            [
-                (0b0100, 5), //
-                (0b1100, 5), //
-            ],
-        ));
-
-        check_block_maps(
-            [
-                make_masterchain(0..10),
-                make_shard(0b0100, 0..10),
-                make_shard(0b1100, 0..3),
-            ],
-            &edge,
-        )
-        .unwrap();
     }
 }
