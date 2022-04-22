@@ -390,8 +390,8 @@ impl<'a> ShardStatePacketReaderTransaction<'a> {
     }
 
     pub fn end(self) {
-        if self.reader.has_crc {
-            if self.reading_next_packet {
+        if self.reading_next_packet {
+            if self.reader.has_crc {
                 // Write to the hasher until the end of current packet
                 self.reader
                     .hasher
@@ -401,15 +401,15 @@ impl<'a> ShardStatePacketReaderTransaction<'a> {
                 self.reader
                     .hasher
                     .update(&self.reader.next_packet[..self.offset]);
-
-                // Replace current packet
-                self.reader.current_packet = std::mem::take(&mut self.reader.next_packet);
-            } else {
-                // Write to the hasher current bytes
-                self.reader
-                    .hasher
-                    .update(&self.reader.current_packet[self.reader.offset..self.offset]);
             }
+
+            // Replace current packet
+            self.reader.current_packet = std::mem::take(&mut self.reader.next_packet);
+        } else if self.reader.has_crc {
+            // Write to the hasher current bytes
+            self.reader
+                .hasher
+                .update(&self.reader.current_packet[self.reader.offset..self.offset]);
         }
 
         // Bump offset
