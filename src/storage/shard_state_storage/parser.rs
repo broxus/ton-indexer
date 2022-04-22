@@ -17,6 +17,7 @@ macro_rules! try_read {
 
 pub struct ShardStatePacketReader {
     hasher: crc::Digest<'static, u32>,
+    has_crc: bool,
     offset: usize,
     current_packet: Vec<u8>,
     next_packet: Vec<u8>,
@@ -27,6 +28,7 @@ impl ShardStatePacketReader {
     pub fn new() -> Self {
         Self {
             hasher: CRC.digest(),
+            has_crc: true,
             offset: 0,
             current_packet: Default::default(),
             next_packet: Default::default(),
@@ -71,6 +73,8 @@ impl ShardStatePacketReader {
                 return Err(ShardStateParserError::InvalidShardStateHeader).context("Invalid flags")
             }
         }
+
+        src.reader.has_crc = has_crc;
 
         if ref_size == 0 || ref_size > 4 {
             return Err(ShardStateParserError::InvalidShardStateHeader)
@@ -387,19 +391,21 @@ impl<'a> ShardStatePacketReaderTransaction<'a> {
 
     pub fn end(self) {
         if self.reading_next_packet {
-            // Write to the hasher until the end of current packet
-            self.reader
-                .hasher
-                .update(&self.reader.current_packet[self.reader.offset..]);
+            if self.reader.has_crc {
+                // Write to the hasher until the end of current packet
+                self.reader
+                    .hasher
+                    .update(&self.reader.current_packet[self.reader.offset..]);
 
-            // Write to the hasher current bytes
-            self.reader
-                .hasher
-                .update(&self.reader.next_packet[..self.offset]);
+                // Write to the hasher current bytes
+                self.reader
+                    .hasher
+                    .update(&self.reader.next_packet[..self.offset]);
+            }
 
             // Replace current packet
             self.reader.current_packet = std::mem::take(&mut self.reader.next_packet);
-        } else {
+        } else if self.reader.has_crc {
             // Write to the hasher current bytes
             self.reader
                 .hasher

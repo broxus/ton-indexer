@@ -546,12 +546,12 @@ impl Engine {
                         let engine = engine.clone();
                         tokio::spawn(async move {
                             if let Err(e) = process_block_broadcast(&engine, *block).await {
-                                log::error!("Failed to process block broadcast: {:?}", e);
+                                log::error!("Failed to process block broadcast: {e:?}");
                             }
                         });
                     }
                     Err(e) => {
-                        log::error!("Failed to wait broadcast for shard {}: {}", shard_ident, e);
+                        log::error!("Failed to wait broadcast for shard {shard_ident}: {e}");
                     }
                     _ => { /* do nothing */ }
                 }

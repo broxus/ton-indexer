@@ -28,8 +28,7 @@ impl FullNodeOverlayClient {
                 data: ton::bytes(message.to_vec()),
             },
         })?;
-        this.overlay()
-            .broadcast(this.overlay_id(), broadcast, None)?;
+        this.broadcast(broadcast, None)?;
         Ok(())
     }
 
@@ -445,20 +444,11 @@ impl FullNodeOverlayClient {
     }
 
     pub async fn wait_broadcast(&self) -> Result<(ton::ton_node::Broadcast, AdnlNodeIdShort)> {
-        let this = &self.0;
-
-        loop {
-            match this.overlay().wait_for_broadcast(this.overlay_id()).await {
-                Ok(info) => {
-                    let answer: ton::ton_node::Broadcast =
-                        Deserializer::new(&mut info.data.as_slice())
-                            .read_boxed()
-                            .map_err(|e| anyhow::Error::msg(e.to_string()))?;
-                    break Ok((answer, info.from));
-                }
-                Err(e) => log::error!("broadcast waiting error: {}", e),
-            }
-        }
+        let info = self.0.wait_for_broadcast().await;
+        let answer: ton::ton_node::Broadcast = Deserializer::new(&mut info.data.as_slice())
+            .read_boxed()
+            .map_err(|e| anyhow::Error::msg(e.to_string()))?;
+        Ok((answer, info.from))
     }
 }
 
