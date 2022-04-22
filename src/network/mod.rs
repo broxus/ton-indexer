@@ -201,9 +201,10 @@ impl NodeNetwork {
         overlay_full_id: OverlayIdFull,
         overlay_id: OverlayIdShort,
     ) -> Result<FullNodeOverlayClient> {
-        self.overlay
+        let (shard, _) = self
+            .overlay
             .add_public_overlay(&overlay_id, self.overlay_shard_options)?;
-        let node = self.overlay.get_signed_node(&overlay_id)?;
+        let node = shard.sign_local_node()?;
 
         start_broadcasting_our_node(
             self.working_state.clone(),
@@ -212,24 +213,17 @@ impl NodeNetwork {
             node,
         );
 
-        let peers = self.update_overlay_peers(&overlay_id, &mut None).await?;
+        let peers = self.update_overlay_peers(&shard, &mut None).await?;
         if peers.is_empty() {
             log::warn!("No nodes were found in overlay {}", &overlay_id);
         }
 
-        let neighbours = Neighbours::new(
-            &self.dht,
-            &self.overlay,
-            &overlay_id,
-            &peers,
-            self.neighbours_options,
-        );
+        let neighbours = Neighbours::new(&self.dht, &shard, &peers, self.neighbours_options);
 
         let overlay_client = Arc::new(OverlayClient::new(
-            self.overlay.clone(),
             self.rldp.clone(),
             neighbours.clone(),
-            overlay_id,
+            shard,
         ));
 
         neighbours.start_pinging_neighbours();
@@ -238,13 +232,7 @@ impl NodeNetwork {
 
         self.start_updating_peers(&overlay_client);
 
-        start_processing_peers(
-            self.working_state.clone(),
-            neighbours,
-            self.dht.clone(),
-            self.overlay.clone(),
-            overlay_id,
-        );
+        start_processing_peers(self.working_state.clone(), neighbours, self.dht.clone());
 
         let result = self
             .overlays
@@ -292,7 +280,7 @@ impl NodeNetwork {
         iter: &mut Option<ExternalDhtIter>,
     ) -> Result<()> {
         let peers = self
-            .update_overlay_peers(overlay_client.overlay_id(), iter)
+            .update_overlay_peers(overlay_client.overlay_shard(), iter)
             .await?;
         for peer_id in peers {
             overlay_client.neighbours().add(peer_id);
@@ -302,17 +290,17 @@ impl NodeNetwork {
 
     async fn update_overlay_peers(
         &self,
-        overlay_id: &OverlayIdShort,
+        overlay_shard: &OverlayShard,
         external_iter: &mut Option<ExternalDhtIter>,
     ) -> Result<Vec<AdnlNodeIdShort>> {
-        log::info!("Overlay {} node search in progress...", overlay_id);
+        log::info!("Overlay {} node search in progress...", overlay_shard.id());
         let nodes = self
             .dht
-            .find_overlay_nodes(overlay_id, external_iter)
+            .find_overlay_nodes(overlay_shard.id(), external_iter)
             .await?;
         log::trace!("Found overlay nodes ({})", nodes.len());
 
-        tokio::task::block_in_place(|| self.overlay.add_public_peers(overlay_id, nodes))
+        tokio::task::block_in_place(|| overlay_shard.add_public_peers(nodes))
     }
 }
 
@@ -405,15 +393,13 @@ fn start_processing_peers(
     working_state: Arc<WorkingState>,
     neighbours: Arc<Neighbours>,
     dht: Arc<DhtNode>,
-    overlay: Arc<OverlayNode>,
-    overlay_id: OverlayIdShort,
 ) {
     const PEERS_PROCESSING_INTERVAL: u64 = 1; // Seconds
     let interval = Duration::from_secs(PEERS_PROCESSING_INTERVAL);
 
     tokio::spawn(async move {
         while working_state.is_working() {
-            if let Err(e) = process_overlay_peers(&neighbours, &dht, &overlay, &overlay_id).await {
+            if let Err(e) = process_overlay_peers(&neighbours, &dht).await {
                 log::warn!("add_overlay_peers: {}", e);
             };
 
@@ -425,13 +411,9 @@ fn start_processing_peers(
     });
 }
 
-async fn process_overlay_peers(
-    neighbours: &Neighbours,
-    dht: &Arc<DhtNode>,
-    overlay: &OverlayNode,
-    overlay_id: &OverlayIdShort,
-) -> Result<()> {
-    let peers = overlay.take_new_peers(overlay_id)?;
+async fn process_overlay_peers(neighbours: &Neighbours, dht: &Arc<DhtNode>) -> Result<()> {
+    let overlay_shard = neighbours.overlay_shard();
+    let peers = overlay_shard.take_new_peers();
 
     for peer in peers.into_values() {
         let peer_id = match AdnlNodeIdFull::try_from(&peer.id)
@@ -459,7 +441,7 @@ async fn process_overlay_peers(
             ip
         );
 
-        overlay.add_public_peer(overlay_id, ip, peer)?;
+        neighbours.overlay_shard().add_public_peer(ip, peer)?;
         neighbours.add_overlay_peer(peer_id);
     }
 
