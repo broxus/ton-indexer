@@ -216,15 +216,14 @@ pub async fn background_sync(engine: &Arc<Engine>, from_seqno: u32) -> Result<()
 
     log::info!("sync: Started background sync from {from} to {to}");
 
-    let mut ctx = BackgroundSyncContext { engine, from, to };
+    let mut ctx = BackgroundSyncContext::new(engine, from, to);
 
     let mut archive_downloader = ArchiveDownloader::new(engine, from..=to, None);
     while let Some(archive) = archive_downloader.recv().await {
-        match ctx.handle(archive.clone()).await? {
-            SyncStatus::Done => break,
-            SyncStatus::InProgress(edge) => archive.accept(Some(edge)),
-            SyncStatus::NoBlocksInArchive => continue,
+        if ctx.handle(archive.clone()).await? == SyncStatus::Done {
+            break;
         }
+        archive.accept(ctx.last_archive_edge.clone());
     }
 
     log::info!("sync: Background sync complete");
@@ -233,11 +232,21 @@ pub async fn background_sync(engine: &Arc<Engine>, from_seqno: u32) -> Result<()
 
 struct BackgroundSyncContext<'a> {
     engine: &'a Arc<Engine>,
+    last_archive_edge: Option<BlockMapsEdge>,
     from: u32,
     to: u32,
 }
 
-impl BackgroundSyncContext<'_> {
+impl<'a> BackgroundSyncContext<'a> {
+    fn new(engine: &'a Arc<Engine>, from: u32, to: u32) -> Self {
+        Self {
+            engine,
+            last_archive_edge: None,
+            from,
+            to,
+        }
+    }
+
     async fn handle(&mut self, maps: Arc<BlockMaps>) -> Result<SyncStatus> {
         let (lowest_id, highest_id) = match (maps.lowest_mc_id(), maps.highest_mc_id()) {
             (Some(lowest), Some(highest)) => (lowest, highest),
@@ -245,10 +254,10 @@ impl BackgroundSyncContext<'_> {
         };
         log::debug!("sync: Saving archive. Low id: {lowest_id}. High id: {highest_id}");
 
-        let block_edge = maps.build_block_maps_edge(highest_id)?;
+        let mut block_edge = maps.build_block_maps_edge(lowest_id)?;
 
         self.import_mc_blocks(&maps).await?;
-        self.import_shard_blocks(&maps).await?;
+        self.import_shard_blocks(&maps, &mut block_edge).await?;
 
         self.engine
             .db
@@ -260,7 +269,8 @@ impl BackgroundSyncContext<'_> {
             if highest_id.seq_no >= self.to {
                 SyncStatus::Done
             } else {
-                SyncStatus::InProgress(block_edge)
+                self.last_archive_edge = Some(block_edge);
+                SyncStatus::InProgress
             }
         })
     }
@@ -295,7 +305,12 @@ impl BackgroundSyncContext<'_> {
 
             // Notify subscribers
             self.engine
-                .notify_subscribers_with_archive_block(&handle, &block.data)
+                .notify_subscribers_with_archive_block(
+                    &handle,
+                    &block.data,
+                    block.new_archive_data()?,
+                    block_proof.new_archive_data()?,
+                )
                 .await?;
         }
 
@@ -303,7 +318,11 @@ impl BackgroundSyncContext<'_> {
         Ok(())
     }
 
-    async fn import_shard_blocks(&mut self, maps: &Arc<BlockMaps>) -> Result<()> {
+    async fn import_shard_blocks(
+        &mut self,
+        maps: &Arc<BlockMaps>,
+        edge: &mut BlockMapsEdge,
+    ) -> Result<()> {
         for (id, entry) in &maps.blocks {
             if !id.shard_id.is_masterchain() {
                 let (block, block_proof) = entry.get_data()?;
@@ -329,47 +348,85 @@ impl BackgroundSyncContext<'_> {
             let mc_block = self.engine.load_block_data(&mc_handle).await?;
             let shard_blocks = mc_block.shard_blocks()?;
 
+            let new_edge = BlockMapsEdge {
+                mc_block_seq_no: mc_seq_no,
+                top_shard_blocks: shard_blocks
+                    .iter()
+                    .map(|(key, id)| (*key, id.seq_no))
+                    .collect(),
+            };
+
             let mut tasks = Vec::with_capacity(shard_blocks.len());
             for (_, id) in shard_blocks {
                 let engine = self.engine.clone();
                 let maps = maps.clone();
                 tasks.push(tokio::spawn(async move {
-                    let handle = engine
-                        .load_block_handle(&id)?
-                        .ok_or(SyncError::ShardchainBlockHandleNotFound)?;
+                    let mut blocks_to_add = Vec::new();
 
-                    let block = maps
-                        .blocks
-                        .get(&id)
-                        .and_then(|entry| entry.block.as_ref())
-                        .ok_or(SyncError::ShardchainBlockHandleNotFound)?;
+                    let mut stack = Vec::from([id]);
+                    while let Some(id) = stack.pop() {
+                        let (block_data, block_proof) = maps
+                            .blocks
+                            .get(&id)
+                            .and_then(|entry| entry.get_data().ok())
+                            .ok_or(SyncError::IncompleteBlockData)?;
 
-                    // Assign valid masterchain id
-                    engine.db.assign_mc_ref_seq_no(&handle, id.seq_no)?;
+                        let (prev1, prev2) = block_data.data.construct_prev_id()?;
+                        // if edge.is_before(&prev1) {
+                        //     stack.push(prev1);
+                        // }
+                        // if let Some(prev2) = prev2 {
+                        //     if edge.is_before(&prev2) {
+                        //         stack.push(prev2);
+                        //     }
+                        // }
 
-                    // Archive block
-                    if engine.archive_options.is_some() {
-                        engine.db.archive_block(&handle).await?;
+                        blocks_to_add.push((block_data, block_proof));
                     }
 
-                    // Notify subscribers
-                    engine
-                        .notify_subscribers_with_archive_block(&handle, &block.data)
-                        .await?;
+                    blocks_to_add.sort_unstable_by_key(|(block_data, _)| {
+                        std::cmp::Reverse(block_data.data.id().seq_no)
+                    });
+
+                    while let Some((block, block_proof)) = blocks_to_add.pop() {
+                        let handle = engine
+                            .load_block_handle(block.data.id())?
+                            .ok_or(SyncError::ShardchainBlockHandleNotFound)?;
+
+                        // Assign valid masterchain id
+                        engine.db.assign_mc_ref_seq_no(&handle, mc_seq_no)?;
+
+                        // Archive block
+                        if engine.archive_options.is_some() {
+                            engine.db.archive_block(&handle).await?;
+                        }
+
+                        // Notify subscribers
+                        engine
+                            .notify_subscribers_with_archive_block(
+                                &handle,
+                                &block.data,
+                                block.new_archive_data()?,
+                                block_proof.new_archive_data()?,
+                            )
+                            .await?;
+                    }
 
                     Result::<_, anyhow::Error>::Ok(())
                 }));
             }
+
+            *edge = new_edge;
         }
 
         Ok(())
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
 enum SyncStatus {
     Done,
-    InProgress(BlockMapsEdge),
+    InProgress,
     NoBlocksInArchive,
 }
 
@@ -471,4 +528,6 @@ enum SyncError {
     MasterchainBlockNotFound,
     #[error("Shardchain block handle not found")]
     ShardchainBlockHandleNotFound,
+    #[error("Incomplete block data")]
+    IncompleteBlockData,
 }

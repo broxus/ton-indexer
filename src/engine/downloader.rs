@@ -77,7 +77,12 @@ impl Downloader for BlockProofDownloader {
 
         context
             .client
-            .download_block_proof(context.block_id, self.is_link, self.is_key_block)
+            .download_block_proof(
+                context.block_id,
+                self.is_link,
+                self.is_key_block,
+                context.explicit_neighbour,
+            )
             .await
     }
 }
@@ -145,16 +150,28 @@ pub struct DownloadContext<'a, T> {
     pub db: &'a Db,
 
     pub downloader: Arc<dyn Downloader<Item = T>>,
+    pub explicit_neighbour: Option<&'a Arc<tiny_adnl::Neighbour>>,
 }
 
 impl<'a, T> DownloadContext<'a, T> {
+    pub fn with_explicit_neighbour(
+        mut self,
+        explicit_neighbour: Option<&'a Arc<tiny_adnl::Neighbour>>,
+    ) -> Self {
+        self.explicit_neighbour = explicit_neighbour;
+        self
+    }
+
     pub async fn download(&mut self) -> Result<T> {
         let mut attempt = 1;
         loop {
             match self.downloader.try_download(self).await {
                 Ok(Some(result)) => break Ok(result),
                 Ok(None) => log::debug!("Got no data for {}", self.name),
-                Err(e) => log::debug!("Error in {}: {}", self.name, e),
+                Err(e) => {
+                    self.explicit_neighbour = None;
+                    log::debug!("Error in {}: {}", self.name, e)
+                }
             }
 
             attempt += 1;

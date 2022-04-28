@@ -140,7 +140,7 @@ async fn prepare_cold_boot_data(engine: &Arc<Engine>) -> Result<ColdBootData> {
 
         let (handle, proof) = loop {
             match engine
-                .download_block_proof(block_id, true, true, None)
+                .download_block_proof(block_id, true, true, None, None)
                 .await
             {
                 Ok(proof) => match proof.check_proof_link() {
@@ -181,17 +181,25 @@ async fn get_key_blocks(
 
     let mut result = vec![handle.clone()];
 
+    let mut good_peer = None;
     loop {
         log::info!("Downloading next key blocks for: {}", handle.id());
 
-        let ids = match engine.download_next_key_blocks_ids(handle.id()).await {
-            Ok(ids) => ids,
+        let ids = match engine
+            .download_next_key_blocks_ids(handle.id(), good_peer.as_ref())
+            .await
+        {
+            Ok((ids, neighbour)) => {
+                good_peer = Some(neighbour);
+                ids
+            }
             Err(e) => {
                 log::warn!(
                     "Failed to download next key block ids for {}: {}",
                     handle.id(),
                     e
                 );
+                good_peer = None;
                 continue;
             }
         };
@@ -201,7 +209,7 @@ async fn get_key_blocks(
             for block_id in &ids {
                 let prev_utime = handle.meta().gen_utime();
                 let (next_handle, proof) =
-                    download_key_block_proof(engine, block_id, &boot_data).await?;
+                    download_key_block_proof(engine, block_id, &boot_data, &good_peer).await?;
                 if is_persistent_state(next_handle.meta().gen_utime(), prev_utime) {
                     engine.set_init_mc_block_id(block_id)?;
                 }
@@ -264,6 +272,7 @@ async fn download_key_block_proof(
     engine: &Arc<Engine>,
     block_id: &ton_block::BlockIdExt,
     boot_data: &ColdBootData,
+    good_peer: &Option<Arc<tiny_adnl::Neighbour>>,
 ) -> Result<(Arc<BlockHandle>, BlockProofStuff)> {
     if let Some(handle) = engine.load_block_handle(block_id)? {
         if let Ok(proof) = engine.load_block_proof(&handle, false).await {
@@ -273,7 +282,7 @@ async fn download_key_block_proof(
 
     loop {
         let proof = engine
-            .download_block_proof(block_id, false, true, None)
+            .download_block_proof(block_id, false, true, None, good_peer.as_ref())
             .await?;
         let result = match boot_data {
             ColdBootData::KeyBlock {

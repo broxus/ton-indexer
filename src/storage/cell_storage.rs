@@ -1,4 +1,3 @@
-use std::collections::VecDeque;
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Weak};
@@ -246,10 +245,10 @@ impl CellStorage {
             }
         }
 
-        let mut stack = VecDeque::with_capacity(16);
-        stack.push_back(cell);
+        let mut stack = Vec::with_capacity(16);
+        stack.push(cell);
 
-        while let Some(current) = stack.pop_back() {
+        while let Some(current) = stack.pop() {
             for i in 0..current.references_count() {
                 let cell = current.reference(i)?;
                 let cell_id = cell.repr_hash();
@@ -278,7 +277,7 @@ impl CellStorage {
                     }
                 }
 
-                stack.push_back(cell);
+                stack.push(cell);
             }
         }
 

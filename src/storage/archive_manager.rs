@@ -258,7 +258,7 @@ impl ArchiveManager {
         let handle_cf = self.block_handles.get_cf();
 
         // Prepare archive
-        let archive_id = self.compute_archive_id(handle)?;
+        let archive_id = self.compute_archive_id(handle);
         let archive_id_bytes = archive_id.to_be_bytes();
 
         // 0. Create transaction
@@ -285,6 +285,42 @@ impl ArchiveManager {
         // Block will be removed after blocks gc
 
         // Done
+        Ok(())
+    }
+
+    pub async fn move_into_archive_with_data(
+        &self,
+        handle: &BlockHandle,
+        block_data: &[u8],
+        block_proof_data: &[u8],
+    ) -> Result<()> {
+        if handle.meta().is_archived() {
+            return Ok(());
+        }
+        if !handle.meta().set_is_moving_to_archive() {
+            return Ok(());
+        }
+
+        // Prepare cf
+        let storage_cf = self.archives.get_cf();
+        let handle_cf = self.block_handles.get_cf();
+
+        // Prepare archive
+        let archive_id = self.compute_archive_id(handle);
+        let archive_id_bytes = archive_id.to_be_bytes();
+
+        let mut batch = rocksdb::WriteBatch::default();
+        batch.merge_cf(&storage_cf, &archive_id_bytes, block_data);
+        batch.merge_cf(&storage_cf, &archive_id_bytes, block_proof_data);
+        if handle.meta().set_is_archived() {
+            batch.put_cf(
+                &handle_cf,
+                handle.id().root_hash.as_slice(),
+                handle.meta().to_vec(),
+            );
+        }
+        self.db.write(batch)?;
+
         Ok(())
     }
 
@@ -408,12 +444,12 @@ impl ArchiveManager {
         Ok(())
     }
 
-    fn compute_archive_id(&self, handle: &BlockHandle) -> Result<u32> {
+    fn compute_archive_id(&self, handle: &BlockHandle) -> u32 {
         let mc_seq_no = handle.masterchain_ref_seqno();
 
         if handle.meta().is_key_block() {
             self.archive_ids.write().insert(mc_seq_no);
-            return Ok(mc_seq_no);
+            return mc_seq_no;
         }
 
         let mut archive_id = mc_seq_no - mc_seq_no % ARCHIVE_SLICE_SIZE;
@@ -434,7 +470,7 @@ impl ArchiveManager {
             archive_id = mc_seq_no;
         }
 
-        Ok(archive_id)
+        archive_id
     }
 
     fn make_archive_segment<I>(&self, entry_id: &PackageEntryId<I>) -> Result<Vec<u8>>

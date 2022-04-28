@@ -17,8 +17,8 @@ use crate::engine::Engine;
 use crate::network::*;
 use crate::utils::*;
 
-const PROCESSING_QUEUE_LEN: usize = 6;
-const DOWNLOADING_QUEUE_LEN: usize = 3;
+const PROCESSING_QUEUE_LEN: usize = 10;
+const DOWNLOADING_QUEUE_LEN: usize = 10;
 const PACKET_SIZE: usize = 1 << 20; // 1 MB
 
 pub async fn download_state(

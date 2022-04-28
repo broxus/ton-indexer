@@ -292,6 +292,22 @@ pub struct BlockMapsEdge {
 }
 
 impl BlockMapsEdge {
+    pub fn is_before(&self, id: &ton_block::BlockIdExt) -> bool {
+        if id.shard_id.is_masterchain() {
+            id.seq_no > self.mc_block_seq_no
+        } else {
+            match self.top_shard_blocks.get(&id.shard_id) {
+                Some(&top_seq_no) => id.seq_no > top_seq_no,
+                None => self
+                    .top_shard_blocks
+                    .iter()
+                    .find(|&(shard, _)| id.shard_id.intersect_with(shard))
+                    .map(|(_, &top_seq_no)| id.seq_no > top_seq_no)
+                    .unwrap_or_default(),
+            }
+        }
+    }
+
     fn find_target_seq_no(&self, shard_ident: &ton_block::ShardIdent) -> Option<TargetSeqNo> {
         // Special case for masterchain
         if shard_ident.is_masterchain() {
@@ -670,6 +686,8 @@ pub enum BlockMapsEdgeVerificationError {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unusual_byte_groupings)]
+
     use super::*;
 
     #[test]

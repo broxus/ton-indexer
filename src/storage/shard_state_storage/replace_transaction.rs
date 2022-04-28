@@ -119,102 +119,100 @@ impl<'a> ShardStateReplaceTransaction<'a> {
             ctx.create_mapped_hashes_file(header.cell_count as usize * HashesEntry::LEN)?;
         let cells_file = ctx.create_mapped_cells_file().await?;
 
-        tokio::task::block_in_place(|| {
-            let mut tail = [0; 4];
-            let mut entries_buffer = EntriesBuffer::new();
-            let mut pruned_branches = FxHashMap::default();
+        let mut tail = [0; 4];
+        let mut entries_buffer = EntriesBuffer::new();
+        let mut pruned_branches = FxHashMap::default();
 
-            // Allocate on heap to prevent big future size
-            let mut chunk_buffer = Vec::with_capacity(1 << 20);
-            let mut output_buffer = Vec::with_capacity(1 << 10);
-            let mut data_buffer = vec![0u8; MAX_DATA_SIZE];
+        // Allocate on heap to prevent big future size
+        let mut chunk_buffer = Vec::with_capacity(1 << 20);
+        let mut output_buffer = Vec::with_capacity(1 << 10);
+        let mut data_buffer = vec![0u8; MAX_DATA_SIZE];
 
-            let total_size = cells_file.length();
-            log::info!("TOTAL SIZE: {}", total_size);
+        let total_size = cells_file.length();
+        log::info!("TOTAL SIZE: {}", total_size);
 
-            let mut file_pos = total_size;
-            let mut cell_index = header.cell_count;
-            while file_pos >= 4 {
-                file_pos -= 4;
-                unsafe { cells_file.read_exact_at(file_pos, &mut tail) };
+        let mut file_pos = total_size;
+        let mut cell_index = header.cell_count;
+        while file_pos >= 4 {
+            file_pos -= 4;
+            unsafe { cells_file.read_exact_at(file_pos, &mut tail) };
 
-                let mut chunk_size = u32::from_le_bytes(tail) as usize;
-                chunk_buffer.resize(chunk_size, 0);
+            let mut chunk_size = u32::from_le_bytes(tail) as usize;
+            chunk_buffer.resize(chunk_size, 0);
 
-                file_pos -= chunk_size;
-                unsafe { cells_file.read_exact_at(file_pos, &mut chunk_buffer) };
+            file_pos -= chunk_size;
+            unsafe { cells_file.read_exact_at(file_pos, &mut chunk_buffer) };
 
-                log::info!("PROCESSING CHUNK OF SIZE: {}", chunk_size);
+            log::info!("PROCESSING CHUNK OF SIZE: {}", chunk_size);
 
-                while chunk_size > 0 {
-                    cell_index -= 1;
-                    let cell_size = chunk_buffer[chunk_size - 1] as usize;
-                    chunk_size -= cell_size + 1;
+            while chunk_size > 0 {
+                cell_index -= 1;
+                let cell_size = chunk_buffer[chunk_size - 1] as usize;
+                chunk_size -= cell_size + 1;
 
-                    let cell = RawCell::from_stored_data(
-                        &mut &chunk_buffer[chunk_size..chunk_size + cell_size],
-                        header.ref_size,
-                        header.cell_count as usize,
-                        cell_index as usize,
-                        &mut data_buffer,
-                    )?;
+                let cell = RawCell::from_stored_data(
+                    &mut &chunk_buffer[chunk_size..chunk_size + cell_size],
+                    header.ref_size,
+                    header.cell_count as usize,
+                    cell_index as usize,
+                    &mut data_buffer,
+                )?;
 
-                    for (&index, buffer) in cell
-                        .reference_indices
-                        .iter()
-                        .zip(entries_buffer.iter_child_buffers())
-                    {
-                        // SAFETY: `buffer` is guaranteed to be in separate memory area
-                        unsafe {
-                            hashes_file.read_exact_at(index as usize * HashesEntry::LEN, buffer)
-                        }
-                    }
-
-                    self.finalize_cell(
-                        cell_index as u32,
-                        cell,
-                        &mut pruned_branches,
-                        &mut entries_buffer,
-                        &mut output_buffer,
-                    )?;
-
-                    // SAFETY: `entries_buffer` is guaranteed to be in separate memory area
-                    unsafe {
-                        hashes_file.write_all_at(
-                            cell_index as usize * HashesEntry::LEN,
-                            entries_buffer.current_entry_buffer(),
-                        )
-                    };
-
-                    chunk_buffer.truncate(chunk_size);
+                for (&index, buffer) in cell
+                    .reference_indices
+                    .iter()
+                    .zip(entries_buffer.iter_child_buffers())
+                {
+                    // SAFETY: `buffer` is guaranteed to be in separate memory area
+                    unsafe { hashes_file.read_exact_at(index as usize * HashesEntry::LEN, buffer) }
                 }
 
-                log::info!("READ: {}", total_size - file_pos);
+                self.finalize_cell(
+                    cell_index as u32,
+                    cell,
+                    &mut pruned_branches,
+                    &mut entries_buffer,
+                    &mut output_buffer,
+                )?;
+
+                // SAFETY: `entries_buffer` is guaranteed to be in separate memory area
+                unsafe {
+                    hashes_file.write_all_at(
+                        cell_index as usize * HashesEntry::LEN,
+                        entries_buffer.current_entry_buffer(),
+                    )
+                };
+
+                chunk_buffer.truncate(chunk_size);
             }
 
-            log::info!("DONE PROCESSING: {} bytes", total_size);
+            log::info!("READ: {}", total_size - file_pos);
 
-            let block_id_key = block_id.to_vec();
+            tokio::task::yield_now().await;
+        }
 
-            // Current entry contains root cell
-            let current_entry = entries_buffer.split_children(&[]).0;
-            self.shard_state_db
-                .insert(block_id_key.as_slice(), current_entry.as_reader().hash(3))?;
+        log::info!("DONE PROCESSING: {} bytes", total_size);
 
-            // Load stored shard state
-            match self.shard_state_db.get(block_id_key)? {
-                Some(root) => {
-                    let cell_id = UInt256::from_be_bytes(&root);
+        let block_id_key = block_id.to_vec();
 
-                    let cell = self.cell_storage.load_cell(cell_id)?;
-                    Ok(Arc::new(ShardStateStuff::new(
-                        block_id,
-                        ton_types::Cell::with_cell_impl_arc(cell),
-                    )?))
-                }
-                None => Err(ReplaceTransactionError::NotFound.into()),
+        // Current entry contains root cell
+        let current_entry = entries_buffer.split_children(&[]).0;
+        self.shard_state_db
+            .insert(block_id_key.as_slice(), current_entry.as_reader().hash(3))?;
+
+        // Load stored shard state
+        match self.shard_state_db.get(block_id_key)? {
+            Some(root) => {
+                let cell_id = UInt256::from_be_bytes(&root);
+
+                let cell = self.cell_storage.load_cell(cell_id)?;
+                Ok(Arc::new(ShardStateStuff::new(
+                    block_id,
+                    ton_types::Cell::with_cell_impl_arc(cell),
+                )?))
             }
-        })
+            None => Err(ReplaceTransactionError::NotFound.into()),
+        }
     }
 
     fn finalize_cell(

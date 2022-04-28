@@ -36,7 +36,7 @@ rlimit = "0.7.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sha2 = "0.9"
-smallvec = { version = "1.8.0", features = ["serde", "write", "union"] }
+smallvec = { version = "1.8.0", features = ["const_generics", "serde", "write", "union"] }
 sysinfo = { version = "0.23.5", default-features = false }
 thiserror = "1.0"
 tokio = { version = "1.17.0", features = ["sync", "fs", "rt-multi-thread", "parking_lot"] }
@@ -64,9 +64,11 @@ public-ip = "0.2.2"
 log4rs = "1.0"
 serde_yaml = "0.8"
 tokio = { version = "1.16.1", features = ["full"] }
-human-panic = "1.0.3"
 
 [features]
 default = []
 count-cells = ['countme/enable', "ton_types/profile"]
 profile = ["profl/active"]
+
+[profile.release]
+debug = true

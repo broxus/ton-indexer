@@ -23,11 +23,22 @@ impl NodeStateStorage {
     }
 
     pub fn store_background_sync_start(&self, id: &ton_block::BlockIdExt) -> Result<()> {
-        self.db.insert(BACKGROUND_SYNC_LOW, id.to_vec())
+        self.db.insert(BACKGROUND_SYNC_MC_LOW, id.to_vec())
     }
 
     pub fn load_background_sync_start(&self) -> Result<Option<ton_block::BlockIdExt>> {
-        Ok(match self.db.get(BACKGROUND_SYNC_LOW)? {
+        Ok(match self.db.get(BACKGROUND_SYNC_MC_LOW)? {
+            Some(data) => Some(ton_block::BlockIdExt::from_slice(data.as_ref())?),
+            None => None,
+        })
+    }
+
+    pub fn store_background_sync_sc_start(&self, id: &ton_block::BlockIdExt) -> Result<()> {
+        self.db.insert(BACKGROUND_SYNC_SC_LOW, id.to_vec())
+    }
+
+    pub fn load_background_sync_sc_start(&self) -> Result<Option<ton_block::BlockIdExt>> {
+        Ok(match self.db.get(BACKGROUND_SYNC_SC_LOW)? {
             Some(data) => Some(ton_block::BlockIdExt::from_slice(data.as_ref())?),
             None => None,
         })
@@ -125,7 +136,8 @@ enum NodeStateStoreError {
 
 type BlockIdCache = (Mutex<Option<ton_block::BlockIdExt>>, &'static [u8]);
 
-const BACKGROUND_SYNC_LOW: &[u8] = b"background_sync_low";
+const BACKGROUND_SYNC_MC_LOW: &[u8] = b"background_sync_low";
+const BACKGROUND_SYNC_SC_LOW: &[u8] = b"background_sync_sc_low";
 const BACKGROUND_SYNC_HIGH: &[u8] = b"background_sync_high";
 
 const LAST_UPLOADED_ARCHIVE: &[u8] = b"last_uploaded_archive";

@@ -70,10 +70,10 @@ impl Db {
         let mut block_factory = BlockBasedOptions::default();
         block_factory.set_block_cache(&block_cache);
         block_factory.set_block_cache_compressed(&compressed_block_cache);
-        block_factory.set_cache_index_and_filter_blocks(true);
+        //block_factory.set_cache_index_and_filter_blocks(true);
         block_factory.set_pin_l0_filter_and_index_blocks_in_cache(true);
         block_factory.set_pin_top_level_index_and_filter(true);
-        block_factory.set_block_size(32 * 1024); // reducing block size reduces index size
+        // block_factory.set_block_size(32 * 1024); // reducing block size reduces index size
         block_factory.set_data_block_index_type(DataBlockIndexType::BinaryAndHash);
 
         let db = DbBuilder::new(rocksdb_path)
@@ -496,6 +496,19 @@ impl Db {
     pub async fn archive_block(&self, handle: &Arc<BlockHandle>) -> Result<()> {
         profl::span!("move_into_archive", {
             self.archive_manager.move_into_archive(handle).await
+        })
+    }
+
+    pub async fn archive_block_with_data(
+        &self,
+        handle: &Arc<BlockHandle>,
+        block_data: &[u8],
+        block_proof_data: &[u8],
+    ) -> Result<()> {
+        profl::span!("move_into_archive_with_data", {
+            self.archive_manager
+                .move_into_archive_with_data(handle, block_data, block_proof_data)
+                .await
         })
     }
 

@@ -51,6 +51,10 @@ pub mod columns {
     pub struct BlockHandles;
     impl Column for BlockHandles {
         const NAME: &'static str = "block_handles";
+
+        fn options(opts: &mut Options) {
+            opts.optimize_for_point_lookup(10);
+        }
     }
 
     /// Maps seqno to key block id
@@ -102,27 +106,44 @@ pub mod columns {
 
         fn options(opts: &mut Options) {
             opts.set_optimize_filters_for_hits(true);
+            opts.optimize_for_point_lookup(1);
         }
     }
 
     pub struct Prev1;
     impl Column for Prev1 {
         const NAME: &'static str = "prev1";
+
+        fn options(opts: &mut Options) {
+            opts.optimize_for_point_lookup(10);
+        }
     }
 
     pub struct Prev2;
     impl Column for Prev2 {
         const NAME: &'static str = "prev2";
+
+        fn options(opts: &mut Options) {
+            opts.optimize_for_point_lookup(10);
+        }
     }
 
     pub struct Next1;
     impl Column for Next1 {
         const NAME: &'static str = "next1";
+
+        fn options(opts: &mut Options) {
+            opts.optimize_for_point_lookup(10);
+        }
     }
 
     pub struct Next2;
     impl Column for Next2 {
         const NAME: &'static str = "next2";
+
+        fn options(opts: &mut Options) {
+            opts.optimize_for_point_lookup(10);
+        }
     }
 }
 
@@ -210,8 +231,7 @@ impl StoredValue for ton_block::BlockIdExt {
     /// 32 bytes file hash
     const SIZE_HINT: usize = ton_block::ShardIdent::SIZE_HINT + 4 + 32 + 32;
 
-    /// 96 is minimal suitable for `smallvec::Array` and `SIZE_HINT`
-    type OnStackSlice = [u8; 96];
+    type OnStackSlice = [u8; Self::SIZE_HINT];
 
     fn serialize<T: StoredValueBuffer>(&self, buffer: &mut T) {
         self.shard_id.serialize(buffer);

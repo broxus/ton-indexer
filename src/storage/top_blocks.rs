@@ -43,7 +43,7 @@ impl TopBlocks {
 impl StoredValue for TopBlocks {
     const SIZE_HINT: usize = 512;
 
-    type OnStackSlice = [u8; 512];
+    type OnStackSlice = [u8; Self::SIZE_HINT];
 
     fn serialize<T: StoredValueBuffer>(&self, buffer: &mut T) {
         self.target_mc_block.serialize(buffer);

@@ -127,6 +127,7 @@ impl FullNodeOverlayClient {
         block_id: &ton_block::BlockIdExt,
         is_link: bool,
         is_key_block: bool,
+        explicit_neighbour: Option<&Arc<Neighbour>>,
     ) -> Result<Option<BlockProofStuffAug>> {
         let this = &self.0;
 
@@ -139,7 +140,7 @@ impl FullNodeOverlayClient {
                 },
                 None,
                 Some(TIMEOUT_PREPARE),
-                None,
+                explicit_neighbour,
             )
             .await?
         } else {
@@ -150,7 +151,7 @@ impl FullNodeOverlayClient {
                 },
                 None,
                 Some(TIMEOUT_PREPARE),
-                None,
+                explicit_neighbour,
             )
             .await?
         };
@@ -318,7 +319,8 @@ impl FullNodeOverlayClient {
         &self,
         block_id: &ton_block::BlockIdExt,
         max_size: i32,
-    ) -> Result<Vec<ton_block::BlockIdExt>> {
+        neighbour: Option<&Arc<Neighbour>>,
+    ) -> Result<(Vec<ton_block::BlockIdExt>, Arc<Neighbour>)> {
         let this = &self.0;
 
         let query = TLObject::new(ton::rpc::ton_node::GetNextKeyBlockIds {
@@ -326,20 +328,22 @@ impl FullNodeOverlayClient {
             max_size,
         });
 
-        this.send_adnl_query(query, None, None, None)
+        this.send_adnl_query(query, None, None, neighbour)
             .await
-            .and_then(|(ids, _): (ton::ton_node::KeyBlocks, _)| {
-                ids.blocks()
+            .and_then(|(ids, neighbour): (ton::ton_node::KeyBlocks, _)| {
+                let ids = ids
+                    .blocks()
                     .iter()
                     .map(convert_block_id_ext_api2blk)
-                    .collect()
+                    .collect::<Result<_, _>>()?;
+                Ok((ids, neighbour))
             })
     }
 
     pub async fn download_archive(
         &self,
         masterchain_seqno: u32,
-        neighbour: Option<&Arc<tiny_adnl::Neighbour>>,
+        neighbour: Option<&Arc<Neighbour>>,
         output: &mut (dyn Write + Send),
     ) -> Result<ArchiveDownloadStatus> {
         const CHUNK_SIZE: i32 = 1 << 21; // 2 MB

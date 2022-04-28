@@ -62,6 +62,7 @@ pub struct Engine {
     next_block_applying_operations: NextBlockApplyingOperationsPool,
     download_block_operations: DownloadBlockOperationsPool,
     persistent_state_keeper: Arc<PersistentStateKeeper>,
+    shard_states_cache: ShardStateCache,
 
     metrics: Arc<EngineMetrics>,
 }
@@ -154,6 +155,7 @@ impl Engine {
             next_block_applying_operations: OperationsPool::new("next_block_applying_operations"),
             download_block_operations: OperationsPool::new("download_block_operations"),
             persistent_state_keeper: Arc::new(Default::default()),
+            shard_states_cache: ShardStateCache::new(config.shard_state_cache_options),
             metrics: Arc::new(Default::default()),
         });
 
@@ -426,8 +428,9 @@ impl Engine {
                     }
                 };
 
-                if let Err(e) = engine.db.remove_outdated_states(&block_id).await {
-                    log::error!("Failed to GC state: {:?}", e);
+                match engine.db.remove_outdated_states(&block_id).await {
+                    Ok(top_blocks) => engine.shard_states_cache.remove(&top_blocks),
+                    Err(e) => log::error!("Failed to GC state: {e:?}"),
                 }
             }
         });
@@ -457,6 +460,7 @@ impl Engine {
 
     pub fn internal_metrics(&self) -> InternalEngineMetrics {
         InternalEngineMetrics {
+            shard_states_cache_len: self.shard_states_cache.len(),
             shard_states_operations_len: self.shard_states_operations.len(),
             block_applying_operations_len: self.block_applying_operations.len(),
             next_block_applying_operations_len: self.next_block_applying_operations.len(),
@@ -647,6 +651,7 @@ impl Engine {
         is_link: bool,
         is_key_block: bool,
         max_attempts: Option<u32>,
+        neighbour: Option<&Arc<tiny_adnl::Neighbour>>,
     ) -> Result<BlockProofStuffAug> {
         self.create_download_context(
             "create_download_context",
@@ -659,6 +664,7 @@ impl Engine {
             None,
         )
         .await?
+        .with_explicit_neighbour(neighbour)
         .download()
         .await
     }
@@ -666,9 +672,12 @@ impl Engine {
     async fn download_next_key_blocks_ids(
         &self,
         block_id: &ton_block::BlockIdExt,
-    ) -> Result<Vec<ton_block::BlockIdExt>> {
+        neighbour: Option<&Arc<tiny_adnl::Neighbour>>,
+    ) -> Result<(Vec<ton_block::BlockIdExt>, Arc<tiny_adnl::Neighbour>)> {
         let mc_overlay = self.get_masterchain_overlay().await?;
-        mc_overlay.download_next_key_blocks_ids(block_id, 5).await
+        mc_overlay
+            .download_next_key_blocks_ids(block_id, 5, neighbour)
+            .await
     }
 
     async fn download_archive(
@@ -804,7 +813,13 @@ impl Engine {
         &self,
         block_id: &ton_block::BlockIdExt,
     ) -> Result<Arc<ShardStateStuff>> {
+        if let Some(state) = self.shard_states_cache.get(block_id) {
+            return Ok(state);
+        }
+
         let state = Arc::new(self.db.load_shard_state(block_id).await?);
+
+        self.shard_states_cache.set(block_id, || state.clone());
         Ok(state)
     }
 
@@ -813,6 +828,8 @@ impl Engine {
         handle: &Arc<BlockHandle>,
         state: &Arc<ShardStateStuff>,
     ) -> Result<()> {
+        self.shard_states_cache.set(handle.id(), || state.clone());
+
         self.db.store_shard_state(handle, state.as_ref()).await?;
 
         self.shard_states_operations
@@ -1123,6 +1140,8 @@ impl Engine {
             handle,
             block,
             shard_state: Some(shard_state),
+            block_data: None,
+            block_proof_data: None,
         };
 
         if handle.id().shard().is_masterchain() {
@@ -1153,6 +1172,8 @@ impl Engine {
         &self,
         handle: &Arc<BlockHandle>,
         block: &BlockStuff,
+        block_data: &[u8],
+        block_proof_data: &[u8],
     ) -> Result<()> {
         let meta = handle.meta().brief();
 
@@ -1162,6 +1183,8 @@ impl Engine {
             handle,
             block,
             shard_state: None,
+            block_data: Some(block_data),
+            block_proof_data: Some(block_proof_data),
         };
 
         if handle.id().shard().is_masterchain() {
@@ -1248,6 +1271,7 @@ impl Engine {
                 .await?,
             db: self.db.as_ref(),
             downloader,
+            explicit_neighbour: None,
         })
     }
 }
@@ -1276,6 +1300,8 @@ pub struct ProcessBlockContext<'a> {
     handle: &'a Arc<BlockHandle>,
     block: &'a BlockStuff,
     shard_state: Option<&'a ShardStateStuff>,
+    block_data: Option<&'a [u8]>,
+    block_proof_data: Option<&'a [u8]>,
 }
 
 impl ProcessBlockContext<'_> {
@@ -1320,21 +1346,36 @@ impl ProcessBlockContext<'_> {
     }
 
     pub async fn load_block_data(&self) -> Result<Vec<u8>> {
-        self.engine.db.load_block_data_raw(self.handle).await
+        match self.block_data {
+            Some(data) => Ok(data.to_vec()),
+            None => self.engine.db.load_block_data_raw(self.handle).await,
+        }
     }
 
     pub async fn load_block_proof(&self) -> Result<BlockProofStuff> {
-        self.engine
-            .db
-            .load_block_proof(self.handle, !self.is_masterchain())
-            .await
+        match self.block_proof_data {
+            Some(data) => {
+                BlockProofStuff::deserialize(self.handle.id().clone(), data, !self.is_masterchain())
+            }
+            None => {
+                self.engine
+                    .db
+                    .load_block_proof(self.handle, !self.is_masterchain())
+                    .await
+            }
+        }
     }
 
     pub async fn load_block_proof_data(&self) -> Result<Vec<u8>> {
-        self.engine
-            .db
-            .load_block_proof_raw(self.handle, !self.is_masterchain())
-            .await
+        match self.block_proof_data {
+            Some(data) => Ok(data.to_vec()),
+            None => {
+                self.engine
+                    .db
+                    .load_block_proof_raw(self.handle, !self.is_masterchain())
+                    .await
+            }
+        }
     }
 }
 
@@ -1349,6 +1390,7 @@ pub struct EngineMetrics {
 
 #[derive(Debug, Default)]
 pub struct InternalEngineMetrics {
+    pub shard_states_cache_len: usize,
     pub shard_states_operations_len: usize,
     pub block_applying_operations_len: usize,
     pub next_block_applying_operations_len: usize,

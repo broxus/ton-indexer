@@ -593,7 +593,7 @@ struct GcState {
 impl StoredValue for GcState {
     const SIZE_HINT: usize = 512;
 
-    type OnStackSlice = [u8; 512];
+    type OnStackSlice = [u8; Self::SIZE_HINT];
 
     fn serialize<T: StoredValueBuffer>(&self, buffer: &mut T) {
         let (step, blocks) = match &self.step {

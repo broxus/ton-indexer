@@ -35,11 +35,11 @@ pub struct Arguments {
 #[tokio::main]
 async fn main() -> Result<()> {
     let args: Arguments = argh::from_env();
-    human_panic::setup_panic!();
 
     profl::init("metrics")?;
 
-    // countme::enable(true);
+    countme::enable(true);
+
     // tokio::spawn(async {
     //     loop {
     //         let counts = countme::get::<ton_types::Cell>();
@@ -90,6 +90,12 @@ async fn start(node_config: NodeConfig, global_config: GlobalConfig) -> Result<(
 
     let engine = Engine::new(node_config, global_config, subscribers).await?;
     engine.start().await?;
+
+    // loop {
+    //     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    //     let metrics = engine.internal_metrics();
+    //     log::error!("CACHE LEN: {}", metrics.shard_states_cache_len);
+    // }
 
     futures::future::pending().await
 }

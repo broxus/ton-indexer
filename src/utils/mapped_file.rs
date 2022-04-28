@@ -94,3 +94,4 @@ impl Drop for MappedFile {
 }
 
 unsafe impl Send for MappedFile {}
+unsafe impl Sync for MappedFile {}
