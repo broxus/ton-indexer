@@ -817,7 +817,7 @@ impl Engine {
             return Ok(state);
         }
 
-        let state = Arc::new(self.db.load_shard_state(block_id).await?);
+        let state = self.db.load_shard_state(block_id).await?;
 
         self.shard_states_cache.set(block_id, || state.clone());
         Ok(state)

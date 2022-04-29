@@ -3,15 +3,16 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use rocksdb::{
-    BoundColumnFamily, DBIterator, DBPinnableSlice, DBRawIterator, IteratorMode, Options,
+    BoundColumnFamily, Cache, DBIterator, DBPinnableSlice, DBRawIterator, IteratorMode, Options,
     ReadOptions, WriteOptions, DB,
 };
 
 pub trait Column {
     const NAME: &'static str;
 
-    fn options(opts: &mut Options) {
+    fn options(opts: &mut Options, caches: &DbCaches) {
         let _unused = opts;
+        let _unused = caches;
     }
 
     fn write_options(opts: &mut WriteOptions) {
@@ -23,29 +24,51 @@ pub trait Column {
     }
 }
 
-pub struct DbBuilder {
+pub struct DbCaches {
+    pub block_cache: Cache,
+    pub compressed_block_cache: Cache,
+}
+
+impl DbCaches {
+    pub fn with_capacity(mut capacity: usize) -> Result<Self, rocksdb::Error> {
+        const MIN_CAPACITY: usize = 64 * 1024 * 1024;
+
+        let block_cache_capacity = std::cmp::min(capacity * 2 / 3, MIN_CAPACITY);
+        let compressed_block_cache_capacity =
+            std::cmp::min(capacity.saturating_sub(block_cache_capacity), MIN_CAPACITY);
+
+        Ok(Self {
+            block_cache: Cache::new_lru_cache(block_cache_capacity)?,
+            compressed_block_cache: Cache::new_lru_cache(compressed_block_cache_capacity)?,
+        })
+    }
+}
+
+pub struct DbBuilder<'a> {
     path: PathBuf,
     options: Options,
+    caches: &'a DbCaches,
     descriptors: Vec<rocksdb::ColumnFamilyDescriptor>,
 }
 
-impl DbBuilder {
-    pub fn new<P>(path: P) -> Self
+impl<'a> DbBuilder<'a> {
+    pub fn new<P>(path: P, caches: &'a DbCaches) -> Self
     where
         P: AsRef<Path>,
     {
         Self {
             path: path.as_ref().into(),
             options: Default::default(),
+            caches,
             descriptors: Default::default(),
         }
     }
 
     pub fn options<F>(mut self, mut f: F) -> Self
     where
-        F: FnMut(&mut Options),
+        F: FnMut(&mut Options, &DbCaches),
     {
-        f(&mut self.options);
+        f(&mut self.options, self.caches);
         self
     }
 
@@ -54,7 +77,7 @@ impl DbBuilder {
         T: Column,
     {
         let mut opts = Default::default();
-        T::options(&mut opts);
+        T::options(&mut opts, self.caches);
         self.descriptors
             .push(rocksdb::ColumnFamilyDescriptor::new(T::NAME, opts));
         self
@@ -128,16 +151,6 @@ where
     pub fn remove<K: AsRef<[u8]>>(&self, key: K) -> Result<()> {
         let cf = self.get_cf();
         Ok(self.db.delete_cf_opt(&cf, key, &self.write_config)?)
-    }
-
-    pub fn clear(&self) -> Result<()> {
-        self.db.drop_cf(T::NAME)?;
-
-        let mut options = Default::default();
-        T::options(&mut options);
-
-        self.db.create_cf(T::NAME, &options)?;
-        Ok(())
     }
 
     pub fn contains_key<K: AsRef<[u8]>>(&self, key: K) -> Result<bool> {

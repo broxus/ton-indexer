@@ -27,9 +27,11 @@ impl ShardStateCache {
     }
 
     pub fn get(&self, block_id: &ton_block::BlockIdExt) -> Option<Arc<ShardStateStuff>> {
-        self.map
-            .as_ref()
-            .and_then(|map| map.lock().get(block_id).cloned())
+        if let Some(map) = &self.map {
+            map.lock().get(block_id).cloned()
+        } else {
+            None
+        }
     }
 
     pub fn set<F>(&self, block_id: &ton_block::BlockIdExt, factory: F)
@@ -45,6 +47,12 @@ impl ShardStateCache {
         if let Some(map) = &self.map {
             let mut map = map.lock();
             map.retain(|(key, _)| top_blocks.contains(key));
+        }
+    }
+
+    pub fn clear(&self) {
+        if let Some(map) = &self.map {
+            map.lock().clear();
         }
     }
 

@@ -29,9 +29,18 @@ mod top_blocks;
 mod tree;
 
 pub mod columns {
-    use rocksdb::Options;
+    use rocksdb::{
+        BlockBasedIndexType, BlockBasedOptions, DataBlockIndexType, Options, SliceTransform,
+    };
 
-    use super::{archive_data_merge, Column};
+    use super::{archive_data_merge, Column, DbCaches, StoredValue};
+
+    fn default_block_based_table_factory(opts: &mut Options, caches: &DbCaches) {
+        let mut block_factory = BlockBasedOptions::default();
+        block_factory.set_block_cache(&caches.block_cache);
+        block_factory.set_block_cache_compressed(&caches.compressed_block_cache);
+        opts.set_block_based_table_factory(&block_factory);
+    }
 
     /// Stores prepared archives
     /// - Key: `u32 (BE)` (archive id)
@@ -40,7 +49,9 @@ pub mod columns {
     impl Column for Archives {
         const NAME: &'static str = "archives";
 
-        fn options(opts: &mut Options) {
+        fn options(opts: &mut Options, caches: &DbCaches) {
+            default_block_based_table_factory(opts, caches);
+
             opts.set_merge_operator_associative("archive_data_merge", archive_data_merge);
         }
     }
@@ -52,7 +63,9 @@ pub mod columns {
     impl Column for BlockHandles {
         const NAME: &'static str = "block_handles";
 
-        fn options(opts: &mut Options) {
+        fn options(opts: &mut Options, caches: &DbCaches) {
+            default_block_based_table_factory(opts, caches);
+
             opts.optimize_for_point_lookup(10);
         }
     }
@@ -72,7 +85,9 @@ pub mod columns {
     impl Column for PackageEntries {
         const NAME: &'static str = "package_entries";
 
-        fn options(opts: &mut Options) {
+        fn options(opts: &mut Options, caches: &DbCaches) {
+            default_block_based_table_factory(opts, caches);
+
             opts.set_optimize_filters_for_hits(true);
         }
     }
@@ -83,6 +98,15 @@ pub mod columns {
     pub struct ShardStates;
     impl Column for ShardStates {
         const NAME: &'static str = "shard_states";
+
+        fn options(opts: &mut Options, caches: &DbCaches) {
+            default_block_based_table_factory(opts, caches);
+
+            // Root hash and file hash are not needed
+            opts.set_prefix_extractor(SliceTransform::create_fixed_prefix(
+                ton_block::ShardIdent::SIZE_HINT + std::mem::size_of::<u32>(),
+            ))
+        }
     }
 
     /// Stores cells data
@@ -92,7 +116,23 @@ pub mod columns {
     impl Column for Cells {
         const NAME: &'static str = "cells";
 
-        fn options(opts: &mut Options) {
+        fn options(opts: &mut Options, caches: &DbCaches) {
+            opts.set_write_buffer_size(128 * 1024 * 1024);
+            opts.set_prefix_extractor(SliceTransform::create_fixed_prefix(32));
+
+            let mut block_factory = BlockBasedOptions::default();
+            block_factory.set_block_cache(&caches.block_cache);
+            block_factory.set_block_cache_compressed(&caches.compressed_block_cache);
+
+            block_factory.set_index_type(BlockBasedIndexType::HashSearch);
+            block_factory.set_data_block_index_type(DataBlockIndexType::BinaryAndHash);
+
+            block_factory.set_cache_index_and_filter_blocks(true);
+            block_factory.set_pin_l0_filter_and_index_blocks_in_cache(true);
+            block_factory.set_pin_top_level_index_and_filter(true);
+
+            opts.set_block_based_table_factory(&block_factory);
+
             opts.set_optimize_filters_for_hits(true);
         }
     }
@@ -104,44 +144,66 @@ pub mod columns {
     impl Column for NodeStates {
         const NAME: &'static str = "node_states";
 
-        fn options(opts: &mut Options) {
+        fn options(opts: &mut Options, caches: &DbCaches) {
+            default_block_based_table_factory(opts, caches);
+
             opts.set_optimize_filters_for_hits(true);
             opts.optimize_for_point_lookup(1);
         }
     }
 
+    /// Stores connections data
+    /// - Key: `ton_types::UInt256` (block root hash)
+    /// - Value: `ton_block::BlockIdExt (LE)`
     pub struct Prev1;
     impl Column for Prev1 {
         const NAME: &'static str = "prev1";
 
-        fn options(opts: &mut Options) {
+        fn options(opts: &mut Options, caches: &DbCaches) {
+            default_block_based_table_factory(opts, caches);
+
             opts.optimize_for_point_lookup(10);
         }
     }
 
+    /// Stores connections data
+    /// - Key: `ton_types::UInt256` (block root hash)
+    /// - Value: `ton_block::BlockIdExt (LE)`
     pub struct Prev2;
     impl Column for Prev2 {
         const NAME: &'static str = "prev2";
 
-        fn options(opts: &mut Options) {
+        fn options(opts: &mut Options, caches: &DbCaches) {
+            default_block_based_table_factory(opts, caches);
+
             opts.optimize_for_point_lookup(10);
         }
     }
 
+    /// Stores connections data
+    /// - Key: `ton_types::UInt256` (block root hash)
+    /// - Value: `ton_block::BlockIdExt (LE)`
     pub struct Next1;
     impl Column for Next1 {
         const NAME: &'static str = "next1";
 
-        fn options(opts: &mut Options) {
+        fn options(opts: &mut Options, caches: &DbCaches) {
+            default_block_based_table_factory(opts, caches);
+
             opts.optimize_for_point_lookup(10);
         }
     }
 
+    /// Stores connections data
+    /// - Key: `ton_types::UInt256` (block root hash)
+    /// - Value: `ton_block::BlockIdExt (LE)`
     pub struct Next2;
     impl Column for Next2 {
         const NAME: &'static str = "next2";
 
-        fn options(opts: &mut Options) {
+        fn options(opts: &mut Options, caches: &DbCaches) {
+            default_block_based_table_factory(opts, caches);
+
             opts.optimize_for_point_lookup(10);
         }
     }
@@ -182,7 +244,7 @@ impl StoredValueBuffer for Vec<u8> {
     }
 }
 
-impl<T> StoredValueBuffer for smallvec::SmallVec<T>
+impl<T> StoredValueBuffer for SmallVec<T>
 where
     T: smallvec::Array<Item = u8>,
 {

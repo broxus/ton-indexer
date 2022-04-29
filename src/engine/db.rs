@@ -23,8 +23,6 @@ const CURRENT_VERSION: [u8; 3] = [2, 0, 6];
 
 pub struct Db {
     file_db_path: PathBuf,
-    block_cache: Cache,
-    uncompressed_block_cache: Cache,
     block_handle_storage: BlockHandleStorage,
     shard_state_storage: ShardStateStorage,
     archive_manager: ArchiveManager,
@@ -35,6 +33,7 @@ pub struct Db {
     next1_block_db: Tree<columns::Next1>,
     next2_block_db: Tree<columns::Next2>,
     db: Arc<rocksdb::DB>,
+    caches: DbCaches,
 }
 
 pub struct RocksdbStats {
@@ -49,7 +48,7 @@ impl Db {
     pub async fn new<PS, PF>(
         rocksdb_path: PS,
         file_db_path: PF,
-        mut mem_limit: usize,
+        mem_limit: usize,
     ) -> Result<Arc<Self>>
     where
         PS: AsRef<Path>,
@@ -62,28 +61,16 @@ impl Db {
             None => rlimit::getrlimit(Resource::NOFILE).unwrap_or((256, 0)).0,
         };
 
-        let total_blocks_cache_size = (mem_limit * 2) / 3;
-        mem_limit -= total_blocks_cache_size;
-        let block_cache = Cache::new_lru_cache(total_blocks_cache_size / 2)?;
-        let compressed_block_cache = Cache::new_lru_cache(total_blocks_cache_size / 2)?;
+        let caches = DbCaches::with_capacity(mem_limit)?;
 
-        let mut block_factory = BlockBasedOptions::default();
-        block_factory.set_block_cache(&block_cache);
-        block_factory.set_block_cache_compressed(&compressed_block_cache);
-        //block_factory.set_cache_index_and_filter_blocks(true);
-        block_factory.set_pin_l0_filter_and_index_blocks_in_cache(true);
-        block_factory.set_pin_top_level_index_and_filter(true);
-        // block_factory.set_block_size(32 * 1024); // reducing block size reduces index size
-        block_factory.set_data_block_index_type(DataBlockIndexType::BinaryAndHash);
+        let db = DbBuilder::new(rocksdb_path, &caches)
+            .options(|opts, _| {
+                opts.set_level_compaction_dynamic_level_bytes(true);
 
-        let db = DbBuilder::new(rocksdb_path)
-            .options(|opts| {
-                opts.set_block_based_table_factory(&block_factory);
-                opts.set_compaction_style(rocksdb::DBCompactionStyle::Level);
-                opts.optimize_level_style_compaction(mem_limit);
                 // compression opts
                 opts.set_zstd_max_train_bytes(32 * 1024 * 1024);
                 opts.set_compression_type(DBCompressionType::Zstd);
+
                 // io
                 opts.set_max_open_files(limit as i32);
 
@@ -95,9 +82,11 @@ impl Db {
                 // cf
                 opts.create_if_missing(true);
                 opts.create_missing_column_families(true);
+
                 // cpu
-                opts.set_max_background_jobs((num_cpus::get() as i32) / 2);
+                opts.set_max_background_jobs(std::cmp::max((num_cpus::get() as i32) / 2, 2));
                 opts.increase_parallelism(num_cpus::get() as i32);
+
                 // debug
                 // opts.enable_statistics();
                 // opts.set_stats_dump_period_sec(300);
@@ -125,8 +114,6 @@ impl Db {
 
         Ok(Arc::new(Self {
             file_db_path: file_db_path.as_ref().to_path_buf(),
-            block_cache,
-            uncompressed_block_cache: compressed_block_cache,
             block_handle_storage,
             shard_state_storage,
             archive_manager,
@@ -136,6 +123,7 @@ impl Db {
             next1_block_db: Tree::new(&db)?,
             next2_block_db: Tree::new(&db)?,
             db,
+            caches,
         }))
     }
 
@@ -156,21 +144,26 @@ impl Db {
     }
 
     pub fn get_memory_usage_stats(&self) -> Result<RocksdbStats> {
-        let caches = &[&self.block_cache, &self.uncompressed_block_cache];
+        let caches = &[
+            &self.caches.block_cache,
+            &self.caches.compressed_block_cache,
+        ];
         let whole_db_stats =
             rocksdb::perf::get_memory_usage_stats(Some(&[&self.db]), Some(caches))?;
 
-        let uncompressed_stats = self.uncompressed_block_cache.get_usage();
-        let uncompressed_pined_stats = self.uncompressed_block_cache.get_pinned_usage();
-        let compressed_stats = self.block_cache.get_usage();
-        let compressed_pined_stats = self.block_cache.get_pinned_usage();
+        let uncompressed_block_cache_usage = self.caches.block_cache.get_usage();
+        let uncompressed_block_cache_pined_usage = self.caches.block_cache.get_pinned_usage();
+
+        let compressed_block_cache_usage = self.caches.compressed_block_cache.get_usage();
+        let compressed_block_cache_pined_usage =
+            self.caches.compressed_block_cache.get_pinned_usage();
 
         Ok(RocksdbStats {
             whole_db_stats,
-            uncompressed_block_cache_usage: uncompressed_stats,
-            uncompressed_block_cache_pined_usage: uncompressed_pined_stats,
-            compressed_block_cache_usage: compressed_stats,
-            compressed_block_cache_pined_usage: compressed_pined_stats,
+            uncompressed_block_cache_usage,
+            uncompressed_block_cache_pined_usage,
+            compressed_block_cache_usage,
+            compressed_block_cache_pined_usage,
         })
     }
 
@@ -415,11 +408,12 @@ impl Db {
     pub async fn load_shard_state(
         &self,
         block_id: &ton_block::BlockIdExt,
-    ) -> Result<ShardStateStuff> {
+    ) -> Result<Arc<ShardStateStuff>> {
         ShardStateStuff::new(
             block_id.clone(),
             self.shard_state_storage.load_state(block_id).await?,
         )
+        .map(Arc::new)
     }
 
     pub fn shard_state_storage(&self) -> &ShardStateStorage {

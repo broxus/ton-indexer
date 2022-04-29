@@ -201,12 +201,6 @@ impl CellStorage {
         self.cells_cache.remove(hash);
     }
 
-    pub fn clear(&self) -> Result<()> {
-        self.cells.clear()?;
-        self.cells_cache.clear();
-        Ok(())
-    }
-
     fn prepare_tree_of_cells(
         &self,
         marker: u8,
