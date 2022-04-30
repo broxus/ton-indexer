@@ -93,7 +93,7 @@ impl ArchiveDownloader {
         let next_index = self.next_mc_seq_no;
         let mut has_gap = false;
 
-        let block_maps = loop {
+        let (block_maps, neighbour) = loop {
             // Force fill gap
             if has_gap {
                 self.start_downloading(next_index);
@@ -111,9 +111,9 @@ impl ArchiveDownloader {
                         // Check lowest id without taking inner data
                         if let Some(maps) = &mut *data {
                             match maps.preload(next_index, &self.last_blocks) {
-                                Ok(maps) => {
+                                Ok(PreloadedBlockMaps { block_maps, .. }) => {
                                     if matches!(
-                                        maps.lowest_mc_id(),
+                                        block_maps.lowest_mc_id(),
                                         Some(id) if id.seq_no > next_index
                                     ) {
                                         has_gap = true;
@@ -140,9 +140,9 @@ impl ArchiveDownloader {
                         PeekMut::pop(item);
 
                         match data.loaded {
-                            Some(data) => {
+                            Some(block_maps) => {
                                 // Result item was found
-                                break data;
+                                break (block_maps, data.neighbour);
                             }
                             None => {
                                 log::error!("Retrying invalid archive for mc block {next_index}");
@@ -186,6 +186,7 @@ impl ArchiveDownloader {
         Some(ReceivedBlockMaps {
             downloader: self,
             index: next_index,
+            neighbour,
             block_maps,
             accepted: false,
         })
@@ -206,8 +207,9 @@ impl ArchiveDownloader {
 
         // Spawn downloader
         tokio::spawn(async move {
-            if let Some(writer) = download_archive(&ctx, mc_block_seq_no).await {
+            if let Some((writer, neighbour)) = download_archive(&ctx, mc_block_seq_no).await {
                 *block_maps.lock() = Some(BlockMapsData {
+                    neighbour: Some(neighbour),
                     writer: Some(writer),
                     loaded: None,
                 });
@@ -280,14 +282,22 @@ impl Ord for PendingBlockMaps {
 }
 
 struct BlockMapsData {
+    neighbour: Option<Arc<Neighbour>>,
     loaded: Option<Arc<BlockMaps>>,
     writer: Option<ArchiveWriter>,
 }
 
 impl BlockMapsData {
-    fn preload(&mut self, next_index: u32, edge: &Option<BlockMapsEdge>) -> Result<Arc<BlockMaps>> {
+    fn preload(
+        &mut self,
+        next_index: u32,
+        edge: &Option<BlockMapsEdge>,
+    ) -> Result<PreloadedBlockMaps> {
         if let Some(loaded) = &self.loaded {
-            return Ok(loaded.clone());
+            return Ok(PreloadedBlockMaps {
+                block_maps: loaded.clone(),
+                neighbour: self.neighbour.clone(),
+            });
         }
 
         if let Some(writer) = self.writer.take() {
@@ -295,16 +305,25 @@ impl BlockMapsData {
                 .parse_block_maps()
                 .context("Failed to load block maps")?;
             block_maps.check(next_index, edge)?;
-            return Ok(self.loaded.insert(block_maps).clone());
+            return Ok(PreloadedBlockMaps {
+                block_maps: self.loaded.insert(block_maps).clone(),
+                neighbour: self.neighbour.clone(),
+            });
         }
 
         Err(ArchiveDownloaderError::EmptyBlockMapsData.into())
     }
 }
 
+struct PreloadedBlockMaps {
+    block_maps: Arc<BlockMaps>,
+    neighbour: Option<Arc<Neighbour>>,
+}
+
 pub struct ReceivedBlockMaps<'a> {
     downloader: &'a mut ArchiveDownloader,
     index: u32,
+    neighbour: Option<Arc<Neighbour>>,
     block_maps: Arc<BlockMaps>,
     accepted: bool,
 }
@@ -341,12 +360,20 @@ impl DerefMut for ReceivedBlockMaps<'_> {
 impl Drop for ReceivedBlockMaps<'_> {
     fn drop(&mut self) {
         if !self.accepted {
+            // Remove peer from good peers
+            if let Some(neighbour) = &self.neighbour {
+                self.downloader.ctx.good_peers.remove(neighbour);
+            }
+
             self.downloader.start_downloading(self.index);
         }
     }
 }
 
-async fn download_archive(ctx: &DownloaderContext, mc_seq_no: u32) -> Option<ArchiveWriter> {
+async fn download_archive(
+    ctx: &DownloaderContext,
+    mc_seq_no: u32,
+) -> Option<(ArchiveWriter, Arc<Neighbour>)> {
     tokio::pin!(
         let signal = ctx.cancellation_token.cancelled();
     );
@@ -366,13 +393,13 @@ async fn download_archive(ctx: &DownloaderContext, mc_seq_no: u32) -> Option<Arc
 
         match result {
             Ok(ArchiveDownloadStatus::Downloaded { neighbour, len }) => {
-                ctx.good_peers.add(neighbour);
+                ctx.good_peers.add(neighbour.clone());
                 log::info!(
                     "sync: Downloaded archive for block {mc_seq_no}, size {} bytes. Took: {} ms",
                     len,
                     start.elapsed().as_millis()
                 );
-                break Some(writer);
+                break Some((writer, neighbour));
             }
             Ok(ArchiveDownloadStatus::NotFound) => {
                 if let Some(neighbour) = &good_peer {

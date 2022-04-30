@@ -52,8 +52,8 @@ where
         }
     }
 
-    pub fn to_vec(&self) -> SmallVec<[u8; 96]> {
-        let mut result = SmallVec::with_capacity(84);
+    pub fn to_vec(&self) -> SmallVec<[u8; ton_block::BlockIdExt::SIZE_HINT + 1]> {
+        let mut result = SmallVec::with_capacity(ton_block::BlockIdExt::SIZE_HINT + 1);
         let (block_id, ty) = match self {
             Self::Block(id) => (id, 0),
             Self::Proof(id) => (id, 1),
@@ -61,7 +61,7 @@ where
         };
 
         block_id.borrow().serialize(&mut result);
-        result.extend_from_slice(&[ty]);
+        result.push(ty);
         result
     }
 }

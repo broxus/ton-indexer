@@ -64,7 +64,17 @@ pub mod columns {
         const NAME: &'static str = "block_handles";
 
         fn options(opts: &mut Options, caches: &DbCaches) {
-            default_block_based_table_factory(opts, caches);
+            opts.set_write_buffer_size(128 * 1024 * 1024);
+            opts.set_prefix_extractor(SliceTransform::create_fixed_prefix(32));
+
+            let mut block_factory = BlockBasedOptions::default();
+            block_factory.set_block_cache(&caches.block_cache);
+            block_factory.set_block_cache_compressed(&caches.compressed_block_cache);
+
+            block_factory.set_index_type(BlockBasedIndexType::HashSearch);
+            block_factory.set_data_block_index_type(DataBlockIndexType::BinaryAndHash);
+
+            opts.set_block_based_table_factory(&block_factory);
 
             opts.optimize_for_point_lookup(10);
         }
@@ -79,7 +89,7 @@ pub mod columns {
     }
 
     /// Maps package entry id to entry data
-    /// - Key: `PackageEntryId<I>, where I: Borrow<ton_block::BlockIdExt>`
+    /// - Key: `ton_block::BlockIdExt, package type (1 byte)`
     /// - Value: `Vec<u8>`
     pub struct PackageEntries;
     impl Column for PackageEntries {
@@ -87,6 +97,11 @@ pub mod columns {
 
         fn options(opts: &mut Options, caches: &DbCaches) {
             default_block_based_table_factory(opts, caches);
+
+            // Root hash, file hash and type are not needed
+            opts.set_prefix_extractor(SliceTransform::create_fixed_prefix(
+                ton_block::ShardIdent::SIZE_HINT + std::mem::size_of::<u32>(),
+            ));
 
             opts.set_optimize_filters_for_hits(true);
         }
@@ -126,10 +141,6 @@ pub mod columns {
 
             block_factory.set_index_type(BlockBasedIndexType::HashSearch);
             block_factory.set_data_block_index_type(DataBlockIndexType::BinaryAndHash);
-
-            block_factory.set_cache_index_and_filter_blocks(true);
-            block_factory.set_pin_l0_filter_and_index_blocks_in_cache(true);
-            block_factory.set_pin_top_level_index_and_filter(true);
 
             opts.set_block_based_table_factory(&block_factory);
 

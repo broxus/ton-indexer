@@ -89,7 +89,7 @@ impl Db {
 
                 // debug
                 // opts.enable_statistics();
-                // opts.set_stats_dump_period_sec(300);
+                // opts.set_stats_dump_period_sec(30);
             })
             .column::<columns::Archives>()
             .column::<columns::BlockHandles>()
