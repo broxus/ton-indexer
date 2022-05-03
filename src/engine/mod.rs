@@ -184,13 +184,13 @@ impl Engine {
 
         let (_, masterchain_overlay_id) = self
             .network
-            .compute_overlay_id(ton_block::MASTERCHAIN_ID, ton_block::SHARD_FULL)?;
+            .compute_overlay_id(ton_block::MASTERCHAIN_ID, ton_block::SHARD_FULL);
         self.network
             .add_subscriber(masterchain_overlay_id, service.clone());
 
         let (_, basechain_overlay_id) = self
             .network
-            .compute_overlay_id(ton_block::BASE_WORKCHAIN_ID, ton_block::SHARD_FULL)?;
+            .compute_overlay_id(ton_block::BASE_WORKCHAIN_ID, ton_block::SHARD_FULL);
         self.network.add_subscriber(basechain_overlay_id, service);
         // Boot
         let BootData {
@@ -427,7 +427,8 @@ impl Engine {
         let overlay = self
             .get_full_node_overlay(to.workchain_id, to.prefix)
             .await?;
-        overlay.broadcast_external_message(data).await
+        overlay.broadcast_external_message(data).await;
+        Ok(())
     }
 
     pub fn get_archives(
@@ -472,7 +473,7 @@ impl Engine {
         workchain: i32,
         shard: u64,
     ) -> Result<FullNodeOverlayClient> {
-        let (full_id, short_id) = self.network.compute_overlay_id(workchain, shard)?;
+        let (full_id, short_id) = self.network.compute_overlay_id(workchain, shard);
         self.network.get_overlay(full_id, short_id).await
     }
 

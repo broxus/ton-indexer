@@ -77,8 +77,8 @@ impl NodeNetwork {
         let masterchain_overlay_id = overlay.compute_overlay_id(
             masterchain_zero_state_id.shard().workchain_id(),
             masterchain_zero_state_id.shard().shard_prefix_with_tag() as i64,
-        )?;
-        let masterchain_overlay_short_id = masterchain_overlay_id.compute_short_id()?;
+        );
+        let masterchain_overlay_short_id = masterchain_overlay_id.compute_short_id();
 
         let dht_key = adnl.key_by_tag(Self::TAG_DHT_KEY)?;
         log::info!("DHT adnl id: {}", dht_key.id());
@@ -165,10 +165,10 @@ impl NodeNetwork {
         &self,
         workchain: i32,
         shard: u64,
-    ) -> Result<(OverlayIdFull, OverlayIdShort)> {
-        let full_id = self.overlay.compute_overlay_id(workchain, shard as i64)?;
-        let short_id = full_id.compute_short_id()?;
-        Ok((full_id, short_id))
+    ) -> (OverlayIdFull, OverlayIdShort) {
+        let full_id = self.overlay.compute_overlay_id(workchain, shard as i64);
+        let short_id = full_id.compute_short_id();
+        (full_id, short_id)
     }
 
     pub async fn get_overlay(
@@ -203,8 +203,8 @@ impl NodeNetwork {
     ) -> Result<FullNodeOverlayClient> {
         let (shard, _) = self
             .overlay
-            .add_public_overlay(&overlay_id, self.overlay_shard_options)?;
-        let node = shard.sign_local_node()?;
+            .add_public_overlay(&overlay_id, self.overlay_shard_options);
+        let node = shard.sign_local_node();
 
         start_broadcasting_our_node(
             self.working_state.clone(),
@@ -416,16 +416,15 @@ async fn process_overlay_peers(neighbours: &Neighbours, dht: &Arc<DhtNode>) -> R
     let peers = overlay_shard.take_new_peers();
 
     for peer in peers.into_values() {
-        let peer_id = match AdnlNodeIdFull::try_from(&peer.id)
-            .and_then(|full_id| full_id.compute_short_id())
-        {
-            Ok(peer_id) if !neighbours.contains_overlay_peer(&peer_id) => peer_id,
-            Ok(_) => continue,
-            Err(e) => {
-                log::warn!("Invalid peer id: {}", e);
-                continue;
-            }
-        };
+        let peer_id =
+            match AdnlNodeIdFull::try_from(&peer.id).map(|full_id| full_id.compute_short_id()) {
+                Ok(peer_id) if !neighbours.contains_overlay_peer(&peer_id) => peer_id,
+                Ok(_) => continue,
+                Err(e) => {
+                    log::warn!("Invalid peer id: {}", e);
+                    continue;
+                }
+            };
 
         let ip = match dht.find_address(&peer_id).await {
             Ok((ip, _)) => ip,
