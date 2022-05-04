@@ -20,16 +20,15 @@ use crate::utils::*;
 pub struct FullNodeOverlayClient(pub Arc<OverlayClient>);
 
 impl FullNodeOverlayClient {
-    pub async fn broadcast_external_message(&self, message: &[u8]) -> Result<()> {
+    pub async fn broadcast_external_message(&self, message: &[u8]) {
         let this = &self.0;
 
         let broadcast = serialize_boxed(ton::ton_node::broadcast::ExternalMessageBroadcast {
             message: ton::ton_node::externalmessage::ExternalMessage {
                 data: ton::bytes(message.to_vec()),
             },
-        })?;
-        this.broadcast(broadcast, None)?;
-        Ok(())
+        });
+        this.broadcast(broadcast, None);
     }
 
     pub async fn check_persistent_state(
