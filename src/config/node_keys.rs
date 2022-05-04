@@ -71,15 +71,8 @@ impl NodeKeys {
     }
 
     pub fn build_keystore(&self) -> Result<AdnlKeystore> {
-        AdnlKeystore::from_tagged_keys(vec![
-            (make_key(&self.dht_key), 1),
-            (make_key(&self.overlay_key), 2),
-        ])
+        AdnlKeystore::from_tagged_keys([(self.dht_key, 1), (self.overlay_key, 2)])
     }
-}
-
-fn make_key(key: &[u8; 32]) -> ed25519_dalek::SecretKey {
-    ed25519_dalek::SecretKey::from_bytes(key).expect("Shouldn't fail")
 }
 
 mod serde_key {
