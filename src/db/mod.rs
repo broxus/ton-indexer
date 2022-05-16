@@ -419,9 +419,7 @@ impl Db {
     }
 
     pub async fn archive_block(&self, handle: &Arc<BlockHandle>) -> Result<()> {
-        profl::span!("move_into_archive", {
-            self.archive_manager.move_into_archive(handle).await
-        })
+        self.archive_manager.move_into_archive(handle).await
     }
 
     pub fn archive_block_with_data(

@@ -36,8 +36,6 @@ pub struct Arguments {
 async fn main() -> Result<()> {
     let args: Arguments = argh::from_env();
 
-    profl::init("metrics")?;
-
     countme::enable(true);
 
     // tokio::spawn(async {

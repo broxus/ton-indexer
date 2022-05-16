@@ -29,7 +29,6 @@ num-traits = "0.2"
 num_cpus = "1.13.1"
 parking_lot = { version = "0.12.0", features = ["hardware-lock-elision"] }
 pin-project-lite = "0.2.8"
-profl = "0.1"
 rand = "0.8"
 rlimit = "0.7.0"
 rustc-hash = "1.1.0"
@@ -67,7 +66,6 @@ tokio = { version = "1.16.1", features = ["full"] }
 [features]
 default = []
 count-cells = ['countme/enable', "ton_types/profile"]
-profile = ["profl/active"]
 
 [profile.release]
 debug = true

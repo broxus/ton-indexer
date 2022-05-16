@@ -32,15 +32,9 @@ pub fn apply_block<'a>(
             return Err(ApplyBlockError::BlockIdMismatch.into());
         }
 
-        let (prev1_id, prev2_id) = profl::span!("ensure_prev_blocks_downloaded", {
-            let (prev1_id, prev2_id) = block.construct_prev_id()?;
-
-            ensure_prev_blocks_downloaded(
-                engine, &prev1_id, &prev2_id, mc_seq_no, pre_apply, depth,
-            )
+        let (prev1_id, prev2_id) = block.construct_prev_id()?;
+        ensure_prev_blocks_downloaded(engine, &prev1_id, &prev2_id, mc_seq_no, pre_apply, depth)
             .await?;
-            (prev1_id, prev2_id)
-        });
 
         let shard_state = if handle.meta().has_state() {
             engine.load_state(handle.id()).await?
@@ -55,10 +49,7 @@ pub fn apply_block<'a>(
                 .await?;
 
             if block.id().is_masterchain() {
-                profl::span!(
-                    "store_last_applied_mc_block_id",
-                    engine.store_last_applied_mc_block_id(block.id())?
-                );
+                engine.store_last_applied_mc_block_id(block.id())?;
 
                 // TODO: update shard blocks
 
@@ -162,28 +153,18 @@ async fn compute_and_store_shard_state(
                 return Err(ApplyBlockError::InvalidMasterchainBlockSequence.into());
             }
 
-            let left = profl::span!(
-                "wait_prev_shard_state_root_left",
-                engine
-                    .wait_state(prev1_id, None, true)
-                    .await?
-                    .root_cell()
-                    .clone()
-            );
+            let left = engine
+                .wait_state(prev1_id, None, true)
+                .await?
+                .root_cell()
+                .clone();
+            let right = engine
+                .wait_state(prev2_id, None, true)
+                .await?
+                .root_cell()
+                .clone();
 
-            let right = profl::span!(
-                "wait_prev_shard_state_root_right",
-                engine
-                    .wait_state(prev2_id, None, true)
-                    .await?
-                    .root_cell()
-                    .clone()
-            );
-
-            profl::span!(
-                "construct_split_root",
-                ShardStateStuff::construct_split_root(left, right)?
-            )
+            ShardStateStuff::construct_split_root(left, right)?
         }
         None => engine
             .wait_state(prev1_id, None, true)
@@ -192,20 +173,13 @@ async fn compute_and_store_shard_state(
             .clone(),
     };
 
-    let merkle_update = profl::span!(
-        "make_state_merkle_update",
-        block.block().read_state_update()?
-    );
+    let merkle_update = block.block().read_state_update()?;
 
     let shard_state = tokio::task::spawn_blocking({
         let block_id = block.id().clone();
         move || -> Result<Arc<ShardStateStuff>> {
             let shard_state_root = merkle_update.apply_for(&prev_shard_state_root)?;
-
-            profl::span!(
-                "make_shard_state_stuff",
-                Ok(Arc::new(ShardStateStuff::new(block_id, shard_state_root)?))
-            )
+            Ok(Arc::new(ShardStateStuff::new(block_id, shard_state_root)?))
         }
     })
     .await??;
