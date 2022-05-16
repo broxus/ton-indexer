@@ -1,37 +1,48 @@
-use std::ops::RangeBounds;
-/// This file is a modified copy of the file from https://github.com/tonlabs/ton-labs-node
-///
-/// Changes:
-/// - replaced old `failure` crate with `anyhow`
-/// - slightly changed db structure
-///
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use anyhow::Context;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use rlimit::Resource;
 use rocksdb::perf::MemoryUsageStats;
-use rocksdb::{BlockBasedOptions, Cache, DBCompressionType, DataBlockIndexType};
+use rocksdb::DBCompressionType;
 use ton_block::HashmapAugType;
 
-use crate::storage::*;
+pub use self::block_connection_storage::*;
+pub use self::block_handle::*;
+use self::block_handle_storage::*;
+pub use self::block_meta::*;
+use self::block_storage::*;
+use self::node_state_storage::*;
+pub use self::runtime_storage::*;
+use self::shard_state_storage::*;
+use self::tree::*;
+use crate::config::*;
 use crate::utils::*;
-use crate::BlocksGcKind;
+
+mod block_connection_storage;
+mod block_handle;
+mod block_handle_storage;
+mod block_meta;
+mod block_storage;
+mod cell_storage;
+mod columns;
+mod node_state_storage;
+mod persistent_state_keeper;
+mod runtime_storage;
+mod shard_state_storage;
+mod tree;
 
 const CURRENT_VERSION: [u8; 3] = [2, 0, 6];
 
 pub struct Db {
     file_db_path: PathBuf,
     block_handle_storage: BlockHandleStorage,
+    block_connection_storage: BlockConnectionStorage,
     shard_state_storage: ShardStateStorage,
-    archive_manager: ArchiveManager,
+    archive_manager: BlockStorage,
     node_state_storage: NodeStateStorage,
+    runtime_storage: RuntimeStorage,
 
-    prev1_block_db: Tree<columns::Prev1>,
-    prev2_block_db: Tree<columns::Prev2>,
-    next1_block_db: Tree<columns::Next1>,
-    next2_block_db: Tree<columns::Next2>,
     db: Arc<rocksdb::DB>,
     caches: DbCaches,
 }
@@ -109,19 +120,19 @@ impl Db {
 
         let block_handle_storage = BlockHandleStorage::with_db(&db)?;
         let shard_state_storage = ShardStateStorage::with_db(&db, &file_db_path).await?;
-        let archive_manager = ArchiveManager::with_db(&db)?;
-        let node_state_storage = NodeStateStorage::new(&db)?;
+        let archive_manager = BlockStorage::with_db(&db)?;
+        let node_state_storage = NodeStateStorage::with_db(&db)?;
+        let block_connection_storage = BlockConnectionStorage::with_db(&db)?;
+        let runtime_storage = RuntimeStorage::default();
 
         Ok(Arc::new(Self {
             file_db_path: file_db_path.as_ref().to_path_buf(),
             block_handle_storage,
+            block_connection_storage,
             shard_state_storage,
             archive_manager,
             node_state_storage,
-            prev1_block_db: Tree::new(&db)?,
-            prev2_block_db: Tree::new(&db)?,
-            next1_block_db: Tree::new(&db)?,
-            next2_block_db: Tree::new(&db)?,
+            runtime_storage,
             db,
             caches,
         }))
@@ -130,6 +141,26 @@ impl Db {
     #[inline(always)]
     pub fn file_db_path(&self) -> &Path {
         &self.file_db_path
+    }
+
+    #[inline(always)]
+    pub fn block_handle_storage(&self) -> &BlockHandleStorage {
+        &self.block_handle_storage
+    }
+
+    #[inline(always)]
+    pub fn block_connection_storage(&self) -> &BlockConnectionStorage {
+        &self.block_connection_storage
+    }
+
+    #[inline(always)]
+    pub fn shard_state_storage(&self) -> &ShardStateStorage {
+        &self.shard_state_storage
+    }
+
+    #[inline(always)]
+    pub fn runtime_storage(&self) -> &RuntimeStorage {
+        &self.runtime_storage
     }
 
     #[inline(always)]
@@ -167,55 +198,12 @@ impl Db {
         })
     }
 
-    pub fn create_or_load_block_handle(
-        &self,
-        block_id: &ton_block::BlockIdExt,
-        block: Option<&ton_block::Block>,
-        utime: Option<u32>,
-    ) -> Result<(Arc<BlockHandle>, HandleCreationStatus)> {
-        if let Some(handle) = self.load_block_handle(block_id)? {
-            return Ok((handle, HandleCreationStatus::Fetched));
-        }
-
-        let meta = match (block, utime) {
-            (Some(block), _) => BlockMeta::from_block(block)?,
-            (None, Some(utime)) if block_id.seq_no == 0 => BlockMeta::with_data(0, utime, 0),
-            _ if block_id.seq_no == 0 => return Err(DbError::FailedToCreateZerostateHandle.into()),
-            _ => return Err(DbError::FailedToCreateBlockHandle.into()),
-        };
-
-        if let Some(handle) = self
-            .block_handle_storage
-            .create_handle(block_id.clone(), meta)?
-        {
-            return Ok((handle, HandleCreationStatus::Created));
-        }
-
-        if let Some(handle) = self.load_block_handle(block_id)? {
-            return Ok((handle, HandleCreationStatus::Fetched));
-        }
-
-        Err(DbError::FailedToCreateBlockHandle.into())
-    }
-
-    pub fn load_block_handle(
-        &self,
-        block_id: &ton_block::BlockIdExt,
-    ) -> Result<Option<Arc<BlockHandle>>> {
-        self.block_handle_storage.load_handle(block_id)
-    }
-
-    pub fn load_key_block_handle(&self, seq_no: u32) -> Result<Arc<BlockHandle>> {
-        self.block_handle_storage.load_key_block_handle(seq_no)
-    }
-
-    pub fn key_block_iterator(&self, since: Option<u32>) -> KeyBlocksIterator<'_> {
-        self.block_handle_storage.key_block_iterator(since)
-    }
-
     pub async fn store_block_data(&self, block: &BlockStuffAug) -> Result<StoreBlockResult> {
-        let (handle, status) =
-            self.create_or_load_block_handle(block.id(), Some(block.block()), None)?;
+        let (handle, status) = self.block_handle_storage.create_or_load_handle(
+            block.id(),
+            Some(block.block()),
+            None,
+        )?;
 
         let archive_id = PackageEntryId::Block(handle.id());
         let mut updated = false;
@@ -230,6 +218,11 @@ impl Db {
                     updated = true;
                 }
             }
+        }
+
+        if handle.id().shard_id.is_masterchain() && handle.is_key_block() {
+            self.runtime_storage
+                .update_last_known_key_block_seqno(handle.id().seq_no);
         }
 
         Ok(StoreBlockResult {
@@ -281,7 +274,7 @@ impl Db {
 
         let (handle, status) = match handle {
             Some(handle) => (handle, HandleCreationStatus::Fetched),
-            None => self.create_or_load_block_handle(
+            None => self.block_handle_storage.create_or_load_handle(
                 block_id,
                 Some(&proof.virtualize_block()?.0),
                 None,
@@ -416,68 +409,6 @@ impl Db {
         .map(Arc::new)
     }
 
-    pub fn shard_state_storage(&self) -> &ShardStateStorage {
-        &self.shard_state_storage
-    }
-
-    pub fn store_block_connection(
-        &self,
-        handle: &Arc<BlockHandle>,
-        direction: BlockConnection,
-        connected_block_id: &ton_block::BlockIdExt,
-    ) -> Result<()> {
-        // Use strange match because all columns have different types
-        let store = match direction {
-            BlockConnection::Prev1 => {
-                if handle.meta().has_prev1() {
-                    return Ok(());
-                }
-                store_block_connection_impl(&self.prev1_block_db, handle, connected_block_id)?;
-                handle.meta().set_has_prev1()
-            }
-            BlockConnection::Prev2 => {
-                if handle.meta().has_prev2() {
-                    return Ok(());
-                }
-                store_block_connection_impl(&self.prev2_block_db, handle, connected_block_id)?;
-                handle.meta().set_has_prev2()
-            }
-            BlockConnection::Next1 => {
-                if handle.meta().has_next1() {
-                    return Ok(());
-                }
-                store_block_connection_impl(&self.next1_block_db, handle, connected_block_id)?;
-                handle.meta().set_has_next1()
-            }
-            BlockConnection::Next2 => {
-                if handle.meta().has_next2() {
-                    return Ok(());
-                }
-                store_block_connection_impl(&self.next2_block_db, handle, connected_block_id)?;
-                handle.meta().set_has_next2()
-            }
-        };
-
-        if store {
-            self.block_handle_storage.store_handle(handle)?;
-        }
-
-        Ok(())
-    }
-
-    pub fn load_block_connection(
-        &self,
-        block_id: &ton_block::BlockIdExt,
-        direction: BlockConnection,
-    ) -> Result<ton_block::BlockIdExt> {
-        match direction {
-            BlockConnection::Prev1 => load_block_connection_impl(&self.prev1_block_db, block_id),
-            BlockConnection::Prev2 => load_block_connection_impl(&self.prev2_block_db, block_id),
-            BlockConnection::Next1 => load_block_connection_impl(&self.next1_block_db, block_id),
-            BlockConnection::Next2 => load_block_connection_impl(&self.next2_block_db, block_id),
-        }
-    }
-
     pub fn store_block_applied(&self, handle: &Arc<BlockHandle>) -> Result<bool> {
         if handle.meta().set_is_applied() {
             self.block_handle_storage.store_handle(handle)?;
@@ -493,17 +424,14 @@ impl Db {
         })
     }
 
-    pub async fn archive_block_with_data(
+    pub fn archive_block_with_data(
         &self,
         handle: &Arc<BlockHandle>,
         block_data: &[u8],
         block_proof_data: &[u8],
     ) -> Result<()> {
-        profl::span!("move_into_archive_with_data", {
-            self.archive_manager
-                .move_into_archive_with_data(handle, block_data, block_proof_data)
-                .await
-        })
+        self.archive_manager
+            .move_into_archive_with_data(handle, block_data, block_proof_data)
     }
 
     pub fn find_last_key_block(&self) -> Result<Arc<BlockHandle>> {
@@ -536,7 +464,7 @@ impl Db {
     #[allow(unused)]
     pub fn get_archives(
         &self,
-        range: impl RangeBounds<u32> + 'static,
+        range: impl std::ops::RangeBounds<u32> + 'static,
     ) -> impl Iterator<Item = (u32, Vec<u8>)> + '_ {
         self.archive_manager.get_archives(range)
     }
@@ -562,7 +490,7 @@ impl Db {
         &self,
         mc_block_id: &ton_block::BlockIdExt,
     ) -> Result<TopBlocks> {
-        let top_blocks = match self.load_block_handle(mc_block_id)? {
+        let top_blocks = match self.block_handle_storage.load_handle(mc_block_id)? {
             Some(handle) => {
                 let state = self
                     .load_shard_state(handle.id())
@@ -704,55 +632,10 @@ fn check_version(db: &Arc<rocksdb::DB>) -> Result<()> {
     }
 }
 
-#[inline]
-fn store_block_connection_impl<T>(
-    db: &Tree<T>,
-    handle: &BlockHandle,
-    block_id: &ton_block::BlockIdExt,
-) -> Result<()>
-where
-    T: Column,
-{
-    db.insert(
-        handle.id().root_hash.as_slice(),
-        write_block_id_le(block_id),
-    )
-}
-
-#[inline]
-fn load_block_connection_impl<T>(
-    db: &Tree<T>,
-    block_id: &ton_block::BlockIdExt,
-) -> Result<ton_block::BlockIdExt>
-where
-    T: Column,
-{
-    match db.get(block_id.root_hash.as_slice())? {
-        Some(value) => {
-            read_block_id_le(value.as_ref()).ok_or_else(|| DbError::InvalidBlockId.into())
-        }
-        None => Err(DbError::NotFound.into()),
-    }
-}
-
 pub struct StoreBlockResult {
     pub handle: Arc<BlockHandle>,
     pub updated: bool,
     pub new: bool,
-}
-
-#[derive(Debug, Copy, Clone, Eq, PartialEq)]
-pub enum BlockConnection {
-    Prev1,
-    Prev2,
-    Next1,
-    Next2,
-}
-
-#[derive(Debug, Copy, Clone, Eq, PartialEq)]
-pub enum HandleCreationStatus {
-    Created,
-    Fetched,
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -761,14 +644,6 @@ enum DbError {
     IncompatibleDbVersion,
     #[error("Existing DB version not found")]
     VersionNotFound,
-    #[error("Not found")]
-    NotFound,
-    #[error("Invalid block id")]
-    InvalidBlockId,
-    #[error("Failed to create zero state block handle")]
-    FailedToCreateZerostateHandle,
-    #[error("Failed to create block handle")]
-    FailedToCreateBlockHandle,
     #[error("Block handle id mismatch")]
     BlockHandleIdMismatch,
     #[error("Block proof id mismatch")]

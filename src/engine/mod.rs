@@ -16,23 +16,18 @@ use tiny_adnl::utils::*;
 use tiny_adnl::{NeighboursMetrics, OverlayShardMetrics};
 use ton_api::ton;
 
-pub use db::{DbMetrics, RocksdbStats};
 use global_config::GlobalConfig;
 
 use crate::config::*;
+use crate::db::*;
 use crate::network::*;
-use crate::storage::*;
 use crate::utils::*;
 
 use self::complex_operations::*;
-use self::db::*;
 use self::downloader::*;
-use self::persistent_state_keeper::*;
 
 pub mod complex_operations;
-mod db;
 mod downloader;
-mod persistent_state_keeper;
 pub mod rpc_operations;
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
@@ -51,7 +46,6 @@ pub struct Engine {
     old_blocks_policy: OldBlocksPolicy,
     zero_state_id: ton_block::BlockIdExt,
     init_mc_block_id: ton_block::BlockIdExt,
-    last_known_key_block_seqno: AtomicU32,
     hard_forks: FxHashSet<ton_block::BlockIdExt>,
 
     archive_options: Option<ArchiveOptions>,
@@ -61,7 +55,6 @@ pub struct Engine {
     block_applying_operations: BlockApplyingOperationsPool,
     next_block_applying_operations: NextBlockApplyingOperationsPool,
     download_block_operations: DownloadBlockOperationsPool,
-    persistent_state_keeper: Arc<PersistentStateKeeper>,
     shard_states_cache: ShardStateCache,
 
     metrics: Arc<EngineMetrics>,
@@ -146,7 +139,6 @@ impl Engine {
             old_blocks_policy,
             zero_state_id,
             init_mc_block_id,
-            last_known_key_block_seqno: AtomicU32::new(0),
             hard_forks,
             archive_options: config.archive_options,
             sync_options: config.sync_options,
@@ -154,7 +146,6 @@ impl Engine {
             block_applying_operations: OperationsPool::new("block_applying_operations"),
             next_block_applying_operations: OperationsPool::new("next_block_applying_operations"),
             download_block_operations: OperationsPool::new("download_block_operations"),
-            persistent_state_keeper: Arc::new(Default::default()),
             shard_states_cache: ShardStateCache::new(config.shard_state_cache_options),
             metrics: Arc::new(Default::default()),
         });
@@ -259,11 +250,14 @@ impl Engine {
         #[cfg(feature = "archive-uploader")]
         if let Some(options) = options.uploader_options.clone() {
             async fn get_latest_mc_block_seq_no(engine: &Engine) -> Result<u32> {
+                let db = &engine.db;
+
                 let block_id = engine.load_shards_client_mc_block_id()?;
-                let handle = engine
-                    .load_block_handle(&block_id)?
+                let handle = db
+                    .block_handle_storage()
+                    .load_handle(&block_id)?
                     .context("Min ref block handle not found")?;
-                let block = engine.load_block_data(&handle).await?;
+                let block = db.load_block_data(&handle).await?;
                 let info = block.block().read_info()?;
                 Ok(info.min_ref_mc_seqno())
             }
@@ -337,11 +331,13 @@ impl Engine {
 
                 let engine = self.clone();
                 tokio::spawn(async move {
-                    loop {
-                        tokio::pin!(let new_state_found = engine.persistent_state_keeper.new_state_found(););
+                    let persistent_state_keeper =
+                        engine.db.runtime_storage().persistent_state_keeper();
 
-                        let (until_id, untile_time) = match engine.persistent_state_keeper.current()
-                        {
+                    loop {
+                        tokio::pin!(let new_state_found = persistent_state_keeper.new_state_found(););
+
+                        let (until_id, untile_time) = match persistent_state_keeper.current() {
                             Some(state) => {
                                 let untile_time = state.meta().gen_utime() as u64 + offset_sec;
                                 (state.id().seq_no, untile_time)
@@ -368,7 +364,9 @@ impl Engine {
                 });
 
                 if let Some(prev_persistent_key_block) = prev_persistent_key_block {
-                    self.persistent_state_keeper
+                    self.db
+                        .runtime_storage()
+                        .persistent_state_keeper()
                         .update(&prev_persistent_key_block);
                 }
 
@@ -515,12 +513,6 @@ impl Engine {
         self.hard_forks.contains(block_id)
     }
 
-    fn update_last_known_key_block_seqno(&self, seqno: u32) -> bool {
-        self.last_known_key_block_seqno
-            .fetch_max(seqno, Ordering::SeqCst)
-            < seqno
-    }
-
     async fn get_masterchain_overlay(&self) -> Result<FullNodeOverlayClient> {
         self.get_full_node_overlay(ton_block::MASTERCHAIN_ID, ton_block::SHARD_FULL)
             .await
@@ -617,11 +609,13 @@ impl Engine {
         block_id: &ton_block::BlockIdExt,
         max_attempts: Option<u32>,
     ) -> Result<(BlockStuffAug, BlockProofStuffAug)> {
+        let db = &self.db;
+
         loop {
-            if let Some(handle) = self.load_block_handle(block_id)? {
+            if let Some(handle) = db.block_handle_storage().load_handle(block_id)? {
                 if handle.meta().has_data() {
-                    let block = self.load_block_data(&handle).await?;
-                    let block_proof = self
+                    let block = db.load_block_data(&handle).await?;
+                    let block_proof = db
                         .load_block_proof(&handle, !block_id.shard().is_masterchain())
                         .await?;
 
@@ -693,13 +687,6 @@ impl Engine {
             .await
     }
 
-    pub(crate) fn load_block_handle(
-        &self,
-        block_id: &ton_block::BlockIdExt,
-    ) -> Result<Option<Arc<BlockHandle>>> {
-        self.db.load_block_handle(block_id)
-    }
-
     pub async fn load_last_key_block(&self) -> Result<BlockStuff> {
         let handle = self
             .db
@@ -720,11 +707,12 @@ impl Engine {
             return Err(EngineError::NonMasterchainNextBlock.into());
         }
 
+        let db = &self.db;
         loop {
             if prev_handle.meta().has_next1() {
-                let next1_id = self
-                    .db
-                    .load_block_connection(prev_handle.id(), BlockConnection::Next1)?;
+                let next1_id = db
+                    .block_connection_storage()
+                    .load_connection(prev_handle.id(), BlockConnection::Next1)?;
                 return self.wait_applied_block(&next1_id, timeout_ms).await;
             } else if let Some(next1_id) = self
                 .next_block_applying_operations
@@ -733,8 +721,8 @@ impl Engine {
                 })
                 .await?
             {
-                if let Some(handle) = self.load_block_handle(&next1_id)? {
-                    let block = self.load_block_data(&handle).await?;
+                if let Some(handle) = db.block_handle_storage().load_handle(&next1_id)? {
+                    let block = db.load_block_data(&handle).await?;
                     return Ok((handle, block));
                 }
             }
@@ -746,18 +734,20 @@ impl Engine {
         block_id: &ton_block::BlockIdExt,
         timeout_ms: Option<u64>,
     ) -> Result<(Arc<BlockHandle>, BlockStuff)> {
+        let db = &self.db;
         loop {
-            if let Some(handle) = self.load_block_handle(block_id)? {
+            if let Some(handle) = db.block_handle_storage().load_handle(block_id)? {
                 if handle.meta().is_applied() {
-                    let block = self.load_block_data(&handle).await?;
+                    let block = db.load_block_data(&handle).await?;
                     return Ok((handle, block));
                 }
             }
 
             self.block_applying_operations
                 .wait(block_id, timeout_ms, || {
-                    Ok(self
-                        .load_block_handle(block_id)?
+                    Ok(db
+                        .block_handle_storage()
+                        .load_handle(block_id)?
                         .map(|handle| handle.meta().is_applied())
                         .unwrap_or_default())
                 })
@@ -771,10 +761,12 @@ impl Engine {
         timeout_ms: Option<u64>,
         allow_block_downloading: bool,
     ) -> Result<Arc<ShardStateStuff>> {
+        let db = &self.db;
         loop {
             let has_state = || {
-                Ok(self
-                    .load_block_handle(block_id)?
+                Ok(db
+                    .block_handle_storage()
+                    .load_handle(block_id)?
                     .map(|handle| handle.meta().has_state())
                     .unwrap_or_default())
             };
@@ -840,46 +832,16 @@ impl Engine {
         Ok(())
     }
 
-    async fn load_block_data(&self, handle: &Arc<BlockHandle>) -> Result<BlockStuff> {
-        self.db.load_block_data(handle.as_ref()).await
-    }
-
-    async fn store_block_data(&self, block: &BlockStuffAug) -> Result<StoreBlockResult> {
-        let store_block_result = self.db.store_block_data(block).await?;
-
-        let handle = &store_block_result.handle;
-        if handle.id().shard().is_masterchain() && handle.is_key_block() {
-            self.update_last_known_key_block_seqno(store_block_result.handle.id().seq_no);
-        }
-
-        Ok(store_block_result)
-    }
-
-    async fn load_block_proof(
-        &self,
-        handle: &Arc<BlockHandle>,
-        is_link: bool,
-    ) -> Result<BlockProofStuff> {
-        self.db.load_block_proof(handle, is_link).await
-    }
-
-    async fn store_block_proof(
-        &self,
-        block_id: &ton_block::BlockIdExt,
-        handle: Option<Arc<BlockHandle>>,
-        proof: &BlockProofStuffAug,
-    ) -> Result<StoreBlockResult> {
-        self.db.store_block_proof(block_id, handle, proof).await
-    }
-
     async fn store_zerostate(
         &self,
         block_id: &ton_block::BlockIdExt,
         state: &Arc<ShardStateStuff>,
     ) -> Result<Arc<BlockHandle>> {
-        let (handle, _) =
-            self.db
-                .create_or_load_block_handle(block_id, None, Some(state.state().gen_time()))?;
+        let (handle, _) = self.db.block_handle_storage().create_or_load_handle(
+            block_id,
+            None,
+            Some(state.state().gen_time()),
+        )?;
         self.store_state(&handle, state).await?;
         Ok(handle)
     }
@@ -893,8 +855,10 @@ impl Engine {
             return Ok(false);
         }
 
-        let last_mc_block_handle = self
-            .load_block_handle(&last_applied_mc_block_id)?
+        let db = &self.db;
+        let last_mc_block_handle = db
+            .block_handle_storage()
+            .load_handle(&last_applied_mc_block_id)?
             .ok_or_else(|| {
                 log::info!("Handle not found");
                 EngineError::FailedToLoadLastMasterchainBlockHandle
@@ -904,7 +868,7 @@ impl Engine {
             return Ok(true);
         }
 
-        let last_key_block_seqno = self.last_known_key_block_seqno.load(Ordering::Acquire);
+        let last_key_block_seqno = self.db.runtime_storage().last_known_key_block_seqno();
         if last_key_block_seqno > last_applied_mc_block_id.seq_no {
             return Ok(false);
         }
@@ -937,7 +901,10 @@ impl Engine {
                 }
             }
 
-            self.persistent_state_keeper.update(handle);
+            self.db
+                .runtime_storage()
+                .persistent_state_keeper()
+                .update(handle);
         }
 
         Ok(applied)
@@ -980,8 +947,9 @@ impl Engine {
             return Err(EngineError::TooDeepRecursion.into());
         }
 
+        let db = &self.db;
         loop {
-            if let Some(handle) = self.load_block_handle(block_id)? {
+            if let Some(handle) = db.block_handle_storage().load_handle(block_id)? {
                 // Block is already applied
                 if handle.meta().is_applied() || pre_apply && handle.meta().has_state() {
                     return Ok(());
@@ -997,7 +965,7 @@ impl Engine {
 
                         // Apply block
                         let operation = async {
-                            let block = self.load_block_data(&handle).await?;
+                            let block = db.load_block_data(&handle).await?;
                             apply_block(self, &handle, &block, mc_seq_no, pre_apply, depth).await?;
                             Ok(())
                         };
@@ -1049,13 +1017,13 @@ impl Engine {
                 )
                 .await?
             {
-                if self.load_block_handle(block_id)?.is_some() {
+                if db.block_handle_storage().load_handle(block_id)?.is_some() {
                     continue;
                 }
 
                 self.check_block_proof(&block_proof).await?;
-                let handle = self.store_block_data(&block).await?.handle;
-                let handle = self
+                let handle = db.store_block_data(&block).await?.handle;
+                let handle = db
                     .store_block_proof(block_id, Some(handle), &block_proof)
                     .await?
                     .handle;
@@ -1182,14 +1150,18 @@ impl Engine {
     }
 
     async fn check_block_proof(&self, block_proof: &BlockProofStuff) -> Result<()> {
+        let db = &self.db;
+
         if block_proof.is_link() {
             block_proof.check_proof_link()?;
         } else {
             let (virt_block, virt_block_info) = block_proof.pre_check_block_proof()?;
             let prev_key_block_seqno = virt_block_info.prev_key_block_seqno();
 
-            let handle = self.db.load_key_block_handle(prev_key_block_seqno)?;
-            let prev_key_block_proof = self.load_block_proof(&handle, false).await?;
+            let handle = db
+                .block_handle_storage()
+                .load_key_block_handle(prev_key_block_seqno)?;
+            let prev_key_block_proof = db.load_block_proof(&handle, false).await?;
 
             if let Err(e) = check_with_prev_key_block_proof(
                 block_proof,

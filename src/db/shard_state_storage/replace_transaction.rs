@@ -9,8 +9,8 @@ use ton_types::UInt256;
 use super::entries_buffer::*;
 use super::files_context::*;
 use super::parser::*;
-use crate::storage::cell_storage::*;
-use crate::storage::{columns, StoredValue, Tree};
+use crate::db::cell_storage::*;
+use crate::db::{columns, Tree};
 use crate::utils::*;
 
 pub struct ShardStateReplaceTransaction<'a> {

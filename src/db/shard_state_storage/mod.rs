@@ -15,8 +15,8 @@ use ton_types::{ByteOrderRead, UInt256};
 use self::files_context::*;
 use self::replace_transaction::*;
 use super::tree::*;
-use crate::storage::cell_storage::*;
-use crate::storage::{columns, StoredValue, StoredValueBuffer, TopBlocks};
+use crate::db::cell_storage::*;
+use crate::db::{columns, StoredValue, StoredValueBuffer, TopBlocks};
 
 mod entries_buffer;
 mod files_context;
@@ -124,7 +124,7 @@ impl ShardStateStorage {
     pub async fn gc(&self, top_blocks: &TopBlocks) -> Result<()> {
         log::info!(
             "Starting shard states GC for target block: {}",
-            top_blocks.target_mc_block
+            top_blocks.mc_block
         );
         let instant = Instant::now();
 
@@ -132,7 +132,7 @@ impl ShardStateStorage {
 
         log::info!(
             "Finished shard states GC for target block: {}. Took: {} ms",
-            top_blocks.target_mc_block,
+            top_blocks.mc_block,
             instant.elapsed().as_millis()
         );
         Ok(())
@@ -687,6 +687,13 @@ enum ShardStateStorageError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fully_on_stack() {
+        assert!(!LastShardBlockKey(ton_block::ShardIdent::default())
+            .to_vec()
+            .spilled());
+    }
 
     #[test]
     fn correct_last_shared_block_key_repr() {

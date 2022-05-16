@@ -111,7 +111,7 @@ impl ArchiveDownloader {
                         // Check lowest id without taking inner data
                         if let Some(maps) = &mut *data {
                             match maps.preload(next_index, &self.last_blocks) {
-                                Ok(PreloadedBlockMaps { block_maps, .. }) => {
+                                Ok(block_maps) => {
                                     if matches!(
                                         block_maps.lowest_mc_id(),
                                         Some(id) if id.seq_no > next_index
@@ -289,35 +289,27 @@ struct BlockMapsData {
 
 impl BlockMapsData {
     fn preload(
-        &mut self,
+        &'_ mut self,
         next_index: u32,
         edge: &Option<BlockMapsEdge>,
-    ) -> Result<PreloadedBlockMaps> {
-        if let Some(loaded) = &self.loaded {
-            return Ok(PreloadedBlockMaps {
-                block_maps: loaded.clone(),
-                neighbour: self.neighbour.clone(),
-            });
+    ) -> Result<&'_ Arc<BlockMaps>> {
+        if self.loaded.is_none() {
+            if let Some(writer) = self.writer.take() {
+                let block_maps = writer
+                    .parse_block_maps()
+                    .context("Failed to load block maps")?;
+                block_maps.check(next_index, edge)?;
+
+                self.loaded = Some(block_maps);
+            }
         }
 
-        if let Some(writer) = self.writer.take() {
-            let block_maps = writer
-                .parse_block_maps()
-                .context("Failed to load block maps")?;
-            block_maps.check(next_index, edge)?;
-            return Ok(PreloadedBlockMaps {
-                block_maps: self.loaded.insert(block_maps).clone(),
-                neighbour: self.neighbour.clone(),
-            });
+        if let Some(block_maps) = &self.loaded {
+            Ok(block_maps)
+        } else {
+            Err(ArchiveDownloaderError::EmptyBlockMapsData.into())
         }
-
-        Err(ArchiveDownloaderError::EmptyBlockMapsData.into())
     }
-}
-
-struct PreloadedBlockMaps {
-    block_maps: Arc<BlockMaps>,
-    neighbour: Option<Arc<Neighbour>>,
 }
 
 pub struct ReceivedBlockMaps<'a> {

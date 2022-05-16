@@ -11,18 +11,22 @@ use std::str::FromStr;
 
 use anyhow::Result;
 use smallvec::SmallVec;
-use ton_types::{ByteOrderRead, UInt256};
 
 use super::StoredValue;
 
+/// Package entry id
 #[derive(Debug, Hash, Eq, PartialEq)]
 pub enum PackageEntryId<I> {
+    /// Block data entry
     Block(I),
+    /// Block proof entry
     Proof(I),
+    /// Block proof link entry
     ProofLink(I),
 }
 
 impl PackageEntryId<ton_block::BlockIdExt> {
+    /// Parses package entry id from string
     pub fn from_filename(filename: &str) -> Result<Self> {
         let block_id_pos = match filename.find('(') {
             Some(pos) => pos,
@@ -42,8 +46,9 @@ impl PackageEntryId<ton_block::BlockIdExt> {
 
 impl<I> PackageEntryId<I>
 where
-    I: Borrow<ton_block::BlockIdExt> + Hash,
+    I: Borrow<ton_block::BlockIdExt>,
 {
+    /// Returns package entry prefix
     fn filename_prefix(&self) -> &'static str {
         match self {
             Self::Block(_) => PACKAGE_ENTRY_BLOCK,
@@ -52,6 +57,7 @@ where
         }
     }
 
+    /// Constructs on-stack buffer with the serialized object
     pub fn to_vec(&self) -> SmallVec<[u8; ton_block::BlockIdExt::SIZE_HINT + 1]> {
         let mut result = SmallVec::with_capacity(ton_block::BlockIdExt::SIZE_HINT + 1);
         let (block_id, ty) = match self {
@@ -59,32 +65,21 @@ where
             Self::Proof(id) => (id, 1),
             Self::ProofLink(id) => (id, 2),
         };
+        let block_id = block_id.borrow();
 
-        block_id.borrow().serialize(&mut result);
+        result.extend_from_slice(&block_id.shard_id.workchain_id().to_be_bytes());
+        result.extend_from_slice(&block_id.shard_id.shard_prefix_with_tag().to_be_bytes());
+        result.extend_from_slice(&block_id.seq_no.to_be_bytes());
+        result.extend_from_slice(block_id.root_hash.as_slice());
+        result.extend_from_slice(block_id.file_hash.as_slice());
         result.push(ty);
+
         result
     }
 }
 
-pub struct PackageEntryIdPrefix {
-    pub shard_ident: ton_block::ShardIdent,
-    pub seq_no: u32,
-}
-
-impl PackageEntryIdPrefix {
-    pub fn from_slice(mut data: &[u8]) -> Result<Self> {
-        let reader = &mut data;
-        let shard_ident = ton_block::ShardIdent::deserialize(reader)?;
-        let seq_no = reader.read_be_u32()?;
-
-        Ok(Self {
-            shard_ident,
-            seq_no,
-        })
-    }
-}
-
 pub trait GetFileName {
+    /// Returns string representation of the package entry id
     fn filename(&self) -> String;
 }
 
@@ -147,12 +142,12 @@ fn parse_block_id(filename: &str) -> Result<ton_block::BlockIdExt> {
     let shard_id = ton_block::ShardIdent::with_tagged_prefix(workchain_id, shard_prefix_tagged)?;
 
     let root_hash = match parts.next() {
-        Some(part) => UInt256::from_str(part)?,
+        Some(part) => ton_types::UInt256::from_str(part)?,
         None => return Err(PackageEntryIdError::RootHashNotFound.into()),
     };
 
     let file_hash = match parts.next() {
-        Some(part) => UInt256::from_str(part)?,
+        Some(part) => ton_types::UInt256::from_str(part)?,
         None => return Err(PackageEntryIdError::FileHashNotFound.into()),
     };
 
@@ -202,8 +197,8 @@ mod tests {
         let block_id = ton_block::BlockIdExt {
             shard_id: ton_block::ShardIdent::with_tagged_prefix(-1, ton_block::SHARD_FULL).unwrap(),
             seq_no: rand::random(),
-            root_hash: UInt256::rand(),
-            file_hash: UInt256::rand(),
+            root_hash: ton_types::UInt256::rand(),
+            file_hash: ton_types::UInt256::rand(),
         };
 
         check_package_id(PackageEntryId::Block(block_id.clone()));

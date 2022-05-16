@@ -6,11 +6,11 @@ use anyhow::{Context, Result};
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
 use parking_lot::RwLock;
+use rustc_hash::FxHashMap;
 use smallvec::SmallVec;
-use tiny_adnl::utils::*;
-use ton_types::{ByteOrderRead, CellImpl, UInt256};
+use ton_types::{ByteOrderRead, CellImpl, FxDashMap, UInt256};
 
-use crate::storage::{columns, Column, Tree};
+use super::{columns, Column, Tree};
 
 pub struct CellStorage {
     cells: Tree<columns::Cells>,

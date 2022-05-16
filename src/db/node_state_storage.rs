@@ -3,7 +3,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use parking_lot::Mutex;
 
-use crate::storage::{self, columns, StoredValue, Tree};
+use super::{columns, read_block_id_le, write_block_id_le, StoredValue, Tree};
 
 pub struct NodeStateStorage {
     db: Tree<columns::NodeStates>,
@@ -13,7 +13,7 @@ pub struct NodeStateStorage {
 }
 
 impl NodeStateStorage {
-    pub fn new(db: &Arc<rocksdb::DB>) -> Result<Self> {
+    pub fn with_db(db: &Arc<rocksdb::DB>) -> Result<Self> {
         Ok(Self {
             db: Tree::new(db)?,
             last_mc_block_id: (Default::default(), LAST_MC_BLOCK_ID),
@@ -52,7 +52,7 @@ impl NodeStateStorage {
         let data = self
             .db
             .get(BACKGROUND_SYNC_HIGH)?
-            .ok_or(NodeStateStoreError::HighBlockNotFound)?;
+            .ok_or(NodeStateStorageError::HighBlockNotFound)?;
         ton_block::BlockIdExt::from_slice(data.as_ref())
     }
 
@@ -102,7 +102,7 @@ impl NodeStateStorage {
         (cache, key): &BlockIdCache,
         block_id: &ton_block::BlockIdExt,
     ) -> Result<()> {
-        self.db.insert(key, storage::write_block_id_le(block_id))?;
+        self.db.insert(key, write_block_id_le(block_id))?;
         *cache.lock() = Some(block_id.clone());
         Ok(())
     }
@@ -114,10 +114,8 @@ impl NodeStateStorage {
         }
 
         let value = match self.db.get(key)? {
-            Some(data) => {
-                storage::read_block_id_le(&data).ok_or(NodeStateStoreError::InvalidBlockId)?
-            }
-            None => return Err(NodeStateStoreError::ParamNotFound.into()),
+            Some(data) => read_block_id_le(&data).ok_or(NodeStateStorageError::InvalidBlockId)?,
+            None => return Err(NodeStateStorageError::ParamNotFound.into()),
         };
         *cache.lock() = Some(value.clone());
         Ok(value)
@@ -125,7 +123,7 @@ impl NodeStateStorage {
 }
 
 #[derive(thiserror::Error, Debug)]
-enum NodeStateStoreError {
+pub enum NodeStateStorageError {
     #[error("High block not found")]
     HighBlockNotFound,
     #[error("Not found")]

@@ -14,13 +14,15 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use parking_lot::RwLock;
+use ton_types::ByteOrderRead;
 
-use super::archive_package::*;
-use super::block_handle::*;
-use super::package_entry_id::*;
-use crate::storage::{columns, StoredValue, TopBlocks, Tree};
+use super::{
+    columns, ArchivePackageError, ArchivePackageVerifier, BlockHandle, PackageEntryId, StoredValue,
+    TopBlocks, Tree,
+};
+use crate::utils::*;
 
-pub struct ArchiveManager {
+pub struct BlockStorage {
     db: Arc<rocksdb::DB>,
     archives: Tree<columns::Archives>,
     package_entries: Tree<columns::PackageEntries>,
@@ -29,7 +31,7 @@ pub struct ArchiveManager {
     archive_ids: RwLock<BTreeSet<u32>>,
 }
 
-impl ArchiveManager {
+impl BlockStorage {
     pub fn with_db(db: &Arc<rocksdb::DB>) -> Result<Self> {
         let manager = Self {
             db: db.clone(),
@@ -288,7 +290,7 @@ impl ArchiveManager {
         Ok(())
     }
 
-    pub async fn move_into_archive_with_data(
+    pub fn move_into_archive_with_data(
         &self,
         handle: &BlockHandle,
         block_data: &[u8],
@@ -478,9 +480,27 @@ impl ArchiveManager {
         I: Borrow<ton_block::BlockIdExt> + Hash,
     {
         match self.package_entries.get(entry_id.to_vec())? {
-            Some(data) => make_archive_segment(&entry_id.filename(), &data).map_err(From::from),
+            Some(data) => Ok(make_archive_segment(&entry_id.filename(), &data)),
             None => Err(ArchiveManagerError::InvalidBlockData.into()),
         }
+    }
+}
+
+pub struct PackageEntryIdPrefix {
+    pub shard_ident: ton_block::ShardIdent,
+    pub seq_no: u32,
+}
+
+impl PackageEntryIdPrefix {
+    pub fn from_slice(mut data: &[u8]) -> Result<Self> {
+        let reader = &mut data;
+        let shard_ident = ton_block::ShardIdent::deserialize(reader)?;
+        let seq_no = reader.read_be_u32()?;
+
+        Ok(Self {
+            shard_ident,
+            seq_no,
+        })
     }
 }
 

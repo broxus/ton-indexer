@@ -9,7 +9,7 @@ use std::sync::Arc;
 use ton_api::ton;
 
 use super::Engine;
-use crate::engine::db::BlockConnection;
+use crate::db::BlockConnection;
 use crate::utils::*;
 
 #[async_trait::async_trait]
@@ -92,22 +92,26 @@ impl Engine {
         allow_partial: bool,
         key_block: bool,
     ) -> Result<ton::ton_node::PreparedProof> {
-        Ok(match self.load_block_handle(block_id)? {
-            Some(handle) if key_block && !handle.meta().is_key_block() => {
-                return Err(RpcServiceError::NotKeyBlock.into())
-            }
-            Some(handle)
-                if !handle.meta().has_proof()
-                    && (!allow_partial || !handle.meta().has_proof_link()) =>
-            {
-                ton::ton_node::PreparedProof::TonNode_PreparedProofEmpty
-            }
-            Some(handle) if handle.meta().has_proof() && handle.id().shard_id.is_masterchain() => {
-                ton::ton_node::PreparedProof::TonNode_PreparedProof
-            }
-            Some(_) => ton::ton_node::PreparedProof::TonNode_PreparedProofLink,
-            None => ton::ton_node::PreparedProof::TonNode_PreparedProofEmpty,
-        })
+        Ok(
+            match self.db.block_handle_storage().load_handle(block_id)? {
+                Some(handle) if key_block && !handle.meta().is_key_block() => {
+                    return Err(RpcServiceError::NotKeyBlock.into())
+                }
+                Some(handle)
+                    if !handle.meta().has_proof()
+                        && (!allow_partial || !handle.meta().has_proof_link()) =>
+                {
+                    ton::ton_node::PreparedProof::TonNode_PreparedProofEmpty
+                }
+                Some(handle)
+                    if handle.meta().has_proof() && handle.id().shard_id.is_masterchain() =>
+                {
+                    ton::ton_node::PreparedProof::TonNode_PreparedProof
+                }
+                Some(_) => ton::ton_node::PreparedProof::TonNode_PreparedProofLink,
+                None => ton::ton_node::PreparedProof::TonNode_PreparedProofEmpty,
+            },
+        )
     }
 
     async fn download_block_proof_internal(
@@ -115,7 +119,7 @@ impl Engine {
         block_id: &ton_block::BlockIdExt,
         is_link: bool,
     ) -> Result<Vec<u8>> {
-        match self.load_block_handle(block_id)? {
+        match self.db.block_handle_storage().load_handle(block_id)? {
             Some(handle)
                 if is_link && handle.meta().has_proof_link()
                     || !is_link && handle.meta().has_proof() =>
@@ -134,11 +138,11 @@ impl RpcService for Engine {
         self: Arc<Self>,
         query: ton::rpc::ton_node::GetNextBlockDescription,
     ) -> Result<ton::ton_node::BlockDescription> {
-        let db = &self.db;
+        let db = self.db.block_connection_storage();
         let prev_block_id = convert_block_id_ext_api2blk(&query.prev_block)?;
 
         Ok(
-            match db.load_block_connection(&prev_block_id, BlockConnection::Next1) {
+            match db.load_connection(&prev_block_id, BlockConnection::Next1) {
                 Ok(id) => ton::ton_node::BlockDescription::TonNode_BlockDescription(Box::new(
                     ton::ton_node::blockdescription::BlockDescription {
                         id: convert_block_id_ext_blk2api(&id),
@@ -176,10 +180,14 @@ impl RpcService for Engine {
         query: ton::rpc::ton_node::PrepareBlock,
     ) -> Result<ton::ton_node::Prepared> {
         let block_id = convert_block_id_ext_api2blk(&query.block)?;
-        Ok(match self.load_block_handle(&block_id)? {
-            Some(handle) if handle.meta().has_data() => ton::ton_node::Prepared::TonNode_Prepared,
-            _ => ton::ton_node::Prepared::TonNode_NotFound,
-        })
+        Ok(
+            match self.db.block_handle_storage().load_handle(&block_id)? {
+                Some(handle) if handle.meta().has_data() => {
+                    ton::ton_node::Prepared::TonNode_Prepared
+                }
+                _ => ton::ton_node::Prepared::TonNode_NotFound,
+            },
+        )
     }
 
     async fn get_next_key_block_ids(
@@ -204,6 +212,7 @@ impl RpcService for Engine {
 
             let mut iterator = self
                 .db
+                .block_handle_storage()
                 .key_block_iterator(Some(start_block_id.seq_no))
                 .take(limit)
                 .peekable();
@@ -252,34 +261,38 @@ impl RpcService for Engine {
         let db = &self.db;
         let prev_block_id = convert_block_id_ext_api2blk(&query.prev_block)?;
 
-        let next_block_id = match self.load_block_handle(&prev_block_id)? {
-            Some(handle) if handle.meta().has_next1() => {
-                db.load_block_connection(&prev_block_id, BlockConnection::Next1)?
-            }
+        let next_block_id = match db.block_handle_storage().load_handle(&prev_block_id)? {
+            Some(handle) if handle.meta().has_next1() => db
+                .block_connection_storage()
+                .load_connection(&prev_block_id, BlockConnection::Next1)?,
             _ => return Ok(ton::ton_node::DataFull::TonNode_DataFullEmpty),
         };
 
         let mut is_link = false;
-        Ok(match self.load_block_handle(&next_block_id)? {
-            Some(handle) if handle.meta().has_data() && handle.has_proof_or_link(&mut is_link) => {
-                let block = db.load_block_data_raw(&handle).await?;
-                let proof = db.load_block_proof_raw(&handle, is_link).await?;
+        Ok(
+            match self.db.block_handle_storage().load_handle(&next_block_id)? {
+                Some(handle)
+                    if handle.meta().has_data() && handle.has_proof_or_link(&mut is_link) =>
+                {
+                    let block = db.load_block_data_raw(&handle).await?;
+                    let proof = db.load_block_proof_raw(&handle, is_link).await?;
 
-                ton::ton_node::DataFull::TonNode_DataFull(Box::new(
-                    ton::ton_node::datafull::DataFull {
-                        id: convert_block_id_ext_blk2api(&next_block_id),
-                        proof: ton::bytes(proof),
-                        block: ton::bytes(block),
-                        is_link: if is_link {
-                            ton::Bool::BoolTrue
-                        } else {
-                            ton::Bool::BoolFalse
+                    ton::ton_node::DataFull::TonNode_DataFull(Box::new(
+                        ton::ton_node::datafull::DataFull {
+                            id: convert_block_id_ext_blk2api(&next_block_id),
+                            proof: ton::bytes(proof),
+                            block: ton::bytes(block),
+                            is_link: if is_link {
+                                ton::Bool::BoolTrue
+                            } else {
+                                ton::Bool::BoolFalse
+                            },
                         },
-                    },
-                ))
-            }
-            _ => ton::ton_node::DataFull::TonNode_DataFullEmpty,
-        })
+                    ))
+                }
+                _ => ton::ton_node::DataFull::TonNode_DataFullEmpty,
+            },
+        )
     }
 
     async fn download_block_full(
@@ -290,7 +303,7 @@ impl RpcService for Engine {
         let block_id = convert_block_id_ext_api2blk(&query.block)?;
 
         let mut is_link = false;
-        Ok(match self.load_block_handle(&block_id)? {
+        Ok(match db.block_handle_storage().load_handle(&block_id)? {
             Some(handle) if handle.meta().has_data() && handle.has_proof_or_link(&mut is_link) => {
                 let block = db.load_block_data_raw(&handle).await?;
                 let proof = db.load_block_proof_raw(&handle, is_link).await?;
@@ -317,7 +330,7 @@ impl RpcService for Engine {
         query: ton::rpc::ton_node::DownloadBlock,
     ) -> Result<Vec<u8>> {
         let block_id = convert_block_id_ext_api2blk(&query.block)?;
-        match self.load_block_handle(&block_id)? {
+        match self.db.block_handle_storage().load_handle(&block_id)? {
             Some(handle) if handle.meta().has_data() => self.db.load_block_data_raw(&handle).await,
             _ => Err(RpcServiceError::BlockNotFound.into()),
         }

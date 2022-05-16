@@ -2,30 +2,38 @@ use anyhow::Result;
 use tiny_adnl::utils::FxHashMap;
 use ton_types::ByteOrderRead;
 
-use super::{StoredValue, StoredValueBuffer};
-use crate::utils::*;
+use super::{BlockStuff, StoredValue, StoredValueBuffer};
 
+/// Stores last blocks for each workchain and shard
 #[derive(Debug, Clone)]
 pub struct TopBlocks {
-    pub target_mc_block: ton_block::BlockIdExt,
+    pub mc_block: ton_block::BlockIdExt,
     pub shard_heights: FxHashMap<ton_block::ShardIdent, u32>,
 }
 
 impl TopBlocks {
-    pub fn from_mc_block(block_data: &BlockStuff) -> Result<Self> {
+    /// Extracts last blocks for each workchain and shard from the given masterchain block
+    pub fn from_mc_block(mc_block_data: &BlockStuff) -> Result<Self> {
+        debug_assert!(mc_block_data.id().shard_id.is_masterchain());
         Ok(Self {
-            target_mc_block: block_data.id().clone(),
-            shard_heights: block_data.shard_blocks_seq_no()?,
+            mc_block: mc_block_data.id().clone(),
+            shard_heights: mc_block_data.shard_blocks_seq_no()?,
         })
     }
 
+    /// Checks whether the given block is equal to or greater than
+    /// the last block for the given shard
     pub fn contains(&self, block_id: &ton_block::BlockIdExt) -> bool {
         self.contains_shard_seq_no(&block_id.shard_id, block_id.seq_no)
     }
 
+    /// Checks whether the given pair of [`ton_block::ShardIdent`] and seqno
+    /// is equal to or greater than the last block for the given shard.
+    ///
+    /// NOTE: Specified shard could be split or merged
     pub fn contains_shard_seq_no(&self, shard_ident: &ton_block::ShardIdent, seq_no: u32) -> bool {
         if shard_ident.is_masterchain() {
-            seq_no >= self.target_mc_block.seq_no
+            seq_no >= self.mc_block.seq_no
         } else {
             match self.shard_heights.get(shard_ident) {
                 Some(&top_seq_no) => seq_no >= top_seq_no,
@@ -46,7 +54,7 @@ impl StoredValue for TopBlocks {
     type OnStackSlice = [u8; Self::SIZE_HINT];
 
     fn serialize<T: StoredValueBuffer>(&self, buffer: &mut T) {
-        self.target_mc_block.serialize(buffer);
+        self.mc_block.serialize(buffer);
 
         buffer.write_raw_slice(&(self.shard_heights.len() as u32).to_le_bytes());
         for (shard, top_block) in &self.shard_heights {
@@ -72,7 +80,7 @@ impl StoredValue for TopBlocks {
         }
 
         Ok(Self {
-            target_mc_block,
+            mc_block: target_mc_block,
             shard_heights: top_blocks,
         })
     }
@@ -94,7 +102,7 @@ mod tests {
         shard_heights.insert(right_shard, 1001);
 
         let top_blocks = TopBlocks {
-            target_mc_block: ton_block::BlockIdExt {
+            mc_block: ton_block::BlockIdExt {
                 shard_id: ton_block::ShardIdent::masterchain(),
                 seq_no: 100,
                 root_hash: Default::default(),

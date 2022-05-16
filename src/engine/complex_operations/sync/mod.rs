@@ -3,8 +3,8 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 
+use crate::db::*;
 use crate::engine::Engine;
-use crate::storage::*;
 use crate::utils::*;
 
 use self::archive_downloader::*;
@@ -74,6 +74,8 @@ async fn import_mc_blocks_with_apply(
     mut last_mc_block_id: &ton_block::BlockIdExt,
     last_gen_utime: &mut u32,
 ) -> Result<()> {
+    let db = &engine.db;
+
     for id in maps.mc_block_ids.values() {
         // Skip already processed blocks
         if id.seq_no <= last_mc_block_id.seq_no {
@@ -97,7 +99,7 @@ async fn import_mc_blocks_with_apply(
         last_mc_block_id = id;
 
         // Skip already applied blocks
-        if let Some(handle) = engine.load_block_handle(id)? {
+        if let Some(handle) = db.block_handle_storage().load_handle(id)? {
             if handle.meta().is_applied() {
                 continue;
             }
@@ -124,6 +126,8 @@ async fn import_mc_blocks_with_apply(
 }
 
 async fn import_shard_blocks_with_apply(engine: &Arc<Engine>, maps: &Arc<BlockMaps>) -> Result<()> {
+    let db = &engine.db;
+
     // Save all shardchain blocks
     for (id, entry) in &maps.blocks {
         if !id.shard_id.is_masterchain() {
@@ -141,10 +145,11 @@ async fn import_shard_blocks_with_apply(engine: &Arc<Engine>, maps: &Arc<BlockMa
         }
 
         // Load masterchain block data and top shardchain blocks
-        let masterchain_handle = engine
-            .load_block_handle(mc_block_id)?
+        let masterchain_handle = db
+            .block_handle_storage()
+            .load_handle(mc_block_id)?
             .ok_or(SyncError::MasterchainBlockNotFound)?;
-        let masterchain_block = engine.load_block_data(&masterchain_handle).await?;
+        let masterchain_block = db.load_block_data(&masterchain_handle).await?;
         let shard_blocks = masterchain_block.shard_blocks()?;
 
         // Start applying blocks for each shard
@@ -153,8 +158,11 @@ async fn import_shard_blocks_with_apply(engine: &Arc<Engine>, maps: &Arc<BlockMa
             let engine = engine.clone();
             let maps = maps.clone();
             tasks.push(tokio::spawn(async move {
-                let handle = engine
-                    .load_block_handle(&id)?
+                let db = &engine.db;
+
+                let handle = db
+                    .block_handle_storage()
+                    .load_handle(&id)?
                     .ok_or(SyncError::ShardchainBlockHandleNotFound)?;
 
                 // Skip applied blocks
@@ -172,9 +180,9 @@ async fn import_shard_blocks_with_apply(engine: &Arc<Engine>, maps: &Arc<BlockMa
                 let block = match maps.blocks.get(&id) {
                     Some(entry) => match &entry.block {
                         Some(block) => Some(Cow::Borrowed(&block.data)),
-                        None => engine.load_block_data(&handle).await.ok().map(Cow::Owned),
+                        None => db.load_block_data(&handle).await.ok().map(Cow::Owned),
                     },
-                    None => engine.load_block_data(&handle).await.ok().map(Cow::Owned),
+                    None => db.load_block_data(&handle).await.ok().map(Cow::Owned),
                 };
 
                 // TODO:
@@ -341,11 +349,12 @@ impl<'a> BackgroundSyncContext<'a> {
                 break;
             }
 
-            let mc_handle = self
-                .engine
-                .load_block_handle(mc_block_id)?
+            let db = &self.engine.db;
+            let mc_handle = db
+                .block_handle_storage()
+                .load_handle(mc_block_id)?
                 .ok_or(SyncError::MasterchainBlockNotFound)?;
-            let mc_block = self.engine.load_block_data(&mc_handle).await?;
+            let mc_block = db.load_block_data(&mc_handle).await?;
             let shard_blocks = mc_block.shard_blocks()?;
 
             let new_edge = BlockMapsEdge {
@@ -361,6 +370,8 @@ impl<'a> BackgroundSyncContext<'a> {
                 let engine = self.engine.clone();
                 let maps = maps.clone();
                 tasks.push(tokio::spawn(async move {
+                    let db = &engine.db;
+
                     let mut blocks_to_add = Vec::new();
 
                     let mut stack = Vec::from([id]);
@@ -389,16 +400,17 @@ impl<'a> BackgroundSyncContext<'a> {
                     });
 
                     while let Some((block, block_proof)) = blocks_to_add.pop() {
-                        let handle = engine
-                            .load_block_handle(block.data.id())?
+                        let handle = db
+                            .block_handle_storage()
+                            .load_handle(block.data.id())?
                             .ok_or(SyncError::ShardchainBlockHandleNotFound)?;
 
                         // Assign valid masterchain id
-                        engine.db.assign_mc_ref_seq_no(&handle, mc_seq_no)?;
+                        db.assign_mc_ref_seq_no(&handle, mc_seq_no)?;
 
                         // Archive block
                         if engine.archive_options.is_some() {
-                            engine.db.archive_block(&handle).await?;
+                            db.archive_block(&handle).await?;
                         }
 
                         // Notify subscribers
@@ -436,14 +448,15 @@ async fn save_block(
     block: &BlockStuffAug,
     block_proof: &BlockProofStuffAug,
 ) -> Result<Arc<BlockHandle>> {
+    let db = &engine.db;
+
     if block_proof.is_link() {
         block_proof.check_proof_link()?;
     } else {
         let (virt_block, virt_block_info) = block_proof.pre_check_block_proof()?;
         let handle = {
             let prev_key_block_seqno = virt_block_info.prev_key_block_seqno();
-            engine
-                .db
+            db.block_handle_storage()
                 .load_key_block_handle(prev_key_block_seqno)
                 .context("Failed to load key block handle")?
         };
@@ -455,7 +468,7 @@ async fn save_block(
                 .context("Failed to load mc zero state")?;
             block_proof.check_with_master_state(&zero_state)?;
         } else {
-            let prev_key_block_proof = engine
+            let prev_key_block_proof = db
                 .load_block_proof(&handle, false)
                 .await
                 .context("Failed to load prev key block proof")?;
@@ -473,8 +486,8 @@ async fn save_block(
         }
     }
 
-    let handle = engine.store_block_data(block).await?.handle;
-    let handle = engine
+    let handle = db.store_block_data(block).await?.handle;
+    let handle = db
         .store_block_proof(block_id, Some(handle), block_proof)
         .await?
         .handle;

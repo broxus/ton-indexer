@@ -3,7 +3,7 @@
 /// Changes:
 /// - replaced old `failure` crate with `anyhow`
 ///
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, Result};
 use ton_block::Deserializable;
 use ton_types::{Cell, HashmapType};
 

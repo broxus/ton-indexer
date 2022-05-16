@@ -9,9 +9,8 @@ use std::sync::Arc;
 use anyhow::Result;
 use futures::future::{BoxFuture, FutureExt};
 
-use crate::engine::db::BlockConnection;
+use crate::db::{BlockConnection, BlockHandle};
 use crate::engine::Engine;
-use crate::storage::*;
 use crate::utils::*;
 
 pub const MAX_BLOCK_APPLIER_DEPTH: u32 = 16;
@@ -116,35 +115,34 @@ fn update_block_connections(
     prev1_id: &ton_block::BlockIdExt,
     prev2_id: &Option<ton_block::BlockIdExt>,
 ) -> Result<()> {
-    let db = &engine.db;
-    let prev1_handle = profl::span!(
-        "load_prev1_handle",
-        engine
-            .load_block_handle(prev1_id)?
-            .ok_or(ApplyBlockError::Prev1BlockHandleNotFound)?
-    );
+    let handles = engine.db.block_handle_storage();
+    let conn = engine.db.block_connection_storage();
+
+    let prev1_handle = handles
+        .load_handle(prev1_id)?
+        .ok_or(ApplyBlockError::Prev1BlockHandleNotFound)?;
 
     match prev2_id {
         Some(prev2_id) => {
-            let prev2_handle = engine
-                .load_block_handle(prev2_id)?
+            let prev2_handle = handles
+                .load_handle(prev2_id)?
                 .ok_or(ApplyBlockError::Prev2BlockHandleNotFound)?;
 
-            db.store_block_connection(&prev1_handle, BlockConnection::Next1, handle.id())?;
-            db.store_block_connection(&prev2_handle, BlockConnection::Next1, handle.id())?;
-            db.store_block_connection(handle, BlockConnection::Prev1, prev1_id)?;
-            db.store_block_connection(handle, BlockConnection::Prev2, prev2_id)?;
+            conn.store_connection(&prev1_handle, BlockConnection::Next1, handle.id())?;
+            conn.store_connection(&prev2_handle, BlockConnection::Next1, handle.id())?;
+            conn.store_connection(handle, BlockConnection::Prev1, prev1_id)?;
+            conn.store_connection(handle, BlockConnection::Prev2, prev2_id)?;
         }
         None => {
             let prev1_shard = prev1_handle.id().shard_id;
             let shard = handle.id().shard_id;
 
             if prev1_shard != shard && prev1_shard.split()?.1 == shard {
-                db.store_block_connection(&prev1_handle, BlockConnection::Next2, handle.id())?;
+                conn.store_connection(&prev1_handle, BlockConnection::Next2, handle.id())?;
             } else {
-                db.store_block_connection(&prev1_handle, BlockConnection::Next1, handle.id())?;
+                conn.store_connection(&prev1_handle, BlockConnection::Next1, handle.id())?;
             }
-            db.store_block_connection(handle, BlockConnection::Prev1, prev1_id)?;
+            conn.store_connection(handle, BlockConnection::Prev1, prev1_id)?;
         }
     }
 

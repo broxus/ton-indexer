@@ -300,7 +300,7 @@ impl NodeNetwork {
             .await?;
         log::trace!("Found overlay nodes ({})", nodes.len());
 
-        tokio::task::block_in_place(|| overlay_shard.add_public_peers(nodes))
+        overlay_shard.add_public_peers(nodes)
     }
 }
 

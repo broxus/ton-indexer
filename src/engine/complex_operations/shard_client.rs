@@ -10,7 +10,7 @@ use anyhow::{anyhow, Result};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use ton_api::ton;
 
-use crate::engine::db::BlockConnection;
+use crate::db::BlockConnection;
 use crate::engine::Engine;
 use crate::utils::*;
 
@@ -41,8 +41,10 @@ pub async fn walk_shard_blocks(
 ) -> Result<()> {
     let semaphore = Arc::new(Semaphore::new(1));
 
-    let mut handle = engine
-        .load_block_handle(&mc_block_id)?
+    let db = &engine.db;
+    let mut handle = db
+        .block_handle_storage()
+        .load_handle(&mc_block_id)?
         .ok_or(ShardClientError::ShardchainBlockHandleNotFound)?;
 
     while engine.is_working() {
@@ -67,11 +69,13 @@ async fn load_next_masterchain_block(
     engine: &Arc<Engine>,
     mc_block_id: &ton_block::BlockIdExt,
 ) -> Result<ton_block::BlockIdExt> {
-    if let Some(handle) = engine.load_block_handle(mc_block_id)? {
+    let db = &engine.db;
+
+    if let Some(handle) = db.block_handle_storage().load_handle(mc_block_id)? {
         if handle.meta().has_next1() {
-            let next1_id = engine
-                .db
-                .load_block_connection(mc_block_id, BlockConnection::Next1)?;
+            let next1_id = db
+                .block_connection_storage()
+                .load_connection(mc_block_id, BlockConnection::Next1)?;
             engine
                 .download_and_apply_block(&next1_id, next1_id.seq_no, false, 0)
                 .await?;
@@ -91,7 +95,7 @@ async fn load_next_masterchain_block(
     let prev_state = engine.wait_state(mc_block_id, None, true).await?;
     block_proof.check_with_master_state(&prev_state)?;
 
-    let mut next_handle = match engine.load_block_handle(block.id())? {
+    let mut next_handle = match db.block_handle_storage().load_handle(block.id())? {
         // Handle exists and it has block data specified
         Some(next_handle) if next_handle.meta().has_data() => next_handle,
         // Handle doesn't exist or doesn't have block data
@@ -102,12 +106,12 @@ async fn load_next_masterchain_block(
                     block.id()
                 );
             }
-            engine.store_block_data(&block).await?.handle
+            db.store_block_data(&block).await?.handle
         }
     };
 
     if !next_handle.meta().has_proof() {
-        next_handle = engine
+        next_handle = db
             .store_block_proof(block.id(), Some(next_handle), &block_proof)
             .await?
             .handle;
@@ -127,7 +131,8 @@ async fn load_shard_blocks(
     let mc_seq_no = masterchain_block.id().seq_no;
     let mut tasks = Vec::new();
     for (_, shard_block_id) in masterchain_block.shard_blocks()? {
-        if let Some(handle) = engine.load_block_handle(&shard_block_id)? {
+        let db = &engine.db;
+        if let Some(handle) = db.block_handle_storage().load_handle(&shard_block_id)? {
             if handle.meta().is_applied() {
                 continue;
             }
@@ -152,7 +157,7 @@ async fn load_shard_blocks(
 
     engine.store_shards_client_mc_block_id(masterchain_block.id())?;
 
-    std::mem::drop(permit);
+    drop(permit);
     Ok(())
 }
 
@@ -160,8 +165,10 @@ pub async fn process_block_broadcast(
     engine: &Arc<Engine>,
     broadcast: ton::ton_node::broadcast::BlockBroadcast,
 ) -> Result<()> {
+    let db = &engine.db;
+
     let block_id = convert_block_id_ext_api2blk(&broadcast.id)?;
-    if let Some(handle) = engine.load_block_handle(&block_id)? {
+    if let Some(handle) = db.block_handle_storage().load_handle(&block_id)? {
         if handle.meta().has_data() {
             return Ok(());
         }
@@ -187,7 +194,9 @@ pub async fn process_block_broadcast(
     }
 
     let (key_block_proof, validator_set, catchain_config) = {
-        let handle = engine.db.load_key_block_handle(prev_key_block_seqno)?;
+        let handle = db
+            .block_handle_storage()
+            .load_key_block_handle(prev_key_block_seqno)?;
         if handle.id().seq_no == 0 {
             let zerostate = engine.load_mc_zero_state().await?;
             let config_params = zerostate.config_params()?;
@@ -195,7 +204,7 @@ pub async fn process_block_broadcast(
             let catchain_config = config_params.catchain_config()?;
             (CheckWith::State(zerostate), validator_set, catchain_config)
         } else {
-            let proof = engine.load_block_proof(&handle, false).await?;
+            let proof = db.load_block_proof(&handle, false).await?;
             let (validator_set, catchain_config) = proof.get_cur_validators_set()?;
             (CheckWith::KeyBlock(proof), validator_set, catchain_config)
         }
@@ -216,14 +225,14 @@ pub async fn process_block_broadcast(
 
     let block = BlockStuff::deserialize_checked(block_id.clone(), &broadcast.data)?;
     let block = BlockStuffAug::new(block, broadcast.data.0);
-    let mut handle = match engine.store_block_data(&block).await? {
+    let mut handle = match db.store_block_data(&block).await? {
         result if result.updated => result.handle,
         // Skipped apply for block broadcast because the block is already being processed
         _ => return Ok(()),
     };
 
     if !handle.meta().has_proof() {
-        handle = match engine
+        handle = match db
             .store_block_proof(
                 &block_id,
                 Some(handle),

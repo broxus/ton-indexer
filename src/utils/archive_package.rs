@@ -1,27 +1,29 @@
-use std::io::Write;
-
-pub fn make_archive_segment(filename: &str, data: &[u8]) -> Result<Vec<u8>, std::io::Error> {
+/// Encodes archive package segment
+pub fn make_archive_segment(filename: &str, data: &[u8]) -> Vec<u8> {
     let mut vec = Vec::with_capacity(2 + 2 + 4 + filename.len() + data.len());
-    vec.write_all(&ARCHIVE_ENTRY_PREFIX)?;
-    vec.write_all(&(filename.len() as u16).to_le_bytes())?;
-    vec.write_all(&(data.len() as u32).to_le_bytes())?;
-    vec.write_all(filename.as_bytes())?;
-    vec.write_all(data)?;
-    Ok(vec)
+    vec.extend_from_slice(&ARCHIVE_ENTRY_PREFIX);
+    vec.extend_from_slice(&(filename.len() as u16).to_le_bytes());
+    vec.extend_from_slice(&(data.len() as u32).to_le_bytes());
+    vec.extend_from_slice(filename.as_bytes());
+    vec.extend_from_slice(data);
+    vec
 }
 
+/// Stateful archive package reader
 pub struct ArchivePackageViewReader<'a> {
     data: &'a [u8],
     offset: usize,
 }
 
 impl<'a> ArchivePackageViewReader<'a> {
+    /// Starts reading archive package
     pub fn new(data: &'a [u8]) -> Result<Self, ArchivePackageError> {
         let mut offset = 0;
         read_package_header(data, &mut offset)?;
         Ok(Self { data, offset })
     }
 
+    /// Reads next archive package segment
     pub fn read_next(
         &mut self,
     ) -> Result<Option<ArchivePackageEntryView<'a>>, ArchivePackageError> {
@@ -29,7 +31,7 @@ impl<'a> ArchivePackageViewReader<'a> {
     }
 }
 
-pub fn read_package_header(buf: &[u8], offset: &mut usize) -> Result<(), ArchivePackageError> {
+fn read_package_header(buf: &[u8], offset: &mut usize) -> Result<(), ArchivePackageError> {
     let end = *offset;
 
     // NOTE: `end > end + 4` is needed here because it eliminates useless
@@ -46,6 +48,7 @@ pub fn read_package_header(buf: &[u8], offset: &mut usize) -> Result<(), Archive
     }
 }
 
+/// Parsed archive package entry
 pub struct ArchivePackageEntryView<'a> {
     pub name: &'a str,
     pub data: &'a [u8],
@@ -108,6 +111,7 @@ pub enum ArchivePackageVerifier {
 }
 
 impl ArchivePackageVerifier {
+    /// Ensures that the verifier is in the correct state
     pub fn final_check(&self) -> Result<(), ArchivePackageError> {
         if matches!(self, Self::PackageEntryHeader { filled: 0, .. }) {
             Ok(())
@@ -116,6 +120,7 @@ impl ArchivePackageVerifier {
         }
     }
 
+    /// Verifies next archive package segment
     pub fn verify(&mut self, part: &[u8]) -> Result<(), ArchivePackageError> {
         let mut offset = 0;
 

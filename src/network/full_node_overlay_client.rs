@@ -13,7 +13,6 @@ use tiny_adnl::{Neighbour, OverlayClient};
 use ton_api::ton::{self, TLObject};
 use ton_api::Deserializer;
 
-use crate::storage::ArchivePackageVerifier;
 use crate::utils::*;
 
 #[derive(Clone)]

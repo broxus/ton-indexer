@@ -9,10 +9,7 @@ use std::sync::{Arc, Weak};
 use anyhow::Result;
 use tiny_adnl::utils::*;
 
-use super::block_handle::*;
-use super::block_meta::*;
-use super::tree::*;
-use super::{columns, StoredValue, TopBlocks};
+use super::{columns, BlockHandle, BlockMeta, StoredValue, Tree};
 use crate::utils::*;
 
 pub struct BlockHandleStorage {
@@ -28,6 +25,36 @@ impl BlockHandleStorage {
             block_handles: Tree::new(db)?,
             key_blocks: Tree::new(db)?,
         })
+    }
+
+    pub fn create_or_load_handle(
+        &self,
+        block_id: &ton_block::BlockIdExt,
+        block: Option<&ton_block::Block>,
+        utime: Option<u32>,
+    ) -> Result<(Arc<BlockHandle>, HandleCreationStatus)> {
+        if let Some(handle) = self.load_handle(block_id)? {
+            return Ok((handle, HandleCreationStatus::Fetched));
+        }
+
+        let meta = match (block, utime) {
+            (Some(block), _) => BlockMeta::from_block(block)?,
+            (None, Some(utime)) if block_id.seq_no == 0 => BlockMeta::with_data(0, utime, 0),
+            _ if block_id.seq_no == 0 => {
+                return Err(BlockHandleStorageError::FailedToCreateZerostateHandle.into())
+            }
+            _ => return Err(BlockHandleStorageError::FailedToCreateBlockHandle.into()),
+        };
+
+        if let Some(handle) = self.create_handle(block_id.clone(), meta)? {
+            return Ok((handle, HandleCreationStatus::Created));
+        }
+
+        if let Some(handle) = self.load_handle(block_id)? {
+            return Ok((handle, HandleCreationStatus::Fetched));
+        }
+
+        Err(BlockHandleStorageError::FailedToCreateBlockHandle.into())
     }
 
     pub fn load_handle(
@@ -52,7 +79,7 @@ impl BlockHandleStorage {
         })
     }
 
-    pub fn store_handle(&self, handle: &Arc<BlockHandle>) -> Result<()> {
+    pub fn store_handle(&self, handle: &BlockHandle) -> Result<()> {
         let id = handle.id();
 
         self.block_handles
@@ -60,7 +87,7 @@ impl BlockHandleStorage {
 
         if handle.is_key_block() {
             self.key_blocks
-                .insert(handle.id().seq_no.to_be_bytes(), handle.id().to_vec())?;
+                .insert(id.seq_no.to_be_bytes(), id.to_vec())?;
         }
 
         Ok(())
@@ -183,27 +210,6 @@ impl BlockHandleStorage {
         iterator
     }
 
-    pub fn create_handle(
-        &self,
-        block_id: ton_block::BlockIdExt,
-        meta: BlockMeta,
-    ) -> Result<Option<Arc<BlockHandle>>> {
-        use dashmap::mapref::entry::Entry;
-
-        let handle = match self.cache.entry(block_id.clone()) {
-            Entry::Vacant(entry) => {
-                let handle = Arc::new(BlockHandle::with_values(block_id, meta, self.cache.clone()));
-                entry.insert(Arc::downgrade(&handle));
-                handle
-            }
-            Entry::Occupied(_) => return Ok(None),
-        };
-
-        self.store_handle(&handle)?;
-
-        Ok(Some(handle))
-    }
-
     pub fn gc_handles_cache(&self, top_blocks: &TopBlocks) -> usize {
         let mut total_removed = 0;
 
@@ -232,6 +238,33 @@ impl BlockHandleStorage {
 
         total_removed
     }
+
+    fn create_handle(
+        &self,
+        block_id: ton_block::BlockIdExt,
+        meta: BlockMeta,
+    ) -> Result<Option<Arc<BlockHandle>>> {
+        use dashmap::mapref::entry::Entry;
+
+        let handle = match self.cache.entry(block_id.clone()) {
+            Entry::Vacant(entry) => {
+                let handle = Arc::new(BlockHandle::with_values(block_id, meta, self.cache.clone()));
+                entry.insert(Arc::downgrade(&handle));
+                handle
+            }
+            Entry::Occupied(_) => return Ok(None),
+        };
+
+        self.store_handle(&handle)?;
+
+        Ok(Some(handle))
+    }
+}
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+pub enum HandleCreationStatus {
+    Created,
+    Fetched,
 }
 
 pub struct KeyBlocksIterator<'a> {
@@ -259,6 +292,10 @@ impl Iterator for KeyBlocksIterator<'_> {
 
 #[derive(thiserror::Error, Debug)]
 enum BlockHandleStorageError {
+    #[error("Failed to create zero state block handle")]
+    FailedToCreateZerostateHandle,
+    #[error("Failed to create block handle")]
+    FailedToCreateBlockHandle,
     #[error("Key block not found")]
     KeyBlockNotFound,
     #[error("Key block handle not found: {}", .0)]

@@ -1,5 +1,6 @@
 use std::path::Path;
 
+/// Memory buffer that is mapped to a file
 pub struct MappedFile {
     file: std::fs::File,
     length: usize,
@@ -7,6 +8,7 @@ pub struct MappedFile {
 }
 
 impl MappedFile {
+    /// Opens a file and maps it to memory. Resizes the file to `length` bytes.
     pub fn new<P>(path: &P, length: usize) -> std::io::Result<Self>
     where
         P: AsRef<Path>,
@@ -23,6 +25,7 @@ impl MappedFile {
         Self::from_existing_file(file)
     }
 
+    /// Opens an existing file and maps it to memory
     pub fn from_existing_file(file: std::fs::File) -> std::io::Result<Self> {
         use std::os::unix::io::AsRawFd;
 
@@ -51,6 +54,7 @@ impl MappedFile {
         Ok(Self { file, length, ptr })
     }
 
+    /// Mapped buffer length in bytes
     pub fn length(&self) -> usize {
         self.length
     }

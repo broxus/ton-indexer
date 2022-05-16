@@ -4,7 +4,7 @@ use std::sync::Arc;
 use parking_lot::RwLock;
 use tokio::sync::Notify;
 
-use crate::storage::*;
+use crate::db::BlockHandle;
 use crate::utils::*;
 
 #[derive(Default)]
