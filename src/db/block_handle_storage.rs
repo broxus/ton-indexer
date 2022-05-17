@@ -27,6 +27,26 @@ impl BlockHandleStorage {
         })
     }
 
+    pub fn store_block_applied(&self, handle: &Arc<BlockHandle>) -> Result<bool> {
+        if handle.meta().set_is_applied() {
+            self.store_handle(handle)?;
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
+    pub fn assign_mc_ref_seq_no(
+        &self,
+        handle: &Arc<BlockHandle>,
+        mc_ref_seq_no: u32,
+    ) -> Result<()> {
+        if handle.set_masterchain_ref_seqno(mc_ref_seq_no)? {
+            self.store_handle(handle)?;
+        }
+        Ok(())
+    }
+
     pub fn create_or_load_handle(
         &self,
         block_id: &ton_block::BlockIdExt,

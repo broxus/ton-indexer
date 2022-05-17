@@ -124,7 +124,10 @@ impl Engine {
                 if is_link && handle.meta().has_proof_link()
                     || !is_link && handle.meta().has_proof() =>
             {
-                self.db.load_block_proof_raw(&handle, is_link).await
+                self.db
+                    .block_storage()
+                    .load_block_proof_raw(&handle, is_link)
+                    .await
             }
             _ if is_link => Err(RpcServiceError::BlockProofLinkNotFound.into()),
             _ => Err(RpcServiceError::BlockProofNotFound.into()),
@@ -274,8 +277,11 @@ impl RpcService for Engine {
                 Some(handle)
                     if handle.meta().has_data() && handle.has_proof_or_link(&mut is_link) =>
                 {
-                    let block = db.load_block_data_raw(&handle).await?;
-                    let proof = db.load_block_proof_raw(&handle, is_link).await?;
+                    let block = db.block_storage().load_block_data_raw(&handle).await?;
+                    let proof = db
+                        .block_storage()
+                        .load_block_proof_raw(&handle, is_link)
+                        .await?;
 
                     ton::ton_node::DataFull::TonNode_DataFull(Box::new(
                         ton::ton_node::datafull::DataFull {
@@ -305,8 +311,11 @@ impl RpcService for Engine {
         let mut is_link = false;
         Ok(match db.block_handle_storage().load_handle(&block_id)? {
             Some(handle) if handle.meta().has_data() && handle.has_proof_or_link(&mut is_link) => {
-                let block = db.load_block_data_raw(&handle).await?;
-                let proof = db.load_block_proof_raw(&handle, is_link).await?;
+                let block = db.block_storage().load_block_data_raw(&handle).await?;
+                let proof = db
+                    .block_storage()
+                    .load_block_proof_raw(&handle, is_link)
+                    .await?;
 
                 ton::ton_node::DataFull::TonNode_DataFull(Box::new(
                     ton::ton_node::datafull::DataFull {
@@ -331,7 +340,9 @@ impl RpcService for Engine {
     ) -> Result<Vec<u8>> {
         let block_id = convert_block_id_ext_api2blk(&query.block)?;
         match self.db.block_handle_storage().load_handle(&block_id)? {
-            Some(handle) if handle.meta().has_data() => self.db.load_block_data_raw(&handle).await,
+            Some(handle) if handle.meta().has_data() => {
+                self.db.block_storage().load_block_data_raw(&handle).await
+            }
             _ => Err(RpcServiceError::BlockNotFound.into()),
         }
     }
@@ -384,7 +395,7 @@ impl RpcService for Engine {
             return Ok(ton::ton_node::ArchiveInfo::TonNode_ArchiveNotFound);
         }
 
-        Ok(match self.db.get_archive_id(mc_seq_no) {
+        Ok(match self.db.block_storage().get_archive_id(mc_seq_no) {
             Some(id) => ton::ton_node::ArchiveInfo::TonNode_ArchiveInfo(Box::new(
                 ton::ton_node::archiveinfo::ArchiveInfo { id: id as i64 },
             )),
@@ -397,7 +408,7 @@ impl RpcService for Engine {
         query: ton::rpc::ton_node::GetArchiveSlice,
     ) -> Result<Vec<u8>> {
         Ok(
-            match self.db.get_archive_slice(
+            match self.db.block_storage().get_archive_slice(
                 query.archive_id as u32,
                 query.offset as usize,
                 query.max_size as usize,

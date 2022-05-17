@@ -10,13 +10,17 @@ use futures::StreamExt;
 use itertools::Itertools;
 use smallvec::SmallVec;
 use tiny_adnl::utils::*;
+use ton_block::HashmapAugType;
 use ton_types::{ByteOrderRead, UInt256};
 
 use self::files_context::*;
 use self::replace_transaction::*;
-use super::tree::*;
-use crate::db::cell_storage::*;
-use crate::db::{columns, StoredValue, StoredValueBuffer, TopBlocks};
+use super::cell_storage::*;
+use super::{
+    columns, BlockHandle, BlockHandleStorage, BlockStorage, Column, StoredValue, StoredValueBuffer,
+    TopBlocks, Tree,
+};
+use crate::utils::*;
 
 mod entries_buffer;
 mod files_context;
@@ -24,6 +28,9 @@ mod parser;
 mod replace_transaction;
 
 pub struct ShardStateStorage {
+    block_handle_storage: Arc<BlockHandleStorage>,
+    block_storage: Arc<BlockStorage>,
+
     downloads_dir: Arc<PathBuf>,
     state: Arc<ShardStateStorageState>,
     max_new_mc_cell_count: AtomicUsize,
@@ -31,7 +38,12 @@ pub struct ShardStateStorage {
 }
 
 impl ShardStateStorage {
-    pub async fn with_db<P>(db: &Arc<rocksdb::DB>, file_db_path: &P) -> Result<Self>
+    pub async fn with_db<P>(
+        db: &Arc<rocksdb::DB>,
+        block_handle_storage: &Arc<BlockHandleStorage>,
+        block_storage: &Arc<BlockStorage>,
+        file_db_path: &P,
+    ) -> Result<Self>
     where
         P: AsRef<Path>,
     {
@@ -39,6 +51,8 @@ impl ShardStateStorage {
         tokio::fs::create_dir_all(downloads_dir.as_ref()).await?;
 
         Ok(Self {
+            block_handle_storage: block_handle_storage.clone(),
+            block_storage: block_storage.clone(),
             downloads_dir,
             state: Arc::new(ShardStateStorageState::new(db).await?),
             max_new_mc_cell_count: AtomicUsize::new(0),
@@ -55,10 +69,19 @@ impl ShardStateStorage {
 
     pub async fn store_state(
         &self,
-        block_id: &ton_block::BlockIdExt,
-        root: ton_types::Cell,
-    ) -> Result<()> {
-        let cell_id = root.repr_hash();
+        handle: &Arc<BlockHandle>,
+        state: &ShardStateStuff,
+    ) -> Result<bool> {
+        if handle.id() != state.block_id() {
+            return Err(ShardStateStorageError::BlockHandleIdMismatch.into());
+        }
+
+        if handle.meta().has_state() {
+            return Ok(false);
+        }
+
+        let block_id = handle.id();
+        let cell_id = state.root_cell().repr_hash();
 
         let current_marker = self.state.current_marker.read().await;
 
@@ -71,10 +94,11 @@ impl ShardStateStorage {
             _ => *current_marker,
         };
 
-        let len = self
-            .state
-            .cell_storage
-            .store_dynamic_boc(&mut batch, marker, root)?;
+        let len = self.state.cell_storage.store_dynamic_boc(
+            &mut batch,
+            marker,
+            state.root_cell().clone(),
+        )?;
 
         if block_id.shard_id.is_masterchain() {
             self.max_new_mc_cell_count.fetch_max(len, Ordering::Release);
@@ -90,16 +114,26 @@ impl ShardStateStorage {
 
         self.state.shard_state_db.raw_db_handle().write(batch)?;
 
-        Ok(())
+        Ok(if handle.meta().set_has_state() {
+            self.block_handle_storage.store_handle(handle)?;
+            true
+        } else {
+            false
+        })
     }
 
-    pub async fn load_state(&self, block_id: &ton_block::BlockIdExt) -> Result<ton_types::Cell> {
+    pub async fn load_state(
+        &self,
+        block_id: &ton_block::BlockIdExt,
+    ) -> Result<Arc<ShardStateStuff>> {
         let shard_state = self.state.shard_state_db.get(block_id.to_vec())?;
         match shard_state {
             Some(root) => {
                 let cell_id = UInt256::from_be_bytes(&root);
                 let cell = self.state.cell_storage.load_cell(cell_id)?;
-                Ok(ton_types::Cell::with_cell_impl_arc(cell))
+
+                ShardStateStuff::new(block_id.clone(), ton_types::Cell::with_cell_impl_arc(cell))
+                    .map(Arc::new)
             }
             None => Err(ShardStateStorageError::NotFound.into()),
         }
@@ -121,21 +155,61 @@ impl ShardStateStorage {
         ))
     }
 
-    pub async fn gc(&self, top_blocks: &TopBlocks) -> Result<()> {
+    pub async fn remove_outdated_states(
+        &self,
+        mc_block_id: &ton_block::BlockIdExt,
+    ) -> Result<TopBlocks> {
+        let top_blocks = match self.block_handle_storage.load_handle(mc_block_id)? {
+            Some(handle) => {
+                let state = self
+                    .load_state(handle.id())
+                    .await
+                    .context("Failed to load shard state for top block")?;
+                let state_extra = state.shard_state_extra()?;
+
+                let block_data = self.block_storage.load_block_data(&handle).await?;
+                let block_info = block_data
+                    .block()
+                    .read_info()
+                    .context("Failed to read block info")?;
+
+                let target_block_id = state_extra
+                    .prev_blocks
+                    .get(&block_info.min_ref_mc_seqno())
+                    .context("Failed to find min ref mc block id")?
+                    .context("Prev ref mc not found")?
+                    .master_block_id()
+                    .1;
+
+                let target_block_handle = self
+                    .block_handle_storage
+                    .load_handle(&target_block_id)
+                    .context("Failed to find min ref mc block handle")?
+                    .context("Prev ref mc handle not found")?;
+
+                self.block_storage
+                    .load_block_data(&target_block_handle)
+                    .await
+                    .and_then(|block_data| TopBlocks::from_mc_block(&block_data))?
+            }
+            None => return Err(ShardStateStorageError::NotFound.into()),
+        };
+
         log::info!(
             "Starting shard states GC for target block: {}",
             top_blocks.mc_block
         );
         let instant = Instant::now();
 
-        self.state.gc(top_blocks).await?;
+        self.state.gc(&top_blocks).await?;
 
         log::info!(
             "Finished shard states GC for target block: {}. Took: {} ms",
             top_blocks.mc_block,
             instant.elapsed().as_millis()
         );
-        Ok(())
+
+        Ok(top_blocks)
     }
 }
 
@@ -682,6 +756,8 @@ enum ShardStateStorageError {
     NotFound,
     #[error("Invalid states GC step")]
     InvalidStatesGcStep,
+    #[error("Block handle id mismatch")]
+    BlockHandleIdMismatch,
 }
 
 #[cfg(test)]

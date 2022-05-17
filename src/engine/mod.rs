@@ -231,8 +231,9 @@ impl Engine {
 
         blocks_gc_state.enabled.store(true, Ordering::Release);
 
-        let handle = self.db.find_last_key_block()?;
+        let handle = self.db.block_handle_storage().find_last_key_block()?;
         self.db
+            .block_storage()
             .remove_outdated_blocks(
                 handle.id(),
                 blocks_gc_state.max_blocks_per_batch,
@@ -257,7 +258,7 @@ impl Engine {
                     .block_handle_storage()
                     .load_handle(&block_id)?
                     .context("Min ref block handle not found")?;
-                let block = db.load_block_data(&handle).await?;
+                let block = db.block_storage().load_block_data(&handle).await?;
                 let info = block.block().read_info()?;
                 Ok(info.min_ref_mc_seqno())
             }
@@ -292,7 +293,8 @@ impl Engine {
                         None => 0..until_id,
                     };
 
-                    let mut archives_iter = engine.db.get_archives(range).peekable();
+                    let mut archives_iter =
+                        engine.db.block_storage().get_archives(range).peekable();
                     while let Some((archive_id, archive_data)) = archives_iter.next() {
                         // Skip latest archive
                         if archives_iter.peek().is_none() {
@@ -324,10 +326,11 @@ impl Engine {
             ArchivesGcInterval::Manual => Ok(()),
             ArchivesGcInterval::PersistentStates { offset_sec } => {
                 // Get current persistent state
-                let last_key_block = self.db.find_last_key_block()?;
+                let last_key_block = self.db.block_handle_storage().find_last_key_block()?;
                 let prev_persistent_key_block = self
                     .db
-                    .find_prev_persistent_key_block(last_key_block.id())?;
+                    .block_handle_storage()
+                    .find_prev_persistent_key_block(last_key_block.id().seq_no)?;
 
                 let engine = self.clone();
                 tokio::spawn(async move {
@@ -355,7 +358,8 @@ impl Engine {
                             );
                         }
 
-                        if let Err(e) = engine.db.remove_outdated_archives(until_id) {
+                        if let Err(e) = engine.db.block_storage().remove_outdated_archives(until_id)
+                        {
                             log::error!("Failed to remove outdated archives: {e:?}");
                         }
 
@@ -426,7 +430,8 @@ impl Engine {
                     }
                 };
 
-                match engine.db.remove_outdated_states(&block_id).await {
+                let shard_state_storage = engine.db.shard_state_storage();
+                match shard_state_storage.remove_outdated_states(&block_id).await {
                     Ok(top_blocks) => engine.shard_states_cache.remove(&top_blocks),
                     Err(e) => log::error!("Failed to GC state: {e:?}"),
                 }
@@ -492,10 +497,6 @@ impl Engine {
             .await?;
         overlay.broadcast_external_message(data).await;
         Ok(())
-    }
-
-    pub fn remove_outdated_archives(&self, until_id: u32) -> Result<()> {
-        self.db.remove_outdated_archives(until_id)
     }
 
     pub fn init_mc_block_id(&self) -> &ton_block::BlockIdExt {
@@ -614,8 +615,9 @@ impl Engine {
         loop {
             if let Some(handle) = db.block_handle_storage().load_handle(block_id)? {
                 if handle.meta().has_data() {
-                    let block = db.load_block_data(&handle).await?;
+                    let block = db.block_storage().load_block_data(&handle).await?;
                     let block_proof = db
+                        .block_storage()
                         .load_block_proof(&handle, !block_id.shard().is_masterchain())
                         .await?;
 
@@ -690,9 +692,11 @@ impl Engine {
     pub async fn load_last_key_block(&self) -> Result<BlockStuff> {
         let handle = self
             .db
+            .block_handle_storage()
             .find_last_key_block()
             .context("Failed to find last key block")?;
         self.db
+            .block_storage()
             .load_block_data(&handle)
             .await
             .context("Failed to load key block data")
@@ -722,7 +726,7 @@ impl Engine {
                 .await?
             {
                 if let Some(handle) = db.block_handle_storage().load_handle(&next1_id)? {
-                    let block = db.load_block_data(&handle).await?;
+                    let block = db.block_storage().load_block_data(&handle).await?;
                     return Ok((handle, block));
                 }
             }
@@ -738,7 +742,7 @@ impl Engine {
         loop {
             if let Some(handle) = db.block_handle_storage().load_handle(block_id)? {
                 if handle.meta().is_applied() {
-                    let block = db.load_block_data(&handle).await?;
+                    let block = db.block_storage().load_block_data(&handle).await?;
                     return Ok((handle, block));
                 }
             }
@@ -810,7 +814,7 @@ impl Engine {
             return Ok(state);
         }
 
-        let state = self.db.load_shard_state(block_id).await?;
+        let state = self.db.shard_state_storage().load_state(block_id).await?;
 
         self.shard_states_cache.set(block_id, || state.clone());
         Ok(state)
@@ -823,7 +827,10 @@ impl Engine {
     ) -> Result<()> {
         self.shard_states_cache.set(handle.id(), || state.clone());
 
-        self.db.store_shard_state(handle, state.as_ref()).await?;
+        self.db
+            .shard_state_storage()
+            .store_state(handle, state.as_ref())
+            .await?;
 
         self.shard_states_operations
             .do_or_wait(state.block_id(), None, futures::future::ok(state.clone()))
@@ -880,18 +887,21 @@ impl Engine {
         if handle.meta().is_applied() {
             return Ok(false);
         }
-        self.db.assign_mc_ref_seq_no(handle, mc_seq_no)?;
+        self.db
+            .block_handle_storage()
+            .assign_mc_ref_seq_no(handle, mc_seq_no)?;
 
         if self.archive_options.is_some() {
-            self.db.archive_block(handle).await?;
+            self.db.block_storage().move_into_archive(handle).await?;
         }
 
-        let applied = self.db.store_block_applied(handle)?;
+        let applied = self.db.block_handle_storage().store_block_applied(handle)?;
 
         if handle.is_key_block() {
             if let Some(blocks_gc) = &self.blocks_gc_state {
                 if blocks_gc.enabled.load(Ordering::Acquire) {
                     self.db
+                        .block_storage()
                         .remove_outdated_blocks(
                             handle.id(),
                             blocks_gc.max_blocks_per_batch,
@@ -965,7 +975,7 @@ impl Engine {
 
                         // Apply block
                         let operation = async {
-                            let block = db.load_block_data(&handle).await?;
+                            let block = db.block_storage().load_block_data(&handle).await?;
                             apply_block(self, &handle, &block, mc_seq_no, pre_apply, depth).await?;
                             Ok(())
                         };
@@ -1022,8 +1032,9 @@ impl Engine {
                 }
 
                 self.check_block_proof(&block_proof).await?;
-                let handle = db.store_block_data(&block).await?.handle;
+                let handle = db.block_storage().store_block_data(&block).await?.handle;
                 let handle = db
+                    .block_storage()
                     .store_block_proof(block_id, Some(handle), &block_proof)
                     .await?
                     .handle;
@@ -1161,7 +1172,7 @@ impl Engine {
             let handle = db
                 .block_handle_storage()
                 .load_key_block_handle(prev_key_block_seqno)?;
-            let prev_key_block_proof = db.load_block_proof(&handle, false).await?;
+            let prev_key_block_proof = db.block_storage().load_block_proof(&handle, false).await?;
 
             if let Err(e) = check_with_prev_key_block_proof(
                 block_proof,
@@ -1294,7 +1305,10 @@ impl ProcessBlockContext<'_> {
     pub async fn load_block_data(&self) -> Result<Vec<u8>> {
         match self.block_data {
             Some(data) => Ok(data.to_vec()),
-            None => self.engine.db.load_block_data_raw(self.handle).await,
+            None => {
+                let block_storage = self.engine.db.block_storage();
+                block_storage.load_block_data_raw(self.handle).await
+            }
         }
     }
 
@@ -1304,8 +1318,8 @@ impl ProcessBlockContext<'_> {
                 BlockProofStuff::deserialize(self.handle.id().clone(), data, !self.is_masterchain())
             }
             None => {
-                self.engine
-                    .db
+                let block_storage = self.engine.db.block_storage();
+                block_storage
                     .load_block_proof(self.handle, !self.is_masterchain())
                     .await
             }
@@ -1316,8 +1330,8 @@ impl ProcessBlockContext<'_> {
         match self.block_proof_data {
             Some(data) => Ok(data.to_vec()),
             None => {
-                self.engine
-                    .db
+                let block_storage = self.engine.db.block_storage();
+                block_storage
                     .load_block_proof_raw(self.handle, !self.is_masterchain())
                     .await
             }

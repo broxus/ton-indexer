@@ -21,8 +21,12 @@ impl<'a, T> DownloadContext<'a, T> {
             Some(handle) => {
                 let mut is_link = false;
                 if handle.meta().has_data() && handle.has_proof_or_link(&mut is_link) {
-                    let block = self.db.load_block_data(&handle).await?;
-                    let block_proof = self.db.load_block_proof(&handle, is_link).await?;
+                    let block = self.db.block_storage().load_block_data(&handle).await?;
+                    let block_proof = self
+                        .db
+                        .block_storage()
+                        .load_block_proof(&handle, is_link)
+                        .await?;
                     Ok(Some((
                         BlockStuffAug::loaded(block),
                         BlockProofStuffAug::loaded(block_proof),
@@ -74,7 +78,11 @@ impl Downloader for BlockProofDownloader {
         {
             let mut is_link = false;
             if handle.has_proof_or_link(&mut is_link) {
-                let proof = context.db.load_block_proof(&handle, is_link).await?;
+                let proof = context
+                    .db
+                    .block_storage()
+                    .load_block_proof(&handle, is_link)
+                    .await?;
                 return Ok(Some(Self::Item::loaded(proof)));
             }
         }

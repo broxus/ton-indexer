@@ -17,13 +17,16 @@ use parking_lot::RwLock;
 use ton_types::ByteOrderRead;
 
 use super::{
-    columns, ArchivePackageError, ArchivePackageVerifier, BlockHandle, PackageEntryId, StoredValue,
-    TopBlocks, Tree,
+    columns, BlockHandle, BlockHandleStorage, Column, HandleCreationStatus, RuntimeStorage,
+    StoredValue, Tree,
 };
+use crate::config::BlocksGcKind;
 use crate::utils::*;
 
 pub struct BlockStorage {
-    db: Arc<rocksdb::DB>,
+    runtime_storage: Arc<RuntimeStorage>,
+    block_handle_storage: Arc<BlockHandleStorage>,
+
     archives: Tree<columns::Archives>,
     package_entries: Tree<columns::PackageEntries>,
     block_handles: Tree<columns::BlockHandles>,
@@ -32,9 +35,14 @@ pub struct BlockStorage {
 }
 
 impl BlockStorage {
-    pub fn with_db(db: &Arc<rocksdb::DB>) -> Result<Self> {
+    pub fn with_db(
+        db: &Arc<rocksdb::DB>,
+        runtime_storage: &Arc<RuntimeStorage>,
+        block_handle_storage: &Arc<BlockHandleStorage>,
+    ) -> Result<Self> {
         let manager = Self {
-            db: db.clone(),
+            runtime_storage: runtime_storage.clone(),
+            block_handle_storage: block_handle_storage.clone(),
             archives: Tree::new(db)?,
             package_entries: Tree::new(db)?,
             block_handles: Tree::new(db)?,
@@ -77,141 +85,180 @@ impl BlockStorage {
         Ok(())
     }
 
-    pub fn add_data<I>(&self, id: &PackageEntryId<I>, data: &[u8]) -> Result<()>
-    where
-        I: Borrow<ton_block::BlockIdExt> + Hash,
-    {
-        self.package_entries.insert(id.to_vec(), data)
-    }
+    pub async fn store_block_data(&self, block: &BlockStuffAug) -> Result<StoreBlockResult> {
+        let (handle, status) = self.block_handle_storage.create_or_load_handle(
+            block.id(),
+            Some(block.block()),
+            None,
+        )?;
 
-    pub fn has_data<I>(&self, id: &PackageEntryId<I>) -> Result<bool>
-    where
-        I: Borrow<ton_block::BlockIdExt> + Hash,
-    {
-        self.package_entries.contains_key(id.to_vec())
-    }
+        let archive_id = PackageEntryId::Block(handle.id());
+        let mut updated = false;
+        if !handle.meta().has_data() || !self.has_data(&archive_id)? {
+            let data = block.new_archive_data()?;
 
-    pub async fn get_data<I>(&self, handle: &BlockHandle, id: &PackageEntryId<I>) -> Result<Vec<u8>>
-    where
-        I: Borrow<ton_block::BlockIdExt> + Hash,
-    {
-        let _lock = match &id {
-            PackageEntryId::Block(_) => handle.block_data_lock().read().await,
-            PackageEntryId::Proof(_) | PackageEntryId::ProofLink(_) => {
-                handle.proof_data_lock().read().await
+            let _lock = handle.block_data_lock().write().await;
+            if !handle.meta().has_data() || !self.has_data(&archive_id)? {
+                self.add_data(&archive_id, data)?;
+                if handle.meta().set_has_data() {
+                    self.block_handle_storage.store_handle(&handle)?;
+                    updated = true;
+                }
             }
-        };
-
-        match self.package_entries.get(id.to_vec())? {
-            Some(a) => Ok(a.to_vec()),
-            None => Err(ArchiveManagerError::InvalidBlockData.into()),
         }
+
+        if handle.id().shard_id.is_masterchain() && handle.is_key_block() {
+            self.runtime_storage
+                .update_last_known_key_block_seqno(handle.id().seq_no);
+        }
+
+        Ok(StoreBlockResult {
+            handle,
+            updated,
+            new: status == HandleCreationStatus::Created,
+        })
     }
 
-    pub async fn get_data_ref<'a, I>(
+    pub async fn load_block_data(&self, handle: &BlockHandle) -> Result<BlockStuff> {
+        let raw_block = self.load_block_data_raw_ref(handle).await?;
+        BlockStuff::deserialize(handle.id().clone(), raw_block.as_ref())
+    }
+
+    pub async fn load_block_data_raw(&self, handle: &BlockHandle) -> Result<Vec<u8>> {
+        if !handle.meta().has_data() {
+            return Err(BlockStorageError::BlockDataNotFound.into());
+        }
+        self.get_data(handle, &PackageEntryId::Block(handle.id()))
+            .await
+    }
+
+    pub async fn load_block_data_raw_ref<'a>(
         &'a self,
         handle: &'a BlockHandle,
-        id: &PackageEntryId<I>,
-    ) -> Result<impl AsRef<[u8]> + 'a>
-    where
-        I: Borrow<ton_block::BlockIdExt> + Hash,
-    {
-        let lock = match id {
-            PackageEntryId::Block(_) => handle.block_data_lock().read().await,
-            PackageEntryId::Proof(_) | PackageEntryId::ProofLink(_) => {
-                handle.proof_data_lock().read().await
-            }
-        };
-
-        match self.package_entries.get(id.to_vec())? {
-            Some(data) => Ok(BlockContentsLock { _lock: lock, data }),
-            None => Err(ArchiveManagerError::InvalidBlockData.into()),
+    ) -> Result<impl AsRef<[u8]> + 'a> {
+        if !handle.meta().has_data() {
+            return Err(BlockStorageError::BlockDataNotFound.into());
         }
+        self.get_data_ref(handle, &PackageEntryId::Block(handle.id()))
+            .await
     }
 
-    pub fn gc(
+    pub async fn store_block_proof(
         &self,
-        max_blocks_per_batch: Option<usize>,
-        top_blocks: &TopBlocks,
-    ) -> Result<BlockGcStats> {
-        let mut stats = BlockGcStats::default();
+        block_id: &ton_block::BlockIdExt,
+        handle: Option<Arc<BlockHandle>>,
+        proof: &BlockProofStuffAug,
+    ) -> Result<StoreBlockResult> {
+        if matches!(&handle, Some(handle) if handle.id() != block_id) {
+            return Err(BlockStorageError::BlockHandleIdMismatch.into());
+        }
 
-        // Cache cfs before loop
-        let blocks_cf = self.package_entries.get_cf();
-        let block_handles_cf = self.block_handles.get_cf();
-        let key_blocks_cf = self.key_blocks.get_cf();
-        let raw_db = self.package_entries.raw_db_handle().clone();
+        if block_id != proof.id() {
+            return Err(BlockStorageError::BlockProofIdMismatch.into());
+        }
 
-        // Create batch
-        let mut batch = rocksdb::WriteBatch::default();
-        let mut batch_len = 0;
+        let (handle, status) = match handle {
+            Some(handle) => (handle, HandleCreationStatus::Fetched),
+            None => self.block_handle_storage.create_or_load_handle(
+                block_id,
+                Some(&proof.virtualize_block()?.0),
+                None,
+            )?,
+        };
 
-        // Iterate all entries and find expired items
-        let blocks_iter = self.package_entries.iterator(rocksdb::IteratorMode::Start);
-        for (key, _) in blocks_iter {
-            // Read only prefix with shard ident and seqno
-            let prefix = PackageEntryIdPrefix::from_slice(key.as_ref())?;
+        let mut updated = false;
+        if proof.is_link() {
+            let archive_id = PackageEntryId::ProofLink(block_id);
+            if !handle.meta().has_proof_link() || !self.has_data(&archive_id)? {
+                let data = proof.new_archive_data()?;
 
-            // Don't gc latest blocks
-            if top_blocks.contains_shard_seq_no(&prefix.shard_ident, prefix.seq_no) {
-                continue;
+                let _lock = handle.proof_data_lock().write().await;
+                if !handle.meta().has_proof_link() || !self.has_data(&archive_id)? {
+                    self.add_data(&archive_id, data)?;
+                    if handle.meta().set_has_proof_link() {
+                        self.block_handle_storage.store_handle(&handle)?;
+                        updated = true;
+                    }
+                }
             }
+        } else {
+            let archive_id = PackageEntryId::Proof(block_id);
+            if !handle.meta().has_proof() || !self.has_data(&archive_id)? {
+                let data = proof.new_archive_data()?;
 
-            // Additionally check whether this item is a key block
-            if prefix.seq_no == 0
-                || prefix.shard_ident.is_masterchain()
-                    && raw_db
-                        .get_pinned_cf_opt(
-                            &key_blocks_cf,
-                            prefix.seq_no.to_be_bytes(),
-                            self.key_blocks.read_config(),
-                        )?
-                        .is_some()
-            {
-                // Don't remove key blocks
-                continue;
-            }
-
-            // Add item to the batch
-            batch.delete_cf(&blocks_cf, &key);
-            stats.total_package_entries_removed += 1;
-            if prefix.shard_ident.is_masterchain() {
-                stats.mc_package_entries_removed += 1;
-            }
-
-            // Key structure:
-            // [workchain id, 4 bytes]
-            // [shard id, 8 bytes]
-            // [seqno, 4 bytes]
-            // [root hash, 32 bytes] <-
-            // ..
-            if key.len() >= 48 {
-                batch.delete_cf(&block_handles_cf, &key[16..48]);
-                stats.total_handles_removed += 1;
-            }
-
-            batch_len += 1;
-            if matches!(
-                max_blocks_per_batch,
-                Some(max_blocks_per_batch) if batch_len >= max_blocks_per_batch
-            ) {
-                log::info!(
-                    "Applying intermediate batch {}...",
-                    stats.total_package_entries_removed
-                );
-                let batch = std::mem::take(&mut batch);
-                raw_db.write(batch)?;
-                batch_len = 0;
+                let _lock = handle.proof_data_lock().write().await;
+                if !handle.meta().has_proof() || !self.has_data(&archive_id)? {
+                    self.add_data(&archive_id, data)?;
+                    if handle.meta().set_has_proof() {
+                        self.block_handle_storage.store_handle(&handle)?;
+                        updated = true;
+                    }
+                }
             }
         }
 
-        if batch_len > 0 {
-            log::info!("Applying final batch...");
-            raw_db.write(batch)?;
+        Ok(StoreBlockResult {
+            handle,
+            updated,
+            new: status == HandleCreationStatus::Created,
+        })
+    }
+
+    pub async fn load_block_proof(
+        &self,
+        handle: &BlockHandle,
+        is_link: bool,
+    ) -> Result<BlockProofStuff> {
+        let raw_proof = self.load_block_proof_raw_ref(handle, is_link).await?;
+        BlockProofStuff::deserialize(handle.id().clone(), raw_proof.as_ref(), is_link)
+    }
+
+    pub async fn load_block_proof_raw(
+        &self,
+        handle: &BlockHandle,
+        is_link: bool,
+    ) -> Result<Vec<u8>> {
+        let (archive_id, exists) = if is_link {
+            (
+                PackageEntryId::ProofLink(handle.id()),
+                handle.meta().has_proof_link(),
+            )
+        } else {
+            (
+                PackageEntryId::Proof(handle.id()),
+                handle.meta().has_proof(),
+            )
+        };
+
+        if !exists {
+            return Err(BlockStorageError::BlockProofNotFound.into());
         }
 
-        // Done
-        Ok(stats)
+        self.get_data(handle, &archive_id).await
+    }
+
+    pub async fn load_block_proof_raw_ref<'a>(
+        &'a self,
+        handle: &'a BlockHandle,
+        is_link: bool,
+    ) -> Result<impl AsRef<[u8]> + 'a> {
+        let (archive_id, exists) = if is_link {
+            (
+                PackageEntryId::ProofLink(handle.id()),
+                handle.meta().has_proof_link(),
+            )
+        } else {
+            (
+                PackageEntryId::Proof(handle.id()),
+                handle.meta().has_proof(),
+            )
+        };
+
+        if !exists {
+            return Err(BlockStorageError::BlockProofNotFound.into());
+        }
+
+        self.get_data_ref(handle, &archive_id).await
     }
 
     pub async fn move_into_archive(&self, handle: &BlockHandle) -> Result<()> {
@@ -282,7 +329,7 @@ impl BlockStorage {
             );
         }
         // 5. Execute transaction
-        self.db.write(batch)?;
+        self.archives.raw_db_handle().write(batch)?;
 
         // Block will be removed after blocks gc
 
@@ -321,7 +368,7 @@ impl BlockStorage {
                 handle.meta().to_vec(),
             );
         }
-        self.db.write(batch)?;
+        self.archives.raw_db_handle().write(batch)?;
 
         Ok(())
     }
@@ -400,9 +447,69 @@ impl BlockStorage {
                 let end = std::cmp::min(offset.saturating_add(limit), slice.len());
                 Ok(Some(slice[offset..end].to_vec()))
             }
-            Some(_) => Err(ArchiveManagerError::InvalidOffset.into()),
+            Some(_) => Err(BlockStorageError::InvalidOffset.into()),
             None => Ok(None),
         }
+    }
+
+    pub async fn remove_outdated_blocks(
+        &self,
+        key_block_id: &ton_block::BlockIdExt,
+        max_blocks_per_batch: Option<usize>,
+        gc_type: BlocksGcKind,
+    ) -> Result<()> {
+        // Find target block
+        let target_block = match gc_type {
+            BlocksGcKind::BeforePreviousKeyBlock => self
+                .block_handle_storage
+                .find_prev_key_block(key_block_id.seq_no)?,
+            BlocksGcKind::BeforePreviousPersistentState => self
+                .block_handle_storage
+                .find_prev_persistent_key_block(key_block_id.seq_no)?,
+        };
+
+        // Load target block data
+        let top_blocks = match target_block {
+            Some(handle) if handle.meta().has_data() => {
+                log::info!(
+                    "Starting blocks GC for key block: {key_block_id}. Target block: {}",
+                    handle.id()
+                );
+                self.load_block_data(&handle)
+                    .await
+                    .context("Failed to load target key block data")
+                    .and_then(|block_data| TopBlocks::from_mc_block(&block_data))
+                    .context("Failed to compute top blocks for target block")?
+            }
+            _ => {
+                log::info!("Blocks GC skipped for key block: {key_block_id}");
+                return Ok(());
+            }
+        };
+
+        // Remove all expired entries
+        let total_cached_handles_removed = self.block_handle_storage.gc_handles_cache(&top_blocks);
+
+        let db = self.package_entries.raw_db_handle().clone();
+        let BlockGcStats {
+            mc_package_entries_removed,
+            total_package_entries_removed,
+            total_handles_removed,
+        } = tokio::task::spawn_blocking(move || {
+            remove_blocks(&db, max_blocks_per_batch, &top_blocks)
+        })
+        .await??;
+
+        log::info!(
+            "Finished blocks GC for key block: {key_block_id}\n\
+             total_cached_handles_removed: {total_cached_handles_removed}\n\
+             mc_package_entries_removed: {mc_package_entries_removed}\n\
+             total_package_entries_removed: {total_package_entries_removed}\n\
+             total_handles_removed: {total_handles_removed}"
+        );
+
+        // Done
+        Ok(())
     }
 
     pub fn remove_outdated_archives(&self, until_id: u32) -> Result<()> {
@@ -440,10 +547,62 @@ impl BlockStorage {
             batch.delete_cf(&archives_cf, id.to_be_bytes());
         }
 
-        self.db.write(batch)?;
+        self.archives.raw_db_handle().write(batch)?;
 
         log::info!("Archives GC: done");
         Ok(())
+    }
+
+    fn add_data<I>(&self, id: &PackageEntryId<I>, data: &[u8]) -> Result<()>
+    where
+        I: Borrow<ton_block::BlockIdExt> + Hash,
+    {
+        self.package_entries.insert(id.to_vec(), data)
+    }
+
+    fn has_data<I>(&self, id: &PackageEntryId<I>) -> Result<bool>
+    where
+        I: Borrow<ton_block::BlockIdExt> + Hash,
+    {
+        self.package_entries.contains_key(id.to_vec())
+    }
+
+    async fn get_data<I>(&self, handle: &BlockHandle, id: &PackageEntryId<I>) -> Result<Vec<u8>>
+    where
+        I: Borrow<ton_block::BlockIdExt> + Hash,
+    {
+        let _lock = match &id {
+            PackageEntryId::Block(_) => handle.block_data_lock().read().await,
+            PackageEntryId::Proof(_) | PackageEntryId::ProofLink(_) => {
+                handle.proof_data_lock().read().await
+            }
+        };
+
+        match self.package_entries.get(id.to_vec())? {
+            Some(a) => Ok(a.to_vec()),
+            None => Err(BlockStorageError::InvalidBlockData.into()),
+        }
+    }
+
+    async fn get_data_ref<'a, I>(
+        &'a self,
+        handle: &'a BlockHandle,
+        id: &PackageEntryId<I>,
+    ) -> Result<impl AsRef<[u8]> + 'a>
+    where
+        I: Borrow<ton_block::BlockIdExt> + Hash,
+    {
+        let lock = match id {
+            PackageEntryId::Block(_) => handle.block_data_lock().read().await,
+            PackageEntryId::Proof(_) | PackageEntryId::ProofLink(_) => {
+                handle.proof_data_lock().read().await
+            }
+        };
+
+        match self.package_entries.get(id.to_vec())? {
+            Some(data) => Ok(BlockContentsLock { _lock: lock, data }),
+            None => Err(BlockStorageError::InvalidBlockData.into()),
+        }
     }
 
     fn compute_archive_id(&self, handle: &BlockHandle) -> u32 {
@@ -481,18 +640,124 @@ impl BlockStorage {
     {
         match self.package_entries.get(entry_id.to_vec())? {
             Some(data) => Ok(make_archive_segment(&entry_id.filename(), &data)),
-            None => Err(ArchiveManagerError::InvalidBlockData.into()),
+            None => Err(BlockStorageError::InvalidBlockData.into()),
         }
     }
 }
 
-pub struct PackageEntryIdPrefix {
-    pub shard_ident: ton_block::ShardIdent,
-    pub seq_no: u32,
+pub struct StoreBlockResult {
+    pub handle: Arc<BlockHandle>,
+    pub updated: bool,
+    pub new: bool,
+}
+
+fn remove_blocks(
+    db: &Arc<rocksdb::DB>,
+    max_blocks_per_batch: Option<usize>,
+    top_blocks: &TopBlocks,
+) -> Result<BlockGcStats> {
+    let mut stats = BlockGcStats::default();
+
+    // Cache cfs before loop
+    let blocks_cf = db
+        .cf_handle(columns::PackageEntries::NAME)
+        .expect("Shouldn't fail");
+    let block_handles_cf = db
+        .cf_handle(columns::BlockHandles::NAME)
+        .expect("Shouldn't fail");
+    let key_blocks_cf = db
+        .cf_handle(columns::KeyBlocks::NAME)
+        .expect("Shouldn't fail");
+
+    // Create batch
+    let mut batch = rocksdb::WriteBatch::default();
+    let mut batch_len = 0;
+
+    let mut package_entries_readopts = Default::default();
+    columns::PackageEntries::read_options(&mut package_entries_readopts);
+
+    let mut key_blocks_readopts = Default::default();
+    columns::KeyBlocks::read_options(&mut key_blocks_readopts);
+
+    // Iterate all entries and find expired items
+    let blocks_iter = db.iterator_cf_opt(
+        &blocks_cf,
+        package_entries_readopts,
+        rocksdb::IteratorMode::Start,
+    );
+    for (key, _) in blocks_iter {
+        // Read only prefix with shard ident and seqno
+        let prefix = PackageEntryIdPrefix::from_slice(key.as_ref())?;
+
+        // Don't gc latest blocks
+        if top_blocks.contains_shard_seq_no(&prefix.shard_ident, prefix.seq_no) {
+            continue;
+        }
+
+        // Additionally check whether this item is a key block
+        if prefix.seq_no == 0
+            || prefix.shard_ident.is_masterchain()
+                && db
+                    .get_pinned_cf_opt(
+                        &key_blocks_cf,
+                        prefix.seq_no.to_be_bytes(),
+                        &key_blocks_readopts,
+                    )?
+                    .is_some()
+        {
+            // Don't remove key blocks
+            continue;
+        }
+
+        // Add item to the batch
+        batch.delete_cf(&blocks_cf, &key);
+        stats.total_package_entries_removed += 1;
+        if prefix.shard_ident.is_masterchain() {
+            stats.mc_package_entries_removed += 1;
+        }
+
+        // Key structure:
+        // [workchain id, 4 bytes]
+        // [shard id, 8 bytes]
+        // [seqno, 4 bytes]
+        // [root hash, 32 bytes] <-
+        // ..
+        if key.len() >= 48 {
+            batch.delete_cf(&block_handles_cf, &key[16..48]);
+            stats.total_handles_removed += 1;
+        }
+
+        batch_len += 1;
+        if matches!(
+            max_blocks_per_batch,
+            Some(max_blocks_per_batch) if batch_len >= max_blocks_per_batch
+        ) {
+            log::info!(
+                "Applying intermediate batch {}...",
+                stats.total_package_entries_removed
+            );
+            let batch = std::mem::take(&mut batch);
+            db.write(batch)?;
+            batch_len = 0;
+        }
+    }
+
+    if batch_len > 0 {
+        log::info!("Applying final batch...");
+        db.write(batch)?;
+    }
+
+    // Done
+    Ok(stats)
+}
+
+struct PackageEntryIdPrefix {
+    shard_ident: ton_block::ShardIdent,
+    seq_no: u32,
 }
 
 impl PackageEntryIdPrefix {
-    pub fn from_slice(mut data: &[u8]) -> Result<Self> {
+    fn from_slice(mut data: &[u8]) -> Result<Self> {
         let reader = &mut data;
         let shard_ident = ton_block::ShardIdent::deserialize(reader)?;
         let seq_no = reader.read_be_u32()?;
@@ -526,7 +791,15 @@ pub const ARCHIVE_PACKAGE_SIZE: u32 = 100;
 pub const ARCHIVE_SLICE_SIZE: u32 = 20_000;
 
 #[derive(thiserror::Error, Debug)]
-enum ArchiveManagerError {
+enum BlockStorageError {
+    #[error("Block data not found")]
+    BlockDataNotFound,
+    #[error("Block proof not found")]
+    BlockProofNotFound,
+    #[error("Block handle id mismatch")]
+    BlockHandleIdMismatch,
+    #[error("Block proof id mismatch")]
+    BlockProofIdMismatch,
     #[error("Invalid block data")]
     InvalidBlockData,
     #[error("Offset is outside of the archive slice")]

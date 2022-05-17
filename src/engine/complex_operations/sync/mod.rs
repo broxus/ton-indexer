@@ -149,7 +149,10 @@ async fn import_shard_blocks_with_apply(engine: &Arc<Engine>, maps: &Arc<BlockMa
             .block_handle_storage()
             .load_handle(mc_block_id)?
             .ok_or(SyncError::MasterchainBlockNotFound)?;
-        let masterchain_block = db.load_block_data(&masterchain_handle).await?;
+        let masterchain_block = db
+            .block_storage()
+            .load_block_data(&masterchain_handle)
+            .await?;
         let shard_blocks = masterchain_block.shard_blocks()?;
 
         // Start applying blocks for each shard
@@ -177,12 +180,21 @@ async fn import_shard_blocks_with_apply(engine: &Arc<Engine>, maps: &Arc<BlockMa
                 }
 
                 // Get block data or load it from db
+                let block_storage = db.block_storage();
                 let block = match maps.blocks.get(&id) {
                     Some(entry) => match &entry.block {
                         Some(block) => Some(Cow::Borrowed(&block.data)),
-                        None => db.load_block_data(&handle).await.ok().map(Cow::Owned),
+                        None => block_storage
+                            .load_block_data(&handle)
+                            .await
+                            .ok()
+                            .map(Cow::Owned),
                     },
-                    None => db.load_block_data(&handle).await.ok().map(Cow::Owned),
+                    None => block_storage
+                        .load_block_data(&handle)
+                        .await
+                        .ok()
+                        .map(Cow::Owned),
                 };
 
                 // TODO:
@@ -269,7 +281,7 @@ impl<'a> BackgroundSyncContext<'a> {
 
         self.engine
             .db
-            .background_sync_store()
+            .node_state()
             .store_background_sync_start(highest_id)?;
         log::info!("sync: Saved archive from {} to {}", lowest_id, highest_id);
 
@@ -284,6 +296,9 @@ impl<'a> BackgroundSyncContext<'a> {
     }
 
     async fn import_mc_blocks(&mut self, maps: &Arc<BlockMaps>) -> Result<()> {
+        let block_handle_storage = self.engine.db.block_handle_storage();
+        let block_storage = self.engine.db.block_storage();
+
         for id in maps.mc_block_ids.values() {
             // Skip already saved blocks
             if id.seq_no <= self.from {
@@ -304,11 +319,11 @@ impl<'a> BackgroundSyncContext<'a> {
             let handle = save_block(self.engine, id, block, block_proof).await?;
 
             // Assign valid masterchain id
-            self.engine.db.assign_mc_ref_seq_no(&handle, id.seq_no)?;
+            block_handle_storage.assign_mc_ref_seq_no(&handle, id.seq_no)?;
 
             // Archive block
             if self.engine.archive_options.is_some() {
-                self.engine.db.archive_block(&handle).await?;
+                block_storage.move_into_archive(&handle).await?;
             }
 
             // Notify subscribers
@@ -331,6 +346,9 @@ impl<'a> BackgroundSyncContext<'a> {
         maps: &Arc<BlockMaps>,
         edge: &mut BlockMapsEdge,
     ) -> Result<()> {
+        let block_handle_storage = self.engine.db.block_handle_storage();
+        let block_storage = self.engine.db.block_storage();
+
         for (id, entry) in &maps.blocks {
             if !id.shard_id.is_masterchain() {
                 let (block, block_proof) = entry.get_data()?;
@@ -349,12 +367,10 @@ impl<'a> BackgroundSyncContext<'a> {
                 break;
             }
 
-            let db = &self.engine.db;
-            let mc_handle = db
-                .block_handle_storage()
+            let mc_handle = block_handle_storage
                 .load_handle(mc_block_id)?
                 .ok_or(SyncError::MasterchainBlockNotFound)?;
-            let mc_block = db.load_block_data(&mc_handle).await?;
+            let mc_block = block_storage.load_block_data(&mc_handle).await?;
             let shard_blocks = mc_block.shard_blocks()?;
 
             let new_edge = BlockMapsEdge {
@@ -370,7 +386,8 @@ impl<'a> BackgroundSyncContext<'a> {
                 let engine = self.engine.clone();
                 let maps = maps.clone();
                 tasks.push(tokio::spawn(async move {
-                    let db = &engine.db;
+                    let block_handle_storage = engine.db.block_handle_storage();
+                    let block_storage = engine.db.block_storage();
 
                     let mut blocks_to_add = Vec::new();
 
@@ -400,17 +417,16 @@ impl<'a> BackgroundSyncContext<'a> {
                     });
 
                     while let Some((block, block_proof)) = blocks_to_add.pop() {
-                        let handle = db
-                            .block_handle_storage()
+                        let handle = block_handle_storage
                             .load_handle(block.data.id())?
                             .ok_or(SyncError::ShardchainBlockHandleNotFound)?;
 
                         // Assign valid masterchain id
-                        db.assign_mc_ref_seq_no(&handle, mc_seq_no)?;
+                        block_handle_storage.assign_mc_ref_seq_no(&handle, mc_seq_no)?;
 
                         // Archive block
                         if engine.archive_options.is_some() {
-                            db.archive_block(&handle).await?;
+                            block_storage.move_into_archive(&handle).await?;
                         }
 
                         // Notify subscribers
@@ -469,6 +485,7 @@ async fn save_block(
             block_proof.check_with_master_state(&zero_state)?;
         } else {
             let prev_key_block_proof = db
+                .block_storage()
                 .load_block_proof(&handle, false)
                 .await
                 .context("Failed to load prev key block proof")?;
@@ -486,8 +503,9 @@ async fn save_block(
         }
     }
 
-    let handle = db.store_block_data(block).await?.handle;
+    let handle = db.block_storage().store_block_data(block).await?.handle;
     let handle = db
+        .block_storage()
         .store_block_proof(block_id, Some(handle), block_proof)
         .await?
         .handle;
@@ -508,11 +526,11 @@ impl Engine {
     }
 
     fn background_sync_range(&self, from_seqno: u32) -> Result<(u32, u32)> {
-        let store = self.db.background_sync_store();
+        let state = self.db.node_state();
 
         log::info!("sync: Download previous history sync since block {from_seqno}");
 
-        let low = match store.load_background_sync_start()? {
+        let low = match state.load_background_sync_start()? {
             Some(low) => {
                 log::warn!(
                     "sync: Ignoring `from_seqno` param, using saved seqno: {}",
@@ -523,7 +541,7 @@ impl Engine {
             None => from_seqno.saturating_sub(1),
         };
 
-        let high = store.load_background_sync_end()?.seq_no;
+        let high = state.load_background_sync_end()?.seq_no;
 
         Ok((low, high))
     }

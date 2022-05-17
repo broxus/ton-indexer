@@ -106,12 +106,13 @@ async fn load_next_masterchain_block(
                     block.id()
                 );
             }
-            db.store_block_data(&block).await?.handle
+            db.block_storage().store_block_data(&block).await?.handle
         }
     };
 
     if !next_handle.meta().has_proof() {
         next_handle = db
+            .block_storage()
             .store_block_proof(block.id(), Some(next_handle), &block_proof)
             .await?
             .handle;
@@ -204,7 +205,7 @@ pub async fn process_block_broadcast(
             let catchain_config = config_params.catchain_config()?;
             (CheckWith::State(zerostate), validator_set, catchain_config)
         } else {
-            let proof = db.load_block_proof(&handle, false).await?;
+            let proof = db.block_storage().load_block_proof(&handle, false).await?;
             let (validator_set, catchain_config) = proof.get_cur_validators_set()?;
             (CheckWith::KeyBlock(proof), validator_set, catchain_config)
         }
@@ -225,7 +226,7 @@ pub async fn process_block_broadcast(
 
     let block = BlockStuff::deserialize_checked(block_id.clone(), &broadcast.data)?;
     let block = BlockStuffAug::new(block, broadcast.data.0);
-    let mut handle = match db.store_block_data(&block).await? {
+    let mut handle = match db.block_storage().store_block_data(&block).await? {
         result if result.updated => result.handle,
         // Skipped apply for block broadcast because the block is already being processed
         _ => return Ok(()),
@@ -233,6 +234,7 @@ pub async fn process_block_broadcast(
 
     if !handle.meta().has_proof() {
         handle = match db
+            .block_storage()
             .store_block_proof(
                 &block_id,
                 Some(handle),

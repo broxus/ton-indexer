@@ -35,7 +35,7 @@ pub async fn boot(engine: &Arc<Engine>) -> Result<BootData> {
 
             engine
                 .db
-                .background_sync_store()
+                .node_state()
                 .store_background_sync_end(&last_mc_block_id)?;
 
             last_mc_block_id
@@ -81,9 +81,8 @@ async fn warm_boot(
     mut last_mc_block_id: ton_block::BlockIdExt,
 ) -> Result<ton_block::BlockIdExt> {
     log::info!("Starting warm boot");
-    let db = &engine.db;
-    let handle = db
-        .block_handle_storage()
+    let block_handle_storage = engine.db.block_handle_storage();
+    let handle = block_handle_storage
         .load_handle(&last_mc_block_id)?
         .ok_or(BootError::FailedToLoadInitialBlock)?;
 
@@ -106,7 +105,8 @@ async fn warm_boot(
 }
 
 async fn prepare_cold_boot_data(engine: &Arc<Engine>) -> Result<ColdBootData> {
-    let db = &engine.db;
+    let block_handle_storage = engine.db.block_handle_storage();
+    let block_storage = engine.db.block_storage();
 
     let block_id = engine.init_mc_block_id();
     log::info!("Cold boot from {}", block_id);
@@ -117,14 +117,14 @@ async fn prepare_cold_boot_data(engine: &Arc<Engine>) -> Result<ColdBootData> {
         Ok(ColdBootData::ZeroState { handle, state })
     } else {
         log::info!("Using key block");
-        let handle = match db.block_handle_storage().load_handle(block_id)? {
+        let handle = match block_handle_storage.load_handle(block_id)? {
             Some(handle) => {
                 if handle.meta().has_proof_link() || handle.meta().has_proof() {
-                    let proof = match db.load_block_proof(&handle, true).await {
+                    let proof = match block_storage.load_block_proof(&handle, true).await {
                         Ok(proof) => proof,
                         Err(e) => {
                             log::warn!("Failed to load block proof as link: {}", e);
-                            db.load_block_proof(&handle, false).await?
+                            block_storage.load_block_proof(&handle, false).await?
                         }
                     };
 
@@ -149,7 +149,10 @@ async fn prepare_cold_boot_data(engine: &Arc<Engine>) -> Result<ColdBootData> {
             {
                 Ok(proof) => match proof.check_proof_link() {
                     Ok(_) => {
-                        let handle = db.store_block_proof(block_id, handle, &proof).await?.handle;
+                        let handle = block_storage
+                            .store_block_proof(block_id, handle, &proof)
+                            .await?
+                            .handle;
                         break (handle, proof);
                     }
                     Err(e) => {
@@ -275,10 +278,11 @@ async fn download_key_block_proof(
     boot_data: &ColdBootData,
     good_peer: &Option<Arc<tiny_adnl::Neighbour>>,
 ) -> Result<(Arc<BlockHandle>, BlockProofStuff)> {
-    let db = &engine.db;
+    let block_handle_storage = engine.db.block_handle_storage();
+    let block_storage = engine.db.block_storage();
 
-    if let Some(handle) = db.block_handle_storage().load_handle(block_id)? {
-        if let Ok(proof) = db.load_block_proof(&handle, false).await {
+    if let Some(handle) = block_handle_storage.load_handle(block_id)? {
+        if let Ok(proof) = block_storage.load_block_proof(&handle, false).await {
             return Ok((handle, proof));
         }
     }
@@ -305,7 +309,10 @@ async fn download_key_block_proof(
 
         match result {
             Ok(_) => {
-                let handle = db.store_block_proof(block_id, None, &proof).await?.handle;
+                let handle = block_storage
+                    .store_block_proof(block_id, None, &proof)
+                    .await?
+                    .handle;
                 return Ok((handle, proof.data));
             }
             Err(e) => {
@@ -431,24 +438,24 @@ async fn download_block_and_state(
     block_id: &ton_block::BlockIdExt,
     masterchain_block_id: &ton_block::BlockIdExt,
 ) -> Result<(Arc<BlockHandle>, BlockStuff)> {
-    let db = &engine.db;
+    let block_handle_storage = engine.db.block_handle_storage();
+    let block_storage = engine.db.block_storage();
 
-    let handle = db
-        .block_handle_storage()
+    let handle = block_handle_storage
         .load_handle(block_id)?
         .filter(|handle| handle.meta().has_data());
 
     log::info!("Downloading block state for {}", block_id);
 
     let (block, handle) = match handle {
-        Some(handle) => (db.load_block_data(&handle).await?, handle),
+        Some(handle) => (block_storage.load_block_data(&handle).await?, handle),
         None => {
             let (block, proof) = engine.download_block(block_id, None).await?;
             log::info!("Downloaded block {}", block_id);
 
-            let mut handle = db.store_block_data(&block).await?.handle;
+            let mut handle = block_storage.store_block_data(&block).await?.handle;
             if !handle.meta().has_proof() {
-                handle = db
+                handle = block_storage
                     .store_block_proof(block_id, Some(handle), &proof)
                     .await?
                     .handle;
