@@ -8,7 +8,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+use futures::future::BoxFuture;
+use futures::{FutureExt, StreamExt};
 use tiny_adnl::utils::*;
+use tokio::sync::mpsc;
 
 use crate::db::*;
 use crate::engine::Engine;
@@ -109,7 +112,7 @@ async fn prepare_cold_boot_data(engine: &Arc<Engine>) -> Result<ColdBootData> {
     let block_storage = engine.db.block_storage();
 
     let block_id = engine.init_mc_block_id();
-    log::info!("Cold boot from {}", block_id);
+    log::info!("Cold boot from {block_id}");
 
     if block_id.seq_no == 0 {
         log::info!("Using zero state");
@@ -123,7 +126,7 @@ async fn prepare_cold_boot_data(engine: &Arc<Engine>) -> Result<ColdBootData> {
                     let proof = match block_storage.load_block_proof(&handle, true).await {
                         Ok(proof) => proof,
                         Err(e) => {
-                            log::warn!("Failed to load block proof as link: {}", e);
+                            log::warn!("Failed to load block proof as link: {e}");
                             block_storage.load_block_proof(&handle, false).await?
                         }
                     };
@@ -156,11 +159,11 @@ async fn prepare_cold_boot_data(engine: &Arc<Engine>) -> Result<ColdBootData> {
                         break (handle, proof);
                     }
                     Err(e) => {
-                        log::warn!("Got invalid block proof for init block: {}", e);
+                        log::warn!("Got invalid block proof for init block: {e:?}");
                     }
                 },
                 Err(e) => {
-                    log::warn!("Failed to download block proof for init block: {}", e);
+                    log::warn!("Failed to download block proof for init block: {e:?}");
                 }
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
@@ -185,62 +188,206 @@ async fn get_key_blocks(
 
     let mut result = vec![handle.clone()];
 
-    let mut good_peer = None;
-    loop {
-        log::info!("Downloading next key blocks for: {}", handle.id());
+    let (tasks_tx, mut tasks_rx) = mpsc::unbounded_channel();
+    let (ids_tx, mut ids_rx) = mpsc::unbounded_channel();
 
-        let ids = match engine
-            .download_next_key_blocks_ids(handle.id(), good_peer.as_ref())
-            .await
-        {
-            Ok((ids, neighbour)) => {
-                good_peer = Some(neighbour);
-                ids
+    let (_guard, signal) = trigger_on_drop();
+
+    let mc_overlay = engine.get_masterchain_overlay().await?;
+    tokio::spawn(async move {
+        let mut good_peer = None;
+
+        tokio::pin! { let dropped = signal.cancelled(); }
+
+        while let Some(block_id) = tasks_rx.recv().await {
+            'inner: loop {
+                log::info!("Downloading next key blocks for: {block_id}");
+
+                let res = tokio::select! {
+                    res = mc_overlay.download_next_key_blocks_ids(
+                        &block_id,
+                        5,
+                        good_peer.as_ref()
+                    ) => res,
+                    _ = &mut dropped => return,
+                };
+
+                match res {
+                    Ok((ids, neighbour)) => {
+                        good_peer = Some(neighbour.clone());
+                        if ids_tx.send((ids, neighbour)).is_err() {
+                            return;
+                        }
+                        break 'inner;
+                    }
+                    Err(e) => {
+                        log::warn!("Failed to download next key block ids for {block_id}: {e:?}");
+                        good_peer = None;
+                    }
+                };
             }
-            Err(e) => {
-                log::warn!(
-                    "Failed to download next key block ids for {}: {}",
-                    handle.id(),
-                    e
-                );
-                good_peer = None;
+        }
+    });
+
+    tasks_tx.send(handle.id().clone()).ok();
+
+    while let Some((ids, neighbour)) = ids_rx.recv().await {
+        match ids.last() {
+            Some(block_id) => {
+                log::info!("Last key block id: {block_id}");
+                tasks_tx.send(block_id.clone()).ok();
+            }
+            None => {
+                tasks_tx.send(handle.id().clone()).ok();
                 continue;
             }
         };
 
-        if let Some(block_id) = ids.last() {
-            log::info!("Last key block id: {}", block_id);
-            for block_id in &ids {
-                let prev_utime = handle.meta().gen_utime();
-                let (next_handle, proof) =
-                    download_key_block_proof(engine, block_id, &boot_data, &good_peer).await?;
-                if is_persistent_state(next_handle.meta().gen_utime(), prev_utime) {
-                    engine.set_init_mc_block_id(block_id)?;
-                }
-
-                handle = next_handle;
-                result.push(handle.clone());
-                boot_data = ColdBootData::KeyBlock {
-                    handle: handle.clone(),
-                    proof: Box::new(proof),
-                };
+        // TODO: Invalidate queue (tasks_*) in case of bad block proof
+        let mut stream = BlockProofStream::new(engine, &mut boot_data, ids, &neighbour);
+        while let Some((next_handle, proof)) = stream.next().await? {
+            let prev_utime = handle.meta().gen_utime();
+            if is_persistent_state(next_handle.meta().gen_utime(), prev_utime) {
+                engine.set_init_mc_block_id(next_handle.id())?;
             }
+
+            handle = next_handle;
+            result.push(handle.clone());
+            *stream.boot_data = ColdBootData::KeyBlock {
+                handle: handle.clone(),
+                proof: Box::new(proof),
+            };
         }
 
         let last_utime = handle.meta().gen_utime() as i32;
         let current_utime = now();
 
         log::info!(
-            "Last known block: {}, utime: {}, now: {}",
+            "Last known block: {}, utime: {last_utime}, now: {current_utime}",
             handle.id(),
-            last_utime,
-            current_utime
         );
 
         if last_utime + INTITAL_SYNC_TIME_SECONDS > current_utime
             || last_utime + 2 * KEY_BLOCK_UTIME_STEP > current_utime
         {
-            return Ok(result);
+            break;
+        }
+    }
+
+    Ok(result)
+}
+
+struct BlockProofStream<'a> {
+    engine: &'a Engine,
+    boot_data: &'a mut ColdBootData,
+    ids: Vec<ton_block::BlockIdExt>,
+    neighbour: &'a Arc<tiny_adnl::Neighbour>,
+    futures: futures::stream::FuturesOrdered<BoxFuture<'a, BlockProofStuffAug>>,
+    index: usize,
+}
+
+impl<'a> BlockProofStream<'a> {
+    fn new(
+        engine: &'a Engine,
+        boot_data: &'a mut ColdBootData,
+        ids: Vec<ton_block::BlockIdExt>,
+        neighbour: &'a Arc<tiny_adnl::Neighbour>,
+    ) -> Self {
+        let mut stream = Self {
+            engine,
+            boot_data,
+            ids,
+            neighbour,
+            futures: Default::default(),
+            index: 0,
+        };
+        stream.restart();
+        stream
+    }
+
+    /// Waits next block proof
+    async fn next(&mut self) -> Result<Option<(Arc<BlockHandle>, BlockProofStuff)>> {
+        let block_id = match self.ids.get(self.index) {
+            Some(block_id) => block_id.clone(),
+            None => return Ok(None),
+        };
+
+        let block_handle_storage = self.engine.db.block_handle_storage();
+        let block_storage = self.engine.db.block_storage();
+
+        if let Some(handle) = block_handle_storage.load_handle(&block_id)? {
+            if let Ok(proof) = block_storage.load_block_proof(&handle, false).await {
+                self.index += 1;
+                return Ok(Some((handle, proof)));
+            }
+        }
+
+        loop {
+            let proof = match self.futures.next().await {
+                Some(proof) => proof,
+                None if self.index > self.ids.len() => return Ok(None),
+                None => {
+                    self.restart();
+                    continue;
+                }
+            };
+
+            let result = match self.boot_data {
+                ColdBootData::KeyBlock {
+                    proof: prev_proof, ..
+                } => proof
+                    .check_with_prev_key_block_proof(prev_proof)
+                    .or_else(|e| {
+                        if self.engine.is_hard_fork(&block_id) {
+                            log::warn!("Received hard fork key block {block_id}. Ignoring proof");
+                            Ok(())
+                        } else {
+                            Err(e)
+                        }
+                    }),
+                ColdBootData::ZeroState { state, .. } => proof.check_with_master_state(state),
+            };
+
+            match result {
+                Ok(_) => {
+                    let handle = block_storage
+                        .store_block_proof(&block_id, None, &proof)
+                        .await?
+                        .handle;
+                    self.index += 1;
+                    return Ok(Some((handle, proof.data)));
+                }
+                Err(e) => {
+                    self.restart();
+                    log::warn!("Got invalid key block proof: {e:?}");
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            }
+        }
+    }
+
+    /// Fills the stream with new futures
+    fn restart(&mut self) {
+        self.futures = futures::stream::FuturesOrdered::new();
+        for id in self.ids.iter().skip(self.index).cloned() {
+            let engine = self.engine;
+            let neighbour = self.neighbour;
+            self.futures.push(
+                async move {
+                    loop {
+                        match engine
+                            .download_block_proof(&id, false, true, None, Some(neighbour))
+                            .await
+                        {
+                            Ok(res) => return res,
+                            Err(e) => {
+                                log::error!("Failed to download block proof: {e:?}");
+                            }
+                        }
+                    }
+                }
+                .boxed(),
+            );
         }
     }
 }
@@ -270,57 +417,6 @@ fn choose_key_block(mut key_blocks: Vec<Arc<BlockHandle>>) -> Result<Arc<BlockHa
     }
 
     Err(BootError::PersistentShardStateNotFound.into())
-}
-
-async fn download_key_block_proof(
-    engine: &Arc<Engine>,
-    block_id: &ton_block::BlockIdExt,
-    boot_data: &ColdBootData,
-    good_peer: &Option<Arc<tiny_adnl::Neighbour>>,
-) -> Result<(Arc<BlockHandle>, BlockProofStuff)> {
-    let block_handle_storage = engine.db.block_handle_storage();
-    let block_storage = engine.db.block_storage();
-
-    if let Some(handle) = block_handle_storage.load_handle(block_id)? {
-        if let Ok(proof) = block_storage.load_block_proof(&handle, false).await {
-            return Ok((handle, proof));
-        }
-    }
-
-    loop {
-        let proof = engine
-            .download_block_proof(block_id, false, true, None, good_peer.as_ref())
-            .await?;
-        let result = match boot_data {
-            ColdBootData::KeyBlock {
-                proof: prev_proof, ..
-            } => proof
-                .check_with_prev_key_block_proof(prev_proof)
-                .or_else(|e| {
-                    if engine.is_hard_fork(block_id) {
-                        log::warn!("Received hard fork key block {}. Ignoring proof", block_id);
-                        Ok(())
-                    } else {
-                        Err(e)
-                    }
-                }),
-            ColdBootData::ZeroState { state, .. } => proof.check_with_master_state(state),
-        };
-
-        match result {
-            Ok(_) => {
-                let handle = block_storage
-                    .store_block_proof(block_id, None, &proof)
-                    .await?
-                    .handle;
-                return Ok((handle, proof.data));
-            }
-            Err(e) => {
-                log::warn!("Got invalid key block proof: {}", e);
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-        }
-    }
 }
 
 enum ColdBootData {

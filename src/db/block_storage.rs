@@ -30,7 +30,6 @@ pub struct BlockStorage {
     archives: Tree<columns::Archives>,
     package_entries: Tree<columns::PackageEntries>,
     block_handles: Tree<columns::BlockHandles>,
-    key_blocks: Tree<columns::KeyBlocks>,
     archive_ids: RwLock<BTreeSet<u32>>,
 }
 
@@ -46,7 +45,6 @@ impl BlockStorage {
             archives: Tree::new(db)?,
             package_entries: Tree::new(db)?,
             block_handles: Tree::new(db)?,
-            key_blocks: Tree::new(db)?,
             archive_ids: Default::default(),
         };
 

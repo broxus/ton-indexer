@@ -1,5 +1,5 @@
 use std::io::{Read, Write};
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Weak};
 
 use anyhow::{Context, Result};
@@ -292,12 +292,12 @@ pub struct StorageCell {
     cell_storage: Arc<CellStorage>,
     cell_data: ton_types::CellData,
     references: RwLock<SmallVec<[StorageCellReference; 4]>>,
-    tree_bits_count: AtomicU64,
-    tree_cell_count: AtomicU64,
+    tree_bits_count: u64,
+    tree_cell_count: u64,
 }
 
 impl StorageCell {
-    pub fn repr_hash(&self) -> ton_types::UInt256 {
+    pub fn repr_hash(&self) -> UInt256 {
         self.hash(ton_types::MAX_LEVEL as usize)
     }
 
@@ -331,8 +331,8 @@ impl StorageCell {
             cell_storage: boc_db,
             cell_data,
             references: RwLock::new(references),
-            tree_bits_count: AtomicU64::new(tree_bits_count),
-            tree_cell_count: AtomicU64::new(tree_cell_count),
+            tree_bits_count,
+            tree_cell_count,
         })
     }
 
@@ -437,11 +437,11 @@ impl CellImpl for StorageCell {
     }
 
     fn tree_bits_count(&self) -> u64 {
-        self.tree_bits_count.load(Ordering::Acquire)
+        self.tree_bits_count
     }
 
     fn tree_cell_count(&self) -> u64 {
-        self.tree_cell_count.load(Ordering::Acquire)
+        self.tree_cell_count
     }
 }
 

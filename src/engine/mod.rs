@@ -666,17 +666,6 @@ impl Engine {
         .await
     }
 
-    async fn download_next_key_blocks_ids(
-        &self,
-        block_id: &ton_block::BlockIdExt,
-        neighbour: Option<&Arc<tiny_adnl::Neighbour>>,
-    ) -> Result<(Vec<ton_block::BlockIdExt>, Arc<tiny_adnl::Neighbour>)> {
-        let mc_overlay = self.get_masterchain_overlay().await?;
-        mc_overlay
-            .download_next_key_blocks_ids(block_id, 5, neighbour)
-            .await
-    }
-
     async fn download_archive(
         &self,
         mc_block_seq_no: u32,
