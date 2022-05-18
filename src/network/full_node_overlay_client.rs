@@ -19,7 +19,7 @@ use crate::utils::*;
 pub struct FullNodeOverlayClient(pub Arc<OverlayClient>);
 
 impl FullNodeOverlayClient {
-    pub async fn broadcast_external_message(&self, message: &[u8]) {
+    pub fn broadcast_external_message(&self, message: &[u8]) {
         let this = &self.0;
 
         let broadcast = serialize_boxed(ton::ton_node::broadcast::ExternalMessageBroadcast {

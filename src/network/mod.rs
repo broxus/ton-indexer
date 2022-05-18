@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use global_config::*;
 use tiny_adnl::utils::*;
 use tiny_adnl::*;
@@ -28,8 +28,6 @@ pub struct NodeNetwork {
     rldp: Arc<RldpNode>,
     neighbours_options: NeighboursOptions,
     overlay_shard_options: OverlayShardOptions,
-    masterchain_overlay_short_id: OverlayIdShort,
-    masterchain_overlay_id: OverlayIdFull,
     overlays: Arc<FxDashMap<OverlayIdShort, Arc<OverlayClient>>>,
     overlay_awaiters: OperationsPool<OverlayIdShort, FullNodeOverlayClient>,
     working_state: Arc<WorkingState>,
@@ -74,12 +72,6 @@ impl NodeNetwork {
             dht.add_peer(peer)?;
         }
 
-        let masterchain_overlay_id = overlay.compute_overlay_id(
-            masterchain_zero_state_id.shard().workchain_id(),
-            masterchain_zero_state_id.shard().shard_prefix_with_tag() as i64,
-        );
-        let masterchain_overlay_short_id = masterchain_overlay_id.compute_short_id();
-
         let dht_key = adnl.key_by_tag(Self::TAG_DHT_KEY)?;
         log::info!("DHT adnl id: {}", dht_key.id());
         start_broadcasting_our_ip(working_state.clone(), dht.clone(), dht_key);
@@ -95,8 +87,6 @@ impl NodeNetwork {
             rldp,
             neighbours_options,
             overlay_shard_options,
-            masterchain_overlay_short_id,
-            masterchain_overlay_id,
             overlays: Arc::new(Default::default()),
             overlay_awaiters: OperationsPool::new("overlay_operations"),
             working_state,
@@ -127,7 +117,7 @@ impl NodeNetwork {
         self.overlay.metrics()
     }
 
-    pub async fn start(self: &Arc<Self>) -> Result<FullNodeOverlayClient> {
+    pub async fn start(self: &Arc<Self>) -> Result<()> {
         self.adnl
             .start(vec![
                 self.dht.clone(),
@@ -135,17 +125,6 @@ impl NodeNetwork {
                 self.rldp.clone(),
             ])
             .await
-            .context("Failed to start ADNL node")?;
-
-        let overlay = self
-            .get_overlay(
-                self.masterchain_overlay_id,
-                self.masterchain_overlay_short_id,
-            )
-            .await
-            .context("Failed to start masterchain overlay node")?;
-
-        Ok(overlay)
     }
 
     pub fn shutdown(&self) {
@@ -161,12 +140,10 @@ impl NodeNetwork {
         self.overlay.add_subscriber(overlay_id, subscriber);
     }
 
-    pub fn compute_overlay_id(
-        &self,
-        workchain: i32,
-        shard: u64,
-    ) -> (OverlayIdFull, OverlayIdShort) {
-        let full_id = self.overlay.compute_overlay_id(workchain, shard as i64);
+    pub fn compute_overlay_id(&self, workchain: i32) -> (OverlayIdFull, OverlayIdShort) {
+        let full_id = self
+            .overlay
+            .compute_overlay_id(workchain, ton_block::SHARD_FULL as i64);
         let short_id = full_id.compute_short_id();
         (full_id, short_id)
     }

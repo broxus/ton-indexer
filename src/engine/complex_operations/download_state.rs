@@ -26,12 +26,7 @@ pub async fn download_state(
     block_id: &ton_block::BlockIdExt,
     masterchain_block_id: &ton_block::BlockIdExt,
 ) -> Result<Arc<ShardStateStuff>> {
-    let overlay = engine
-        .get_full_node_overlay(
-            block_id.shard_id.workchain_id(),
-            block_id.shard_id.shard_prefix_with_tag(),
-        )
-        .await?;
+    let overlay = engine.masterchain_overlay.clone();
 
     let neighbour = loop {
         match overlay

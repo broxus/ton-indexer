@@ -43,6 +43,10 @@ pub struct Engine {
     blocks_gc_state: Option<BlocksGcState>,
     subscribers: Vec<Arc<dyn Subscriber>>,
     network: Arc<NodeNetwork>,
+
+    masterchain_overlay: FullNodeOverlayClient,
+    basechain_overlay: FullNodeOverlayClient,
+
     old_blocks_policy: OldBlocksPolicy,
     zero_state_id: ton_block::BlockIdExt,
     init_mc_block_id: ton_block::BlockIdExt,
@@ -121,7 +125,26 @@ impl Engine {
         )
         .await
         .context("Failed to init network")?;
+
         network.start().await.context("Failed to start network")?;
+
+        let (masterchain_overlay, basechain_overlay) = {
+            let (masterchain_full_id, masterchain_short_id) =
+                network.compute_overlay_id(ton_block::MASTERCHAIN_ID);
+            let (basechain_full_id, basechain_short_id) =
+                network.compute_overlay_id(ton_block::BASE_WORKCHAIN_ID);
+
+            let (masterchain, basechain) = futures::future::join(
+                network.get_overlay(masterchain_full_id, masterchain_short_id),
+                network.get_overlay(basechain_full_id, basechain_short_id),
+            )
+            .await;
+
+            (
+                masterchain.context("Failed to create masterchain overlay")?,
+                basechain.context("Failed to create basechain overlay")?,
+            )
+        };
 
         log::info!("Network started");
 
@@ -136,6 +159,8 @@ impl Engine {
             }),
             subscribers,
             network,
+            masterchain_overlay,
+            basechain_overlay,
             old_blocks_policy,
             zero_state_id,
             init_mc_block_id,
@@ -150,11 +175,6 @@ impl Engine {
             metrics: Arc::new(Default::default()),
         });
 
-        engine
-            .get_full_node_overlay(ton_block::BASE_WORKCHAIN_ID, ton_block::SHARD_FULL)
-            .await
-            .context("Failed to create base workchain overlay node")?;
-
         log::info!("Overlay connected");
         Ok(engine)
     }
@@ -163,15 +183,14 @@ impl Engine {
         // Start full node overlay service
         let service = FullNodeOverlayService::new(self);
 
-        let (_, masterchain_overlay_id) = self
-            .network
-            .compute_overlay_id(ton_block::MASTERCHAIN_ID, ton_block::SHARD_FULL);
+        let (_, masterchain_overlay_id) =
+            self.network.compute_overlay_id(ton_block::MASTERCHAIN_ID);
         self.network
             .add_subscriber(masterchain_overlay_id, service.clone());
 
         let (_, basechain_overlay_id) = self
             .network
-            .compute_overlay_id(ton_block::BASE_WORKCHAIN_ID, ton_block::SHARD_FULL);
+            .compute_overlay_id(ton_block::BASE_WORKCHAIN_ID);
         self.network.add_subscriber(basechain_overlay_id, service);
 
         // Boot
@@ -189,13 +208,8 @@ impl Engine {
             .await;
 
         // Start listening broadcasts
-        self.listen_broadcasts(ton_block::ShardIdent::masterchain())
-            .await?;
-        self.listen_broadcasts(ton_block::ShardIdent::with_tagged_prefix(
-            ton_block::BASE_WORKCHAIN_ID,
-            ton_block::SHARD_FULL,
-        )?)
-        .await?;
+        self.listen_broadcasts(&self.masterchain_overlay);
+        self.listen_broadcasts(&self.basechain_overlay);
 
         // Start archives gc
         self.start_archives_gc().await?;
@@ -487,15 +501,9 @@ impl Engine {
         self.network.overlay_metrics()
     }
 
-    pub async fn broadcast_external_message(
-        &self,
-        to: &ton_block::AccountIdPrefixFull,
-        data: &[u8],
-    ) -> Result<()> {
-        let overlay = self
-            .get_full_node_overlay(to.workchain_id, to.prefix)
-            .await?;
-        overlay.broadcast_external_message(data).await;
+    pub fn broadcast_external_message(&self, workchain: i32, data: &[u8]) -> Result<()> {
+        self.get_overlay(workchain)?
+            .broadcast_external_message(data);
         Ok(())
     }
 
@@ -514,30 +522,21 @@ impl Engine {
         self.hard_forks.contains(block_id)
     }
 
-    async fn get_masterchain_overlay(&self) -> Result<FullNodeOverlayClient> {
-        self.get_full_node_overlay(ton_block::MASTERCHAIN_ID, ton_block::SHARD_FULL)
-            .await
+    fn get_overlay(&self, workchain: i32) -> Result<&FullNodeOverlayClient> {
+        match workchain {
+            ton_block::MASTERCHAIN_ID => Ok(&self.masterchain_overlay),
+            ton_block::BASE_WORKCHAIN_ID => Ok(&self.basechain_overlay),
+            _ => Err(EngineError::OverlayNotFound.into()),
+        }
     }
 
-    async fn get_full_node_overlay(
-        &self,
-        workchain: i32,
-        shard: u64,
-    ) -> Result<FullNodeOverlayClient> {
-        let (full_id, short_id) = self.network.compute_overlay_id(workchain, shard);
-        self.network.get_overlay(full_id, short_id).await
-    }
-
-    async fn listen_broadcasts(self: &Arc<Self>, shard_ident: ton_block::ShardIdent) -> Result<()> {
-        let overlay = self
-            .get_full_node_overlay(
-                shard_ident.workchain_id(),
-                shard_ident.shard_prefix_with_tag(),
-            )
-            .await?;
+    fn listen_broadcasts(self: &Arc<Self>, overlay: &FullNodeOverlayClient) {
         let engine = self.clone();
+        let overlay = overlay.clone();
 
         tokio::spawn(async move {
+            let overlay_id = overlay.0.overlay_id();
+
             loop {
                 match overlay.wait_broadcast().await {
                     Ok((ton::ton_node::Broadcast::TonNode_BlockBroadcast(block), _)) => {
@@ -549,14 +548,12 @@ impl Engine {
                         });
                     }
                     Err(e) => {
-                        log::error!("Failed to wait broadcast for shard {shard_ident}: {e}");
+                        log::error!("Failed to wait broadcast for overlay {overlay_id}: {e}");
                     }
                     _ => { /* do nothing */ }
                 }
             }
         });
-
-        Ok(())
     }
 
     async fn download_zerostate(
@@ -575,7 +572,6 @@ impl Engine {
                 multiplier: 1.2,
             }),
         )
-        .await?
         .download()
         .await
     }
@@ -600,7 +596,6 @@ impl Engine {
                 multiplier: 1.1,
             }),
         )
-        .await?
         .download()
         .await
     }
@@ -660,7 +655,6 @@ impl Engine {
             max_attempts,
             None,
         )
-        .await?
         .with_explicit_neighbour(neighbour)
         .download()
         .await
@@ -672,8 +666,7 @@ impl Engine {
         neighbour: Option<&Arc<tiny_adnl::Neighbour>>,
         output: &mut (dyn Write + Send),
     ) -> Result<ArchiveDownloadStatus> {
-        let mc_overlay = self.get_masterchain_overlay().await?;
-        mc_overlay
+        self.masterchain_overlay
             .download_archive(mc_block_seq_no, neighbour, output)
             .await
     }
@@ -1191,34 +1184,28 @@ impl Engine {
             max_attempts,
             timeouts,
         )
-        .await?
         .download()
         .await
     }
 
-    async fn create_download_context<'a, T>(
+    fn create_download_context<'a, T>(
         &'a self,
         name: &'a str,
         downloader: Arc<dyn Downloader<Item = T>>,
         block_id: &'a ton_block::BlockIdExt,
         max_attempts: Option<u32>,
         timeouts: Option<DownloaderTimeouts>,
-    ) -> Result<DownloadContext<'a, T>> {
-        Ok(DownloadContext {
+    ) -> DownloadContext<'a, T> {
+        DownloadContext {
             name,
             block_id,
             max_attempts,
             timeouts,
-            client: self
-                .get_full_node_overlay(
-                    block_id.shard().workchain_id(),
-                    block_id.shard().shard_prefix_with_tag(),
-                )
-                .await?,
+            client: &self.masterchain_overlay,
             db: self.db.as_ref(),
             downloader,
             explicit_neighbour: None,
-        })
+        }
     }
 }
 
@@ -1354,4 +1341,6 @@ enum EngineError {
     FailedToLoadLastMasterchainBlockHandle,
     #[error("Too deep recursion")]
     TooDeepRecursion,
+    #[error("Overlay not found")]
+    OverlayNotFound,
 }

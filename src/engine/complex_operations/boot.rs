@@ -196,7 +196,7 @@ async fn get_key_blocks(
 
     let (_guard, signal) = trigger_on_drop();
 
-    let mc_overlay = engine.get_masterchain_overlay().await?;
+    let mc_overlay = engine.masterchain_overlay.clone();
     tokio::spawn(async move {
         let mut good_peer = None;
 

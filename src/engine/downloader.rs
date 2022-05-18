@@ -163,7 +163,7 @@ pub struct DownloadContext<'a, T> {
     pub max_attempts: Option<u32>,
     pub timeouts: Option<DownloaderTimeouts>,
 
-    pub client: FullNodeOverlayClient,
+    pub client: &'a FullNodeOverlayClient,
     pub db: &'a Db,
 
     pub downloader: Arc<dyn Downloader<Item = T>>,
