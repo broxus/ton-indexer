@@ -175,7 +175,7 @@ async fn import_shard_blocks_with_apply(engine: &Arc<Engine>, maps: &Arc<BlockMa
 
                 // Special case for zerostate blocks
                 if id.seq_no == 0 {
-                    super::boot::download_zero_state(&engine, &id).await?;
+                    engine.download_zero_state(&id).await?;
                     return Ok(());
                 }
 

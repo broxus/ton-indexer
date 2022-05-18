@@ -194,16 +194,7 @@ impl Engine {
         self.network.add_subscriber(basechain_overlay_id, service);
 
         // Boot
-        let BootData {
-            last_mc_block_id,
-            shards_client_mc_block_id,
-        } = boot(self).await?;
-        log::info!(
-            "Initialized (last block: {}, shards client block id: {})",
-            last_mc_block_id,
-            shards_client_mc_block_id
-        );
-
+        boot(self).await?;
         self.notify_subscribers_with_status(EngineStatus::Booted)
             .await;
 
@@ -507,17 +498,6 @@ impl Engine {
         Ok(())
     }
 
-    pub fn init_mc_block_id(&self) -> &ton_block::BlockIdExt {
-        &self.init_mc_block_id
-    }
-
-    fn set_init_mc_block_id(&self, block_id: &ton_block::BlockIdExt) -> Result<()> {
-        self.db
-            .node_state()
-            .store_init_mc_block_id(block_id)
-            .context("Failed to set init mc block id")
-    }
-
     fn is_hard_fork(&self, block_id: &ton_block::BlockIdExt) -> bool {
         self.hard_forks.contains(block_id)
     }
@@ -556,24 +536,53 @@ impl Engine {
         });
     }
 
-    async fn download_zerostate(
+    async fn download_zero_state(
         &self,
         block_id: &ton_block::BlockIdExt,
-        max_attempts: Option<u32>,
-    ) -> Result<Arc<ShardStateStuff>> {
-        self.create_download_context(
-            "download_zerostate",
-            Arc::new(ZeroStateDownloader),
+    ) -> Result<(Arc<BlockHandle>, Arc<ShardStateStuff>)> {
+        // Check if zero state was already downloaded
+        let block_handle_storage = self.db.block_handle_storage();
+        if let Some(handle) = block_handle_storage
+            .load_handle(block_id)
+            .context("Failed to load zerostate handle")?
+        {
+            if handle.meta().has_state() {
+                let state = self
+                    .load_state(block_id)
+                    .await
+                    .context("Failed to load zerostate")?;
+
+                return Ok((handle, state));
+            }
+        }
+
+        // Download zerostate
+        let state = self
+            .create_download_context(
+                "download_zerostate",
+                Arc::new(ZeroStateDownloader),
+                block_id,
+                None,
+                Some(DownloaderTimeouts {
+                    initial: 10,
+                    max: 3000,
+                    multiplier: 1.2,
+                }),
+            )
+            .download()
+            .await?;
+
+        let (handle, _) = self.db.block_handle_storage().create_or_load_handle(
             block_id,
-            max_attempts,
-            Some(DownloaderTimeouts {
-                initial: 10,
-                max: 3000,
-                multiplier: 1.2,
-            }),
-        )
-        .download()
-        .await
+            None,
+            Some(state.state().gen_time()),
+        )?;
+        self.store_state(&handle, &state).await?;
+
+        self.set_applied(&handle, 0).await?;
+        self.notify_subscribers_with_full_state(&state).await?;
+
+        Ok((handle, state))
     }
 
     async fn download_next_masterchain_block(
@@ -640,17 +649,13 @@ impl Engine {
     async fn download_block_proof(
         &self,
         block_id: &ton_block::BlockIdExt,
-        is_link: bool,
         is_key_block: bool,
         max_attempts: Option<u32>,
         neighbour: Option<&Arc<tiny_adnl::Neighbour>>,
     ) -> Result<BlockProofStuffAug> {
         self.create_download_context(
             "create_download_context",
-            Arc::new(BlockProofDownloader {
-                is_link,
-                is_key_block,
-            }),
+            Arc::new(BlockProofDownloader { is_key_block }),
             block_id,
             max_attempts,
             None,
@@ -819,20 +824,6 @@ impl Engine {
             .await?;
 
         Ok(())
-    }
-
-    async fn store_zerostate(
-        &self,
-        block_id: &ton_block::BlockIdExt,
-        state: &Arc<ShardStateStuff>,
-    ) -> Result<Arc<BlockHandle>> {
-        let (handle, _) = self.db.block_handle_storage().create_or_load_handle(
-            block_id,
-            None,
-            Some(state.state().gen_time()),
-        )?;
-        self.store_state(&handle, state).await?;
-        Ok(handle)
     }
 
     pub fn is_synced(&self) -> Result<bool> {

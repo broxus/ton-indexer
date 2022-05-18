@@ -30,18 +30,17 @@ impl FullNodeOverlayClient {
         this.broadcast(broadcast, None);
     }
 
-    pub async fn check_persistent_state(
+    pub async fn find_persistent_state(
         &self,
-        block_id: &ton_block::BlockIdExt,
-        masterchain_block_id: &ton_block::BlockIdExt,
+        full_state_id: &FullStateId,
     ) -> Result<Option<Arc<Neighbour>>> {
         let this = &self.0;
 
         let (prepare, neighbour): (ton::ton_node::PreparedState, _) = this
             .send_adnl_query(
                 TLObject::new(ton::rpc::ton_node::PreparePersistentState {
-                    block: convert_block_id_ext_blk2api(block_id),
-                    masterchain_block: convert_block_id_ext_blk2api(masterchain_block_id),
+                    block: convert_block_id_ext_blk2api(&full_state_id.block_id),
+                    masterchain_block: convert_block_id_ext_blk2api(&full_state_id.mc_block_id),
                 }),
                 None,
                 Some(TIMEOUT_PREPARE),
@@ -49,7 +48,7 @@ impl FullNodeOverlayClient {
             )
             .await?;
 
-        log::info!("Prepared state: {:?} from {}", prepare, neighbour.peer_id());
+        log::info!("Found state {prepare:?} from peer {}", neighbour.peer_id());
 
         match prepare {
             ton::ton_node::PreparedState::TonNode_PreparedState => Ok(Some(neighbour)),
@@ -59,8 +58,7 @@ impl FullNodeOverlayClient {
 
     pub async fn download_persistent_state_part(
         &self,
-        block_id: &ton_block::BlockIdExt,
-        masterchain_block_id: &ton_block::BlockIdExt,
+        full_state_id: &FullStateId,
         offset: usize,
         mas_size: usize,
         neighbour: Arc<Neighbour>,
@@ -70,8 +68,8 @@ impl FullNodeOverlayClient {
             .send_rldp_query_raw(
                 neighbour,
                 &ton::rpc::ton_node::DownloadPersistentStateSlice {
-                    block: convert_block_id_ext_blk2api(block_id),
-                    masterchain_block: convert_block_id_ext_blk2api(masterchain_block_id),
+                    block: convert_block_id_ext_blk2api(&full_state_id.block_id),
+                    masterchain_block: convert_block_id_ext_blk2api(&full_state_id.mc_block_id),
                     offset: offset as i64,
                     max_size: mas_size as i64,
                 },
@@ -123,7 +121,6 @@ impl FullNodeOverlayClient {
     pub async fn download_block_proof(
         &self,
         block_id: &ton_block::BlockIdExt,
-        is_link: bool,
         is_key_block: bool,
         explicit_neighbour: Option<&Arc<Neighbour>>,
     ) -> Result<Option<BlockProofStuffAug>> {
@@ -134,7 +131,7 @@ impl FullNodeOverlayClient {
             this.send_adnl_query(
                 ton::rpc::ton_node::PrepareKeyBlockProof {
                     block: convert_block_id_ext_blk2api(block_id),
-                    allow_partial: is_link.into(),
+                    allow_partial: false.into(),
                 },
                 None,
                 Some(TIMEOUT_PREPARE),
@@ -145,7 +142,7 @@ impl FullNodeOverlayClient {
             this.send_adnl_query(
                 ton::rpc::ton_node::PrepareBlockProof {
                     block: convert_block_id_ext_blk2api(block_id),
-                    allow_partial: Default::default(),
+                    allow_partial: (!block_id.shard_id.is_masterchain()).into(),
                 },
                 None,
                 Some(TIMEOUT_PREPARE),
@@ -452,6 +449,12 @@ impl FullNodeOverlayClient {
             .map_err(|e| anyhow::Error::msg(e.to_string()))?;
         Ok((answer, info.from))
     }
+}
+
+/// Full persistent state block id (relative to the masterchain)
+pub struct FullStateId {
+    pub mc_block_id: ton_block::BlockIdExt,
+    pub block_id: ton_block::BlockIdExt,
 }
 
 #[derive(Clone)]

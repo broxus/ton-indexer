@@ -59,7 +59,6 @@ impl Downloader for BlockDownloader {
 }
 
 pub struct BlockProofDownloader {
-    pub is_link: bool,
     pub is_key_block: bool,
 }
 
@@ -91,7 +90,6 @@ impl Downloader for BlockProofDownloader {
             .client
             .download_block_proof(
                 context.block_id,
-                self.is_link,
                 self.is_key_block,
                 context.explicit_neighbour,
             )

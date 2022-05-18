@@ -8,7 +8,7 @@ use rocksdb::DBCompressionType;
 
 pub use self::block_connection_storage::*;
 pub use self::block_handle::*;
-use self::block_handle_storage::*;
+pub use self::block_handle_storage::*;
 pub use self::block_meta::*;
 use self::block_storage::*;
 use self::node_state_storage::*;

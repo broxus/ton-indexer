@@ -23,22 +23,18 @@ const PACKET_SIZE: usize = 1 << 20; // 1 MB
 
 pub async fn download_state(
     engine: &Arc<Engine>,
-    block_id: &ton_block::BlockIdExt,
-    masterchain_block_id: &ton_block::BlockIdExt,
+    full_state_id: FullStateId,
 ) -> Result<Arc<ShardStateStuff>> {
     let overlay = engine.masterchain_overlay.clone();
 
     let neighbour = loop {
-        match overlay
-            .check_persistent_state(block_id, masterchain_block_id)
-            .await
-        {
+        match overlay.find_persistent_state(&full_state_id).await {
             Ok(Some(peer)) => break peer,
             Ok(None) => {
                 log::trace!("Failed to download state: state not found");
             }
             Err(e) => {
-                log::trace!("Failed to download state: {}", e);
+                log::trace!("Failed to download state: {e:?}");
             }
         };
     };
@@ -50,17 +46,14 @@ pub async fn download_state(
 
     tokio::spawn({
         let engine = engine.clone();
-        let block_id = block_id.clone();
+        let block_id = full_state_id.block_id.clone();
         async move { result_tx.send(background_process(&engine, block_id, packets_rx).await) }
     });
 
-    let block_id = block_id.clone();
-    let masterchain_block_id = masterchain_block_id.clone();
     let downloader = async move {
         let mut scheduler = Scheduler::with_slots(
             overlay,
-            block_id,
-            masterchain_block_id,
+            full_state_id,
             neighbour,
             DOWNLOADING_QUEUE_LEN,
             PACKET_SIZE,
@@ -151,8 +144,7 @@ struct Scheduler {
 impl Scheduler {
     async fn with_slots(
         overlay: FullNodeOverlayClient,
-        block_id: ton_block::BlockIdExt,
-        masterchain_block_id: ton_block::BlockIdExt,
+        full_state_id: FullStateId,
         neighbour: Arc<Neighbour>,
         worker_count: usize,
         max_size: usize,
@@ -164,8 +156,7 @@ impl Scheduler {
 
         let ctx = Arc::new(DownloadContext {
             overlay,
-            block_id,
-            masterchain_block_id,
+            full_state_id,
             neighbour,
             max_size,
             response_tx,
@@ -277,8 +268,7 @@ impl Scheduler {
 
 struct DownloadContext {
     overlay: FullNodeOverlayClient,
-    block_id: ton_block::BlockIdExt,
-    masterchain_block_id: ton_block::BlockIdExt,
+    full_state_id: FullStateId,
     neighbour: Arc<Neighbour>,
     max_size: usize,
     response_tx: ResponseTx,
@@ -298,8 +288,7 @@ async fn download_packet_worker(ctx: Arc<DownloadContext>, mut offsets_rx: Offse
             }
 
             let recv_fut = ctx.overlay.download_persistent_state_part(
-                &ctx.block_id,
-                &ctx.masterchain_block_id,
+                &ctx.full_state_id,
                 offset,
                 ctx.max_size,
                 ctx.neighbour.clone(),

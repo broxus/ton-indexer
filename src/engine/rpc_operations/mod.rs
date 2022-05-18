@@ -9,7 +9,7 @@ use std::sync::Arc;
 use ton_api::ton;
 
 use super::Engine;
-use crate::db::BlockConnection;
+use crate::db::{BlockConnection, KeyBlocksDirection};
 use crate::utils::*;
 
 #[async_trait::async_trait]
@@ -216,7 +216,7 @@ impl RpcService for Engine {
             let mut iterator = self
                 .db
                 .block_handle_storage()
-                .key_block_iterator(Some(start_block_id.seq_no))
+                .key_blocks_iterator(KeyBlocksDirection::ForwardFrom(start_block_id.seq_no))
                 .take(limit)
                 .peekable();
 

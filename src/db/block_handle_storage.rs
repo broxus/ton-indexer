@@ -218,16 +218,26 @@ impl BlockHandleStorage {
         Ok(None)
     }
 
-    pub fn key_block_iterator(&self, since: Option<u32>) -> KeyBlocksIterator {
-        let mut iterator = KeyBlocksIterator {
-            raw_iterator: self.key_blocks.raw_iterator(),
+    pub fn key_blocks_iterator(
+        &self,
+        direction: KeyBlocksDirection,
+    ) -> impl Iterator<Item = Result<ton_block::BlockIdExt>> + '_ {
+        let mut raw_iterator = self.key_blocks.raw_iterator();
+        let reverse = match direction {
+            KeyBlocksDirection::ForwardFrom(seq_no) => {
+                raw_iterator.seek(seq_no.to_be_bytes());
+                false
+            }
+            KeyBlocksDirection::Backward => {
+                raw_iterator.seek_to_last();
+                true
+            }
         };
-        if let Some(seq_no) = since {
-            iterator.seek(seq_no);
-        } else {
-            iterator.raw_iterator.seek_to_first();
+
+        KeyBlocksIterator {
+            raw_iterator,
+            reverse,
         }
-        iterator
     }
 
     pub fn gc_handles_cache(&self, top_blocks: &TopBlocks) -> usize {
@@ -287,14 +297,15 @@ pub enum HandleCreationStatus {
     Fetched,
 }
 
-pub struct KeyBlocksIterator<'a> {
-    raw_iterator: rocksdb::DBRawIterator<'a>,
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+pub enum KeyBlocksDirection {
+    ForwardFrom(u32),
+    Backward,
 }
 
-impl KeyBlocksIterator<'_> {
-    pub fn seek(&mut self, seq_no: u32) {
-        self.raw_iterator.seek(seq_no.to_be_bytes());
-    }
+struct KeyBlocksIterator<'a> {
+    raw_iterator: rocksdb::DBRawIterator<'a>,
+    reverse: bool,
 }
 
 impl Iterator for KeyBlocksIterator<'_> {
@@ -305,7 +316,12 @@ impl Iterator for KeyBlocksIterator<'_> {
             .raw_iterator
             .value()
             .map(ton_block::BlockIdExt::from_slice)?;
-        self.raw_iterator.next();
+        if self.reverse {
+            self.raw_iterator.prev();
+        } else {
+            self.raw_iterator.next();
+        }
+
         Some(value)
     }
 }
