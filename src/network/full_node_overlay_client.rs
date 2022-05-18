@@ -316,14 +316,14 @@ impl FullNodeOverlayClient {
     pub async fn download_next_key_blocks_ids(
         &self,
         block_id: &ton_block::BlockIdExt,
-        max_size: i32,
+        max_size: u16,
         neighbour: Option<&Arc<Neighbour>>,
     ) -> Result<(Vec<ton_block::BlockIdExt>, Arc<Neighbour>)> {
         let this = &self.0;
 
         let query = TLObject::new(ton::rpc::ton_node::GetNextKeyBlockIds {
             block: convert_block_id_ext_blk2api(block_id),
-            max_size,
+            max_size: max_size as i32,
         });
 
         this.send_adnl_query(query, None, None, neighbour)

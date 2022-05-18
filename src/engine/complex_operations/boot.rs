@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use futures::future::BoxFuture;
+use futures::stream::FuturesOrdered;
 use futures::{FutureExt, StreamExt};
 use tiny_adnl::utils::*;
 use tokio::sync::mpsc;
@@ -184,6 +185,8 @@ async fn get_key_blocks(
     engine: &Arc<Engine>,
     mut boot_data: ColdBootData,
 ) -> Result<Vec<Arc<BlockHandle>>> {
+    const BLOCKS_PER_BATCH: u16 = 5;
+
     let mut handle = boot_data.init_block_handle().clone();
 
     let mut result = vec![handle.clone()];
@@ -206,7 +209,7 @@ async fn get_key_blocks(
                 let res = tokio::select! {
                     res = mc_overlay.download_next_key_blocks_ids(
                         &block_id,
-                        5,
+                        BLOCKS_PER_BATCH,
                         good_peer.as_ref()
                     ) => res,
                     _ = &mut dropped => return,
@@ -244,7 +247,7 @@ async fn get_key_blocks(
         };
 
         // TODO: Invalidate queue (tasks_*) in case of bad block proof
-        let mut stream = BlockProofStream::new(engine, &mut boot_data, ids, &neighbour);
+        let mut stream = BlockProofStream::new(engine, &mut boot_data, &ids, &neighbour);
         while let Some((next_handle, proof)) = stream.next().await? {
             let prev_utime = handle.meta().gen_utime();
             if is_persistent_state(next_handle.meta().gen_utime(), prev_utime) {
@@ -280,9 +283,9 @@ async fn get_key_blocks(
 struct BlockProofStream<'a> {
     engine: &'a Engine,
     boot_data: &'a mut ColdBootData,
-    ids: Vec<ton_block::BlockIdExt>,
+    ids: &'a [ton_block::BlockIdExt],
     neighbour: &'a Arc<tiny_adnl::Neighbour>,
-    futures: futures::stream::FuturesOrdered<BoxFuture<'a, BlockProofStuffAug>>,
+    futures: FuturesOrdered<BoxFuture<'a, (usize, Result<BlockProofStuffAug>)>>,
     index: usize,
 }
 
@@ -290,23 +293,22 @@ impl<'a> BlockProofStream<'a> {
     fn new(
         engine: &'a Engine,
         boot_data: &'a mut ColdBootData,
-        ids: Vec<ton_block::BlockIdExt>,
+        ids: &'a [ton_block::BlockIdExt],
         neighbour: &'a Arc<tiny_adnl::Neighbour>,
     ) -> Self {
-        let mut stream = Self {
+        Self {
             engine,
             boot_data,
             ids,
             neighbour,
             futures: Default::default(),
             index: 0,
-        };
-        stream.restart();
-        stream
+        }
     }
 
     /// Waits next block proof
     async fn next(&mut self) -> Result<Option<(Arc<BlockHandle>, BlockProofStuff)>> {
+        // Check ids range end
         let block_id = match self.ids.get(self.index) {
             Some(block_id) => block_id.clone(),
             None => return Ok(None),
@@ -315,24 +317,34 @@ impl<'a> BlockProofStream<'a> {
         let block_handle_storage = self.engine.db.block_handle_storage();
         let block_storage = self.engine.db.block_storage();
 
+        // Check whether block proof is already stored locally
         if let Some(handle) = block_handle_storage.load_handle(&block_id)? {
             if let Ok(proof) = block_storage.load_block_proof(&handle, false).await {
+                // Move index forward
                 self.index += 1;
                 return Ok(Some((handle, proof)));
             }
         }
 
         loop {
+            // Wait for the next resolved future
             let proof = match self.futures.next().await {
-                Some(proof) => proof,
+                // Skip block proofs which we don't need anymore
+                Some((index, _)) if index < self.index => continue,
+                // Next block proof found
+                Some((_, proof)) => proof?,
+                // No more futures found. Probably unreachable
                 None if self.index > self.ids.len() => return Ok(None),
+                // Initial state when futures queue is empty
                 None => {
+                    // Fill tasks queue
                     self.restart();
                     continue;
                 }
             };
 
             let result = match self.boot_data {
+                // Check block proof with previous key block
                 ColdBootData::KeyBlock {
                     proof: prev_proof, ..
                 } => proof
@@ -345,20 +357,26 @@ impl<'a> BlockProofStream<'a> {
                             Err(e)
                         }
                     }),
+                // Check block proof with zero state
                 ColdBootData::ZeroState { state, .. } => proof.check_with_master_state(state),
             };
 
             match result {
                 Ok(_) => {
+                    // Save block proof
                     let handle = block_storage
                         .store_block_proof(&block_id, None, &proof)
                         .await?
                         .handle;
+
+                    // Move index forward
                     self.index += 1;
                     return Ok(Some((handle, proof.data)));
                 }
                 Err(e) => {
+                    // Refill tasks queue
                     self.restart();
+
                     log::warn!("Got invalid key block proof: {e:?}");
                     tokio::time::sleep(Duration::from_millis(10)).await;
                 }
@@ -368,27 +386,15 @@ impl<'a> BlockProofStream<'a> {
 
     /// Fills the stream with new futures
     fn restart(&mut self) {
-        self.futures = futures::stream::FuturesOrdered::new();
-        for id in self.ids.iter().skip(self.index).cloned() {
-            let engine = self.engine;
-            let neighbour = self.neighbour;
-            self.futures.push(
-                async move {
-                    loop {
-                        match engine
-                            .download_block_proof(&id, false, true, None, Some(neighbour))
-                            .await
-                        {
-                            Ok(res) => return res,
-                            Err(e) => {
-                                log::error!("Failed to download block proof: {e:?}");
-                            }
-                        }
-                    }
-                }
-                .boxed(),
-            );
-        }
+        let ids = self.ids.iter().skip(self.index).enumerate();
+        self.futures = ids
+            .map(|(index, id)| {
+                self.engine
+                    .download_block_proof(id, false, true, None, Some(self.neighbour))
+                    .map(move |result| (index, result))
+                    .boxed()
+            })
+            .collect();
     }
 }
 
