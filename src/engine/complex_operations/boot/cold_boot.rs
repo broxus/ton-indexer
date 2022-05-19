@@ -2,6 +2,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+use arc_swap::ArcSwapOption;
 use futures::future::BoxFuture;
 use futures::stream::FuturesOrdered;
 use futures::{FutureExt, StreamExt};
@@ -145,42 +146,45 @@ async fn download_key_blocks(engine: &Arc<Engine>, mut prev_key_block: PrevKeyBl
     let (ids_tx, mut ids_rx) = mpsc::unbounded_channel();
 
     let (_guard, signal) = trigger_on_drop();
-    let mc_overlay = engine.masterchain_overlay.clone();
-    tokio::spawn(async move {
-        let mut good_peer = None;
+    let good_peer = Arc::new(ArcSwapOption::empty());
+    tokio::spawn({
+        let mc_overlay = engine.masterchain_overlay.clone();
+        let good_peer = good_peer.clone();
+        async move {
+            tokio::pin! { let dropped = signal.cancelled(); }
 
-        tokio::pin! { let dropped = signal.cancelled(); }
+            while let Some(block_id) = tasks_rx.recv().await {
+                'inner: loop {
+                    log::info!("Downloading next key blocks for: {block_id}");
 
-        while let Some(block_id) = tasks_rx.recv().await {
-            'inner: loop {
-                log::info!("Downloading next key blocks for: {block_id}");
+                    let neighbour = good_peer.load().clone();
+                    let res = tokio::select! {
+                        // Download next key blocks ids
+                        res = mc_overlay.download_next_key_blocks_ids(
+                            &block_id,
+                            BLOCKS_PER_BATCH,
+                            neighbour.as_ref()
+                        ) => res,
+                        // Return in case of main task cancellation
+                        _ = &mut dropped => return,
+                    };
 
-                let res = tokio::select! {
-                    // Download next key blocks ids
-                    res = mc_overlay.download_next_key_blocks_ids(
-                        &block_id,
-                        BLOCKS_PER_BATCH,
-                        good_peer.as_ref()
-                    ) => res,
-                    // Return in case of main task cancellation
-                    _ = &mut dropped => return,
-                };
-
-                match res {
-                    // Send result back to the main task
-                    Ok((ids, neighbour)) => {
-                        good_peer = Some(neighbour.clone());
-                        if ids_tx.send((ids, neighbour)).is_err() {
-                            return;
+                    match res {
+                        // Send result back to the main task
+                        Ok((ids, neighbour)) => {
+                            good_peer.store(Some(neighbour.clone()));
+                            if ids_tx.send((ids, neighbour)).is_err() {
+                                return;
+                            }
+                            break 'inner;
                         }
-                        break 'inner;
-                    }
-                    // Reset good_peer in case of error and retry request
-                    Err(e) => {
-                        log::warn!("Failed to download next key block ids for {block_id}: {e:?}");
-                        good_peer = None;
-                    }
-                };
+                        // Reset good_peer in case of error and retry request
+                        Err(e) => {
+                            log::warn!("Failed to download key block ids for {block_id}: {e:?}");
+                            good_peer.store(None);
+                        }
+                    };
+                }
             }
         }
     });
@@ -199,6 +203,8 @@ async fn download_key_blocks(engine: &Arc<Engine>, mut prev_key_block: PrevKeyBl
             }
             // Retry request in case of empty response
             None => {
+                // Reset good peer, because empty ids is suspicious
+                good_peer.store(None);
                 tasks_tx.send(prev_handle.id().clone()).ok();
                 continue;
             }
