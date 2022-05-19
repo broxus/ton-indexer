@@ -118,11 +118,7 @@ impl Db {
 
         let runtime_storage = Arc::new(RuntimeStorage::default());
         let block_handle_storage = Arc::new(BlockHandleStorage::with_db(&db)?);
-        let block_storage = Arc::new(BlockStorage::with_db(
-            &db,
-            &runtime_storage,
-            &block_handle_storage,
-        )?);
+        let block_storage = Arc::new(BlockStorage::with_db(&db, &block_handle_storage)?);
         let shard_state_storage =
             ShardStateStorage::with_db(&db, &block_handle_storage, &block_storage, &file_db_path)
                 .await?;

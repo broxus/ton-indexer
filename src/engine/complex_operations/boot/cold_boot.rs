@@ -105,11 +105,17 @@ async fn prepare_prev_key_block(engine: &Arc<Engine>) -> Result<PrevKeyBlock> {
                 .await?;
 
             match prev_key_block.check_next_proof(engine, &proof) {
-                Ok(_) => {
+                Ok(info) => {
+                    let handle = match handle {
+                        Some(handle) => handle.into(),
+                        None => info.with_mc_seq_no(block_id.seq_no).into(),
+                    };
+
                     let handle = block_storage
-                        .store_block_proof(block_id, handle, &proof)
+                        .store_block_proof(&proof, handle)
                         .await?
                         .handle;
+
                     break (handle, proof);
                 }
                 Err(e) => {
@@ -304,10 +310,10 @@ impl<'a> BlockProofStream<'a> {
 
             // Verify block proof
             match self.prev_key_block.check_next_proof(self.engine, &proof) {
-                Ok(_) => {
+                Ok(info) => {
                     // Save block proof
                     let handle = block_storage
-                        .store_block_proof(&block_id, None, &proof)
+                        .store_block_proof(&proof, info.with_mc_seq_no(block_id.seq_no).into())
                         .await?
                         .handle;
 
@@ -411,15 +417,24 @@ impl PrevKeyBlock {
         }
     }
 
-    fn check_next_proof(&self, engine: &Engine, next_proof: &BlockProofStuff) -> Result<()> {
+    fn check_next_proof(
+        &self,
+        engine: &Engine,
+        next_proof: &BlockProofStuff,
+    ) -> Result<BriefBlockInfo> {
         let block_id = next_proof.id();
+
+        let (virt_block, virt_block_info) = next_proof.pre_check_block_proof()?;
+        let res = BriefBlockInfo::from(&virt_block_info);
 
         match self {
             // Check block proof with zero state
-            PrevKeyBlock::ZeroState { state, .. } => next_proof.check_with_master_state(state),
+            PrevKeyBlock::ZeroState { state, .. } => {
+                check_with_master_state(next_proof, state, &virt_block, &virt_block_info)
+            }
             // Check block proof with previous key block
             PrevKeyBlock::KeyBlock { proof, .. } => {
-                next_proof.check_with_prev_key_block_proof(proof)
+                check_with_prev_key_block_proof(next_proof, proof, &virt_block, &virt_block_info)
             }
         }
         .or_else(|e| {
@@ -431,6 +446,7 @@ impl PrevKeyBlock {
                 Err(e)
             }
         })
+        .map(move |_| res)
     }
 }
 
@@ -515,13 +531,29 @@ async fn download_block_with_state(
     let (block, handle) = match handle {
         Some(handle) => (block_storage.load_block_data(&handle).await?, handle),
         None => {
-            let (block, proof) = engine.download_block(&full_state_id.block_id, None).await?;
+            let (block, proof, meta_data) = loop {
+                let (block, proof) = engine.download_block(&full_state_id.block_id, None).await?;
+                match proof.pre_check_block_proof() {
+                    Ok((_, block_info)) => {
+                        let meta_data = BriefBlockInfo::from(&block_info).with_mc_seq_no(mc_seq_no);
+                        break (block, proof, meta_data);
+                    }
+                    Err(e) => {
+                        log::error!("Received invalid block: {e:?}");
+                        continue;
+                    }
+                }
+            };
+
             log::info!("Downloaded block data for {}", full_state_id.block_id);
 
-            let mut handle = block_storage.store_block_data(&block).await?.handle;
+            let mut handle = block_storage
+                .store_block_data(&block, meta_data)
+                .await?
+                .handle;
             if !handle.meta().has_proof() {
                 handle = block_storage
-                    .store_block_proof(&full_state_id.block_id, Some(handle), &proof)
+                    .store_block_proof(&proof, handle.into())
                     .await?
                     .handle;
             }

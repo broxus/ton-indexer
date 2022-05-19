@@ -67,15 +67,16 @@ pub async fn walk_shard_blocks(
 
 async fn load_next_masterchain_block(
     engine: &Arc<Engine>,
-    mc_block_id: &ton_block::BlockIdExt,
+    prev_block_id: &ton_block::BlockIdExt,
 ) -> Result<ton_block::BlockIdExt> {
-    let db = &engine.db;
+    let block_handle_storage = engine.db.block_handle_storage();
+    let block_connection_storage = engine.db.block_connection_storage();
+    let block_storage = engine.db.block_storage();
 
-    if let Some(handle) = db.block_handle_storage().load_handle(mc_block_id)? {
+    if let Some(handle) = block_handle_storage.load_handle(prev_block_id)? {
         if handle.meta().has_next1() {
-            let next1_id = db
-                .block_connection_storage()
-                .load_connection(mc_block_id, BlockConnection::Next1)?;
+            let next1_id =
+                block_connection_storage.load_connection(prev_block_id, BlockConnection::Next1)?;
             engine
                 .download_and_apply_block(&next1_id, next1_id.seq_no, false, 0)
                 .await?;
@@ -86,42 +87,49 @@ async fn load_next_masterchain_block(
     }
 
     let (block, block_proof) = engine
-        .download_next_masterchain_block(mc_block_id, None)
+        .download_next_masterchain_block(prev_block_id, None)
         .await?;
-    if block.id().seq_no != mc_block_id.seq_no + 1 {
+    let block_id = block.id();
+
+    if block_id.seq_no != prev_block_id.seq_no + 1 {
         return Err(ShardClientError::BlockIdMismatch.into());
+    } else if block_proof.is_link() {
+        return Err(ShardClientError::InvalidBlockProof.into());
     }
 
-    let prev_state = engine.wait_state(mc_block_id, None, true).await?;
-    block_proof.check_with_master_state(&prev_state)?;
+    let (virt_block, virt_block_info) = block_proof.pre_check_block_proof()?;
+    let brief_info = BriefBlockInfo::from(&virt_block_info);
 
-    let mut next_handle = match db.block_handle_storage().load_handle(block.id())? {
+    let prev_state = engine.wait_state(prev_block_id, None, true).await?;
+    check_with_master_state(&block_proof, &prev_state, &virt_block, &virt_block_info)?;
+
+    let mut handle = match block_handle_storage.load_handle(block_id)? {
         // Handle exists and it has block data specified
         Some(next_handle) if next_handle.meta().has_data() => next_handle,
         // Handle doesn't exist or doesn't have block data
         handle => {
             if handle.is_some() {
-                log::warn!(
-                    "Partially initialized handle detected for block {}",
-                    block.id()
-                );
+                log::warn!("Partially initialized handle detected for block {block_id}");
             }
-            db.block_storage().store_block_data(&block).await?.handle
+            block_storage
+                .store_block_data(&block, brief_info.with_mc_seq_no(block_id.seq_no))
+                .await?
+                .handle
         }
     };
 
-    if !next_handle.meta().has_proof() {
-        next_handle = db
-            .block_storage()
-            .store_block_proof(block.id(), Some(next_handle), &block_proof)
+    if !handle.meta().has_proof() {
+        handle = block_storage
+            .store_block_proof(&block_proof, handle.into())
             .await?
             .handle;
     }
 
     engine
-        .apply_block_ext(&next_handle, &block, next_handle.id().seq_no, false, 0)
+        .apply_block_ext(&handle, &block, handle.id().seq_no, false, 0)
         .await?;
-    Ok(block.id().clone())
+
+    Ok(block_id.clone())
 }
 
 async fn load_shard_blocks(
@@ -180,9 +188,10 @@ pub async fn process_block_broadcast(
         &broadcast.proof.0,
         !block_id.shard_id.is_masterchain(),
     )?;
-    let block_info = proof.virtualize_block()?.0.read_info()?;
+    let virt_block_info = proof.virtualize_block()?.0.read_info()?;
+    let meta_data = BriefBlockInfo::from(&virt_block_info);
 
-    let prev_key_block_seqno = block_info.prev_key_block_seqno();
+    let prev_key_block_seqno = virt_block_info.prev_key_block_seqno();
     let last_applied_mc_block_id = engine.load_last_applied_mc_block_id()?;
     if prev_key_block_seqno > last_applied_mc_block_id.seq_no {
         return Ok(());
@@ -226,7 +235,11 @@ pub async fn process_block_broadcast(
 
     let block = BlockStuff::deserialize_checked(block_id.clone(), &broadcast.data)?;
     let block = BlockStuffAug::new(block, broadcast.data.0);
-    let mut handle = match db.block_storage().store_block_data(&block).await? {
+    let mut handle = match db
+        .block_storage()
+        .store_block_data(&block, meta_data.with_mc_seq_no(0))
+        .await?
+    {
         result if result.updated => result.handle,
         // Skipped apply for block broadcast because the block is already being processed
         _ => return Ok(()),
@@ -236,9 +249,8 @@ pub async fn process_block_broadcast(
         handle = match db
             .block_storage()
             .store_block_proof(
-                &block_id,
-                Some(handle),
                 &BlockProofStuffAug::new(proof, broadcast.proof.0),
+                handle.into(),
             )
             .await?
         {
@@ -328,6 +340,8 @@ enum ShardClientError {
     ShardchainBlockHandleNotFound,
     #[error("Block id mismatch")]
     BlockIdMismatch,
+    #[error("Invalid block proof")]
+    InvalidBlockProof,
     #[error("Invalid block extra")]
     InvalidBlockExtra,
 }

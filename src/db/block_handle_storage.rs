@@ -9,7 +9,7 @@ use std::sync::{Arc, Weak};
 use anyhow::Result;
 use tiny_adnl::utils::*;
 
-use super::{columns, BlockHandle, BlockMeta, StoredValue, Tree};
+use super::{columns, BlockHandle, BlockMeta, BlockMetaData, StoredValue, Tree};
 use crate::utils::*;
 
 pub struct BlockHandleStorage {
@@ -50,23 +50,15 @@ impl BlockHandleStorage {
     pub fn create_or_load_handle(
         &self,
         block_id: &ton_block::BlockIdExt,
-        block: Option<&ton_block::Block>,
-        utime: Option<u32>,
+        meta_data: BlockMetaData,
     ) -> Result<(Arc<BlockHandle>, HandleCreationStatus)> {
         if let Some(handle) = self.load_handle(block_id)? {
             return Ok((handle, HandleCreationStatus::Fetched));
         }
 
-        let meta = match (block, utime) {
-            (Some(block), _) => BlockMeta::from_block(block)?,
-            (None, Some(utime)) if block_id.seq_no == 0 => BlockMeta::with_data(0, utime, 0),
-            _ if block_id.seq_no == 0 => {
-                return Err(BlockHandleStorageError::FailedToCreateZerostateHandle.into())
-            }
-            _ => return Err(BlockHandleStorageError::FailedToCreateBlockHandle.into()),
-        };
-
-        if let Some(handle) = self.create_handle(block_id.clone(), meta)? {
+        if let Some(handle) =
+            self.create_handle(block_id.clone(), BlockMeta::with_data(meta_data))?
+        {
             return Ok((handle, HandleCreationStatus::Created));
         }
 
@@ -328,8 +320,6 @@ impl Iterator for KeyBlocksIterator<'_> {
 
 #[derive(thiserror::Error, Debug)]
 enum BlockHandleStorageError {
-    #[error("Failed to create zero state block handle")]
-    FailedToCreateZerostateHandle,
     #[error("Failed to create block handle")]
     FailedToCreateBlockHandle,
     #[error("Key block not found")]

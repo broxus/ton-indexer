@@ -135,6 +135,23 @@ impl BlockStuff {
     }
 }
 
+#[derive(Debug, Copy, Clone)]
+pub struct BriefBlockInfo {
+    pub is_key_block: bool,
+    pub gen_utime: u32,
+    pub after_split: bool,
+}
+
+impl From<&ton_block::BlockInfo> for BriefBlockInfo {
+    fn from(info: &ton_block::BlockInfo) -> Self {
+        Self {
+            is_key_block: info.key_block(),
+            gen_utime: info.gen_utime().0,
+            after_split: info.after_split(),
+        }
+    }
+}
+
 pub trait BlockIdExtExtension {
     fn is_masterchain(&self) -> bool;
 }

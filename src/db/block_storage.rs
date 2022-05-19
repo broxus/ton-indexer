@@ -17,14 +17,13 @@ use parking_lot::RwLock;
 use ton_types::ByteOrderRead;
 
 use super::{
-    columns, BlockHandle, BlockHandleStorage, Column, HandleCreationStatus, RuntimeStorage,
+    columns, BlockHandle, BlockHandleStorage, BlockMetaData, Column, HandleCreationStatus,
     StoredValue, Tree,
 };
 use crate::config::BlocksGcKind;
 use crate::utils::*;
 
 pub struct BlockStorage {
-    runtime_storage: Arc<RuntimeStorage>,
     block_handle_storage: Arc<BlockHandleStorage>,
 
     archives: Tree<columns::Archives>,
@@ -36,11 +35,9 @@ pub struct BlockStorage {
 impl BlockStorage {
     pub fn with_db(
         db: &Arc<rocksdb::DB>,
-        runtime_storage: &Arc<RuntimeStorage>,
         block_handle_storage: &Arc<BlockHandleStorage>,
     ) -> Result<Self> {
         let manager = Self {
-            runtime_storage: runtime_storage.clone(),
             block_handle_storage: block_handle_storage.clone(),
             archives: Tree::new(db)?,
             package_entries: Tree::new(db)?,
@@ -83,31 +80,29 @@ impl BlockStorage {
         Ok(())
     }
 
-    pub async fn store_block_data(&self, block: &BlockStuffAug) -> Result<StoreBlockResult> {
-        let (handle, status) = self.block_handle_storage.create_or_load_handle(
-            block.id(),
-            Some(block.block()),
-            None,
-        )?;
+    pub async fn store_block_data(
+        &self,
+        block: &BlockStuffAug,
+        meta_data: BlockMetaData,
+    ) -> Result<StoreBlockResult> {
+        let block_id = block.id();
+        let (handle, status) = self
+            .block_handle_storage
+            .create_or_load_handle(block_id, meta_data)?;
 
-        let archive_id = PackageEntryId::Block(handle.id());
+        let archive_id = PackageEntryId::Block(block_id);
         let mut updated = false;
-        if !handle.meta().has_data() || !self.has_data(&archive_id)? {
+        if !handle.meta().has_data() {
             let data = block.new_archive_data()?;
 
             let _lock = handle.block_data_lock().write().await;
-            if !handle.meta().has_data() || !self.has_data(&archive_id)? {
+            if !handle.meta().has_data() {
                 self.add_data(&archive_id, data)?;
                 if handle.meta().set_has_data() {
                     self.block_handle_storage.store_handle(&handle)?;
                     updated = true;
                 }
             }
-        }
-
-        if handle.id().shard_id.is_masterchain() && handle.is_key_block() {
-            self.runtime_storage
-                .update_last_known_key_block_seqno(handle.id().seq_no);
         }
 
         Ok(StoreBlockResult {
@@ -143,35 +138,29 @@ impl BlockStorage {
 
     pub async fn store_block_proof(
         &self,
-        block_id: &ton_block::BlockIdExt,
-        handle: Option<Arc<BlockHandle>>,
         proof: &BlockProofStuffAug,
+        handle: BlockProofHandle,
     ) -> Result<StoreBlockResult> {
-        if matches!(&handle, Some(handle) if handle.id() != block_id) {
+        let block_id = proof.id();
+        if matches!(&handle, BlockProofHandle::Existing(handle) if handle.id() != block_id) {
             return Err(BlockStorageError::BlockHandleIdMismatch.into());
         }
 
-        if block_id != proof.id() {
-            return Err(BlockStorageError::BlockProofIdMismatch.into());
-        }
-
         let (handle, status) = match handle {
-            Some(handle) => (handle, HandleCreationStatus::Fetched),
-            None => self.block_handle_storage.create_or_load_handle(
-                block_id,
-                Some(&proof.virtualize_block()?.0),
-                None,
-            )?,
+            BlockProofHandle::Existing(handle) => (handle, HandleCreationStatus::Fetched),
+            BlockProofHandle::New(meta_data) => self
+                .block_handle_storage
+                .create_or_load_handle(block_id, meta_data)?,
         };
 
         let mut updated = false;
         if proof.is_link() {
             let archive_id = PackageEntryId::ProofLink(block_id);
-            if !handle.meta().has_proof_link() || !self.has_data(&archive_id)? {
+            if !handle.meta().has_proof_link() {
                 let data = proof.new_archive_data()?;
 
                 let _lock = handle.proof_data_lock().write().await;
-                if !handle.meta().has_proof_link() || !self.has_data(&archive_id)? {
+                if !handle.meta().has_proof_link() {
                     self.add_data(&archive_id, data)?;
                     if handle.meta().set_has_proof_link() {
                         self.block_handle_storage.store_handle(&handle)?;
@@ -181,11 +170,11 @@ impl BlockStorage {
             }
         } else {
             let archive_id = PackageEntryId::Proof(block_id);
-            if !handle.meta().has_proof() || !self.has_data(&archive_id)? {
+            if !handle.meta().has_proof() {
                 let data = proof.new_archive_data()?;
 
                 let _lock = handle.proof_data_lock().write().await;
-                if !handle.meta().has_proof() || !self.has_data(&archive_id)? {
+                if !handle.meta().has_proof() {
                     self.add_data(&archive_id, data)?;
                     if handle.meta().set_has_proof() {
                         self.block_handle_storage.store_handle(&handle)?;
@@ -322,7 +311,7 @@ impl BlockStorage {
         if handle.meta().set_is_archived() {
             batch.put_cf(
                 &handle_cf,
-                handle.id().root_hash.as_slice(),
+                block_id.root_hash.as_slice(),
                 handle.meta().to_vec(),
             );
         }
@@ -338,6 +327,7 @@ impl BlockStorage {
     pub fn move_into_archive_with_data(
         &self,
         handle: &BlockHandle,
+        is_link: bool,
         block_data: &[u8],
         block_proof_data: &[u8],
     ) -> Result<()> {
@@ -348,6 +338,8 @@ impl BlockStorage {
             return Ok(());
         }
 
+        let block_id = handle.id();
+
         // Prepare cf
         let storage_cf = self.archives.get_cf();
         let handle_cf = self.block_handles.get_cf();
@@ -357,15 +349,35 @@ impl BlockStorage {
         let archive_id_bytes = archive_id.to_be_bytes();
 
         let mut batch = rocksdb::WriteBatch::default();
-        batch.merge_cf(&storage_cf, &archive_id_bytes, block_data);
-        batch.merge_cf(&storage_cf, &archive_id_bytes, block_proof_data);
+
+        batch.merge_cf(
+            &storage_cf,
+            &archive_id_bytes,
+            make_archive_segment(&PackageEntryId::Block(handle.id()).filename(), block_data),
+        );
+
+        batch.merge_cf(
+            &storage_cf,
+            &archive_id_bytes,
+            make_archive_segment(
+                &if is_link {
+                    PackageEntryId::ProofLink(block_id)
+                } else {
+                    PackageEntryId::Proof(block_id)
+                }
+                .filename(),
+                block_proof_data,
+            ),
+        );
+
         if handle.meta().set_is_archived() {
             batch.put_cf(
                 &handle_cf,
-                handle.id().root_hash.as_slice(),
+                block_id.root_hash.as_slice(),
                 handle.meta().to_vec(),
             );
         }
+
         self.archives.raw_db_handle().write(batch)?;
 
         Ok(())
@@ -558,6 +570,7 @@ impl BlockStorage {
         self.package_entries.insert(id.to_vec(), data)
     }
 
+    #[allow(dead_code)]
     fn has_data<I>(&self, id: &PackageEntryId<I>) -> Result<bool>
     where
         I: Borrow<ton_block::BlockIdExt> + Hash,
@@ -640,6 +653,24 @@ impl BlockStorage {
             Some(data) => Ok(make_archive_segment(&entry_id.filename(), &data)),
             None => Err(BlockStorageError::InvalidBlockData.into()),
         }
+    }
+}
+
+#[derive(Clone)]
+pub enum BlockProofHandle {
+    Existing(Arc<BlockHandle>),
+    New(BlockMetaData),
+}
+
+impl From<Arc<BlockHandle>> for BlockProofHandle {
+    fn from(handle: Arc<BlockHandle>) -> Self {
+        Self::Existing(handle)
+    }
+}
+
+impl From<BlockMetaData> for BlockProofHandle {
+    fn from(meta_data: BlockMetaData) -> Self {
+        Self::New(meta_data)
     }
 }
 
@@ -796,8 +827,6 @@ enum BlockStorageError {
     BlockProofNotFound,
     #[error("Block handle id mismatch")]
     BlockHandleIdMismatch,
-    #[error("Block proof id mismatch")]
-    BlockProofIdMismatch,
     #[error("Invalid block data")]
     InvalidBlockData,
     #[error("Offset is outside of the archive slice")]

@@ -291,18 +291,18 @@ pub struct BlockMapsEdge {
 }
 
 impl BlockMapsEdge {
-    /// Checks whether specified block was earlier than this edge
+    /// Checks whether this edge was before the given block
     pub fn is_before(&self, id: &ton_block::BlockIdExt) -> bool {
         if id.shard_id.is_masterchain() {
-            id.seq_no > self.mc_block_seq_no
+            self.mc_block_seq_no < id.seq_no
         } else {
             match self.top_shard_blocks.get(&id.shard_id) {
-                Some(&top_seq_no) => id.seq_no > top_seq_no,
+                Some(&top_seq_no) => top_seq_no < id.seq_no,
                 None => self
                     .top_shard_blocks
                     .iter()
                     .find(|&(shard, _)| id.shard_id.intersect_with(shard))
-                    .map(|(_, &top_seq_no)| id.seq_no > top_seq_no)
+                    .map(|(_, &top_seq_no)| top_seq_no < id.seq_no)
                     .unwrap_or_default(),
             }
         }

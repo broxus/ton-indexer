@@ -574,8 +574,7 @@ impl Engine {
 
         let (handle, _) = self.db.block_handle_storage().create_or_load_handle(
             block_id,
-            None,
-            Some(state.state().gen_time()),
+            BlockMetaData::zero_state(state.state().gen_time()),
         )?;
         self.store_state(&handle, &state).await?;
 
@@ -839,18 +838,10 @@ impl Engine {
         let last_mc_block_handle = db
             .block_handle_storage()
             .load_handle(&last_applied_mc_block_id)?
-            .ok_or_else(|| {
-                log::info!("Handle not found");
-                EngineError::FailedToLoadLastMasterchainBlockHandle
-            })?;
+            .ok_or(EngineError::FailedToLoadLastMasterchainBlockHandle)?;
 
         if last_mc_block_handle.meta().gen_utime() + 600 > now() as u32 {
             return Ok(true);
-        }
-
-        let last_key_block_seqno = self.db.runtime_storage().last_known_key_block_seqno();
-        if last_key_block_seqno > last_applied_mc_block_id.seq_no {
-            return Ok(false);
         }
 
         Ok(false)
@@ -1004,16 +995,19 @@ impl Engine {
                     continue;
                 }
 
-                self.check_block_proof(&block_proof).await?;
-                let handle = db.block_storage().store_block_data(&block).await?.handle;
+                let info = self.check_block_proof(&block_proof).await?;
                 let handle = db
                     .block_storage()
-                    .store_block_proof(block_id, Some(handle), &block_proof)
+                    .store_block_data(&block, info.with_mc_seq_no(mc_seq_no))
+                    .await?
+                    .handle;
+                let handle = db
+                    .block_storage()
+                    .store_block_proof(&block_proof, handle.into())
                     .await?
                     .handle;
 
-                log::trace!("Downloaded block {} for apply", block_id);
-
+                log::trace!("Downloaded block {block_id} for apply");
                 self.apply_block_ext(&handle, &block, mc_seq_no, pre_apply, 0)
                     .await?;
                 return Ok(());
@@ -1133,19 +1127,36 @@ impl Engine {
         Ok(())
     }
 
-    async fn check_block_proof(&self, block_proof: &BlockProofStuff) -> Result<()> {
-        let db = &self.db;
+    async fn check_block_proof(&self, block_proof: &BlockProofStuff) -> Result<BriefBlockInfo> {
+        let block_handle_storage = self.db.block_handle_storage();
+        let block_storage = self.db.block_storage();
+
+        let (virt_block, virt_block_info) = block_proof.pre_check_block_proof()?;
+        let res = BriefBlockInfo::from(&virt_block_info);
 
         if block_proof.is_link() {
-            block_proof.check_proof_link()?;
-        } else {
-            let (virt_block, virt_block_info) = block_proof.pre_check_block_proof()?;
-            let prev_key_block_seqno = virt_block_info.prev_key_block_seqno();
+            // Nothing else to check for proof link
+            return Ok(res);
+        }
 
-            let handle = db
-                .block_handle_storage()
-                .load_key_block_handle(prev_key_block_seqno)?;
-            let prev_key_block_proof = db.block_storage().load_block_proof(&handle, false).await?;
+        let handle = {
+            let prev_key_block_seqno = virt_block_info.prev_key_block_seqno();
+            block_handle_storage
+                .load_key_block_handle(prev_key_block_seqno)
+                .context("Failed to load prev key block handle")?
+        };
+
+        if handle.id().seq_no == 0 {
+            let zero_state = self
+                .load_mc_zero_state()
+                .await
+                .context("Failed to load mc zero state")?;
+            block_proof.check_with_master_state(&zero_state)?
+        } else {
+            let prev_key_block_proof = block_storage
+                .load_block_proof(&handle, false)
+                .await
+                .context("Failed to load prev key block proof")?;
 
             if let Err(e) = check_with_prev_key_block_proof(
                 block_proof,
@@ -1156,10 +1167,16 @@ impl Engine {
                 if !self.is_hard_fork(handle.id()) {
                     return Err(e);
                 }
-                log::warn!("Received hard fork block {}. Ignoring proof", handle.id());
+
+                // Allow invalid proofs for hard forks
+                log::warn!(
+                    "Received hard fork key block {}. Ignoring proof",
+                    handle.id()
+                );
             }
         }
-        Ok(())
+
+        Ok(res)
     }
 
     async fn download_block_worker(

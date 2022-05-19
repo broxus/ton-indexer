@@ -465,7 +465,7 @@ pub fn check_with_prev_key_block_proof(
     proof.check_signatures(validators, validators_hash_short)
 }
 
-fn check_with_master_state(
+pub fn check_with_master_state(
     proof: &BlockProofStuff,
     master_state: &ShardStateStuff,
     virt_block: &ton_block::Block,

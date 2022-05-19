@@ -153,6 +153,7 @@ where
         Ok(self.db.delete_cf_opt(&cf, key, &self.write_config)?)
     }
 
+    #[allow(dead_code)]
     pub fn contains_key<K: AsRef<[u8]>>(&self, key: K) -> Result<bool> {
         let cf = self.get_cf();
         Ok(self

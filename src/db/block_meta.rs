@@ -11,6 +11,34 @@ use anyhow::Result;
 use ton_types::ByteOrderRead;
 
 use super::{StoredValue, StoredValueBuffer};
+use crate::utils::BriefBlockInfo;
+
+#[derive(Debug, Copy, Clone)]
+pub struct BlockMetaData {
+    pub is_key_block: bool,
+    pub gen_utime: u32,
+    pub mc_ref_seqno: Option<u32>,
+}
+
+impl BlockMetaData {
+    pub fn zero_state(gen_utime: u32) -> Self {
+        Self {
+            is_key_block: true,
+            gen_utime,
+            mc_ref_seqno: Some(0),
+        }
+    }
+}
+
+impl BriefBlockInfo {
+    pub fn with_mc_seq_no(self, mc_seq_no: u32) -> BlockMetaData {
+        BlockMetaData {
+            is_key_block: self.is_key_block,
+            gen_utime: self.gen_utime,
+            mc_ref_seqno: Some(mc_seq_no),
+        }
+    }
+}
 
 #[derive(Debug, Default)]
 pub struct BlockMeta {
@@ -19,20 +47,16 @@ pub struct BlockMeta {
 }
 
 impl BlockMeta {
-    pub fn from_block(block: &ton_block::Block) -> Result<Self> {
-        let info = block.read_info()?;
-        let flags = if info.key_block() {
-            BLOCK_META_FLAG_IS_KEY_BLOCK
-        } else {
-            0
-        };
-        Ok(Self::with_data(flags, info.gen_utime().0, 0))
-    }
-
-    pub fn with_data(flags: u64, gen_utime: u32, masterchain_ref_seqno: u32) -> Self {
+    pub fn with_data(data: BlockMetaData) -> Self {
         Self {
-            flags: AtomicU64::new(flags | masterchain_ref_seqno as u64),
-            gen_utime,
+            flags: AtomicU64::new(
+                if data.is_key_block {
+                    BLOCK_META_FLAG_IS_KEY_BLOCK
+                } else {
+                    0
+                } | data.mc_ref_seqno.unwrap_or_default() as u64,
+            ),
+            gen_utime: data.gen_utime,
         }
     }
 

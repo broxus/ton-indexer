@@ -122,7 +122,7 @@ impl ArchiveDownloader {
                                     }
                                 }
                                 Err(e) => {
-                                    log::error!(
+                                    log::warn!(
                                         "Failed to preload archive for mc block {next_index}: {e:?}"
                                     );
                                 }
@@ -357,6 +357,7 @@ impl Drop for ReceivedBlockMaps<'_> {
                 self.downloader.ctx.good_peers.remove(neighbour);
             }
 
+            log::info!("Archive for mc block {} is not accepted", self.index);
             self.downloader.start_downloading(self.index);
         }
     }
