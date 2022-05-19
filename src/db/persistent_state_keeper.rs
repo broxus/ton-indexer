@@ -1,7 +1,7 @@
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 
-use parking_lot::RwLock;
+use arc_swap::ArcSwapOption;
 use tokio::sync::Notify;
 
 use crate::db::BlockHandle;
@@ -10,7 +10,7 @@ use crate::utils::*;
 #[derive(Default)]
 pub struct PersistentStateKeeper {
     persistent_state_changed: Notify,
-    current_persistent_state: RwLock<Option<Arc<BlockHandle>>>,
+    current_persistent_state: ArcSwapOption<BlockHandle>,
     last_utime: AtomicU32,
 }
 
@@ -28,7 +28,8 @@ impl PersistentStateKeeper {
         }
 
         if is_persistent_state(block_utime, prev_utime) {
-            *self.current_persistent_state.write() = Some(block_handle.clone());
+            self.current_persistent_state
+                .store(Some(block_handle.clone()));
             self.persistent_state_changed.notify_waiters();
         }
     }
@@ -38,7 +39,7 @@ impl PersistentStateKeeper {
     }
 
     pub fn current(&self) -> Option<Arc<BlockHandle>> {
-        self.current_persistent_state.read().clone()
+        self.current_persistent_state.load_full()
     }
 
     pub fn new_state_found(&self) -> tokio::sync::futures::Notified {

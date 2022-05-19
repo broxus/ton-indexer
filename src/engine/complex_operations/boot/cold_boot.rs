@@ -157,7 +157,7 @@ async fn download_key_blocks(engine: &Arc<Engine>, mut prev_key_block: PrevKeyBl
                 'inner: loop {
                     log::info!("Downloading next key blocks for: {block_id}");
 
-                    let neighbour = good_peer.load().clone();
+                    let neighbour = good_peer.load_full();
                     let res = tokio::select! {
                         // Download next key blocks ids
                         res = mc_overlay.download_next_key_blocks_ids(

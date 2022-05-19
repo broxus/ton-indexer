@@ -237,8 +237,8 @@ impl Engine {
     fn last_applied_block(&self) -> Result<ton_block::BlockIdExt> {
         let mc_block_id = self.load_last_applied_mc_block_id()?;
         let sc_block_id = self.load_shards_client_mc_block_id()?;
-        log::info!("sync: Last applied block id: {}", mc_block_id);
-        log::info!("sync: Last shards client block id: {}", sc_block_id);
+        log::info!("sync: Last applied block id: {mc_block_id}");
+        log::info!("sync: Last shards client block id: {sc_block_id}");
 
         Ok(match (mc_block_id, sc_block_id) {
             (mc_block_id, sc_block_id) if mc_block_id.seq_no > sc_block_id.seq_no => sc_block_id,
