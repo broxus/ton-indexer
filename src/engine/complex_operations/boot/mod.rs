@@ -27,7 +27,7 @@ pub async fn boot(engine: &Arc<Engine>) -> Result<()> {
             engine
                 .db
                 .node_state()
-                .store_background_sync_end(&last_mc_block_id)?;
+                .store_historical_sync_end(&last_mc_block_id)?;
 
             last_mc_block_id
         }

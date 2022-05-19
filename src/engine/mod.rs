@@ -209,7 +209,7 @@ impl Engine {
         match self.old_blocks_policy {
             OldBlocksPolicy::Ignore => { /* do nothing */ }
             OldBlocksPolicy::Sync { from_seqno } => {
-                background_sync(self, from_seqno).await?;
+                historical_sync(self, from_seqno).await?;
             }
         }
         if !self.is_synced()? {

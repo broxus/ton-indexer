@@ -58,7 +58,7 @@ impl ArchiveDownloader {
             *to = std::cmp::max(*to, from);
         }
 
-        // Enable prefetch only for background sync when range end is known
+        // Enable prefetch only for historical sync when range end is known
         let prefetch_enabled = to.is_some();
 
         let mut downloader = ArchiveDownloader {
