@@ -38,7 +38,7 @@ impl BlockProofStuff {
         }
 
         if !block_id.is_masterchain() && !is_link {
-            return Err(anyhow!("proof for non-masterchain block {}", block_id));
+            return Err(anyhow!("proof for non-masterchain block {block_id}"));
         }
 
         Ok(Self {

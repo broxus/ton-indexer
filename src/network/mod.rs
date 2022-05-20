@@ -15,12 +15,6 @@ use tiny_adnl::*;
 use tokio_util::sync::CancellationToken;
 use ton_api::ton;
 
-pub use self::full_node_overlay_client::*;
-pub use self::full_node_overlay_service::*;
-
-mod full_node_overlay_client;
-mod full_node_overlay_service;
-
 pub struct NodeNetwork {
     adnl: Arc<AdnlNode>,
     dht: Arc<DhtNode>,
@@ -29,7 +23,6 @@ pub struct NodeNetwork {
     neighbours_options: NeighboursOptions,
     overlay_shard_options: OverlayShardOptions,
     overlays: Arc<FxDashMap<OverlayIdShort, Arc<OverlayClient>>>,
-    overlay_awaiters: OperationsPool<OverlayIdShort, FullNodeOverlayClient>,
     working_state: Arc<WorkingState>,
 }
 
@@ -88,7 +81,6 @@ impl NodeNetwork {
             neighbours_options,
             overlay_shard_options,
             overlays: Arc::new(Default::default()),
-            overlay_awaiters: OperationsPool::new("overlay_operations"),
             working_state,
         });
 
@@ -132,14 +124,6 @@ impl NodeNetwork {
         self.working_state.shutdown();
     }
 
-    pub fn add_subscriber(
-        &self,
-        overlay_id: OverlayIdShort,
-        subscriber: Arc<dyn OverlaySubscriber>,
-    ) {
-        self.overlay.add_subscriber(overlay_id, subscriber);
-    }
-
     pub fn compute_overlay_id(&self, workchain: i32) -> (OverlayIdFull, OverlayIdShort) {
         let full_id = self
             .overlay
@@ -148,36 +132,17 @@ impl NodeNetwork {
         (full_id, short_id)
     }
 
-    pub async fn get_overlay(
-        self: &Arc<Self>,
-        overlay_full_id: OverlayIdFull,
-        overlay_id: OverlayIdShort,
-    ) -> Result<FullNodeOverlayClient> {
-        loop {
-            if let Some(overlay) = self.overlays.get(&overlay_id) {
-                return Ok(FullNodeOverlayClient(overlay.value().clone()));
-            }
-
-            let overlay_opt = self
-                .overlay_awaiters
-                .do_or_wait(
-                    &overlay_id,
-                    None,
-                    self.get_overlay_worker(overlay_full_id, overlay_id),
-                )
-                .await?;
-
-            if let Some(overlay) = overlay_opt {
-                return Ok(overlay);
-            }
-        }
+    pub fn add_subscriber(&self, workchain: i32, subscriber: Arc<dyn OverlaySubscriber>) {
+        let (_, overlay_id) = self.compute_overlay_id(workchain);
+        self.overlay.add_subscriber(overlay_id, subscriber);
     }
 
-    async fn get_overlay_worker(
+    pub async fn create_overlay_client(
         self: &Arc<Self>,
-        overlay_full_id: OverlayIdFull,
-        overlay_id: OverlayIdShort,
-    ) -> Result<FullNodeOverlayClient> {
+        workchain: i32,
+    ) -> Result<Arc<OverlayClient>> {
+        let (overlay_full_id, overlay_id) = self.compute_overlay_id(workchain);
+
         let (shard, _) = self
             .overlay
             .add_public_overlay(&overlay_id, self.overlay_shard_options);
@@ -192,7 +157,7 @@ impl NodeNetwork {
 
         let peers = self.update_overlay_peers(&shard, &mut None).await?;
         if peers.is_empty() {
-            log::warn!("No nodes were found in overlay {}", &overlay_id);
+            log::warn!("No nodes were found in overlay {overlay_id}");
         }
 
         let neighbours = Neighbours::new(&self.dht, &shard, &peers, self.neighbours_options);
@@ -217,7 +182,7 @@ impl NodeNetwork {
             .or_insert(overlay_client)
             .clone();
 
-        Ok(FullNodeOverlayClient(result))
+        Ok(result)
     }
 
     fn start_updating_peers(self: &Arc<Self>, overlay_client: &Arc<OverlayClient>) {

@@ -25,10 +25,11 @@ use crate::utils::*;
 
 use self::complex_operations::*;
 use self::downloader::*;
+pub use self::node_rpc::*;
 
 pub mod complex_operations;
 mod downloader;
-pub mod rpc_operations;
+mod node_rpc;
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum EngineStatus {
@@ -44,8 +45,8 @@ pub struct Engine {
     subscribers: Vec<Arc<dyn Subscriber>>,
     network: Arc<NodeNetwork>,
 
-    masterchain_overlay: FullNodeOverlayClient,
-    basechain_overlay: FullNodeOverlayClient,
+    masterchain_client: NodeRpcClient,
+    basechain_client: NodeRpcClient,
 
     old_blocks_policy: OldBlocksPolicy,
     zero_state_id: ton_block::BlockIdExt,
@@ -128,21 +129,20 @@ impl Engine {
 
         network.start().await.context("Failed to start network")?;
 
-        let (masterchain_overlay, basechain_overlay) = {
-            let (masterchain_full_id, masterchain_short_id) =
-                network.compute_overlay_id(ton_block::MASTERCHAIN_ID);
-            let (basechain_full_id, basechain_short_id) =
-                network.compute_overlay_id(ton_block::BASE_WORKCHAIN_ID);
-
+        let (masterchain_client, basechain_client) = {
             let (masterchain, basechain) = futures::future::join(
-                network.get_overlay(masterchain_full_id, masterchain_short_id),
-                network.get_overlay(basechain_full_id, basechain_short_id),
+                network.create_overlay_client(ton_block::MASTERCHAIN_ID),
+                network.create_overlay_client(ton_block::BASE_WORKCHAIN_ID),
             )
             .await;
 
             (
-                masterchain.context("Failed to create masterchain overlay")?,
-                basechain.context("Failed to create basechain overlay")?,
+                masterchain
+                    .map(NodeRpcClient)
+                    .context("Failed to create masterchain overlay")?,
+                basechain
+                    .map(NodeRpcClient)
+                    .context("Failed to create basechain overlay")?,
             )
         };
 
@@ -159,8 +159,8 @@ impl Engine {
             }),
             subscribers,
             network,
-            masterchain_overlay,
-            basechain_overlay,
+            masterchain_client,
+            basechain_client,
             old_blocks_policy,
             zero_state_id,
             init_mc_block_id,
@@ -181,17 +181,12 @@ impl Engine {
 
     pub async fn start(self: &Arc<Self>) -> Result<()> {
         // Start full node overlay service
-        let service = FullNodeOverlayService::new(self);
+        let service = NodeRpcServer::new(self);
 
-        let (_, masterchain_overlay_id) =
-            self.network.compute_overlay_id(ton_block::MASTERCHAIN_ID);
         self.network
-            .add_subscriber(masterchain_overlay_id, service.clone());
-
-        let (_, basechain_overlay_id) = self
-            .network
-            .compute_overlay_id(ton_block::BASE_WORKCHAIN_ID);
-        self.network.add_subscriber(basechain_overlay_id, service);
+            .add_subscriber(ton_block::MASTERCHAIN_ID, service.clone());
+        self.network
+            .add_subscriber(ton_block::BASE_WORKCHAIN_ID, service);
 
         // Boot
         boot(self).await?;
@@ -199,8 +194,8 @@ impl Engine {
             .await;
 
         // Start listening broadcasts
-        self.listen_broadcasts(&self.masterchain_overlay);
-        self.listen_broadcasts(&self.basechain_overlay);
+        self.listen_broadcasts(&self.masterchain_client);
+        self.listen_broadcasts(&self.basechain_client);
 
         // Start archives gc
         self.start_archives_gc().await?;
@@ -493,7 +488,7 @@ impl Engine {
     }
 
     pub fn broadcast_external_message(&self, workchain: i32, data: &[u8]) -> Result<()> {
-        self.get_overlay(workchain)?
+        self.get_rpc_client(workchain)?
             .broadcast_external_message(data);
         Ok(())
     }
@@ -502,23 +497,23 @@ impl Engine {
         self.hard_forks.contains(block_id)
     }
 
-    fn get_overlay(&self, workchain: i32) -> Result<&FullNodeOverlayClient> {
+    fn get_rpc_client(&self, workchain: i32) -> Result<&NodeRpcClient> {
         match workchain {
-            ton_block::MASTERCHAIN_ID => Ok(&self.masterchain_overlay),
-            ton_block::BASE_WORKCHAIN_ID => Ok(&self.basechain_overlay),
+            ton_block::MASTERCHAIN_ID => Ok(&self.masterchain_client),
+            ton_block::BASE_WORKCHAIN_ID => Ok(&self.basechain_client),
             _ => Err(EngineError::OverlayNotFound.into()),
         }
     }
 
-    fn listen_broadcasts(self: &Arc<Self>, overlay: &FullNodeOverlayClient) {
+    fn listen_broadcasts(self: &Arc<Self>, client: &NodeRpcClient) {
         let engine = self.clone();
-        let overlay = overlay.clone();
+        let client = client.clone();
 
         tokio::spawn(async move {
-            let overlay_id = overlay.0.overlay_id();
+            let overlay_id = client.0.overlay_id();
 
             loop {
-                match overlay.wait_broadcast().await {
+                match client.wait_broadcast().await {
                     Ok((ton::ton_node::Broadcast::TonNode_BlockBroadcast(block), _)) => {
                         let engine = engine.clone();
                         tokio::spawn(async move {
@@ -670,7 +665,7 @@ impl Engine {
         neighbour: Option<&Arc<tiny_adnl::Neighbour>>,
         output: &mut (dyn Write + Send),
     ) -> Result<ArchiveDownloadStatus> {
-        self.masterchain_overlay
+        self.masterchain_client
             .download_archive(mc_block_seq_no, neighbour, output)
             .await
     }
@@ -1209,7 +1204,7 @@ impl Engine {
             block_id,
             max_attempts,
             timeouts,
-            client: &self.masterchain_overlay,
+            client: &self.masterchain_client,
             db: self.db.as_ref(),
             downloader,
             explicit_neighbour: None,

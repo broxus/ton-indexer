@@ -13,8 +13,7 @@ use tiny_adnl::Neighbour;
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
-use crate::engine::Engine;
-use crate::network::*;
+use crate::engine::{Engine, NodeRpcClient};
 use crate::utils::*;
 
 const PROCESSING_QUEUE_LEN: usize = 10;
@@ -25,10 +24,10 @@ pub async fn download_state(
     engine: &Arc<Engine>,
     full_state_id: FullStateId,
 ) -> Result<Arc<ShardStateStuff>> {
-    let overlay = engine.masterchain_overlay.clone();
+    let mc_client = engine.masterchain_client.clone();
 
     let neighbour = loop {
-        match overlay.find_persistent_state(&full_state_id).await {
+        match mc_client.find_persistent_state(&full_state_id).await {
             Ok(Some(peer)) => break peer,
             Ok(None) => {
                 log::trace!("Failed to download state: state not found");
@@ -52,7 +51,7 @@ pub async fn download_state(
 
     let downloader = async move {
         let mut scheduler = Scheduler::with_slots(
-            overlay,
+            mc_client,
             full_state_id,
             neighbour,
             DOWNLOADING_QUEUE_LEN,
@@ -143,7 +142,7 @@ struct Scheduler {
 
 impl Scheduler {
     async fn with_slots(
-        overlay: FullNodeOverlayClient,
+        mc_client: NodeRpcClient,
         full_state_id: FullStateId,
         neighbour: Arc<Neighbour>,
         worker_count: usize,
@@ -155,7 +154,7 @@ impl Scheduler {
         let cancellation_token = CancellationToken::new();
 
         let ctx = Arc::new(DownloadContext {
-            overlay,
+            mc_client,
             full_state_id,
             neighbour,
             max_size,
@@ -267,7 +266,7 @@ impl Scheduler {
 }
 
 struct DownloadContext {
-    overlay: FullNodeOverlayClient,
+    mc_client: NodeRpcClient,
     full_state_id: FullStateId,
     neighbour: Arc<Neighbour>,
     max_size: usize,
@@ -287,7 +286,7 @@ async fn download_packet_worker(ctx: Arc<DownloadContext>, mut offsets_rx: Offse
                 break 'tasks;
             }
 
-            let recv_fut = ctx.overlay.download_persistent_state_part(
+            let recv_fut = ctx.mc_client.download_persistent_state_part(
                 &ctx.full_state_id,
                 offset,
                 ctx.max_size,

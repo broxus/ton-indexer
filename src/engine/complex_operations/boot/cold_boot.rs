@@ -148,7 +148,7 @@ async fn download_key_blocks(engine: &Arc<Engine>, mut prev_key_block: PrevKeyBl
     let (_guard, signal) = trigger_on_drop();
     let good_peer = Arc::new(ArcSwapOption::empty());
     tokio::spawn({
-        let mc_overlay = engine.masterchain_overlay.clone();
+        let mc_client = engine.masterchain_client.clone();
         let good_peer = good_peer.clone();
         async move {
             tokio::pin! { let dropped = signal.cancelled(); }
@@ -160,7 +160,7 @@ async fn download_key_blocks(engine: &Arc<Engine>, mut prev_key_block: PrevKeyBl
                     let neighbour = good_peer.load_full();
                     let res = tokio::select! {
                         // Download next key blocks ids
-                        res = mc_overlay.download_next_key_blocks_ids(
+                        res = mc_client.download_next_key_blocks_ids(
                             &block_id,
                             BLOCKS_PER_BATCH,
                             neighbour.as_ref()

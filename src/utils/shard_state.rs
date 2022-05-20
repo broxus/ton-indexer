@@ -7,6 +7,12 @@ use anyhow::{anyhow, Result};
 use ton_block::{Deserializable, Serializable};
 use ton_types::{Cell, UInt256};
 
+/// Full persistent state block id (relative to the masterchain)
+pub struct FullStateId {
+    pub mc_block_id: ton_block::BlockIdExt,
+    pub block_id: ton_block::BlockIdExt,
+}
+
 #[derive(Debug, Default, Clone, Eq, PartialEq)]
 pub struct ShardStateStuff {
     block_id: ton_block::BlockIdExt,

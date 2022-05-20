@@ -7,7 +7,7 @@ use std::io::Write;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result};
 use tiny_adnl::utils::*;
 use tiny_adnl::{Neighbour, OverlayClient};
 use ton_api::ton::{self, TLObject};
@@ -16,9 +16,9 @@ use ton_api::Deserializer;
 use crate::utils::*;
 
 #[derive(Clone)]
-pub struct FullNodeOverlayClient(pub Arc<OverlayClient>);
+pub struct NodeRpcClient(pub Arc<OverlayClient>);
 
-impl FullNodeOverlayClient {
+impl NodeRpcClient {
     pub fn broadcast_external_message(&self, message: &[u8]) {
         let this = &self.0;
 
@@ -227,44 +227,44 @@ impl FullNodeOverlayClient {
             )
             .await?;
 
+        if let ton::ton_node::Prepared::TonNode_NotFound = prepare {
+            return Ok(None);
+        }
+
         // Download
-        match prepare {
-            ton::ton_node::Prepared::TonNode_NotFound => Ok(None),
-            ton::ton_node::Prepared::TonNode_Prepared => {
-                let block_data: ton::ton_node::DataFull = this
-                    .send_rldp_query(
-                        &ton::rpc::ton_node::DownloadBlockFull {
-                            block: convert_block_id_ext_blk2api(block_id),
-                        },
-                        neighbour,
-                        0,
-                    )
-                    .await?;
+        let block_data: ton::ton_node::DataFull = this
+            .send_rldp_query(
+                &ton::rpc::ton_node::DownloadBlockFull {
+                    block: convert_block_id_ext_blk2api(block_id),
+                },
+                neighbour,
+                0,
+            )
+            .await?;
 
-                match block_data {
-                    ton::ton_node::DataFull::TonNode_DataFull(data) => {
-                        if !compare_block_ids(block_id, &data.id) {
-                            return Err(anyhow!("Received block id mismatch"));
-                        }
-
-                        let block =
-                            BlockStuff::deserialize_checked(block_id.clone(), &data.block.0)?;
-                        let proof = BlockProofStuff::deserialize(
-                            block_id.clone(),
-                            &data.proof.0,
-                            data.is_link.into(),
-                        )?;
-
-                        Ok(Some((
-                            WithArchiveData::new(block, data.block.0),
-                            WithArchiveData::new(proof, data.proof.0),
-                        )))
-                    }
-                    ton::ton_node::DataFull::TonNode_DataFullEmpty => {
-                        log::warn!("prepareBlock receives Prepared, but DownloadBlockFull receives DataFullEmpty");
-                        Ok(None)
-                    }
+        match block_data {
+            ton::ton_node::DataFull::TonNode_DataFull(data) => {
+                if !compare_block_ids(block_id, &data.id) {
+                    return Err(NodeRpcClientError::ReceivedBlockIdMismatch.into());
                 }
+
+                let block = BlockStuff::deserialize_checked(block_id.clone(), &data.block.0)?;
+                let proof = BlockProofStuff::deserialize(
+                    block_id.clone(),
+                    &data.proof.0,
+                    data.is_link.into(),
+                )?;
+
+                Ok(Some((
+                    WithArchiveData::new(block, data.block.0),
+                    WithArchiveData::new(proof, data.proof.0),
+                )))
+            }
+            ton::ton_node::DataFull::TonNode_DataFullEmpty => {
+                log::warn!(
+                    "prepareBlock receives Prepared, but DownloadBlockFull receives DataFullEmpty"
+                );
+                Ok(None)
             }
         }
     }
@@ -285,9 +285,8 @@ impl FullNodeOverlayClient {
             neighbour
         } else {
             tokio::time::sleep(Duration::from_millis(NO_NEIGHBOURS_DELAY)).await;
-            return Err(anyhow!("neighbour is not found!"));
+            return Err(NodeRpcClientError::NeighbourNotFound.into());
         };
-        log::trace!("USE PEER {}, REQUEST {:?}", neighbour.peer_id(), query);
 
         // Download
         let data_full: ton::ton_node::DataFull = this.send_rldp_query(query, neighbour, 0).await?;
@@ -413,29 +412,19 @@ impl FullNodeOverlayClient {
                     peer_attempt += 1;
                     part_attempt += 1;
                     log::error!(
-                        "Failed to download archive {}: {}, offset: {}, attempt: {}",
+                        "Failed to download archive {}: {e:?}, offset: {offset}, attempt: {part_attempt}",
                         info.id,
-                        e,
-                        offset,
-                        part_attempt
                     );
 
                     if part_attempt > 2 {
-                        return Err(anyhow!(
-                            "Failed to download archive after {} attempts: {}",
-                            part_attempt,
-                            e
-                        ));
+                        return Err(NodeRpcClientError::TooManyFailedAttempts.into());
                     }
                 }
                 Err(_) => {
                     peer_attempt += 1;
                     part_attempt += 1;
                     if part_attempt > 2 {
-                        return Err(anyhow!(
-                            "Failed to download archive after {} attempts: timeout",
-                            part_attempt,
-                        ));
+                        return Err(NodeRpcClientError::RequestTimeout.into());
                     }
                 }
             }
@@ -451,12 +440,6 @@ impl FullNodeOverlayClient {
     }
 }
 
-/// Full persistent state block id (relative to the masterchain)
-pub struct FullStateId {
-    pub mc_block_id: ton_block::BlockIdExt,
-    pub block_id: ton_block::BlockIdExt,
-}
-
 #[derive(Clone)]
 pub enum ArchiveDownloadStatus {
     Downloaded {
@@ -468,3 +451,15 @@ pub enum ArchiveDownloadStatus {
 
 const TIMEOUT_PREPARE: u64 = 6000; // Milliseconds
 const TIMEOUT_ARCHIVE: u64 = 3000;
+
+#[derive(Debug, thiserror::Error)]
+enum NodeRpcClientError {
+    #[error("Received block id mismatch")]
+    ReceivedBlockIdMismatch,
+    #[error("Neighbour not found")]
+    NeighbourNotFound,
+    #[error("Too many failed attempts")]
+    TooManyFailedAttempts,
+    #[error("Request timeout")]
+    RequestTimeout,
+}

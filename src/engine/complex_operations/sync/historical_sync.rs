@@ -1,13 +1,13 @@
 use std::ops::ControlFlow;
 use std::sync::Arc;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use ton_types::FxDashSet;
-
-use crate::engine::Engine;
 
 use super::archive_downloader::*;
 use super::block_maps::*;
+use crate::engine::Engine;
+use crate::utils::*;
 
 pub async fn historical_sync(engine: &Arc<Engine>, from_seqno: u32) -> Result<()> {
     let (from, to) = engine.historical_sync_range(from_seqno)?;
@@ -80,8 +80,6 @@ impl<'a> HistoricalSyncContext<'a> {
         maps: &Arc<BlockMaps>,
         edge: &mut BlockMapsEdge,
     ) -> Result<()> {
-        let block_handle_storage = self.engine.db.block_handle_storage();
-        let block_storage = self.engine.db.block_storage();
         let node_state = self.engine.db.node_state();
 
         let splits = Arc::new(FxDashSet::default());
@@ -94,16 +92,9 @@ impl<'a> HistoricalSyncContext<'a> {
             }
 
             // Save block
-            let entry = maps
-                .blocks
-                .get(mc_block_id)
-                .context("sync: Failed to get masterchain block entry")?;
+            let (info, block, proof) = self.engine.prepare_archive_block(maps, mc_block_id).await?;
 
-            let (mc_block, mc_block_proof) = entry.get_data()?;
-            let mc_info = self.engine.check_block_proof(mc_block_proof).await?;
-
-            let shard_blocks = mc_block.shard_blocks()?;
-
+            let shard_blocks = block.shard_blocks()?;
             let new_edge = BlockMapsEdge {
                 mc_block_seq_no: mc_seq_no,
                 top_shard_blocks: shard_blocks
@@ -118,27 +109,8 @@ impl<'a> HistoricalSyncContext<'a> {
                 continue;
             }
 
-            let (mc_handle, _) = block_handle_storage
-                .create_or_load_handle(mc_block.id(), mc_info.with_mc_seq_no(mc_seq_no))?;
-
-            // Archive block
-            if self.engine.archive_options.is_some() {
-                block_storage.move_into_archive_with_data(
-                    &mc_handle,
-                    mc_block_proof.is_link(),
-                    mc_block.new_archive_data()?,
-                    mc_block_proof.new_archive_data()?,
-                )?;
-            }
-
-            // Notify subscribers
             self.engine
-                .notify_subscribers_with_archive_block(
-                    &mc_handle,
-                    &mc_block.data,
-                    mc_block.new_archive_data()?,
-                    mc_block_proof.new_archive_data()?,
-                )
+                .save_archive_block(info, block, proof, mc_seq_no)
                 .await?;
 
             splits.clear();
@@ -155,23 +127,13 @@ impl<'a> HistoricalSyncContext<'a> {
                 let maps = maps.clone();
                 let edge = edge.clone();
                 tasks.push(tokio::spawn(async move {
-                    let block_handle_storage = engine.db.block_handle_storage();
-                    let block_storage = engine.db.block_storage();
-
                     let mut blocks_to_add = Vec::new();
 
                     // For each block starting from the latest one (which was referenced by the mc block)
                     let mut stack = Vec::from([id]);
                     while let Some(id) = stack.pop() {
-                        let (block_data, block_proof) = maps
-                            .blocks
-                            .get(&id)
-                            .map(|entry| entry.get_data())
-                            .transpose()?
-                            .ok_or(HistoricalSyncError::IncompleteBlockData)?;
-                        let info = engine.check_block_proof(block_proof).await?;
-
-                        let (prev1, prev2) = block_data.data.construct_prev_id()?;
+                        let (info, block, proof) = engine.prepare_archive_block(&maps, &id).await?;
+                        let (prev1, prev2) = block.data.construct_prev_id()?;
 
                         if info.after_split && !splits.insert(prev1.clone()) {
                             // Two blocks from different shards, referenced by the same mc block,
@@ -193,7 +155,7 @@ impl<'a> HistoricalSyncContext<'a> {
                             }
                         }
 
-                        blocks_to_add.push((info, block_data, block_proof));
+                        blocks_to_add.push((info, block, proof));
                     }
 
                     // Sort blocks by time (to increase processing locality) and seqno
@@ -203,27 +165,8 @@ impl<'a> HistoricalSyncContext<'a> {
 
                     // Apply blocks
                     for (info, block, block_proof) in blocks_to_add {
-                        let (handle, _) = block_handle_storage
-                            .create_or_load_handle(block.id(), info.with_mc_seq_no(mc_seq_no))?;
-
-                        // Archive block
-                        if engine.archive_options.is_some() {
-                            block_storage.move_into_archive_with_data(
-                                &handle,
-                                block_proof.is_link(),
-                                block.new_archive_data()?,
-                                block_proof.new_archive_data()?,
-                            )?;
-                        }
-
-                        // Notify subscribers
                         engine
-                            .notify_subscribers_with_archive_block(
-                                &handle,
-                                &block.data,
-                                block.new_archive_data()?,
-                                block_proof.new_archive_data()?,
-                            )
+                            .save_archive_block(info, block, block_proof, mc_seq_no)
                             .await?;
                     }
 
@@ -247,6 +190,52 @@ impl<'a> HistoricalSyncContext<'a> {
 }
 
 impl Engine {
+    async fn prepare_archive_block<'a>(
+        &self,
+        maps: &'a BlockMaps,
+        block_id: &ton_block::BlockIdExt,
+    ) -> Result<(BriefBlockInfo, &'a BlockStuffAug, &'a BlockProofStuffAug)> {
+        let entry = maps.blocks.get(block_id);
+        let (block, proof) = entry
+            .ok_or(HistoricalSyncError::IncompleteBlockData)?
+            .get_data()?;
+        let info = self.check_block_proof(proof).await?;
+        Ok((info, block, proof))
+    }
+
+    async fn save_archive_block(
+        &self,
+        info: BriefBlockInfo,
+        block: &BlockStuffAug,
+        proof: &BlockProofStuffAug,
+        mc_seq_no: u32,
+    ) -> Result<()> {
+        let block_handle_storage = self.db.block_handle_storage();
+        let block_storage = self.db.block_storage();
+
+        let (handle, _) = block_handle_storage
+            .create_or_load_handle(block.id(), info.with_mc_seq_no(mc_seq_no))?;
+
+        // Archive block
+        if self.archive_options.is_some() {
+            block_storage.move_into_archive_with_data(
+                &handle,
+                proof.is_link(),
+                block.new_archive_data()?,
+                proof.new_archive_data()?,
+            )?;
+        }
+
+        // Notify subscribers
+        self.notify_subscribers_with_archive_block(
+            &handle,
+            &block.data,
+            block.new_archive_data()?,
+            proof.new_archive_data()?,
+        )
+        .await
+    }
+
     fn historical_sync_range(&self, from_seqno: u32) -> Result<(u32, u32)> {
         let state = self.db.node_state();
 

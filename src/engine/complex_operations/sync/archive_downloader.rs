@@ -13,8 +13,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::archive_writers_pool::*;
 use super::block_maps::*;
-use crate::engine::Engine;
-use crate::network::ArchiveDownloadStatus;
+use crate::engine::{ArchiveDownloadStatus, Engine};
 
 pub struct ArchiveDownloader {
     ctx: Arc<DownloaderContext>,

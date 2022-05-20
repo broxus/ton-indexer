@@ -16,18 +16,14 @@ use crate::utils::*;
 
 pub async fn walk_masterchain_blocks(
     engine: &Arc<Engine>,
-    mut mc_block_id: ton_block::BlockIdExt,
+    mut block_id: ton_block::BlockIdExt,
 ) -> Result<()> {
     while engine.is_working() {
-        log::info!("walk_masterchain_blocks: {}", mc_block_id);
-        mc_block_id = match load_next_masterchain_block(engine, &mc_block_id).await {
+        log::info!("walk_masterchain_blocks: {block_id}");
+        block_id = match load_next_masterchain_block(engine, &block_id).await {
             Ok(id) => id,
             Err(e) => {
-                log::error!(
-                    "Failed to load next masterchain block for {}: {:?}",
-                    mc_block_id,
-                    e
-                );
+                log::error!("Failed to load next masterchain block for {block_id}: {e:?}");
                 continue;
             }
         }
@@ -41,9 +37,8 @@ pub async fn walk_shard_blocks(
 ) -> Result<()> {
     let semaphore = Arc::new(Semaphore::new(1));
 
-    let db = &engine.db;
-    let mut handle = db
-        .block_handle_storage()
+    let block_handle_storage = engine.db.block_handle_storage();
+    let mut handle = block_handle_storage
         .load_handle(&mc_block_id)?
         .ok_or(ShardClientError::ShardchainBlockHandleNotFound)?;
 
@@ -52,13 +47,11 @@ pub async fn walk_shard_blocks(
         let (next_handle, next_block) = engine.wait_next_applied_mc_block(&handle, None).await?;
         handle = next_handle;
 
-        tokio::spawn({
-            let engine = engine.clone();
-            let permit = semaphore.clone().acquire_owned().await?;
-            async move {
-                if let Err(e) = load_shard_blocks(&engine, permit, next_block).await {
-                    log::error!("Failed to load shard blocks: {:?}", e);
-                }
+        let engine = engine.clone();
+        let permit = semaphore.clone().acquire_owned().await?;
+        tokio::spawn(async move {
+            if let Err(e) = load_shard_blocks(&engine, permit, next_block).await {
+                log::error!("Failed to load shard blocks: {e:?}");
             }
         });
     }
@@ -100,6 +93,7 @@ async fn load_next_masterchain_block(
     let (virt_block, virt_block_info) = block_proof.pre_check_block_proof()?;
     let brief_info = BriefBlockInfo::from(&virt_block_info);
 
+    // TODO: use key block proof
     let prev_state = engine.wait_state(prev_block_id, None, true).await?;
     check_with_master_state(&block_proof, &prev_state, &virt_block, &virt_block_info)?;
 
@@ -137,14 +131,16 @@ async fn load_shard_blocks(
     permit: OwnedSemaphorePermit,
     masterchain_block: BlockStuff,
 ) -> Result<()> {
+    let block_handle_storage = engine.db.block_handle_storage();
+
     let mc_seq_no = masterchain_block.id().seq_no;
     let mut tasks = Vec::new();
     for (_, shard_block_id) in masterchain_block.shard_blocks()? {
-        let db = &engine.db;
-        if let Some(handle) = db.block_handle_storage().load_handle(&shard_block_id)? {
-            if handle.meta().is_applied() {
-                continue;
-            }
+        if matches!(
+            block_handle_storage.load_handle(&shard_block_id)?,
+            Some(handle) if handle.meta().is_applied()
+        ) {
+            continue;
         }
 
         let engine = engine.clone();
@@ -153,7 +149,7 @@ async fn load_shard_blocks(
                 .download_and_apply_block(&shard_block_id, mc_seq_no, false, 0)
                 .await
             {
-                log::error!("Failed to apply shard block: {}: {:?}", shard_block_id, e);
+                log::error!("Failed to apply shard block: {shard_block_id}: {e:?}");
             }
         }));
     }
@@ -174,13 +170,15 @@ pub async fn process_block_broadcast(
     engine: &Arc<Engine>,
     broadcast: ton::ton_node::broadcast::BlockBroadcast,
 ) -> Result<()> {
-    let db = &engine.db;
+    let block_handle_storage = engine.db.block_handle_storage();
+    let block_storage = engine.db.block_storage();
 
     let block_id = convert_block_id_ext_api2blk(&broadcast.id)?;
-    if let Some(handle) = db.block_handle_storage().load_handle(&block_id)? {
-        if handle.meta().has_data() {
-            return Ok(());
-        }
+    if matches!(
+        block_handle_storage.load_handle(&block_id)?,
+        Some(handle) if handle.meta().has_data()
+    ) {
+        return Ok(());
     }
 
     let proof = BlockProofStuff::deserialize(
@@ -204,9 +202,7 @@ pub async fn process_block_broadcast(
     }
 
     let (key_block_proof, validator_set, catchain_config) = {
-        let handle = db
-            .block_handle_storage()
-            .load_key_block_handle(prev_key_block_seqno)?;
+        let handle = block_handle_storage.load_key_block_handle(prev_key_block_seqno)?;
         if handle.id().seq_no == 0 {
             let zerostate = engine.load_mc_zero_state().await?;
             let config_params = zerostate.config_params()?;
@@ -214,7 +210,7 @@ pub async fn process_block_broadcast(
             let catchain_config = config_params.catchain_config()?;
             (CheckWith::State(zerostate), validator_set, catchain_config)
         } else {
-            let proof = db.block_storage().load_block_proof(&handle, false).await?;
+            let proof = block_storage.load_block_proof(&handle, false).await?;
             let (validator_set, catchain_config) = proof.get_cur_validators_set()?;
             (CheckWith::KeyBlock(proof), validator_set, catchain_config)
         }
@@ -235,8 +231,7 @@ pub async fn process_block_broadcast(
 
     let block = BlockStuff::deserialize_checked(block_id.clone(), &broadcast.data)?;
     let block = BlockStuffAug::new(block, broadcast.data.0);
-    let mut handle = match db
-        .block_storage()
+    let mut handle = match block_storage
         .store_block_data(&block, meta_data.with_mc_seq_no(0))
         .await?
     {
@@ -246,8 +241,7 @@ pub async fn process_block_broadcast(
     };
 
     if !handle.meta().has_proof() {
-        handle = match db
-            .block_storage()
+        handle = match block_storage
             .store_block_proof(
                 &BlockProofStuffAug::new(proof, broadcast.proof.0),
                 handle.into(),
@@ -324,8 +318,7 @@ fn validate_broadcast(
 
     if weight * 3 <= total_weight * 2 {
         return Err(anyhow!(
-            "Too small signatures weight in broadcast with block {}",
-            block_id,
+            "Too small signatures weight in broadcast with block {block_id}"
         ));
     }
 

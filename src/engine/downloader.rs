@@ -9,7 +9,7 @@ use std::time::Duration;
 use anyhow::Result;
 
 use crate::db::*;
-use crate::network::*;
+use crate::engine::NodeRpcClient;
 use crate::utils::*;
 
 impl<'a, T> DownloadContext<'a, T> {
@@ -161,7 +161,7 @@ pub struct DownloadContext<'a, T> {
     pub max_attempts: Option<u32>,
     pub timeouts: Option<DownloaderTimeouts>,
 
-    pub client: &'a FullNodeOverlayClient,
+    pub client: &'a NodeRpcClient,
     pub db: &'a Db,
 
     pub downloader: Arc<dyn Downloader<Item = T>>,
