@@ -451,8 +451,7 @@ impl ShardStateStorageState {
             .context("Failed to reset last block")?;
 
         log::info!(
-            "Marked {} cells. Took: {} ms",
-            total,
+            "Marked {total} cells. Took: {} ms",
             time.elapsed().as_millis()
         );
 
@@ -471,7 +470,7 @@ impl ShardStateStorageState {
         target_marker: u8,
         top_blocks: &TopBlocks,
     ) -> Result<()> {
-        log::info!("Sweeping cells other than {}", target_marker);
+        log::info!("Sweeping cells other than {target_marker}");
 
         let time = Instant::now();
 
@@ -483,8 +482,7 @@ impl ShardStateStorageState {
             .context("Failed to sweep cells")?;
 
         log::info!(
-            "Swept {} cells. Took: {} ms",
-            total,
+            "Swept {total} cells. Took: {} ms",
             time.elapsed().as_millis()
         );
 

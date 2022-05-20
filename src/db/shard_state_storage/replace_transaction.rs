@@ -42,6 +42,7 @@ impl<'a> ShardStateReplaceTransaction<'a> {
         &mut self,
         ctx: &mut FilesContext,
         packet: Vec<u8>,
+        progress_bar: &mut ProgressBar,
     ) -> Result<bool> {
         use tokio::io::AsyncWriteExt;
 
@@ -50,19 +51,19 @@ impl<'a> ShardStateReplaceTransaction<'a> {
         self.reader.set_next_packet(packet);
 
         let header = loop {
-            match &self.boc_header {
-                Some(header) => break header,
-                None => {
-                    self.boc_header = match self.reader.read_header()? {
-                        Some(header) => {
-                            log::info!("HEADER: {:?}", header);
-                            Some(header)
-                        }
-                        None => return Ok(false),
-                    };
-                    continue;
-                }
+            if let Some(header) = &self.boc_header {
+                break header;
             }
+
+            let header = match self.reader.read_header()? {
+                Some(header) => header,
+                None => return Ok(false),
+            };
+
+            log::debug!("State header: {header:?}");
+            progress_bar.set_total(header.cell_count);
+
+            self.boc_header = Some(header);
         };
 
         let mut chunk_size = 0u32;
@@ -81,11 +82,11 @@ impl<'a> ShardStateReplaceTransaction<'a> {
             self.cells_read += 1;
         }
 
-        log::info!("CELLS READ: {} of {}", self.cells_read, header.cell_count);
+        progress_bar.set_progress(self.cells_read);
 
         if chunk_size > 0 {
+            log::debug!("Creating chunk of size: {chunk_size} bytes");
             cells_file.write_u32_le(chunk_size).await?;
-            log::info!("CREATING CHUNK OF SIZE: {} bytes", chunk_size);
         }
 
         if self.cells_read < header.cell_count {
@@ -96,6 +97,7 @@ impl<'a> ShardStateReplaceTransaction<'a> {
             return Ok(false);
         }
 
+        progress_bar.complete();
         Ok(true)
     }
 
@@ -103,6 +105,7 @@ impl<'a> ShardStateReplaceTransaction<'a> {
         self,
         ctx: &mut FilesContext,
         block_id: ton_block::BlockIdExt,
+        progress_bar: &mut ProgressBar,
     ) -> Result<Arc<ShardStateStuff>> {
         // 2^7 bits + 1 bytes
         const MAX_DATA_SIZE: usize = 128;
@@ -129,7 +132,7 @@ impl<'a> ShardStateReplaceTransaction<'a> {
         let mut data_buffer = vec![0u8; MAX_DATA_SIZE];
 
         let total_size = cells_file.length();
-        log::info!("TOTAL SIZE: {}", total_size);
+        progress_bar.set_total(total_size as u64);
 
         let mut file_pos = total_size;
         let mut cell_index = header.cell_count;
@@ -143,7 +146,7 @@ impl<'a> ShardStateReplaceTransaction<'a> {
             file_pos -= chunk_size;
             unsafe { cells_file.read_exact_at(file_pos, &mut chunk_buffer) };
 
-            log::info!("PROCESSING CHUNK OF SIZE: {}", chunk_size);
+            log::debug!("Processing chunk of size: {chunk_size}");
 
             while chunk_size > 0 {
                 cell_index -= 1;
@@ -186,12 +189,11 @@ impl<'a> ShardStateReplaceTransaction<'a> {
                 chunk_buffer.truncate(chunk_size);
             }
 
-            log::info!("READ: {}", total_size - file_pos);
-
+            progress_bar.set_progress((total_size - file_pos) as u64);
             tokio::task::yield_now().await;
         }
 
-        log::info!("DONE PROCESSING: {} bytes", total_size);
+        progress_bar.complete();
 
         let block_id_key = block_id.to_vec();
 

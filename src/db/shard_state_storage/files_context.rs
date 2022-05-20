@@ -26,10 +26,10 @@ impl FilesContext {
 
         let cells_path = downloads_dir
             .as_ref()
-            .join(format!("state_cells_{}", block_id));
+            .join(format!("state_cells_{block_id}"));
         let hashes_path = downloads_dir
             .as_ref()
-            .join(format!("state_hashes_{}", block_id));
+            .join(format!("state_hashes_{block_id}"));
 
         let cells_file = Some(BufWriter::new(
             tokio::fs::OpenOptions::new()

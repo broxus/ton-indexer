@@ -200,11 +200,11 @@ impl NodeNetwork {
                 log::trace!("find overlay nodes by dht...");
 
                 if let Err(e) = network.update_peers(&overlay_client, &mut iter).await {
-                    log::warn!("Error find overlay nodes by dht: {}", e);
+                    log::warn!("Failed to find overlay nodes by dht: {e:?}");
                 }
 
                 if overlay_client.neighbours().len() >= network.neighbours_options.max_neighbours {
-                    log::trace!("finish find overlay nodes.");
+                    log::trace!("Finish searching for overlay nodes");
                     return;
                 }
 
@@ -295,7 +295,7 @@ fn start_broadcasting_our_ip(
     tokio::spawn(async move {
         while working_state.is_working() {
             if let Err(e) = dht.store_ip_address(&key).await {
-                log::warn!("store ip address is ERROR: {}", e)
+                log::warn!("Failed to store ip address in DHT: {e:?}")
             }
 
             if working_state.wait_or_complete(interval).await {
@@ -342,7 +342,7 @@ fn start_processing_peers(
     tokio::spawn(async move {
         while working_state.is_working() {
             if let Err(e) = process_overlay_peers(&neighbours, &dht).await {
-                log::warn!("add_overlay_peers: {}", e);
+                log::warn!("Failed to process overlay peers: {e:?}");
             };
 
             if working_state.wait_or_complete(interval).await {
@@ -363,7 +363,7 @@ async fn process_overlay_peers(neighbours: &Neighbours, dht: &Arc<DhtNode>) -> R
                 Ok(peer_id) if !neighbours.contains_overlay_peer(&peer_id) => peer_id,
                 Ok(_) => continue,
                 Err(e) => {
-                    log::warn!("Invalid peer id: {}", e);
+                    log::warn!("Invalid peer id: {e:?}");
                     continue;
                 }
             };
@@ -371,16 +371,12 @@ async fn process_overlay_peers(neighbours: &Neighbours, dht: &Arc<DhtNode>) -> R
         let ip = match dht.find_address(&peer_id).await {
             Ok((ip, _)) => ip,
             Err(e) => {
-                log::warn!("Failed to find peer address: {}", e);
+                log::warn!("Failed to find peer address: {e:?}");
                 continue;
             }
         };
 
-        log::trace!(
-            "add_overlay_peers: add overlay peer {:?}, address: {}",
-            peer,
-            ip
-        );
+        log::trace!("add_overlay_peers: add overlay peer {peer:?}, address: {ip}");
 
         neighbours.overlay_shard().add_public_peer(ip, peer)?;
         neighbours.add_overlay_peer(peer_id);

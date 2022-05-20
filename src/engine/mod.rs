@@ -766,9 +766,7 @@ impl Engine {
                 tokio::spawn(async move {
                     if let Err(e) = engine.download_and_apply_block(&block_id, 0, true, 0).await {
                         log::error!(
-                            "Error while pre-apply block {} (while waiting state): {}",
-                            block_id,
-                            e
+                            "Error while pre-apply block {block_id} (while waiting state): {e:?}",
                         );
                     }
                 });

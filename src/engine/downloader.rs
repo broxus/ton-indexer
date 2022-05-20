@@ -185,7 +185,7 @@ impl<'a, T> DownloadContext<'a, T> {
                 Ok(None) => log::debug!("Got no data for {}", self.name),
                 Err(e) => {
                     self.explicit_neighbour = None;
-                    log::debug!("Error in {}: {}", self.name, e)
+                    log::debug!("Error in {}: {e:?}", self.name)
                 }
             }
 

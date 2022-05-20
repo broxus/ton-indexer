@@ -155,7 +155,7 @@ async fn download_key_blocks(engine: &Arc<Engine>, mut prev_key_block: PrevKeyBl
 
             while let Some(block_id) = tasks_rx.recv().await {
                 'inner: loop {
-                    log::info!("Downloading next key blocks for: {block_id}");
+                    log::debug!("Downloading next key blocks for: {block_id}");
 
                     let neighbour = good_peer.load_full();
                     let res = tokio::select! {
@@ -189,6 +189,11 @@ async fn download_key_blocks(engine: &Arc<Engine>, mut prev_key_block: PrevKeyBl
         }
     });
 
+    let sync_start_utime = prev_key_block.handle().meta().gen_utime();
+    let mut pg = ProgressBarBuilder::new("Downloading key blocks")
+        .total((now() as u32).checked_sub(sync_start_utime).unwrap_or(1))
+        .build();
+
     // Continue downloading key blocks from the last known block
     let mut prev_handle = prev_key_block.handle().clone();
     tasks_tx.send(prev_handle.id().clone()).ok();
@@ -198,7 +203,7 @@ async fn download_key_blocks(engine: &Arc<Engine>, mut prev_key_block: PrevKeyBl
         match ids.last() {
             // Start downloading next key blocks in background
             Some(block_id) => {
-                log::info!("Last key block id: {block_id}");
+                log::debug!("Last key block id: {block_id}");
                 tasks_tx.send(block_id.clone()).ok();
             }
             // Retry request in case of empty response
@@ -234,7 +239,9 @@ async fn download_key_blocks(engine: &Arc<Engine>, mut prev_key_block: PrevKeyBl
         let last_utime = prev_handle.meta().gen_utime();
         let current_utime = now() as u32;
 
-        log::info!(
+        pg.set_progress(last_utime.saturating_sub(sync_start_utime));
+
+        log::debug!(
             "Last known block: {}, utime: {last_utime}, now: {current_utime}",
             prev_handle.id(),
         );
@@ -245,6 +252,7 @@ async fn download_key_blocks(engine: &Arc<Engine>, mut prev_key_block: PrevKeyBl
         }
     }
 
+    pg.complete();
     Ok(())
 }
 
@@ -381,18 +389,17 @@ fn choose_key_block(engine: &Engine) -> Result<Arc<BlockHandle>> {
         };
 
         let is_persistent = prev_utime == 0 || is_persistent_state(handle_utime, prev_utime);
-        log::info!(
-            "Key block candidate: seqno={}, persistent={}",
+        log::debug!(
+            "Key block candidate: seqno={}, persistent={is_persistent}",
             handle.id().seq_no,
-            is_persistent
         );
 
         // Skip not persistent or too new key blocks
         if !is_persistent {
-            log::info!("Ignoring state: not persistent");
+            log::debug!("Ignoring state: not persistent");
             continue;
         } else if handle_utime as i32 + INTITAL_SYNC_TIME_SECONDS > now() {
-            log::info!("Ignoring state: too new");
+            log::debug!("Ignoring state: too new");
             continue;
         }
 

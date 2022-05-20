@@ -149,7 +149,7 @@ impl ShardStatePacketReader {
             1 + data_size
         } else {
             if r > 4 {
-                log::error!("CELLS: {}", r);
+                log::error!("CELLS: {r}");
                 return Err(ShardStateParserError::InvalidShardStateCell)
                     .context("Cell must contain at most 4 references");
             }

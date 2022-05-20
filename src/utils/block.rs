@@ -23,7 +23,7 @@ impl BlockStuff {
     pub fn deserialize_checked(id: ton_block::BlockIdExt, data: &[u8]) -> Result<Self> {
         let file_hash = UInt256::calc_file_hash(data);
         if id.file_hash() != file_hash {
-            Err(anyhow!("wrong file_hash for {}", id))
+            Err(anyhow!("wrong file_hash for {id}"))
         } else {
             Self::deserialize(id, data)
         }
@@ -32,7 +32,7 @@ impl BlockStuff {
     pub fn deserialize(id: ton_block::BlockIdExt, mut data: &[u8]) -> Result<Self> {
         let root = ton_types::deserialize_tree_of_cells(&mut data)?;
         if id.root_hash != root.repr_hash() {
-            return Err(anyhow!("wrong root hash for {}", id));
+            return Err(anyhow!("wrong root hash for {id}"));
         }
 
         let block = ton_block::Block::construct_from(&mut root.clone().into())?;

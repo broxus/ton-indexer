@@ -31,9 +31,8 @@ impl BlockProofStuff {
 
         if proof.proof_for != block_id {
             return Err(anyhow!(
-                "proof for another block (found: {}, expected: {})",
+                "proof for another block (found: {}, expected: {block_id})",
                 proof.proof_for,
-                block_id
             ));
         }
 

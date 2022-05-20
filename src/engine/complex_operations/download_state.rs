@@ -62,7 +62,6 @@ pub async fn download_state(
         let mut total_bytes = 0;
         while let Some(packet) = scheduler.wait_next_packet().await? {
             total_bytes += packet.len();
-            log::info!("--- Queueing packet");
             if packets_tx.send(packet).await.is_err() {
                 break;
             }
@@ -102,9 +101,12 @@ async fn background_process(
         .begin_replace(&block_id)
         .await?;
 
+    let mut pg = ProgressBar::builder("Downloading state")
+        .exact_unit("cells")
+        .build();
     let mut full = false;
     while let Some(packet) = packets_rx.recv().await {
-        match transaction.process_packet(&mut ctx, packet).await {
+        match transaction.process_packet(&mut ctx, packet, &mut pg).await {
             Ok(true) => {
                 full = true;
                 break;
@@ -125,7 +127,11 @@ async fn background_process(
         return Err(DownloadStateError::UnexpectedEof.into());
     }
 
-    let result = transaction.finalize(&mut ctx, block_id).await;
+    let mut pg = ProgressBar::builder("Processing state")
+        .exact_unit("bytes")
+        .build();
+    let result = transaction.finalize(&mut ctx, block_id, &mut pg).await;
+
     ctx.clear().await?;
     result
 }
@@ -196,8 +202,6 @@ impl Scheduler {
         }
 
         loop {
-            log::info!("--- loop {}", QueueWrapper(&self.pending_packets));
-
             if let Some(data) = self.find_next_downloaded_packet().await? {
                 return Ok(Some(data));
             }
@@ -255,8 +259,6 @@ impl Scheduler {
                     .context("Worker closed")?;
             }
 
-            log::info!("--- Found packet for {}", self.current_offset);
-
             self.current_offset += data.len();
             return Ok(Some(data));
         }
@@ -297,7 +299,7 @@ async fn download_packet_worker(ctx: Arc<DownloadContext>, mut offsets_rx: Offse
             let result = tokio::select! {
                 data = recv_fut => data,
                 _ = &mut complete_signal => {
-                    log::warn!("Got last_part_signal: {}", offset);
+                    log::debug!("Got last_part_signal: {offset}");
                     continue;
                 }
             };
@@ -314,7 +316,7 @@ async fn download_packet_worker(ctx: Arc<DownloadContext>, mut offsets_rx: Offse
                     ctx.peer_attempt.fetch_add(1, Ordering::Release);
 
                     if !ctx.complete.load(Ordering::Acquire) {
-                        log::error!("Failed to download persistent state part {}: {}", offset, e);
+                        log::error!("Failed to download persistent state part {offset}: {e:?}");
                     }
 
                     if part_attempt > 10 {
@@ -332,26 +334,6 @@ async fn download_packet_worker(ctx: Arc<DownloadContext>, mut offsets_rx: Offse
                 }
             }
         }
-    }
-}
-
-struct QueueWrapper<'a>(&'a [(usize, PacketStatus)]);
-
-impl std::fmt::Display for QueueWrapper<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("[\n")?;
-        for (id, item) in self.0 {
-            match item {
-                PacketStatus::Downloading => {
-                    f.write_fmt(format_args!("    ({}, downloading...),\n", id))?
-                }
-                PacketStatus::Downloaded(_) => {
-                    f.write_fmt(format_args!("    ({}, downloaded)\n", id))?
-                }
-                PacketStatus::Done => f.write_fmt(format_args!("    ({}, done)\n", id))?,
-            }
-        }
-        f.write_str("]")
     }
 }
 

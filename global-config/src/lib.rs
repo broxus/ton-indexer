@@ -152,7 +152,7 @@ fn require_type(ty: String, required: &'static str) -> Result<()> {
     if ty == required {
         Ok(())
     } else {
-        Err(anyhow!("Invalid type {}, expected {}", ty, required))
+        Err(anyhow!("Invalid type {ty}, expected {required}"))
     }
 }
 

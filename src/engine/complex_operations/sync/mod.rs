@@ -211,7 +211,7 @@ async fn import_shard_blocks_with_apply(engine: &Arc<Engine>, maps: &Arc<BlockMa
                             .await
                     }
                     None => {
-                        log::info!("sync: Downloading shardchain block for {}", mc_seq_no);
+                        log::info!("sync: Downloading shardchain block for {mc_seq_no}");
                         engine
                             .download_and_apply_block(handle.id(), mc_seq_no, false, 0)
                             .await

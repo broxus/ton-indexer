@@ -54,12 +54,12 @@ impl ShardStateStuff {
 
         let file_hash = UInt256::calc_file_hash(bytes);
         if file_hash != id.file_hash {
-            return Err(anyhow!("Wrong zero state's {} file hash", id));
+            return Err(anyhow!("Wrong zero state's {id} file hash"));
         }
 
         let root = ton_types::deserialize_tree_of_cells(&mut bytes)?;
         if root.repr_hash() != id.root_hash() {
-            return Err(anyhow!("Wrong zero state's {} root hash", id));
+            return Err(anyhow!("Wrong zero state's {id} root hash"));
         }
 
         Self::new(id, root)
