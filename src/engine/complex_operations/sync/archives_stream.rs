@@ -15,7 +15,7 @@ use super::archive_writers_pool::*;
 use super::block_maps::*;
 use crate::engine::{ArchiveDownloadStatus, Engine};
 
-pub struct ArchiveDownloader {
+pub struct ArchivesStream {
     ctx: Arc<DownloaderContext>,
     pending_archives: BinaryHeap<PendingBlockMaps>,
     prefetch_enabled: bool,
@@ -26,7 +26,7 @@ pub struct ArchiveDownloader {
     to: Option<u32>,
 }
 
-impl ArchiveDownloader {
+impl ArchivesStream {
     /// `last_blocks` is a map of shard_id -> block_id of the last known shard block.
     /// Each of blocks of the first downloaded archive is expected to start with
     /// the next block of the last known shard block.
@@ -36,7 +36,7 @@ impl ArchiveDownloader {
         engine: &Arc<Engine>,
         range: impl RangeBounds<u32>,
         last_blocks: Option<BlockMapsEdge>,
-    ) -> ArchiveDownloader {
+    ) -> ArchivesStream {
         let from = match range.start_bound() {
             Bound::Included(&from) => from,
             Bound::Excluded(&from) => from + 1,
@@ -60,7 +60,7 @@ impl ArchiveDownloader {
         // Enable prefetch only for historical sync when range end is known
         let prefetch_enabled = to.is_some();
 
-        let mut downloader = ArchiveDownloader {
+        let mut stream = ArchivesStream {
             ctx: Arc::new(DownloaderContext {
                 engine: engine.clone(),
                 writers_pool: ArchiveWritersPool::new(
@@ -80,9 +80,9 @@ impl ArchiveDownloader {
         };
 
         // Start with only the first archive
-        downloader.start_downloading(downloader.next_mc_seq_no);
+        stream.start_downloading(stream.next_mc_seq_no);
 
-        downloader
+        stream
     }
 
     /// Wait next archive
@@ -183,7 +183,7 @@ impl ArchiveDownloader {
         }
 
         Some(ReceivedBlockMaps {
-            downloader: self,
+            stream: self,
             index: next_index,
             neighbour,
             block_maps,
@@ -218,7 +218,7 @@ impl ArchiveDownloader {
     }
 }
 
-impl Drop for ArchiveDownloader {
+impl Drop for ArchivesStream {
     fn drop(&mut self) {
         self.ctx.cancellation_token.cancel();
     }
@@ -306,13 +306,13 @@ impl BlockMapsData {
         if let Some(block_maps) = &self.loaded {
             Ok(block_maps)
         } else {
-            Err(ArchiveDownloaderError::EmptyBlockMapsData.into())
+            Err(ArchivesStreamError::EmptyBlockMapsData.into())
         }
     }
 }
 
 pub struct ReceivedBlockMaps<'a> {
-    downloader: &'a mut ArchiveDownloader,
+    stream: &'a mut ArchivesStream,
     index: u32,
     neighbour: Option<Arc<Neighbour>>,
     block_maps: Arc<BlockMaps>,
@@ -323,13 +323,13 @@ impl ReceivedBlockMaps<'_> {
     pub fn accept(mut self, edge: Option<BlockMapsEdge>) {
         self.accepted = true;
         if let Some(highest_mc_id) = self.block_maps.highest_mc_id() {
-            self.downloader.last_blocks = edge;
-            self.downloader.next_mc_seq_no = highest_mc_id.seq_no + 1;
+            self.stream.last_blocks = edge;
+            self.stream.next_mc_seq_no = highest_mc_id.seq_no + 1;
         }
     }
 
     pub fn accept_with_time(self, time: u32, edge: Option<BlockMapsEdge>) {
-        self.downloader.prefetch_enabled = time + ARCHIVE_EXISTENCE_THRESHOLD <= now() as u32;
+        self.stream.prefetch_enabled = time + ARCHIVE_EXISTENCE_THRESHOLD <= now() as u32;
         self.accept(edge);
     }
 }
@@ -353,11 +353,11 @@ impl Drop for ReceivedBlockMaps<'_> {
         if !self.accepted {
             // Remove peer from good peers
             if let Some(neighbour) = &self.neighbour {
-                self.downloader.ctx.good_peers.remove(neighbour);
+                self.stream.ctx.good_peers.remove(neighbour);
             }
 
             log::info!("Archive for mc block {} is not accepted", self.index);
-            self.downloader.start_downloading(self.index);
+            self.stream.start_downloading(self.index);
         }
     }
 }
@@ -410,7 +410,7 @@ async fn download_archive(
 }
 
 #[derive(Debug, thiserror::Error)]
-enum ArchiveDownloaderError {
+enum ArchivesStreamError {
     #[error("Empty block maps data")]
     EmptyBlockMapsData,
 }

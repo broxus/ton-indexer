@@ -350,7 +350,7 @@ impl NodeRpcClient {
                 ton::rpc::ton_node::GetArchiveInfo {
                     masterchain_seqno: masterchain_seqno as i32,
                 },
-                Some(2),
+                Some(1),
                 Some(TIMEOUT_ARCHIVE),
                 neighbour,
             )

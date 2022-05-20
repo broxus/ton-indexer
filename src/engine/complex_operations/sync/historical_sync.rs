@@ -4,7 +4,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use ton_types::FxDashSet;
 
-use super::archive_downloader::*;
+use super::archives_stream::*;
 use super::block_maps::*;
 use crate::engine::Engine;
 use crate::utils::*;
@@ -19,8 +19,8 @@ pub async fn historical_sync(engine: &Arc<Engine>, from_seqno: u32) -> Result<()
 
     let mut ctx = HistoricalSyncContext::new(engine, from, to);
 
-    let mut archive_downloader = ArchiveDownloader::new(engine, from..=to, None);
-    while let Some(archive) = archive_downloader.recv().await {
+    let mut archives = ArchivesStream::new(engine, from..=to, None);
+    while let Some(archive) = archives.recv().await {
         match ctx.handle(archive.clone()).await {
             Ok(ControlFlow::Break(())) => break,
             Ok(_) => {

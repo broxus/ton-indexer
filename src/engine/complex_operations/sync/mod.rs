@@ -7,12 +7,12 @@ use crate::db::*;
 use crate::engine::Engine;
 use crate::utils::*;
 
-use self::archive_downloader::*;
+use self::archives_stream::*;
 use self::block_maps::*;
 pub use self::historical_sync::*;
 
-mod archive_downloader;
 mod archive_writers_pool;
+mod archives_stream;
 mod block_maps;
 mod historical_sync;
 
@@ -22,10 +22,10 @@ pub async fn sync(engine: &Arc<Engine>) -> Result<()> {
     let mut last_mc_block_id = engine.last_applied_block()?;
     log::info!("sync: Creating archives stream from {last_mc_block_id}");
 
-    let mut archives_stream = ArchiveDownloader::new(engine, last_mc_block_id.seq_no + 1.., None);
+    let mut archives = ArchivesStream::new(engine, last_mc_block_id.seq_no + 1.., None);
 
     let mut last_gen_utime = 0;
-    while let Some(archive) = archives_stream.recv().await {
+    while let Some(archive) = archives.recv().await {
         if let Err(e) = import_package_with_apply(
             engine,
             archive.clone(),
