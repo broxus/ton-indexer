@@ -1,5 +1,5 @@
 use anyhow::Result;
-use tiny_adnl::utils::FxHashMap;
+use rustc_hash::FxHashMap;
 use ton_types::ByteOrderRead;
 
 use super::{BlockStuff, StoredValue, StoredValueBuffer};

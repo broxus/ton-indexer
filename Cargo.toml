@@ -20,6 +20,7 @@ bytes = "1.1.0"
 countme = { version = "3.0.0" }
 crc = "2.1"
 dashmap = "5.3"
+everscale-network = { version = "0.2.0", features = ["full"] }
 fdlimit = "0.2.1"
 futures = "0.3.21"
 hex = "0.4"
@@ -29,7 +30,6 @@ log = "0.4"
 num-traits = "0.2"
 num_cpus = "1.13.1"
 parking_lot = { version = "0.12.0", features = ["hardware-lock-elision"] }
-pin-project-lite = "0.2.8"
 rand = "0.8"
 rlimit = "0.7.0"
 rustc-hash = "1.1.0"
@@ -39,6 +39,7 @@ sha2 = "0.9"
 smallvec = { version = "1.8.0", features = ["const_generics", "serde", "write", "union"] }
 sysinfo = { version = "0.23.5", default-features = false }
 thiserror = "1.0"
+tl-proto = { version = "0.3.2", features = ["derive"] }
 tokio = { version = "1.17.0", features = ["sync", "fs", "rt-multi-thread", "parking_lot"] }
 tokio-util = "0.7.0"
 
@@ -46,8 +47,6 @@ lru_time_cache = { git = "https://github.com/Rexagon/lru_time_cache.git" }
 
 rocksdb = { git = "https://github.com/Rexagon/rust-rocksdb.git", features = ["multi-threaded-cf", "zstd", "lz4", "jemalloc"], default-features = false }
 
-ton_api = { git = "https://github.com/broxus/ton-labs-tl.git", package = "ton_api", default-features = false }
-tiny-adnl = { git = "https://github.com/broxus/tiny-adnl.git" }
 ton_block = { git = "https://github.com/broxus/ton-labs-block.git" }
 ton_types = { git = "https://github.com/broxus/ton-labs-types.git" }
 

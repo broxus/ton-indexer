@@ -8,11 +8,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use tiny_adnl::utils::*;
-use tiny_adnl::{Neighbour, OverlayClient};
-use ton_api::ton::{self, TLObject};
-use ton_api::Deserializer;
+use everscale_network::network::{Neighbour, OverlayClient};
 
+use crate::proto;
 use crate::utils::*;
 
 #[derive(Clone)]
@@ -22,11 +20,7 @@ impl NodeRpcClient {
     pub fn broadcast_external_message(&self, message: &[u8]) {
         let this = &self.0;
 
-        let broadcast = serialize_boxed(ton::ton_node::broadcast::ExternalMessageBroadcast {
-            message: ton::ton_node::externalmessage::ExternalMessage {
-                data: ton::bytes(message.to_vec()),
-            },
-        });
+        let broadcast = tl_proto::serialize(proto::ExternalMessageBroadcast { data: message });
         this.broadcast(broadcast, None);
     }
 
@@ -36,12 +30,12 @@ impl NodeRpcClient {
     ) -> Result<Option<Arc<Neighbour>>> {
         let this = &self.0;
 
-        let (prepare, neighbour): (ton::ton_node::PreparedState, _) = this
+        let (prepare, neighbour): (proto::PreparedState, _) = this
             .send_adnl_query(
-                TLObject::new(ton::rpc::ton_node::PreparePersistentState {
-                    block: convert_block_id_ext_blk2api(&full_state_id.block_id),
-                    masterchain_block: convert_block_id_ext_blk2api(&full_state_id.mc_block_id),
-                }),
+                proto::RpcPreparePersistentState {
+                    block: full_state_id.block_id.clone(),
+                    masterchain_block: full_state_id.mc_block_id.clone(),
+                },
                 None,
                 Some(TIMEOUT_PREPARE),
                 None,
@@ -51,8 +45,8 @@ impl NodeRpcClient {
         log::info!("Found state {prepare:?} from peer {}", neighbour.peer_id());
 
         match prepare {
-            ton::ton_node::PreparedState::TonNode_PreparedState => Ok(Some(neighbour)),
-            ton::ton_node::PreparedState::TonNode_NotFoundState => Ok(None),
+            proto::PreparedState::Found => Ok(Some(neighbour)),
+            proto::PreparedState::NotFound => Ok(None),
         }
     }
 
@@ -67,11 +61,11 @@ impl NodeRpcClient {
         self.0
             .send_rldp_query_raw(
                 neighbour,
-                &ton::rpc::ton_node::DownloadPersistentStateSlice {
-                    block: convert_block_id_ext_blk2api(&full_state_id.block_id),
-                    masterchain_block: convert_block_id_ext_blk2api(&full_state_id.mc_block_id),
-                    offset: offset as i64,
-                    max_size: mas_size as i64,
+                proto::RpcDownloadPersistentStateSlice {
+                    block: full_state_id.block_id.clone(),
+                    masterchain_block: full_state_id.mc_block_id.clone(),
+                    offset: offset as u64,
+                    max_size: mas_size as u64,
                 },
                 attempt,
             )
@@ -85,11 +79,9 @@ impl NodeRpcClient {
         let this = &self.0;
 
         // Prepare
-        let (prepare, neighbour): (ton::ton_node::PreparedState, _) = this
+        let (prepare, neighbour): (proto::PreparedState, _) = this
             .send_adnl_query(
-                TLObject::new(ton::rpc::ton_node::PrepareZeroState {
-                    block: convert_block_id_ext_blk2api(id),
-                }),
+                proto::RpcPrepareZeroState { block: id.clone() },
                 None,
                 Some(TIMEOUT_PREPARE),
                 None,
@@ -98,13 +90,11 @@ impl NodeRpcClient {
 
         // Download
         match prepare {
-            ton::ton_node::PreparedState::TonNode_PreparedState => {
+            proto::PreparedState::Found => {
                 let state_bytes = this
                     .send_rldp_query_raw(
                         neighbour,
-                        &ton::rpc::ton_node::DownloadZeroState {
-                            block: convert_block_id_ext_blk2api(id),
-                        },
+                        proto::RpcDownloadZeroState { block: id.clone() },
                         0,
                     )
                     .await?;
@@ -114,7 +104,7 @@ impl NodeRpcClient {
                     &state_bytes,
                 )?)))
             }
-            ton::ton_node::PreparedState::TonNode_NotFoundState => Ok(None),
+            proto::PreparedState::NotFound => Ok(None),
         }
     }
 
@@ -127,11 +117,11 @@ impl NodeRpcClient {
         let this = &self.0;
 
         // Prepare
-        let (prepare, neighbour): (ton::ton_node::PreparedProof, _) = if is_key_block {
+        let (prepare, neighbour): (proto::PreparedProof, _) = if is_key_block {
             this.send_adnl_query(
-                ton::rpc::ton_node::PrepareKeyBlockProof {
-                    block: convert_block_id_ext_blk2api(block_id),
-                    allow_partial: false.into(),
+                proto::RpcPrepareKeyBlockProof {
+                    block: block_id.clone(),
+                    allow_partial: false,
                 },
                 None,
                 Some(TIMEOUT_PREPARE),
@@ -140,9 +130,9 @@ impl NodeRpcClient {
             .await?
         } else {
             this.send_adnl_query(
-                ton::rpc::ton_node::PrepareBlockProof {
-                    block: convert_block_id_ext_blk2api(block_id),
-                    allow_partial: (!block_id.shard_id.is_masterchain()).into(),
+                proto::RpcPrepareBlockProof {
+                    block: block_id.clone(),
+                    allow_partial: !block_id.shard_id.is_masterchain(),
                 },
                 None,
                 Some(TIMEOUT_PREPARE),
@@ -153,12 +143,12 @@ impl NodeRpcClient {
 
         // Download
         match prepare {
-            ton::ton_node::PreparedProof::TonNode_PreparedProof if is_key_block => {
+            proto::PreparedProof::Found if is_key_block => {
                 let data = this
                     .send_rldp_query_raw(
                         neighbour,
-                        &ton::rpc::ton_node::DownloadKeyBlockProof {
-                            block: convert_block_id_ext_blk2api(block_id),
+                        proto::RpcDownloadKeyBlockProof {
+                            block: block_id.clone(),
                         },
                         0,
                     )
@@ -166,12 +156,12 @@ impl NodeRpcClient {
                 let proof = BlockProofStuff::deserialize(block_id.clone(), &data, false)?;
                 Ok(Some(WithArchiveData::new(proof, data)))
             }
-            ton::ton_node::PreparedProof::TonNode_PreparedProof => {
+            proto::PreparedProof::Found => {
                 let data = this
                     .send_rldp_query_raw(
                         neighbour,
-                        &ton::rpc::ton_node::DownloadBlockProof {
-                            block: convert_block_id_ext_blk2api(block_id),
+                        proto::RpcDownloadBlockProof {
+                            block: block_id.clone(),
                         },
                         0,
                     )
@@ -179,12 +169,12 @@ impl NodeRpcClient {
                 let proof = BlockProofStuff::deserialize(block_id.clone(), &data, false)?;
                 Ok(Some(WithArchiveData::new(proof, data)))
             }
-            ton::ton_node::PreparedProof::TonNode_PreparedProofLink if is_key_block => {
+            proto::PreparedProof::Link if is_key_block => {
                 let data = this
                     .send_rldp_query_raw(
                         neighbour,
-                        &ton::rpc::ton_node::DownloadKeyBlockProofLink {
-                            block: convert_block_id_ext_blk2api(block_id),
+                        proto::RpcDownloadKeyBlockProofLink {
+                            block: block_id.clone(),
                         },
                         0,
                     )
@@ -192,12 +182,12 @@ impl NodeRpcClient {
                 let proof = BlockProofStuff::deserialize(block_id.clone(), &data, true)?;
                 Ok(Some(WithArchiveData::new(proof, data)))
             }
-            ton::ton_node::PreparedProof::TonNode_PreparedProofLink => {
+            proto::PreparedProof::Link => {
                 let data = this
                     .send_rldp_query_raw(
                         neighbour,
-                        &ton::rpc::ton_node::DownloadBlockProofLink {
-                            block: convert_block_id_ext_blk2api(block_id),
+                        proto::RpcDownloadBlockProofLink {
+                            block: block_id.clone(),
                         },
                         0,
                     )
@@ -205,7 +195,7 @@ impl NodeRpcClient {
                 let proof = BlockProofStuff::deserialize(block_id.clone(), &data, true)?;
                 Ok(Some(WithArchiveData::new(proof, data)))
             }
-            ton::ton_node::PreparedProof::TonNode_PreparedProofEmpty => Ok(None),
+            proto::PreparedProof::Empty => Ok(None),
         }
     }
 
@@ -216,10 +206,10 @@ impl NodeRpcClient {
         let this = &self.0;
 
         // Prepare
-        let (prepare, neighbour): (ton::ton_node::Prepared, _) = this
+        let (prepare, neighbour): (proto::Prepared, _) = this
             .send_adnl_query(
-                ton::rpc::ton_node::PrepareBlock {
-                    block: convert_block_id_ext_blk2api(block_id),
+                proto::RpcPrepareBlock {
+                    block: block_id.clone(),
                 },
                 Some(1),
                 None,
@@ -227,15 +217,15 @@ impl NodeRpcClient {
             )
             .await?;
 
-        if let ton::ton_node::Prepared::TonNode_NotFound = prepare {
+        if prepare == proto::Prepared::NotFound {
             return Ok(None);
         }
 
         // Download
-        let block_data: ton::ton_node::DataFull = this
+        let block_data: proto::DataFull = this
             .send_rldp_query(
-                &ton::rpc::ton_node::DownloadBlockFull {
-                    block: convert_block_id_ext_blk2api(block_id),
+                proto::RpcDownloadBlockFull {
+                    block: block_id.clone(),
                 },
                 neighbour,
                 0,
@@ -243,24 +233,25 @@ impl NodeRpcClient {
             .await?;
 
         match block_data {
-            ton::ton_node::DataFull::TonNode_DataFull(data) => {
-                if !compare_block_ids(block_id, &data.id) {
+            proto::DataFull::Found {
+                block_id: foudnd_block_id,
+                block: block_data,
+                proof: proof_data,
+                is_link,
+            } => {
+                if block_id != &foudnd_block_id {
                     return Err(NodeRpcClientError::ReceivedBlockIdMismatch.into());
                 }
 
-                let block = BlockStuff::deserialize_checked(block_id.clone(), &data.block.0)?;
-                let proof = BlockProofStuff::deserialize(
-                    block_id.clone(),
-                    &data.proof.0,
-                    data.is_link.into(),
-                )?;
+                let block = BlockStuff::deserialize_checked(block_id.clone(), &block_data)?;
+                let proof = BlockProofStuff::deserialize(block_id.clone(), &proof_data, is_link)?;
 
                 Ok(Some((
-                    WithArchiveData::new(block, data.block.0),
-                    WithArchiveData::new(proof, data.proof.0),
+                    WithArchiveData::new(block, block_data),
+                    WithArchiveData::new(proof, proof_data),
                 )))
             }
-            ton::ton_node::DataFull::TonNode_DataFullEmpty => {
+            proto::DataFull::Empty => {
                 log::warn!(
                     "prepareBlock receives Prepared, but DownloadBlockFull receives DataFullEmpty"
                 );
@@ -277,8 +268,8 @@ impl NodeRpcClient {
 
         let this = &self.0;
 
-        let query = &ton::rpc::ton_node::DownloadNextBlockFull {
-            prev_block: convert_block_id_ext_blk2api(prev_id),
+        let query = proto::RpcDownloadNextBlockFull {
+            prev_block: prev_id.clone(),
         };
 
         let neighbour = if let Some(neighbour) = this.neighbours().choose_neighbour() {
@@ -289,23 +280,25 @@ impl NodeRpcClient {
         };
 
         // Download
-        let data_full: ton::ton_node::DataFull = this.send_rldp_query(query, neighbour, 0).await?;
+        let data_full: proto::DataFull = this.send_rldp_query(query, neighbour, 0).await?;
 
         // Parse
         match data_full {
-            ton::ton_node::DataFull::TonNode_DataFullEmpty => Ok(None),
-            ton::ton_node::DataFull::TonNode_DataFull(data_full) => {
-                let id = convert_block_id_ext_api2blk(&data_full.id)?;
-
-                let block = BlockStuff::deserialize_checked(id.clone(), &data_full.block.0)?;
-                let proof =
-                    BlockProofStuff::deserialize(id, &data_full.proof.0, data_full.is_link.into())?;
+            proto::DataFull::Found {
+                block_id,
+                block: block_data,
+                proof: proof_data,
+                is_link,
+            } => {
+                let block = BlockStuff::deserialize_checked(block_id.clone(), &block_data)?;
+                let proof = BlockProofStuff::deserialize(block_id, &proof_data, is_link)?;
 
                 Ok(Some((
-                    WithArchiveData::new(block, data_full.block.0),
-                    WithArchiveData::new(proof, data_full.proof.0),
+                    WithArchiveData::new(block, block_data),
+                    WithArchiveData::new(proof, proof_data),
                 )))
             }
+            proto::DataFull::Empty => Ok(None),
         }
     }
 
@@ -317,20 +310,19 @@ impl NodeRpcClient {
     ) -> Result<(Vec<ton_block::BlockIdExt>, Arc<Neighbour>)> {
         let this = &self.0;
 
-        let query = TLObject::new(ton::rpc::ton_node::GetNextKeyBlockIds {
-            block: convert_block_id_ext_blk2api(block_id),
-            max_size: max_size as i32,
-        });
+        let query = proto::RpcGetNextKeyBlockIds {
+            block: block_id.clone(),
+            max_size: max_size as u32,
+        };
 
         this.send_adnl_query(query, None, None, neighbour)
             .await
-            .and_then(|(ids, neighbour): (ton::ton_node::KeyBlocks, _)| {
-                let ids = ids
-                    .blocks()
-                    .iter()
-                    .map(convert_block_id_ext_api2blk)
-                    .collect::<Result<_, _>>()?;
-                Ok((ids, neighbour))
+            .and_then(|(key_blocks, neighbour): (proto::KeyBlocks, _)| {
+                if !key_blocks.error {
+                    Ok((key_blocks.blocks, neighbour))
+                } else {
+                    Err(NodeRpcClientError::KeyBlocksError.into())
+                }
             })
     }
 
@@ -340,16 +332,14 @@ impl NodeRpcClient {
         neighbour: Option<&Arc<Neighbour>>,
         output: &mut (dyn Write + Send),
     ) -> Result<ArchiveDownloadStatus> {
-        const CHUNK_SIZE: i32 = 1 << 21; // 2 MB
+        const CHUNK_SIZE: u32 = 1 << 21; // 2 MB
 
         let this = &self.0;
 
         // Prepare
-        let (archive_info, neighbour): (ton::ton_node::ArchiveInfo, _) = this
+        let (archive_info, neighbour): (proto::ArchiveInfo, _) = this
             .send_adnl_query(
-                ton::rpc::ton_node::GetArchiveInfo {
-                    masterchain_seqno: masterchain_seqno as i32,
-                },
+                proto::RpcGetArchiveInfo { masterchain_seqno },
                 Some(1),
                 Some(TIMEOUT_ARCHIVE),
                 neighbour,
@@ -357,9 +347,9 @@ impl NodeRpcClient {
             .await?;
 
         // Download
-        let info = match archive_info {
-            ton::ton_node::ArchiveInfo::TonNode_ArchiveInfo(info) => info,
-            ton::ton_node::ArchiveInfo::TonNode_ArchiveNotFound => {
+        let archive_id = match archive_info {
+            proto::ArchiveInfo::Found { id } => id,
+            proto::ArchiveInfo::NotFound => {
                 return Ok(ArchiveDownloadStatus::NotFound);
             }
         };
@@ -374,8 +364,8 @@ impl NodeRpcClient {
                 Duration::from_secs(10),
                 this.send_rldp_query_raw(
                     neighbour.clone(),
-                    &ton::rpc::ton_node::GetArchiveSlice {
-                        archive_id: info.id,
+                    proto::RpcGetArchiveSlice {
+                        archive_id,
                         offset,
                         max_size: CHUNK_SIZE,
                     },
@@ -405,7 +395,7 @@ impl NodeRpcClient {
                         });
                     }
 
-                    offset += chunk.len() as i64;
+                    offset += chunk.len() as u64;
                     part_attempt = 0;
                 }
                 Ok(Err(e)) => {
@@ -413,7 +403,7 @@ impl NodeRpcClient {
                     part_attempt += 1;
                     log::error!(
                         "Failed to download archive {}: {e:?}, offset: {offset}, attempt: {part_attempt}",
-                        info.id,
+                        archive_id,
                     );
 
                     if part_attempt > 2 {
@@ -431,12 +421,10 @@ impl NodeRpcClient {
         }
     }
 
-    pub async fn wait_broadcast(&self) -> Result<(ton::ton_node::Broadcast, AdnlNodeIdShort)> {
+    pub async fn wait_broadcast(&self) -> Result<proto::BlockBroadcast> {
         let info = self.0.wait_for_broadcast().await;
-        let answer: ton::ton_node::Broadcast = Deserializer::new(&mut info.data.as_slice())
-            .read_boxed()
-            .map_err(|e| anyhow::Error::msg(e.to_string()))?;
-        Ok((answer, info.from))
+        let broadcast = tl_proto::deserialize(&info.data)?;
+        Ok(broadcast)
     }
 }
 
@@ -462,4 +450,6 @@ enum NodeRpcClientError {
     TooManyFailedAttempts,
     #[error("Request timeout")]
     RequestTimeout,
+    #[error("Failed to get key blocks")]
+    KeyBlocksError,
 }

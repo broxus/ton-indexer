@@ -8,10 +8,10 @@ use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
-use ton_api::ton;
 
 use crate::db::BlockConnection;
 use crate::engine::Engine;
+use crate::proto;
 use crate::utils::*;
 
 pub async fn walk_masterchain_blocks(
@@ -168,23 +168,22 @@ async fn load_shard_blocks(
 
 pub async fn process_block_broadcast(
     engine: &Arc<Engine>,
-    broadcast: ton::ton_node::broadcast::BlockBroadcast,
+    mut broadcast: proto::BlockBroadcast,
 ) -> Result<()> {
     let block_handle_storage = engine.db.block_handle_storage();
     let block_storage = engine.db.block_storage();
 
-    let block_id = convert_block_id_ext_api2blk(&broadcast.id)?;
     if matches!(
-        block_handle_storage.load_handle(&block_id)?,
+        block_handle_storage.load_handle(&broadcast.id)?,
         Some(handle) if handle.meta().has_data()
     ) {
         return Ok(());
     }
 
     let proof = BlockProofStuff::deserialize(
-        block_id.clone(),
-        &broadcast.proof.0,
-        !block_id.shard_id.is_masterchain(),
+        broadcast.id.clone(),
+        &broadcast.proof,
+        !broadcast.id.shard_id.is_masterchain(),
     )?;
     let virt_block_info = proof.virtualize_block()?.0.read_info()?;
     let meta_data = BriefBlockInfo::from(&virt_block_info);
@@ -216,8 +215,9 @@ pub async fn process_block_broadcast(
         }
     };
 
-    validate_broadcast(&broadcast, &block_id, &validator_set, &catchain_config)?;
+    validate_broadcast(&mut broadcast, &validator_set, &catchain_config)?;
 
+    let block_id = &broadcast.id;
     if block_id.shard_id.is_masterchain() {
         match key_block_proof {
             CheckWith::KeyBlock(key_block_proof) => {
@@ -230,7 +230,7 @@ pub async fn process_block_broadcast(
     }
 
     let block = BlockStuff::deserialize_checked(block_id.clone(), &broadcast.data)?;
-    let block = BlockStuffAug::new(block, broadcast.data.0);
+    let block = BlockStuffAug::new(block, broadcast.data);
     let mut handle = match block_storage
         .store_block_data(&block, meta_data.with_mc_seq_no(0))
         .await?
@@ -243,7 +243,7 @@ pub async fn process_block_broadcast(
     if !handle.meta().has_proof() {
         handle = match block_storage
             .store_block_proof(
-                &BlockProofStuffAug::new(proof, broadcast.proof.0),
+                &BlockProofStuffAug::new(proof, broadcast.proof),
                 handle.into(),
             )
             .await?
@@ -279,20 +279,21 @@ pub async fn process_block_broadcast(
 }
 
 fn validate_broadcast(
-    broadcast: &ton::ton_node::broadcast::BlockBroadcast,
-    block_id: &ton_block::BlockIdExt,
+    broadcast: &mut proto::BlockBroadcast,
     validator_set: &ton_block::ValidatorSet,
     catchain_config: &ton_block::CatchainConfig,
 ) -> Result<()> {
+    let block_id = &broadcast.id;
+
     let (validators, validators_hash_short) = validator_set.calc_subset(
         catchain_config,
         block_id.shard_id.shard_prefix_with_tag(),
         block_id.shard_id.workchain_id(),
-        broadcast.catchain_seqno as u32,
+        broadcast.catchain_seqno,
         ton_block::UnixTime32(0),
     )?;
 
-    if validators_hash_short != broadcast.validator_set_hash as u32 {
+    if validators_hash_short != broadcast.validator_set_hash {
         return Err(anyhow!(
             "Bad validator set hash in broadcast with block {}, calculated: {}, found: {}",
             block_id,
@@ -303,11 +304,8 @@ fn validate_broadcast(
 
     // Extract signatures
     let mut block_pure_signatures = ton_block::BlockSignaturesPure::default();
-    for signature in &broadcast.signatures.0 {
-        block_pure_signatures.add_sigpair(ton_block::CryptoSignaturePair {
-            node_id_short: ton_types::UInt256::from(&signature.who.0),
-            sign: ton_block::CryptoSignature::from_bytes(&signature.signature)?,
-        });
+    for signature in std::mem::take(&mut broadcast.signatures) {
+        block_pure_signatures.add_sigpair(signature);
     }
 
     // Check signatures

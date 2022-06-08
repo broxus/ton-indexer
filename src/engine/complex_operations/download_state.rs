@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use tiny_adnl::Neighbour;
+use everscale_network::network::Neighbour;
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 

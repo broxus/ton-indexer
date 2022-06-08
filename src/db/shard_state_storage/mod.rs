@@ -8,8 +8,8 @@ use anyhow::{Context, Result};
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
 use itertools::Itertools;
+use rustc_hash::FxHashMap;
 use smallvec::SmallVec;
-use tiny_adnl::utils::*;
 use ton_block::HashmapAugType;
 use ton_types::{ByteOrderRead, UInt256};
 

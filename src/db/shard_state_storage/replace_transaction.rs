@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use num_traits::ToPrimitive;
-use tiny_adnl::utils::*;
+use rustc_hash::FxHashMap;
 use ton_types::UInt256;
 
 use super::entries_buffer::*;

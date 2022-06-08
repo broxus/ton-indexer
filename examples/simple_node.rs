@@ -4,8 +4,8 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use argh::FromArgs;
+use everscale_network::utils::now;
 use serde::{Deserialize, Serialize};
-use tiny_adnl::utils::*;
 use ton_block::{DepthBalanceInfo, Deserializable, ShardAccount};
 use ton_types::{HashmapType, UInt256};
 

@@ -7,6 +7,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
+use everscale_network::network::Neighbour;
 
 use crate::db::*;
 use crate::engine::NodeRpcClient;
@@ -165,13 +166,13 @@ pub struct DownloadContext<'a, T> {
     pub db: &'a Db,
 
     pub downloader: Arc<dyn Downloader<Item = T>>,
-    pub explicit_neighbour: Option<&'a Arc<tiny_adnl::Neighbour>>,
+    pub explicit_neighbour: Option<&'a Arc<Neighbour>>,
 }
 
 impl<'a, T> DownloadContext<'a, T> {
     pub fn with_explicit_neighbour(
         mut self,
-        explicit_neighbour: Option<&'a Arc<tiny_adnl::Neighbour>>,
+        explicit_neighbour: Option<&'a Arc<Neighbour>>,
     ) -> Self {
         self.explicit_neighbour = explicit_neighbour;
         self

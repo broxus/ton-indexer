@@ -7,8 +7,8 @@
 use std::sync::{Arc, Weak};
 
 use anyhow::Result;
-use tiny_adnl::utils::*;
 use tokio::sync::RwLock;
+use ton_types::FxDashMap;
 
 use super::block_meta::BlockMeta;
 

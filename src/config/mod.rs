@@ -1,10 +1,11 @@
 use std::net::SocketAddrV4;
 use std::path::PathBuf;
 
+use everscale_network::network::NeighboursOptions;
+use everscale_network::{AdnlNodeOptions, DhtNodeOptions, OverlayShardOptions, RldpNodeOptions};
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use sysinfo::SystemExt;
-use tiny_adnl::*;
 
 pub use self::node_keys::*;
 

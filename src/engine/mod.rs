@@ -11,10 +11,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+use everscale_network::network::{Neighbour, NeighboursMetrics};
+use everscale_network::utils::{now, OverlayIdShort};
+use everscale_network::OverlayShardMetrics;
 pub use rocksdb::perf::MemoryUsageStats;
-use tiny_adnl::utils::*;
-use tiny_adnl::{NeighboursMetrics, OverlayShardMetrics};
-use ton_api::ton;
+use rustc_hash::FxHashSet;
 
 use global_config::GlobalConfig;
 
@@ -115,7 +116,7 @@ impl Engine {
         let hard_forks = global_config.hard_forks.clone().into_iter().collect();
 
         let network = NodeNetwork::new(
-            config.ip_address.into(),
+            config.ip_address,
             config.adnl_keys.build_keystore()?,
             config.adnl_options,
             config.rldp_options,
@@ -127,7 +128,7 @@ impl Engine {
         .await
         .context("Failed to init network")?;
 
-        network.start().await.context("Failed to start network")?;
+        network.start().context("Failed to start network")?;
 
         let (masterchain_client, basechain_client) = {
             let (masterchain, basechain) = futures::future::join(
@@ -513,20 +514,20 @@ impl Engine {
             let overlay_id = client.0.overlay_id();
 
             loop {
-                match client.wait_broadcast().await {
-                    Ok((ton::ton_node::Broadcast::TonNode_BlockBroadcast(block), _)) => {
-                        let engine = engine.clone();
-                        tokio::spawn(async move {
-                            if let Err(e) = process_block_broadcast(&engine, *block).await {
-                                log::error!("Failed to process block broadcast: {e:?}");
-                            }
-                        });
-                    }
+                let block = match client.wait_broadcast().await {
+                    Ok(block) => block,
                     Err(e) => {
                         log::error!("Failed to wait broadcast for overlay {overlay_id}: {e}");
+                        continue;
                     }
-                    _ => { /* do nothing */ }
-                }
+                };
+
+                let engine = engine.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = process_block_broadcast(&engine, block).await {
+                        log::error!("Failed to process block broadcast: {e:?}");
+                    }
+                });
             }
         });
     }
@@ -645,7 +646,7 @@ impl Engine {
         block_id: &ton_block::BlockIdExt,
         is_key_block: bool,
         max_attempts: Option<u32>,
-        neighbour: Option<&Arc<tiny_adnl::Neighbour>>,
+        neighbour: Option<&Arc<Neighbour>>,
     ) -> Result<BlockProofStuffAug> {
         self.create_download_context(
             "create_download_context",
@@ -662,7 +663,7 @@ impl Engine {
     async fn download_archive(
         &self,
         mc_block_seq_no: u32,
-        neighbour: Option<&Arc<tiny_adnl::Neighbour>>,
+        neighbour: Option<&Arc<Neighbour>>,
         output: &mut (dyn Write + Send),
     ) -> Result<ArchiveDownloadStatus> {
         self.masterchain_client

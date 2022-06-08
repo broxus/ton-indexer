@@ -64,9 +64,9 @@ impl BlockProofStuff {
         Ok(block_virt_root)
     }
 
-    pub fn virtualize_block(&self) -> Result<(ton_block::Block, ton_api::ton::int256)> {
+    pub fn virtualize_block(&self) -> Result<(ton_block::Block, ton_types::UInt256)> {
         let cell = self.virtualize_block_root()?;
-        let hash = ton_api::ton::int256(cell.repr_hash().as_slice().to_owned());
+        let hash = cell.repr_hash();
         Ok((ton_block::Block::construct_from(&mut cell.into())?, hash))
     }
 
@@ -143,7 +143,7 @@ impl BlockProofStuff {
 
         let (virt_block, virt_block_hash) = self.virtualize_block()?;
 
-        if &virt_block_hash.0 != self.id.root_hash.as_slice() {
+        if virt_block_hash != self.id.root_hash {
             return Err(anyhow!(
                 "proof for block {} contains a Merkle proof with incorrect root hash: expected {}, found: {} ",
                 self.id,

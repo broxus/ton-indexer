@@ -4,18 +4,17 @@
 /// - replaced old `failure` crate with `anyhow`
 /// - simplified answer processing
 ///
+use std::borrow::Cow;
 use std::future::Future;
 use std::sync::{Arc, Weak};
 
 use anyhow::Result;
-use tiny_adnl::utils::*;
-use tiny_adnl::{OverlaySubscriber, QueryAnswer, QueryConsumingResult};
-use ton_api::ton::{self, TLObject};
-use ton_api::{AnyBoxedSerialize, IntoBoxed};
+use everscale_network::{QueryConsumingResult, QuerySubscriber, SubscriberContext};
+use tl_proto::{TlRead, TlWrite};
 
 use crate::db::{BlockConnection, Db, KeyBlocksDirection};
 use crate::engine::Engine;
-use crate::utils::*;
+use crate::proto;
 
 pub struct NodeRpcServer(Weak<Engine>);
 
@@ -26,101 +25,84 @@ impl NodeRpcServer {
 
     async fn answer<'a, Q, F, R>(
         &self,
-        query: TLObject,
+        query: Cow<'a, [u8]>,
         handler: fn(QueryHandler, Q) -> F,
-        into_answer: fn(R) -> Result<QueryConsumingResult>,
-    ) -> ProcessedQuery
+        into_answer: fn(R) -> Vec<u8>,
+    ) -> Result<QueryConsumingResult<'a>>
     where
-        F: Future<Output = Result<R>> + 'a,
-        Q: AnyBoxedSerialize,
+        for<'b> Q: TlRead<'b, Repr = tl_proto::Boxed> + 'static,
+        F: Future<Output = Result<R>>,
         R: Send,
     {
-        let query = match query.downcast::<Q>() {
-            Ok(query) => query,
-            Err(query) => return ProcessedQuery::Rejected(query),
-        };
+        let query = tl_proto::deserialize(&query)?;
 
-        ProcessedQuery::Accepted(match self.0.upgrade() {
+        match self.0.upgrade() {
             Some(engine) => handler(QueryHandler(engine), query)
                 .await
-                .and_then(into_answer),
+                .map(|data| QueryConsumingResult::Consumed(Some(into_answer(data)))),
             None => Err(NodeRpcServerError::EngineDropped.into()),
-        })
+        }
     }
 }
 
-enum ProcessedQuery {
-    Accepted(Result<QueryConsumingResult>),
-    Rejected(TLObject),
-}
-
 #[async_trait::async_trait]
-impl OverlaySubscriber for NodeRpcServer {
-    async fn try_consume_query(
+impl QuerySubscriber for NodeRpcServer {
+    async fn try_consume_query<'a>(
         &self,
-        _: &AdnlNodeIdShort,
-        _: &AdnlNodeIdShort,
-        mut query: TLObject,
-    ) -> Result<QueryConsumingResult> {
-        //log::info!("Got query: {:?}", query);
-
-        fn answer<T: AnyBoxedSerialize>(data: T) -> Result<QueryConsumingResult> {
-            Ok(QueryConsumingResult::Consumed(Some(QueryAnswer::Object(
-                TLObject::new(data),
-            ))))
+        _: SubscriberContext<'a>,
+        constructor: u32,
+        query: Cow<'a, [u8]>,
+    ) -> Result<QueryConsumingResult<'a>> {
+        #[inline(always)]
+        fn answer<T: TlWrite<Repr = tl_proto::Boxed>>(data: T) -> Vec<u8> {
+            tl_proto::serialize(data)
         }
 
-        fn answer_raw(data: Vec<u8>) -> Result<QueryConsumingResult> {
-            Ok(QueryConsumingResult::Consumed(Some(QueryAnswer::Raw(data))))
-        }
-
-        fn answer_boxed<T: IntoBoxed>(data: T) -> Result<QueryConsumingResult>
-        where
-            T::Boxed: AnyBoxedSerialize,
-        {
-            answer(data.into_boxed())
+        #[inline(always)]
+        fn answer_raw(data: Vec<u8>) -> Vec<u8> {
+            data
         }
 
         macro_rules! select_query {
-            ($($handler:ident => $into_answer:ident),*,) => {
-                $(query = match self.answer(query, QueryHandler::$handler, $into_answer).await {
-                    ProcessedQuery::Accepted(result) => return result,
-                    ProcessedQuery::Rejected(query) => query,
-                });*;
+            ($($ty:ident => $handler:ident => $into_answer:ident),*, _ => { $($rest:tt)* }) => {
+                match constructor {
+                    $(
+                        proto::$ty::TL_ID => self.answer(query, QueryHandler::$handler, $into_answer).await,
+                    )*
+                    $($rest)*
+                }
             };
         }
 
         select_query! {
-            get_next_block_description => answer,
-            prepare_block_proof => answer,
-            prepare_key_block_proof => answer,
-            prepare_block => answer,
-            prepare_persistent_state => answer,
-            prepare_zero_state => answer,
-            get_next_key_block_ids => answer,
-            download_next_block_full => answer,
-            download_block_full => answer,
-            download_block => answer_raw,
-            download_block_proof => answer_raw,
-            download_key_block_proof => answer_raw,
-            download_block_proof_link => answer_raw,
-            download_key_block_proof_link => answer_raw,
-            get_archive_info => answer,
-            get_archive_slice => answer_raw,
-        };
-
-        if query
-            .downcast::<ton::rpc::ton_node::GetCapabilities>()
-            .is_ok()
-        {
-            //log::warn!("Got capabilities query");
-            return answer_boxed(ton::ton_node::capabilities::Capabilities {
-                version: 2,
-                capabilities: 1,
-            });
-        };
-
-        Ok(QueryConsumingResult::Consumed(None))
+            RpcGetNextBlockDescription => get_next_block_description => answer,
+            RpcPrepareBlockProof => prepare_block_proof => answer,
+            RpcPrepareKeyBlockProof => prepare_key_block_proof => answer,
+            RpcPrepareBlock => prepare_block => answer,
+            RpcPreparePersistentState => prepare_persistent_state => answer,
+            RpcPrepareZeroState => prepare_zero_state => answer,
+            RpcGetNextKeyBlockIds => get_next_key_block_ids => answer,
+            RpcDownloadNextBlockFull => download_next_block_full => answer,
+            RpcDownloadBlockFull => download_block_full => answer,
+            RpcDownloadBlock => download_block => answer_raw,
+            RpcDownloadBlockProof => download_block_proof => answer_raw,
+            RpcDownloadKeyBlockProof => download_key_block_proof => answer_raw,
+            RpcDownloadBlockProofLink => download_block_proof_link => answer_raw,
+            RpcDownloadKeyBlockProofLink => download_key_block_proof_link => answer_raw,
+            RpcGetArchiveInfo => get_archive_info => answer,
+            RpcGetArchiveSlice => get_archive_slice => answer_raw,
+            _ => {
+                everscale_network::proto::rpc::TonNodeGetCapabilities::TL_ID => {
+                    Ok(QueryConsumingResult::Consumed(Some(tl_proto::serialize(
+                        everscale_network::proto::ton_node::Capabilities {
+                            version: 2,
+                            capabilities: 1,
+                        },
+                    ))))
+                }
+                _ => Ok(QueryConsumingResult::Consumed(None))
+            }
+        }
     }
 }
 
@@ -129,92 +111,67 @@ struct QueryHandler(Arc<Engine>);
 impl QueryHandler {
     async fn get_next_block_description(
         self,
-        query: ton::rpc::ton_node::GetNextBlockDescription,
-    ) -> Result<ton::ton_node::BlockDescription> {
+        query: proto::RpcGetNextBlockDescription,
+    ) -> Result<proto::BlockDescription> {
         let db = self.0.db.block_connection_storage();
-        let prev_block_id = convert_block_id_ext_api2blk(&query.prev_block)?;
 
-        match db.load_connection(&prev_block_id, BlockConnection::Next1) {
-            Ok(id) => Ok(ton::ton_node::BlockDescription::TonNode_BlockDescription(
-                Box::new(ton::ton_node::blockdescription::BlockDescription {
-                    id: convert_block_id_ext_blk2api(&id),
-                }),
-            )),
-            Err(_) => Ok(ton::ton_node::BlockDescription::TonNode_BlockDescriptionEmpty),
+        match db.load_connection(&query.prev_block, BlockConnection::Next1) {
+            Ok(id) => Ok(proto::BlockDescription::Found { id }),
+            Err(_) => Ok(proto::BlockDescription::Empty),
         }
     }
 
     async fn prepare_block_proof(
         self,
-        query: ton::rpc::ton_node::PrepareBlockProof,
-    ) -> Result<ton::ton_node::PreparedProof> {
-        find_block_proof(
-            &self.0.db,
-            &convert_block_id_ext_api2blk(&query.block)?,
-            query.allow_partial.into(),
-            false,
-        )
+        query: proto::RpcPrepareBlockProof,
+    ) -> Result<proto::PreparedProof> {
+        find_block_proof(&self.0.db, &query.block, query.allow_partial, false)
     }
 
     async fn prepare_key_block_proof(
         self,
-        query: ton::rpc::ton_node::PrepareKeyBlockProof,
-    ) -> Result<ton::ton_node::PreparedProof> {
-        find_block_proof(
-            &self.0.db,
-            &convert_block_id_ext_api2blk(&query.block)?,
-            query.allow_partial.into(),
-            true,
-        )
+        query: proto::RpcPrepareKeyBlockProof,
+    ) -> Result<proto::PreparedProof> {
+        find_block_proof(&self.0.db, &query.block, query.allow_partial, true)
     }
 
-    async fn prepare_block(
-        self,
-        query: ton::rpc::ton_node::PrepareBlock,
-    ) -> Result<ton::ton_node::Prepared> {
+    async fn prepare_block(self, query: proto::RpcPrepareBlock) -> Result<proto::Prepared> {
         let block_handle_storage = self.0.db.block_handle_storage();
 
-        let block_id = convert_block_id_ext_api2blk(&query.block)?;
-        Ok(match block_handle_storage.load_handle(&block_id)? {
-            Some(handle) if handle.meta().has_data() => ton::ton_node::Prepared::TonNode_Prepared,
-            _ => ton::ton_node::Prepared::TonNode_NotFound,
+        Ok(match block_handle_storage.load_handle(&query.block)? {
+            Some(handle) if handle.meta().has_data() => proto::Prepared::Found,
+            _ => proto::Prepared::NotFound,
         })
     }
 
     async fn prepare_persistent_state(
         self,
-        _: ton::rpc::ton_node::PreparePersistentState,
-    ) -> Result<ton::ton_node::PreparedState> {
+        _: proto::RpcPreparePersistentState,
+    ) -> Result<proto::PreparedState> {
         // TODO: implement
-        Ok(ton::ton_node::PreparedState::TonNode_NotFoundState)
+        Ok(proto::PreparedState::NotFound)
     }
 
     async fn prepare_zero_state(
         self,
-        _: ton::rpc::ton_node::PrepareZeroState,
-    ) -> Result<ton::ton_node::PreparedState> {
+        _: proto::RpcPrepareZeroState,
+    ) -> Result<proto::PreparedState> {
         // TODO: implement
-        Ok(ton::ton_node::PreparedState::TonNode_NotFoundState)
+        Ok(proto::PreparedState::NotFound)
     }
 
     async fn get_next_key_block_ids(
         self,
-        query: ton::rpc::ton_node::GetNextKeyBlockIds,
-    ) -> Result<ton::ton_node::KeyBlocks> {
+        query: proto::RpcGetNextKeyBlockIds,
+    ) -> Result<proto::KeyBlocks> {
         const NEXT_KEY_BLOCKS_LIMIT: usize = 8;
 
         let block_handle_storage = self.0.db.block_handle_storage();
 
-        let limit = std::cmp::min(
-            query
-                .max_size
-                .try_into()
-                .map_err(|_| NodeRpcServerError::InvalidArgument)?,
-            NEXT_KEY_BLOCKS_LIMIT,
-        );
+        let limit = std::cmp::min(query.max_size as usize, NEXT_KEY_BLOCKS_LIMIT);
 
         let get_next_key_block_ids = || {
-            let start_block_id = convert_block_id_ext_api2blk(&query.block)?;
+            let start_block_id = &query.block;
             if !start_block_id.shard().is_masterchain() {
                 return Err(NodeRpcServerError::BlockNotFromMasterChain.into());
             }
@@ -235,7 +192,7 @@ impl QueryHandler {
 
             let mut ids = Vec::with_capacity(limit);
             while let Some(id) = iterator.next().transpose()? {
-                ids.push(convert_block_id_ext_blk2api(&id));
+                ids.push(id);
                 if ids.len() >= limit {
                     break;
                 }
@@ -252,30 +209,25 @@ impl QueryHandler {
             }
         };
 
-        Ok(ton::ton_node::KeyBlocks::TonNode_KeyBlocks(Box::new(
-            ton::ton_node::keyblocks::KeyBlocks {
-                blocks: blocks.into(),
-                incomplete: incomplete.into(),
-                error: error.into(),
-            },
-        )))
+        Ok(proto::KeyBlocks {
+            blocks,
+            incomplete,
+            error,
+        })
     }
 
     async fn download_next_block_full(
         self,
-        query: ton::rpc::ton_node::DownloadNextBlockFull,
-    ) -> Result<ton::ton_node::DataFull> {
+        query: proto::RpcDownloadNextBlockFull,
+    ) -> Result<proto::DataFull> {
         let block_handle_storage = self.0.db.block_handle_storage();
         let block_connection_storage = self.0.db.block_connection_storage();
         let block_storage = self.0.db.block_storage();
 
-        let prev_block_id = convert_block_id_ext_api2blk(&query.prev_block)?;
-
-        let next_block_id = match block_handle_storage.load_handle(&prev_block_id)? {
-            Some(handle) if handle.meta().has_next1() => {
-                block_connection_storage.load_connection(&prev_block_id, BlockConnection::Next1)?
-            }
-            _ => return Ok(ton::ton_node::DataFull::TonNode_DataFullEmpty),
+        let next_block_id = match block_handle_storage.load_handle(&query.prev_block)? {
+            Some(handle) if handle.meta().has_next1() => block_connection_storage
+                .load_connection(&query.prev_block, BlockConnection::Next1)?,
+            _ => return Ok(proto::DataFull::Empty),
         };
 
         let mut is_link = false;
@@ -284,58 +236,43 @@ impl QueryHandler {
                 let block = block_storage.load_block_data_raw(&handle).await?;
                 let proof = block_storage.load_block_proof_raw(&handle, is_link).await?;
 
-                ton::ton_node::DataFull::TonNode_DataFull(Box::new(
-                    ton::ton_node::datafull::DataFull {
-                        id: convert_block_id_ext_blk2api(&next_block_id),
-                        proof: ton::bytes(proof),
-                        block: ton::bytes(block),
-                        is_link: if is_link {
-                            ton::Bool::BoolTrue
-                        } else {
-                            ton::Bool::BoolFalse
-                        },
-                    },
-                ))
+                proto::DataFull::Found {
+                    block_id: next_block_id,
+                    proof: proof.into(),
+                    block: block.into(),
+                    is_link,
+                }
             }
-            _ => ton::ton_node::DataFull::TonNode_DataFullEmpty,
+            _ => proto::DataFull::Empty,
         })
     }
 
     async fn download_block_full(
         self,
-        query: ton::rpc::ton_node::DownloadBlockFull,
-    ) -> Result<ton::ton_node::DataFull> {
+        query: proto::RpcDownloadBlockFull,
+    ) -> Result<proto::DataFull> {
         let block_handle_storage = self.0.db.block_handle_storage();
         let block_storage = self.0.db.block_storage();
 
-        let block_id = convert_block_id_ext_api2blk(&query.block)?;
-
         let mut is_link = false;
-        Ok(match block_handle_storage.load_handle(&block_id)? {
+        Ok(match block_handle_storage.load_handle(&query.block)? {
             Some(handle) if handle.meta().has_data() && handle.has_proof_or_link(&mut is_link) => {
                 let block = block_storage.load_block_data_raw(&handle).await?;
                 let proof = block_storage.load_block_proof_raw(&handle, is_link).await?;
 
-                ton::ton_node::DataFull::TonNode_DataFull(Box::new(
-                    ton::ton_node::datafull::DataFull {
-                        id: convert_block_id_ext_blk2api(&block_id),
-                        proof: ton::bytes(proof),
-                        block: ton::bytes(block),
-                        is_link: if is_link {
-                            ton::Bool::BoolTrue
-                        } else {
-                            ton::Bool::BoolFalse
-                        },
-                    },
-                ))
+                proto::DataFull::Found {
+                    block_id: query.block,
+                    proof: proof.into(),
+                    block: block.into(),
+                    is_link,
+                }
             }
-            _ => ton::ton_node::DataFull::TonNode_DataFullEmpty,
+            _ => proto::DataFull::Empty,
         })
     }
 
-    async fn download_block(self, query: ton::rpc::ton_node::DownloadBlock) -> Result<Vec<u8>> {
-        let block_id = convert_block_id_ext_api2blk(&query.block)?;
-        match self.0.db.block_handle_storage().load_handle(&block_id)? {
+    async fn download_block(self, query: proto::RpcDownloadBlock) -> Result<Vec<u8>> {
+        match self.0.db.block_handle_storage().load_handle(&query.block)? {
             Some(handle) if handle.meta().has_data() => {
                 self.0.db.block_storage().load_block_data_raw(&handle).await
             }
@@ -343,82 +280,51 @@ impl QueryHandler {
         }
     }
 
-    async fn download_block_proof(
-        self,
-        query: ton::rpc::ton_node::DownloadBlockProof,
-    ) -> Result<Vec<u8>> {
-        load_block_proof(
-            &self.0.db,
-            &convert_block_id_ext_api2blk(&query.block)?,
-            false,
-        )
-        .await
+    async fn download_block_proof(self, query: proto::RpcDownloadBlockProof) -> Result<Vec<u8>> {
+        load_block_proof(&self.0.db, &query.block, false).await
     }
 
     async fn download_key_block_proof(
         self,
-        query: ton::rpc::ton_node::DownloadKeyBlockProof,
+        query: proto::RpcDownloadKeyBlockProof,
     ) -> Result<Vec<u8>> {
-        load_block_proof(
-            &self.0.db,
-            &convert_block_id_ext_api2blk(&query.block)?,
-            false,
-        )
-        .await
+        load_block_proof(&self.0.db, &query.block, false).await
     }
 
     async fn download_block_proof_link(
         self,
-        query: ton::rpc::ton_node::DownloadBlockProofLink,
+        query: proto::RpcDownloadBlockProofLink,
     ) -> Result<Vec<u8>> {
-        load_block_proof(
-            &self.0.db,
-            &convert_block_id_ext_api2blk(&query.block)?,
-            true,
-        )
-        .await
+        load_block_proof(&self.0.db, &query.block, true).await
     }
 
     async fn download_key_block_proof_link(
         self,
-        query: ton::rpc::ton_node::DownloadKeyBlockProofLink,
+        query: proto::RpcDownloadKeyBlockProofLink,
     ) -> Result<Vec<u8>> {
-        load_block_proof(
-            &self.0.db,
-            &convert_block_id_ext_api2blk(&query.block)?,
-            true,
-        )
-        .await
+        load_block_proof(&self.0.db, &query.block, true).await
     }
 
-    async fn get_archive_info(
-        self,
-        query: ton::rpc::ton_node::GetArchiveInfo,
-    ) -> Result<ton::ton_node::ArchiveInfo> {
-        let mc_seq_no = query.masterchain_seqno as u32;
+    async fn get_archive_info(self, query: proto::RpcGetArchiveInfo) -> Result<proto::ArchiveInfo> {
+        let mc_seq_no = query.masterchain_seqno;
 
         let last_applied_mc_block = self.0.load_last_applied_mc_block_id()?;
         if mc_seq_no > last_applied_mc_block.seq_no {
-            return Ok(ton::ton_node::ArchiveInfo::TonNode_ArchiveNotFound);
+            return Ok(proto::ArchiveInfo::NotFound);
         }
 
         let shards_client_mc_block_id = self.0.load_shards_client_mc_block_id()?;
         if mc_seq_no > shards_client_mc_block_id.seq_no {
-            return Ok(ton::ton_node::ArchiveInfo::TonNode_ArchiveNotFound);
+            return Ok(proto::ArchiveInfo::NotFound);
         }
 
         Ok(match self.0.db.block_storage().get_archive_id(mc_seq_no) {
-            Some(id) => ton::ton_node::ArchiveInfo::TonNode_ArchiveInfo(Box::new(
-                ton::ton_node::archiveinfo::ArchiveInfo { id: id as i64 },
-            )),
-            None => ton::ton_node::ArchiveInfo::TonNode_ArchiveNotFound,
+            Some(id) => proto::ArchiveInfo::Found { id: id as u64 },
+            None => proto::ArchiveInfo::NotFound,
         })
     }
 
-    async fn get_archive_slice(
-        self,
-        query: ton::rpc::ton_node::GetArchiveSlice,
-    ) -> Result<Vec<u8>> {
+    async fn get_archive_slice(self, query: proto::RpcGetArchiveSlice) -> Result<Vec<u8>> {
         Ok(
             match self.0.db.block_storage().get_archive_slice(
                 query.archive_id as u32,
@@ -437,10 +343,10 @@ fn find_block_proof(
     block_id: &ton_block::BlockIdExt,
     allow_partial: bool,
     key_block: bool,
-) -> Result<ton::ton_node::PreparedProof> {
+) -> Result<proto::PreparedProof> {
     let handle = match db.block_handle_storage().load_handle(block_id)? {
         Some(handle) => handle,
-        None => return Ok(ton::ton_node::PreparedProof::TonNode_PreparedProofEmpty),
+        None => return Ok(proto::PreparedProof::Empty),
     };
     let meta = handle.meta();
 
@@ -449,11 +355,11 @@ fn find_block_proof(
     }
 
     if meta.has_proof() {
-        Ok(ton::ton_node::PreparedProof::TonNode_PreparedProof)
+        Ok(proto::PreparedProof::Found)
     } else if allow_partial && meta.has_proof_link() {
-        Ok(ton::ton_node::PreparedProof::TonNode_PreparedProofLink)
+        Ok(proto::PreparedProof::Link)
     } else {
-        Ok(ton::ton_node::PreparedProof::TonNode_PreparedProofEmpty)
+        Ok(proto::PreparedProof::Empty)
     }
 }
 
@@ -491,8 +397,6 @@ enum NodeRpcServerError {
     NotKeyBlock,
     #[error("Block is not from masterchain")]
     BlockNotFromMasterChain,
-    #[error("Invalid argument")]
-    InvalidArgument,
     #[error("Invalid root hash")]
     InvalidRootHash,
     #[error("Invalid file hash")]

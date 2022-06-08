@@ -2,9 +2,9 @@ use std::io::{Seek, SeekFrom, Write};
 use std::path::Path;
 
 use anyhow::{Context, Result};
+use everscale_network::Keystore;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
-use tiny_adnl::AdnlKeystore;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -70,8 +70,11 @@ impl NodeKeys {
         Ok(())
     }
 
-    pub fn build_keystore(&self) -> Result<AdnlKeystore> {
-        AdnlKeystore::from_tagged_keys([(self.dht_key, 1), (self.overlay_key, 2)])
+    pub fn build_keystore(&self) -> Result<Keystore> {
+        Ok(Keystore::builder()
+            .with_tagged_key(self.dht_key, 1)?
+            .with_tagged_key(self.overlay_key, 2)?
+            .build())
     }
 }
 

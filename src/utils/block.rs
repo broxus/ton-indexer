@@ -4,7 +4,7 @@
 /// - replaced old `failure` crate with `anyhow`
 ///
 use anyhow::{anyhow, Context, Result};
-use ton_api::ton;
+use rustc_hash::FxHashMap;
 use ton_block::Deserializable;
 use ton_types::{Cell, UInt256};
 
@@ -160,37 +160,4 @@ impl BlockIdExtExtension for ton_block::BlockIdExt {
     fn is_masterchain(&self) -> bool {
         self.shard().is_masterchain()
     }
-}
-
-pub fn convert_block_id_ext_api2blk(
-    id: &ton::ton_node::blockidext::BlockIdExt,
-) -> Result<ton_block::BlockIdExt> {
-    Ok(ton_block::BlockIdExt::with_params(
-        ton_block::ShardIdent::with_tagged_prefix(id.workchain, id.shard as u64)?,
-        id.seqno as u32,
-        UInt256::from(&id.root_hash.0),
-        UInt256::from(&id.file_hash.0),
-    ))
-}
-
-pub fn convert_block_id_ext_blk2api(
-    id: &ton_block::BlockIdExt,
-) -> ton::ton_node::blockidext::BlockIdExt {
-    ton::ton_node::blockidext::BlockIdExt {
-        workchain: id.shard_id.workchain_id(),
-        shard: id.shard_id.shard_prefix_with_tag() as i64,
-        seqno: id.seq_no as i32,
-        root_hash: ton::int256(id.root_hash.as_slice().to_owned()),
-        file_hash: ton::int256(id.file_hash.as_slice().to_owned()),
-    }
-}
-
-pub fn compare_block_ids(
-    id: &ton_block::BlockIdExt,
-    id_api: &ton::ton_node::blockidext::BlockIdExt,
-) -> bool {
-    id.shard_id.shard_prefix_with_tag() == id_api.shard as u64
-        && id.shard_id.workchain_id() == id_api.workchain
-        && id.root_hash.as_slice() == &id_api.root_hash.0
-        && id.file_hash.as_slice() == &id_api.file_hash.0
 }

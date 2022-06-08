@@ -14,4 +14,5 @@ mod config;
 mod db;
 mod engine;
 mod network;
+mod proto;
 pub mod utils;

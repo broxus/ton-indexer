@@ -3,7 +3,7 @@ use std::hash::BuildHasherDefault;
 use std::sync::Arc;
 
 use anyhow::Result;
-use tiny_adnl::utils::*;
+use rustc_hash::FxHashMap;
 
 use crate::utils::*;
 

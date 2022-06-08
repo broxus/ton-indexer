@@ -7,7 +7,7 @@
 use std::sync::{Arc, Weak};
 
 use anyhow::Result;
-use tiny_adnl::utils::*;
+use ton_types::FxDashMap;
 
 use super::{columns, BlockHandle, BlockMeta, BlockMetaData, StoredValue, Tree};
 use crate::utils::*;

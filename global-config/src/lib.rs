@@ -2,12 +2,12 @@ use std::convert::{TryFrom, TryInto};
 use std::path::Path;
 
 use anyhow::{anyhow, Result};
+use everscale_network::proto;
 use serde::{Deserialize, Deserializer};
-use ton_api::{ton, IntoBoxed};
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct GlobalConfig {
-    pub dht_nodes: Vec<ton::dht::node::Node>,
+    pub dht_nodes: Vec<proto::dht::NodeOwned>,
     pub zero_state: ton_block::BlockIdExt,
     pub init_block: Option<ton_block::BlockIdExt>,
     pub hard_forks: Vec<ton_block::BlockIdExt>,
@@ -34,7 +34,7 @@ impl<'de> Deserialize<'de> for GlobalConfig {
 
         GlobalConfigJson::deserialize(deserializer)?
             .try_into()
-            .map_err(D::Error::custom)
+            .map_err(Error::custom)
     }
 }
 
@@ -63,7 +63,7 @@ impl TryFrom<GlobalConfigJson> for GlobalConfig {
     }
 }
 
-impl TryFrom<DhtJson> for Vec<ton::dht::node::Node> {
+impl TryFrom<DhtJson> for Vec<proto::dht::NodeOwned> {
     type Error = anyhow::Error;
 
     fn try_from(value: DhtJson) -> Result<Self, Self::Error> {
@@ -78,7 +78,7 @@ impl TryFrom<DhtJson> for Vec<ton::dht::node::Node> {
     }
 }
 
-impl TryFrom<DhtNodeJson> for ton::dht::node::Node {
+impl TryFrom<DhtNodeJson> for proto::dht::NodeOwned {
     type Error = anyhow::Error;
 
     fn try_from(value: DhtNodeJson) -> Result<Self, Self::Error> {
@@ -86,49 +86,44 @@ impl TryFrom<DhtNodeJson> for ton::dht::node::Node {
         require_type(value.id.ty, "pub.ed25519")?;
 
         Ok(Self {
-            id: ton::pub_::publickey::Ed25519 {
-                key: ton::int256(value.id.key),
-            }
-            .into_boxed(),
+            id: everscale_crypto::tl::PublicKeyOwned::Ed25519 { key: value.id.key },
             addr_list: value.addr_list.try_into()?,
-            version: value.version,
-            signature: ton::bytes(value.signature.to_vec()),
+            version: value.version as u32,
+            signature: value.signature.to_vec().into(),
         })
     }
 }
 
-impl TryFrom<AddressListJson> for ton::adnl::addresslist::AddressList {
+impl TryFrom<AddressListJson> for proto::adnl::AddressList {
     type Error = anyhow::Error;
 
     fn try_from(value: AddressListJson) -> Result<Self, Self::Error> {
         require_type(value.ty, "adnl.addressList")?;
 
         Ok(Self {
-            addrs: value
+            address: value
                 .addrs
                 .into_iter()
+                .next()
                 .map(TryFrom::try_from)
-                .collect::<Result<Vec<ton::adnl::Address>>>()?
-                .into(),
-            version: value.version,
-            reinit_date: value.reinit_date,
-            priority: value.priority,
-            expire_at: value.expire_at,
+                .transpose()?,
+            version: value.version as u32,
+            reinit_date: value.reinit_date as u32,
+            expire_at: value.expire_at as u32,
         })
     }
 }
 
-impl TryFrom<AddressJson> for ton::adnl::Address {
+impl TryFrom<AddressJson> for proto::adnl::Address {
     type Error = anyhow::Error;
 
     fn try_from(value: AddressJson) -> Result<Self, Self::Error> {
         require_type(value.ty, "adnl.address.udp")?;
 
-        Ok(ton::adnl::address::address::Udp {
-            ip: value.ip,
-            port: value.port,
-        }
-        .into_boxed())
+        Ok(proto::adnl::Address::Udp {
+            ip: value.ip as u32,
+            port: value.port as u32,
+        })
     }
 }
 
@@ -204,7 +199,6 @@ struct AddressListJson {
     addrs: Vec<AddressJson>,
     version: i32,
     reinit_date: i32,
-    priority: i32,
     expire_at: i32,
 }
 
@@ -240,11 +234,11 @@ struct BlockIdJson {
 
 fn deserialize_base64_array<'de, D, const N: usize>(deserializer: D) -> Result<[u8; N], D::Error>
 where
-    D: serde::Deserializer<'de>,
+    D: Deserializer<'de>,
 {
     use serde::de::Error;
     let data = String::deserialize(deserializer)?;
-    let data = base64::decode(data).map_err(D::Error::custom)?;
+    let data = base64::decode(data).map_err(Error::custom)?;
     data.try_into()
         .map_err(|_| D::Error::custom(format!("Invalid array length, expected: {}", N)))
 }
@@ -325,7 +319,7 @@ mod tests {
         }
     }
 }"#;
-        let config = serde_json::from_str::<GlobalConfig>(CONFIG).unwrap();
-        println!("{:?}", config);
+
+        serde_json::from_str::<GlobalConfig>(CONFIG).unwrap();
     }
 }

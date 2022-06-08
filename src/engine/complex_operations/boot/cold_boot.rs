@@ -3,10 +3,11 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use arc_swap::ArcSwapOption;
+use everscale_network::network::Neighbour;
+use everscale_network::utils::now;
 use futures::future::BoxFuture;
 use futures::stream::FuturesOrdered;
 use futures::{FutureExt, StreamExt};
-use tiny_adnl::utils::*;
 use tokio::sync::mpsc;
 
 use crate::db::*;
@@ -261,7 +262,7 @@ struct BlockProofStream<'a> {
     engine: &'a Engine,
     prev_key_block: &'a mut PrevKeyBlock,
     ids: &'a [ton_block::BlockIdExt],
-    neighbour: &'a Arc<tiny_adnl::Neighbour>,
+    neighbour: &'a Arc<Neighbour>,
     futures: FuturesOrdered<BoxFuture<'a, (usize, Result<BlockProofStuffAug>)>>,
     index: usize,
 }
@@ -271,7 +272,7 @@ impl<'a> BlockProofStream<'a> {
         engine: &'a Engine,
         prev_key_block: &'a mut PrevKeyBlock,
         ids: &'a [ton_block::BlockIdExt],
-        neighbour: &'a Arc<tiny_adnl::Neighbour>,
+        neighbour: &'a Arc<Neighbour>,
     ) -> Self {
         Self {
             engine,
@@ -398,7 +399,7 @@ fn choose_key_block(engine: &Engine) -> Result<Arc<BlockHandle>> {
         if !is_persistent {
             log::debug!("Ignoring state: not persistent");
             continue;
-        } else if handle_utime as i32 + INTITAL_SYNC_TIME_SECONDS > now() {
+        } else if handle_utime + INTITAL_SYNC_TIME_SECONDS > now() {
             log::debug!("Ignoring state: too new");
             continue;
         }
@@ -437,7 +438,9 @@ impl PrevKeyBlock {
     ) -> Result<BriefBlockInfo> {
         let block_id = next_proof.id();
 
-        let (virt_block, virt_block_info) = next_proof.pre_check_block_proof()?;
+        let (virt_block, virt_block_info) = next_proof
+            .pre_check_block_proof()
+            .context("Failed to pre check block proof")?;
         let res = BriefBlockInfo::from(&virt_block_info);
 
         match self {
@@ -598,7 +601,7 @@ async fn download_block_with_state(
 }
 
 const KEY_BLOCK_UTIME_STEP: u32 = 86400;
-const INTITAL_SYNC_TIME_SECONDS: i32 = 300;
+const INTITAL_SYNC_TIME_SECONDS: u32 = 300;
 
 #[derive(thiserror::Error, Debug)]
 enum ColdBootError {
