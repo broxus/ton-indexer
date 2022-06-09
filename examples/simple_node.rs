@@ -38,8 +38,7 @@ async fn main() {
 async fn run(app: App) -> Result<()> {
     let mut config = read_config(app.config)?;
 
-    let ip_address = config
-        .ip_address
+    let ip_address = ip_resolver::Ip::Public
         .resolve(config.indexer.ip_address.port())
         .await?;
     config.indexer.ip_address = ip_address;
@@ -99,14 +98,8 @@ impl ton_indexer::Subscriber for LoggerSubscriber {
 
 #[derive(Serialize, Deserialize)]
 struct Config {
-    #[serde(default = "default_ip_address")]
-    ip_address: ip_resolver::PublicIp,
     indexer: NodeConfig,
     logger_settings: serde_yaml::Value,
-}
-
-fn default_ip_address() -> ip_resolver::PublicIp {
-    ip_resolver::PublicIp::Public
 }
 
 fn read_config<T>(path: T) -> Result<Config>

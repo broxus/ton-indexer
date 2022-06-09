@@ -8,13 +8,13 @@ use tokio::net::UdpSocket;
 pub mod proto;
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
-pub enum PublicIp {
+pub enum Ip {
     Explicit(Ipv4Addr),
     Public,
     BehindNat(ResolverOptions),
 }
 
-impl PublicIp {
+impl Ip {
     pub async fn resolve(&self, port: u16) -> Result<SocketAddrV4, ResolverError> {
         match self {
             Self::Explicit(ip) => Ok(SocketAddrV4::new(*ip, port)),
@@ -29,7 +29,7 @@ impl PublicIp {
     }
 }
 
-impl Serialize for PublicIp {
+impl Serialize for Ip {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: serde::ser::Serializer,
@@ -42,7 +42,7 @@ impl Serialize for PublicIp {
     }
 }
 
-impl<'de> Deserialize<'de> for PublicIp {
+impl<'de> Deserialize<'de> for Ip {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: serde::de::Deserializer<'de>,
@@ -162,17 +162,17 @@ mod tests {
 
     #[test]
     fn correct_serialization() {
-        let test = PublicIp::Explicit(Ipv4Addr::LOCALHOST);
+        let test = Ip::Explicit(Ipv4Addr::LOCALHOST);
         let test_str = serde_json::to_string(&test).unwrap();
         assert_eq!(test_str, "\"127.0.0.1\"");
         assert_eq!(test, serde_json::from_str(&test_str).unwrap());
 
-        let test = PublicIp::Public;
+        let test = Ip::Public;
         let test_str = serde_json::to_string(&test).unwrap();
         assert_eq!(test_str, "null");
         assert_eq!(test, serde_json::from_str(&test_str).unwrap());
 
-        let test = PublicIp::BehindNat(ResolverOptions {
+        let test = Ip::BehindNat(ResolverOptions {
             resolver_addr: SocketAddrV4::new(Ipv4Addr::LOCALHOST, 53),
             wave_len: 10,
             wave_interval_ms: 100,
@@ -189,7 +189,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "required local ip-resolver-server"]
     async fn resolve() {
-        let my_ip = PublicIp::BehindNat(ResolverOptions {
+        let my_ip = Ip::BehindNat(ResolverOptions {
             resolver_addr: SocketAddrV4::new(Ipv4Addr::LOCALHOST, 7777),
             wave_len: 10,
             wave_interval_ms: 100,
