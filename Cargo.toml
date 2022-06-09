@@ -6,7 +6,13 @@ edition = "2021"
 rust-version = "1.60"
 
 [workspace]
-members = ["ton-indexer-alloc", "global-config", "archive-uploader"]
+members = [
+    "ip-resolver",
+    "ip-resolver-server",
+    "ton-indexer-alloc",
+    "global-config",
+    "archive-uploader"
+]
 
 [[example]]
 name = "simple_node"
@@ -56,16 +62,17 @@ global-config = { path = "global-config" }
 
 [dev-dependencies]
 argh = "0.1"
-config = { version = "0.11", default-features = false, features = ["yaml"] }
 cargo-husky = { version = "1.5.0", features = ["precommit-hook", "run-cargo-test", "run-cargo-clippy", "run-cargo-fmt"] }
-public-ip = "0.2.2"
+config = { version = "0.11", default-features = false, features = ["yaml"] }
 log4rs = "1.0"
 serde_yaml = "0.8"
 tokio = { version = "1.16.1", features = ["full"] }
 
+ip-resolver = { path = "./ip-resolver" }
+
 [features]
 default = []
-count-cells = ['countme/enable', "ton_types/profile"]
+count-cells = ["countme/enable", "ton_types/profile"]
 
 [profile.release]
 debug = true
