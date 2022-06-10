@@ -3,7 +3,6 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use arc_swap::ArcSwapOption;
-use everscale_network::network::Neighbour;
 use everscale_network::utils::now;
 use futures::future::BoxFuture;
 use futures::stream::FuturesOrdered;
@@ -13,6 +12,7 @@ use tokio::sync::mpsc;
 use crate::db::*;
 use crate::engine::complex_operations::download_state::*;
 use crate::engine::{Engine, FullStateId};
+use crate::network::Neighbour;
 use crate::utils::*;
 
 /// Boot type when the node has not yet started syncing

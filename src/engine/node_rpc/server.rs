@@ -92,9 +92,9 @@ impl QuerySubscriber for NodeRpcServer {
             RpcGetArchiveInfo => get_archive_info => answer,
             RpcGetArchiveSlice => get_archive_slice => answer_raw,
             _ => {
-                everscale_network::proto::rpc::TonNodeGetCapabilities::TL_ID => {
+                proto::RpcGetCapabilities::TL_ID => {
                     Ok(QueryConsumingResult::Consumed(Some(tl_proto::serialize(
-                        everscale_network::proto::ton_node::Capabilities {
+                        proto::Capabilities {
                             version: 2,
                             capabilities: 1,
                         },

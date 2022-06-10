@@ -10,30 +10,29 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
-use everscale_network::adnl::{AdnlNode, AdnlNodeMetrics, AdnlNodeOptions, Keystore};
-use everscale_network::dht::{DhtNode, DhtNodeMetrics, DhtNodeOptions};
-use everscale_network::network::{Neighbours, NeighboursMetrics, NeighboursOptions, OverlayClient};
-use everscale_network::overlay::{
-    OverlayNode, OverlayShard, OverlayShardMetrics, OverlayShardOptions,
-};
-use everscale_network::proto;
-use everscale_network::rldp::{RldpNode, RldpNodeMetrics, RldpNodeOptions};
-use everscale_network::utils::{
-    AdnlNodeIdFull, AdnlNodeIdShort, OverlayIdFull, OverlayIdShort, StoredAdnlNodeKey,
-};
-use everscale_network::{NetworkBuilder, QuerySubscriber};
+use everscale_network::*;
 use global_config::*;
 use tokio_util::sync::CancellationToken;
 use ton_types::FxDashMap;
 
+pub use self::overlay_client::OverlayClient;
+pub use neighbour::Neighbour;
+use neighbours::Neighbours;
+pub use neighbours::{NeighboursMetrics, NeighboursOptions};
+
+mod neighbour;
+mod neighbours;
+mod neighbours_cache;
+mod overlay_client;
+
 pub struct NodeNetwork {
-    adnl: Arc<AdnlNode>,
-    dht: Arc<DhtNode>,
-    overlay: Arc<OverlayNode>,
-    rldp: Arc<RldpNode>,
+    adnl: Arc<adnl::Node>,
+    dht: Arc<dht::Node>,
+    overlay: Arc<overlay::Node>,
+    rldp: Arc<rldp::Node>,
     neighbours_options: NeighboursOptions,
-    overlay_shard_options: OverlayShardOptions,
-    overlays: Arc<FxDashMap<OverlayIdShort, Arc<OverlayClient>>>,
+    overlay_shard_options: overlay::ShardOptions,
+    overlays: Arc<FxDashMap<overlay::IdShort, Arc<OverlayClient>>>,
     working_state: Arc<WorkingState>,
 }
 
@@ -50,12 +49,12 @@ impl NodeNetwork {
     #[allow(clippy::too_many_arguments)]
     pub async fn new(
         socket_addr: SocketAddrV4,
-        keystore: Keystore,
-        adnl_options: AdnlNodeOptions,
-        rldp_options: RldpNodeOptions,
-        dht_options: DhtNodeOptions,
+        keystore: adnl::Keystore,
+        adnl_options: adnl::NodeOptions,
+        rldp_options: rldp::NodeOptions,
+        dht_options: dht::NodeOptions,
         neighbours_options: NeighboursOptions,
-        overlay_shard_options: OverlayShardOptions,
+        overlay_shard_options: overlay::ShardOptions,
         global_config: GlobalConfig,
     ) -> Result<Arc<Self>> {
         let working_state = Arc::new(WorkingState::new());
@@ -108,7 +107,7 @@ impl NodeNetwork {
 
     pub fn neighbour_metrics(
         &self,
-    ) -> impl Iterator<Item = (OverlayIdShort, NeighboursMetrics)> + '_ {
+    ) -> impl Iterator<Item = (overlay::IdShort, NeighboursMetrics)> + '_ {
         self.overlays
             .iter()
             .map(|item| (*item.key(), item.neighbours().metrics()))
@@ -116,7 +115,7 @@ impl NodeNetwork {
 
     pub fn overlay_metrics(
         &self,
-    ) -> impl Iterator<Item = (OverlayIdShort, OverlayShardMetrics)> + '_ {
+    ) -> impl Iterator<Item = (overlay::IdShort, overlay::ShardMetrics)> + '_ {
         self.overlay.metrics()
     }
 
@@ -129,7 +128,7 @@ impl NodeNetwork {
         self.working_state.shutdown();
     }
 
-    pub fn compute_overlay_id(&self, workchain: i32) -> (OverlayIdFull, OverlayIdShort) {
+    pub fn compute_overlay_id(&self, workchain: i32) -> (overlay::IdFull, overlay::IdShort) {
         let full_id = self.overlay.compute_overlay_id(workchain);
         let short_id = full_id.compute_short_id();
         (full_id, short_id)
@@ -167,13 +166,13 @@ impl NodeNetwork {
 
         let overlay_client = Arc::new(OverlayClient::new(
             self.rldp.clone(),
-            neighbours.clone(),
             shard,
+            neighbours.clone(),
         ));
 
         neighbours.start_pinging_neighbours();
         neighbours.start_reloading_neighbours();
-        neighbours.start_searching_peers();
+        neighbours.start_exchanging_peers();
 
         self.start_updating_peers(&overlay_client);
 
@@ -230,8 +229,8 @@ impl NodeNetwork {
 
     async fn update_overlay_peers(
         &self,
-        overlay_shard: &OverlayShard,
-    ) -> Result<Vec<AdnlNodeIdShort>> {
+        overlay_shard: &overlay::Shard,
+    ) -> Result<Vec<adnl::NodeIdShort>> {
         log::info!("Overlay {} node search in progress...", overlay_shard.id());
         let nodes = self.dht.find_overlay_nodes(overlay_shard.id()).await?;
         log::trace!("Found overlay nodes ({})", nodes.len());
@@ -247,9 +246,9 @@ impl NodeNetwork {
 
 #[derive(Debug, Copy, Clone)]
 pub struct NetworkMetrics {
-    pub adnl: AdnlNodeMetrics,
-    pub dht: DhtNodeMetrics,
-    pub rldp: RldpNodeMetrics,
+    pub adnl: adnl::NodeMetrics,
+    pub dht: dht::NodeMetrics,
+    pub rldp: rldp::NodeMetrics,
 }
 
 struct WorkingState {
@@ -285,8 +284,8 @@ impl WorkingState {
 
 fn start_broadcasting_our_ip(
     working_state: Arc<WorkingState>,
-    dht: Arc<DhtNode>,
-    key: Arc<StoredAdnlNodeKey>,
+    dht: Arc<dht::Node>,
+    key: Arc<adnl::Key>,
 ) {
     const IP_BROADCASTING_INTERVAL: u64 = 500; // Seconds
     let interval = Duration::from_secs(IP_BROADCASTING_INTERVAL);
@@ -308,8 +307,8 @@ fn start_broadcasting_our_ip(
 
 fn start_broadcasting_our_node(
     working_state: Arc<WorkingState>,
-    dht: Arc<DhtNode>,
-    overlay_full_id: OverlayIdFull,
+    dht: Arc<dht::Node>,
+    overlay_full_id: overlay::IdFull,
     overlay_node: proto::overlay::NodeOwned,
 ) {
     const NODE_BROADCASTING_INTERVAL: u64 = 500; // Seconds
@@ -334,7 +333,7 @@ fn start_broadcasting_our_node(
 fn start_processing_peers(
     working_state: Arc<WorkingState>,
     neighbours: Arc<Neighbours>,
-    dht: Arc<DhtNode>,
+    dht: Arc<dht::Node>,
 ) {
     const PEERS_PROCESSING_INTERVAL: u64 = 1; // Seconds
     let interval = Duration::from_secs(PEERS_PROCESSING_INTERVAL);
@@ -353,12 +352,12 @@ fn start_processing_peers(
     });
 }
 
-async fn process_overlay_peers(neighbours: &Neighbours, dht: &Arc<DhtNode>) -> Result<()> {
+async fn process_overlay_peers(neighbours: &Neighbours, dht: &Arc<dht::Node>) -> Result<()> {
     let overlay_shard = neighbours.overlay_shard();
     let peers = overlay_shard.take_new_peers();
 
     for peer in peers.into_values() {
-        let peer_id = match AdnlNodeIdFull::try_from(peer.id.as_equivalent_ref())
+        let peer_id = match adnl::NodeIdFull::try_from(peer.id.as_equivalent_ref())
             .map(|full_id| full_id.compute_short_id())
         {
             Ok(peer_id) if !neighbours.contains_overlay_peer(&peer_id) => peer_id,

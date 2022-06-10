@@ -9,11 +9,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use everscale_network::network::Neighbour;
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
 use crate::engine::{Engine, NodeRpcClient};
+use crate::network::Neighbour;
 use crate::utils::*;
 
 const PROCESSING_QUEUE_LEN: usize = 10;

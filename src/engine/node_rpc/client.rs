@@ -8,8 +8,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use everscale_network::network::{Neighbour, OverlayClient};
 
+use crate::network::{Neighbour, OverlayClient};
 use crate::proto;
 use crate::utils::*;
 

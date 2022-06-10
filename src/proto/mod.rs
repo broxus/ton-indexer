@@ -167,6 +167,10 @@ pub struct RpcGetArchiveSlice {
     pub max_size: u32,
 }
 
+#[derive(TlWrite, TlRead)]
+#[tl(boxed, id = 0xdee618f8)]
+pub struct RpcGetCapabilities;
+
 #[derive(Copy, Clone, Eq, PartialEq, TlRead, TlWrite)]
 #[tl(boxed)]
 pub enum PreparedProof {
@@ -227,6 +231,13 @@ pub enum ArchiveInfo {
     Found { id: u64 },
     #[tl(id = 0x99291683)]
     NotFound,
+}
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq, TlWrite, TlRead)]
+#[tl(boxed, id = 0xf5bf60c0)]
+pub struct Capabilities {
+    pub version: u32,
+    pub capabilities: u64,
 }
 
 mod tl_signature_pair_vec {

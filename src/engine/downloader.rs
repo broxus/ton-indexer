@@ -7,10 +7,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
-use everscale_network::network::Neighbour;
 
 use crate::db::*;
 use crate::engine::NodeRpcClient;
+use crate::network::Neighbour;
 use crate::utils::*;
 
 impl<'a, T> DownloadContext<'a, T> {

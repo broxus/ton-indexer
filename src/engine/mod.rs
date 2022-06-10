@@ -11,9 +11,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use everscale_network::network::{Neighbour, NeighboursMetrics};
-use everscale_network::utils::{now, OverlayIdShort};
-use everscale_network::OverlayShardMetrics;
+use everscale_network::overlay;
+use everscale_network::utils::now;
 pub use rocksdb::perf::MemoryUsageStats;
 use rustc_hash::FxHashSet;
 
@@ -478,13 +477,13 @@ impl Engine {
 
     pub fn network_neighbour_metrics(
         &self,
-    ) -> impl Iterator<Item = (OverlayIdShort, NeighboursMetrics)> + '_ {
+    ) -> impl Iterator<Item = (overlay::IdShort, NeighboursMetrics)> + '_ {
         self.network.neighbour_metrics()
     }
 
     pub fn network_overlay_metrics(
         &self,
-    ) -> impl Iterator<Item = (OverlayIdShort, OverlayShardMetrics)> + '_ {
+    ) -> impl Iterator<Item = (overlay::IdShort, overlay::ShardMetrics)> + '_ {
         self.network.overlay_metrics()
     }
 
@@ -511,15 +510,10 @@ impl Engine {
         let client = client.clone();
 
         tokio::spawn(async move {
-            let overlay_id = client.0.overlay_id();
-
             loop {
                 let block = match client.wait_broadcast().await {
                     Ok(block) => block,
-                    Err(e) => {
-                        log::error!("Failed to wait broadcast for overlay {overlay_id}: {e}");
-                        continue;
-                    }
+                    Err(_) => continue,
                 };
 
                 let engine = engine.clone();

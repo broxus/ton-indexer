@@ -2,7 +2,7 @@ use std::io::{Seek, SeekFrom, Write};
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use everscale_network::Keystore;
+use everscale_network::adnl::Keystore;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 

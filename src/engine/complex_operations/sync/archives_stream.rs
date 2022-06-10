@@ -5,7 +5,6 @@ use std::ops::{Bound, Deref, DerefMut, RangeBounds};
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use everscale_network::network::Neighbour;
 use everscale_network::utils::now;
 use parking_lot::Mutex;
 use tokio::sync::Notify;
@@ -14,6 +13,7 @@ use tokio_util::sync::CancellationToken;
 use super::archive_writers_pool::*;
 use super::block_maps::*;
 use crate::engine::{ArchiveDownloadStatus, Engine};
+use crate::network::Neighbour;
 
 pub struct ArchivesStream {
     ctx: Arc<DownloaderContext>,

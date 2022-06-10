@@ -1,13 +1,13 @@
 use std::net::SocketAddrV4;
 use std::path::PathBuf;
 
-use everscale_network::network::NeighboursOptions;
-use everscale_network::{AdnlNodeOptions, DhtNodeOptions, OverlayShardOptions, RldpNodeOptions};
+use everscale_network::{adnl, dht, overlay, rldp};
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use sysinfo::SystemExt;
 
 pub use self::node_keys::*;
+use crate::network::NeighboursOptions;
 
 mod node_keys;
 
@@ -29,11 +29,11 @@ pub struct NodeConfig {
     pub archive_options: Option<ArchiveOptions>,
     pub sync_options: SyncOptions,
 
-    pub adnl_options: AdnlNodeOptions,
-    pub rldp_options: RldpNodeOptions,
-    pub dht_options: DhtNodeOptions,
+    pub adnl_options: adnl::NodeOptions,
+    pub rldp_options: rldp::NodeOptions,
+    pub dht_options: dht::NodeOptions,
+    pub overlay_shard_options: overlay::ShardOptions,
     pub neighbours_options: NeighboursOptions,
-    pub overlay_shard_options: OverlayShardOptions,
 }
 
 impl Default for NodeConfig {
@@ -52,8 +52,8 @@ impl Default for NodeConfig {
             adnl_options: Default::default(),
             rldp_options: Default::default(),
             dht_options: Default::default(),
-            neighbours_options: Default::default(),
             overlay_shard_options: Default::default(),
+            neighbours_options: Default::default(),
         }
     }
 }
