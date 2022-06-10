@@ -31,14 +31,13 @@ impl BlockProofStuff {
 
         if proof.proof_for != block_id {
             return Err(anyhow!(
-                "proof for another block (found: {}, expected: {})",
+                "proof for another block (found: {}, expected: {block_id})",
                 proof.proof_for,
-                block_id
             ));
         }
 
         if !block_id.is_masterchain() && !is_link {
-            return Err(anyhow!("proof for non-masterchain block {}", block_id));
+            return Err(anyhow!("proof for non-masterchain block {block_id}"));
         }
 
         Ok(Self {
@@ -65,9 +64,9 @@ impl BlockProofStuff {
         Ok(block_virt_root)
     }
 
-    pub fn virtualize_block(&self) -> Result<(ton_block::Block, ton_api::ton::int256)> {
+    pub fn virtualize_block(&self) -> Result<(ton_block::Block, ton_types::UInt256)> {
         let cell = self.virtualize_block_root()?;
-        let hash = ton_api::ton::int256(cell.repr_hash().as_slice().to_owned());
+        let hash = cell.repr_hash();
         Ok((ton_block::Block::construct_from(&mut cell.into())?, hash))
     }
 
@@ -144,7 +143,7 @@ impl BlockProofStuff {
 
         let (virt_block, virt_block_hash) = self.virtualize_block()?;
 
-        if &virt_block_hash.0 != self.id.root_hash.as_slice() {
+        if virt_block_hash != self.id.root_hash {
             return Err(anyhow!(
                 "proof for block {} contains a Merkle proof with incorrect root hash: expected {}, found: {} ",
                 self.id,
@@ -465,7 +464,7 @@ pub fn check_with_prev_key_block_proof(
     proof.check_signatures(validators, validators_hash_short)
 }
 
-fn check_with_master_state(
+pub fn check_with_master_state(
     proof: &BlockProofStuff,
     master_state: &ShardStateStuff,
     virt_block: &ton_block::Block,

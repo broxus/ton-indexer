@@ -9,42 +9,31 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use tiny_adnl::Neighbour;
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
-use crate::engine::Engine;
-use crate::network::*;
+use crate::engine::{Engine, NodeRpcClient};
+use crate::network::Neighbour;
 use crate::utils::*;
 
-const PROCESSING_QUEUE_LEN: usize = 6;
-const DOWNLOADING_QUEUE_LEN: usize = 3;
+const PROCESSING_QUEUE_LEN: usize = 10;
+const DOWNLOADING_QUEUE_LEN: usize = 10;
 const PACKET_SIZE: usize = 1 << 20; // 1 MB
 
 pub async fn download_state(
     engine: &Arc<Engine>,
-    block_id: &ton_block::BlockIdExt,
-    masterchain_block_id: &ton_block::BlockIdExt,
-    clear_db: bool,
+    full_state_id: FullStateId,
 ) -> Result<Arc<ShardStateStuff>> {
-    let overlay = engine
-        .get_full_node_overlay(
-            block_id.shard_id.workchain_id(),
-            block_id.shard_id.shard_prefix_with_tag(),
-        )
-        .await?;
+    let mc_client = engine.masterchain_client.clone();
 
     let neighbour = loop {
-        match overlay
-            .check_persistent_state(block_id, masterchain_block_id)
-            .await
-        {
+        match mc_client.find_persistent_state(&full_state_id).await {
             Ok(Some(peer)) => break peer,
             Ok(None) => {
                 log::trace!("Failed to download state: state not found");
             }
             Err(e) => {
-                log::trace!("Failed to download state: {}", e);
+                log::trace!("Failed to download state: {e:?}");
             }
         };
     };
@@ -56,17 +45,14 @@ pub async fn download_state(
 
     tokio::spawn({
         let engine = engine.clone();
-        let block_id = block_id.clone();
-        async move { result_tx.send(background_process(&engine, block_id, clear_db, packets_rx).await) }
+        let block_id = full_state_id.block_id.clone();
+        async move { result_tx.send(background_process(&engine, block_id, packets_rx).await) }
     });
 
-    let block_id = block_id.clone();
-    let masterchain_block_id = masterchain_block_id.clone();
     let downloader = async move {
         let mut scheduler = Scheduler::with_slots(
-            overlay,
-            block_id,
-            masterchain_block_id,
+            mc_client,
+            full_state_id,
             neighbour,
             DOWNLOADING_QUEUE_LEN,
             PACKET_SIZE,
@@ -76,7 +62,6 @@ pub async fn download_state(
         let mut total_bytes = 0;
         while let Some(packet) = scheduler.wait_next_packet().await? {
             total_bytes += packet.len();
-            log::info!("--- Queueing packet");
             if packets_tx.send(packet).await.is_err() {
                 break;
             }
@@ -108,18 +93,20 @@ pub async fn download_state(
 async fn background_process(
     engine: &Arc<Engine>,
     block_id: ton_block::BlockIdExt,
-    clear_db: bool,
     mut packets_rx: PacketsRx,
 ) -> Result<Arc<ShardStateStuff>> {
     let (mut transaction, mut ctx) = engine
         .db
         .shard_state_storage()
-        .begin_replace(&block_id, clear_db)
+        .begin_replace(&block_id)
         .await?;
 
+    let mut pg = ProgressBar::builder("Downloading state")
+        .exact_unit("cells")
+        .build();
     let mut full = false;
     while let Some(packet) = packets_rx.recv().await {
-        match transaction.process_packet(&mut ctx, packet).await {
+        match transaction.process_packet(&mut ctx, packet, &mut pg).await {
             Ok(true) => {
                 full = true;
                 break;
@@ -140,7 +127,11 @@ async fn background_process(
         return Err(DownloadStateError::UnexpectedEof.into());
     }
 
-    let result = transaction.finalize(&mut ctx, block_id).await;
+    let mut pg = ProgressBar::builder("Processing state")
+        .exact_unit("bytes")
+        .build();
+    let result = transaction.finalize(&mut ctx, block_id, &mut pg).await;
+
     ctx.clear().await?;
     result
 }
@@ -157,9 +148,8 @@ struct Scheduler {
 
 impl Scheduler {
     async fn with_slots(
-        overlay: FullNodeOverlayClient,
-        block_id: ton_block::BlockIdExt,
-        masterchain_block_id: ton_block::BlockIdExt,
+        mc_client: NodeRpcClient,
+        full_state_id: FullStateId,
         neighbour: Arc<Neighbour>,
         worker_count: usize,
         max_size: usize,
@@ -170,9 +160,8 @@ impl Scheduler {
         let cancellation_token = CancellationToken::new();
 
         let ctx = Arc::new(DownloadContext {
-            overlay,
-            block_id,
-            masterchain_block_id,
+            mc_client,
+            full_state_id,
             neighbour,
             max_size,
             response_tx,
@@ -213,8 +202,6 @@ impl Scheduler {
         }
 
         loop {
-            log::info!("--- loop {}", QueueWrapper(&self.pending_packets));
-
             if let Some(data) = self.find_next_downloaded_packet().await? {
                 return Ok(Some(data));
             }
@@ -272,8 +259,6 @@ impl Scheduler {
                     .context("Worker closed")?;
             }
 
-            log::info!("--- Found packet for {}", self.current_offset);
-
             self.current_offset += data.len();
             return Ok(Some(data));
         }
@@ -283,9 +268,8 @@ impl Scheduler {
 }
 
 struct DownloadContext {
-    overlay: FullNodeOverlayClient,
-    block_id: ton_block::BlockIdExt,
-    masterchain_block_id: ton_block::BlockIdExt,
+    mc_client: NodeRpcClient,
+    full_state_id: FullStateId,
     neighbour: Arc<Neighbour>,
     max_size: usize,
     response_tx: ResponseTx,
@@ -304,9 +288,8 @@ async fn download_packet_worker(ctx: Arc<DownloadContext>, mut offsets_rx: Offse
                 break 'tasks;
             }
 
-            let recv_fut = ctx.overlay.download_persistent_state_part(
-                &ctx.block_id,
-                &ctx.masterchain_block_id,
+            let recv_fut = ctx.mc_client.download_persistent_state_part(
+                &ctx.full_state_id,
                 offset,
                 ctx.max_size,
                 ctx.neighbour.clone(),
@@ -316,7 +299,7 @@ async fn download_packet_worker(ctx: Arc<DownloadContext>, mut offsets_rx: Offse
             let result = tokio::select! {
                 data = recv_fut => data,
                 _ = &mut complete_signal => {
-                    log::warn!("Got last_part_signal: {}", offset);
+                    log::debug!("Got last_part_signal: {offset}");
                     continue;
                 }
             };
@@ -333,7 +316,7 @@ async fn download_packet_worker(ctx: Arc<DownloadContext>, mut offsets_rx: Offse
                     ctx.peer_attempt.fetch_add(1, Ordering::Release);
 
                     if !ctx.complete.load(Ordering::Acquire) {
-                        log::error!("Failed to download persistent state part {}: {}", offset, e);
+                        log::error!("Failed to download persistent state part {offset}: {e:?}");
                     }
 
                     if part_attempt > 10 {
@@ -351,26 +334,6 @@ async fn download_packet_worker(ctx: Arc<DownloadContext>, mut offsets_rx: Offse
                 }
             }
         }
-    }
-}
-
-struct QueueWrapper<'a>(&'a [(usize, PacketStatus)]);
-
-impl std::fmt::Display for QueueWrapper<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("[\n")?;
-        for (id, item) in self.0 {
-            match item {
-                PacketStatus::Downloading => {
-                    f.write_fmt(format_args!("    ({}, downloading...),\n", id))?
-                }
-                PacketStatus::Downloaded(_) => {
-                    f.write_fmt(format_args!("    ({}, downloaded)\n", id))?
-                }
-                PacketStatus::Done => f.write_fmt(format_args!("    ({}, done)\n", id))?,
-            }
-        }
-        f.write_str("]")
     }
 }
 

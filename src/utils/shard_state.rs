@@ -7,6 +7,12 @@ use anyhow::{anyhow, Result};
 use ton_block::{Deserializable, Serializable};
 use ton_types::{Cell, UInt256};
 
+/// Full persistent state block id (relative to the masterchain)
+pub struct FullStateId {
+    pub mc_block_id: ton_block::BlockIdExt,
+    pub block_id: ton_block::BlockIdExt,
+}
+
 #[derive(Debug, Default, Clone, Eq, PartialEq)]
 pub struct ShardStateStuff {
     block_id: ton_block::BlockIdExt,
@@ -48,12 +54,12 @@ impl ShardStateStuff {
 
         let file_hash = UInt256::calc_file_hash(bytes);
         if file_hash != id.file_hash {
-            return Err(anyhow!("Wrong zero state's {} file hash", id));
+            return Err(anyhow!("Wrong zero state's {id} file hash"));
         }
 
         let root = ton_types::deserialize_tree_of_cells(&mut bytes)?;
         if root.repr_hash() != id.root_hash() {
-            return Err(anyhow!("Wrong zero state's {} root hash", id));
+            return Err(anyhow!("Wrong zero state's {id} root hash"));
         }
 
         Self::new(id, root)
@@ -96,5 +102,5 @@ impl ShardStateStuff {
 }
 
 pub fn is_persistent_state(block_utime: u32, prev_utime: u32) -> bool {
-    block_utime / (1 << 17) != prev_utime / (1 << 17)
+    block_utime >> 17 != prev_utime >> 17
 }

@@ -10,7 +10,6 @@ and would not have been implemented without their gigantic work of reverse engin
 ```yaml
 ---
 indexer:
-  ip_address: "1.2.3.4:30303" # your ip
   adnl_keys:
     dht_key: "0092a775abde7539df5fab97ac32e644eb3bc3711c9136ef3a96be8e290df111"
     overlay_key: "f0db73bee16d51b5372540a50a7ed61c11e1527e5f6194579ec9fff3f89be222"

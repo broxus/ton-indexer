@@ -43,7 +43,7 @@ fn set_jemalloc_param<T>(name: &str, mut value: T) {
     };
 
     if res != 0 {
-        log::error!("Failed to set {}: {}", name, errno::Errno(res));
+        log::error!("Failed to set {name}: {}", errno::Errno(res));
     }
 }
 
@@ -71,8 +71,8 @@ pub fn activate_prof() -> Result<()> {
     log::info!("start profiler");
     unsafe {
         if let Err(e) = tikv_jemalloc_ctl::raw::update(PROF_ACTIVE, true) {
-            log::error!("failed to activate profiling: {}", e);
-            anyhow::bail!("failed to activate profiling: {}", e);
+            log::error!("Failed to activate profiling: {e:?}");
+            anyhow::bail!("Failed to activate profiling: {e:?}");
         }
     }
     Ok(())
@@ -82,26 +82,26 @@ pub fn deactivate_prof() -> Result<()> {
     log::info!("stop profiler");
     unsafe {
         if let Err(e) = tikv_jemalloc_ctl::raw::update(PROF_ACTIVE, false) {
-            log::error!("failed to deactivate profiling: {}", e);
-            anyhow::bail!("failed to deactivate profiling: {}", e);
+            log::error!("Failed to deactivate profiling: {e:?}");
+            anyhow::bail!("Failed to deactivate profiling: {e:?}");
         }
     }
     Ok(())
 }
 
 /// Dump the profile to the `path`.
-pub fn dump_prof(path: &str) -> anyhow::Result<()> {
+pub fn dump_prof(path: &str) -> Result<()> {
     let mut bytes = CString::new(path)?.into_bytes_with_nul();
     let ptr = bytes.as_mut_ptr() as *mut c_char;
     let res = unsafe { tikv_jemalloc_ctl::raw::write(PROF_DUMP, ptr) };
     match res {
         Err(e) => {
-            log::error!("failed to dump the profile to {:?}: {}", path, e);
+            log::error!("Failed to dump the profile to {path:?}: {e:?}");
             Err(anyhow::Error::msg(e.to_string()))
-                .with_context(|| format!("failed to dump the profile to {:?}", path))
+                .with_context(|| format!("Failed to dump the profile to {path:?}"))
         }
         Ok(_) => {
-            log::info!("dump profile to {}", path);
+            log::info!("Dump profile to {path}");
             Ok(())
         }
     }

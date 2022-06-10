@@ -8,8 +8,9 @@ use std::time::Duration;
 
 use anyhow::Result;
 
-use super::db::*;
-use crate::network::*;
+use crate::db::*;
+use crate::engine::NodeRpcClient;
+use crate::network::Neighbour;
 use crate::utils::*;
 
 impl<'a, T> DownloadContext<'a, T> {
@@ -17,22 +18,26 @@ impl<'a, T> DownloadContext<'a, T> {
         &self,
         block_id: &ton_block::BlockIdExt,
     ) -> Result<Option<(BlockStuffAug, BlockProofStuffAug)>> {
-        Ok(match self.db.load_block_handle(block_id)? {
+        match self.db.block_handle_storage().load_handle(block_id)? {
             Some(handle) => {
                 let mut is_link = false;
                 if handle.meta().has_data() && handle.has_proof_or_link(&mut is_link) {
-                    let block = self.db.load_block_data(&handle).await?;
-                    let block_proof = self.db.load_block_proof(&handle, is_link).await?;
-                    Some((
+                    let block = self.db.block_storage().load_block_data(&handle).await?;
+                    let block_proof = self
+                        .db
+                        .block_storage()
+                        .load_block_proof(&handle, is_link)
+                        .await?;
+                    Ok(Some((
                         BlockStuffAug::loaded(block),
                         BlockProofStuffAug::loaded(block_proof),
-                    ))
+                    )))
                 } else {
-                    None
+                    Ok(None)
                 }
             }
-            None => None,
-        })
+            None => Ok(None),
+        }
     }
 }
 
@@ -55,7 +60,6 @@ impl Downloader for BlockDownloader {
 }
 
 pub struct BlockProofDownloader {
-    pub is_link: bool,
     pub is_key_block: bool,
 }
 
@@ -67,17 +71,29 @@ impl Downloader for BlockProofDownloader {
         &self,
         context: &DownloadContext<'_, Self::Item>,
     ) -> Result<Option<Self::Item>> {
-        if let Some(handle) = context.db.load_block_handle(context.block_id)? {
+        if let Some(handle) = context
+            .db
+            .block_handle_storage()
+            .load_handle(context.block_id)?
+        {
             let mut is_link = false;
             if handle.has_proof_or_link(&mut is_link) {
-                let proof = context.db.load_block_proof(&handle, is_link).await?;
+                let proof = context
+                    .db
+                    .block_storage()
+                    .load_block_proof(&handle, is_link)
+                    .await?;
                 return Ok(Some(Self::Item::loaded(proof)));
             }
         }
 
         context
             .client
-            .download_block_proof(context.block_id, self.is_link, self.is_key_block)
+            .download_block_proof(
+                context.block_id,
+                self.is_key_block,
+                context.explicit_neighbour,
+            )
             .await
     }
 }
@@ -92,11 +108,16 @@ impl Downloader for NextBlockDownloader {
         &self,
         context: &DownloadContext<'_, Self::Item>,
     ) -> Result<Option<Self::Item>> {
-        if let Some(prev_handle) = context.db.load_block_handle(context.block_id)? {
+        if let Some(prev_handle) = context
+            .db
+            .block_handle_storage()
+            .load_handle(context.block_id)?
+        {
             if prev_handle.meta().has_next1() {
                 let next_block_id = context
                     .db
-                    .load_block_connection(context.block_id, BlockConnection::Next1)?;
+                    .block_connection_storage()
+                    .load_connection(context.block_id, BlockConnection::Next1)?;
 
                 if let Some(full_block) = context.load_full_block(&next_block_id).await? {
                     return Ok(Some(full_block));
@@ -141,20 +162,32 @@ pub struct DownloadContext<'a, T> {
     pub max_attempts: Option<u32>,
     pub timeouts: Option<DownloaderTimeouts>,
 
-    pub client: FullNodeOverlayClient,
+    pub client: &'a NodeRpcClient,
     pub db: &'a Db,
 
     pub downloader: Arc<dyn Downloader<Item = T>>,
+    pub explicit_neighbour: Option<&'a Arc<Neighbour>>,
 }
 
 impl<'a, T> DownloadContext<'a, T> {
+    pub fn with_explicit_neighbour(
+        mut self,
+        explicit_neighbour: Option<&'a Arc<Neighbour>>,
+    ) -> Self {
+        self.explicit_neighbour = explicit_neighbour;
+        self
+    }
+
     pub async fn download(&mut self) -> Result<T> {
         let mut attempt = 1;
         loop {
             match self.downloader.try_download(self).await {
                 Ok(Some(result)) => break Ok(result),
                 Ok(None) => log::debug!("Got no data for {}", self.name),
-                Err(e) => log::debug!("Error in {}: {}", self.name, e),
+                Err(e) => {
+                    self.explicit_neighbour = None;
+                    log::debug!("Error in {}: {e:?}", self.name)
+                }
             }
 
             attempt += 1;
