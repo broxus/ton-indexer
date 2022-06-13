@@ -410,10 +410,7 @@ impl CellImpl for StorageCell {
     }
 
     fn reference(&self, index: usize) -> Result<ton_types::Cell> {
-        Ok(ton_types::Cell::with_cell_impl_arc(
-            self.reference(index)
-                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?,
-        ))
+        Ok(ton_types::Cell::with_cell_impl_arc(self.reference(index)?))
     }
 
     fn cell_type(&self) -> ton_types::CellType {

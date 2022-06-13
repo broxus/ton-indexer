@@ -1,6 +1,6 @@
 use rocksdb::{
     BlockBasedIndexType, BlockBasedOptions, DataBlockIndexType, MergeOperands, Options,
-    SliceTransform,
+    ReadOptions, SliceTransform,
 };
 
 use super::{Column, DbCaches, StoredValue, ARCHIVE_PREFIX};
@@ -41,6 +41,10 @@ impl Column for BlockHandles {
 
         opts.optimize_for_point_lookup(10);
     }
+
+    fn read_options(opts: &mut ReadOptions) {
+        opts.set_verify_checksums(false);
+    }
 }
 
 /// Maps seqno to key block id
@@ -49,6 +53,10 @@ impl Column for BlockHandles {
 pub struct KeyBlocks;
 impl Column for KeyBlocks {
     const NAME: &'static str = "key_blocks";
+
+    fn read_options(opts: &mut ReadOptions) {
+        opts.set_verify_checksums(false);
+    }
 }
 
 /// Maps package entry id to entry data
@@ -109,6 +117,10 @@ impl Column for Cells {
 
         opts.set_optimize_filters_for_hits(true);
     }
+
+    fn read_options(opts: &mut ReadOptions) {
+        opts.set_verify_checksums(false);
+    }
 }
 
 /// Stores generic node parameters
@@ -138,6 +150,10 @@ impl Column for Prev1 {
 
         opts.optimize_for_point_lookup(10);
     }
+
+    fn read_options(opts: &mut ReadOptions) {
+        opts.set_verify_checksums(false);
+    }
 }
 
 /// Stores connections data
@@ -151,6 +167,10 @@ impl Column for Prev2 {
         default_block_based_table_factory(opts, caches);
 
         opts.optimize_for_point_lookup(10);
+    }
+
+    fn read_options(opts: &mut ReadOptions) {
+        opts.set_verify_checksums(false);
     }
 }
 
@@ -166,6 +186,10 @@ impl Column for Next1 {
 
         opts.optimize_for_point_lookup(10);
     }
+
+    fn read_options(opts: &mut ReadOptions) {
+        opts.set_verify_checksums(false);
+    }
 }
 
 /// Stores connections data
@@ -179,6 +203,10 @@ impl Column for Next2 {
         default_block_based_table_factory(opts, caches);
 
         opts.optimize_for_point_lookup(10);
+    }
+
+    fn read_options(opts: &mut ReadOptions) {
+        opts.set_verify_checksums(false);
     }
 }
 

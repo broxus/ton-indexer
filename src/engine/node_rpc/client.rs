@@ -42,10 +42,11 @@ impl NodeRpcClient {
             )
             .await?;
 
-        log::info!("Found state {prepare:?} from peer {}", neighbour.peer_id());
-
         match prepare {
-            proto::PreparedState::Found => Ok(Some(neighbour)),
+            proto::PreparedState::Found => {
+                log::info!("Found state from peer {}", neighbour.peer_id());
+                Ok(Some(neighbour))
+            }
             proto::PreparedState::NotFound => Ok(None),
         }
     }
