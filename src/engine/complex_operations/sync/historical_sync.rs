@@ -174,7 +174,7 @@ impl<'a> HistoricalSyncContext<'a> {
                 }));
             }
 
-            futures::future::try_join_all(tasks)
+            futures_util::future::try_join_all(tasks)
                 .await?
                 .into_iter()
                 .find(|item| item.is_err())

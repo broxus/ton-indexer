@@ -130,7 +130,7 @@ impl Engine {
         network.start().context("Failed to start network")?;
 
         let (masterchain_client, basechain_client) = {
-            let (masterchain, basechain) = futures::future::join(
+            let (masterchain, basechain) = futures_util::future::join(
                 network.create_overlay_client(ton_block::MASTERCHAIN_ID),
                 network.create_overlay_client(ton_block::BASE_WORKCHAIN_ID),
             )
@@ -807,7 +807,11 @@ impl Engine {
             .await?;
 
         self.shard_states_operations
-            .do_or_wait(state.block_id(), None, futures::future::ok(state.clone()))
+            .do_or_wait(
+                state.block_id(),
+                None,
+                futures_util::future::ok(state.clone()),
+            )
             .await?;
 
         Ok(())

@@ -154,7 +154,7 @@ async fn load_shard_blocks(
         }));
     }
 
-    futures::future::join_all(tasks)
+    futures_util::future::join_all(tasks)
         .await
         .into_iter()
         .find(|item| item.is_err())

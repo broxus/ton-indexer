@@ -220,7 +220,7 @@ async fn import_shard_blocks_with_apply(engine: &Arc<Engine>, maps: &Arc<BlockMa
             }));
         }
 
-        futures::future::try_join_all(tasks)
+        futures_util::future::try_join_all(tasks)
             .await?
             .into_iter()
             .find(|item| item.is_err())

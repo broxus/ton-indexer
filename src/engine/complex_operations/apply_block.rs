@@ -7,7 +7,7 @@
 use std::sync::Arc;
 
 use anyhow::Result;
-use futures::future::{BoxFuture, FutureExt};
+use futures_util::future::{BoxFuture, FutureExt};
 
 use crate::db::{BlockConnection, BlockHandle};
 use crate::engine::Engine;
@@ -85,7 +85,7 @@ async fn ensure_prev_blocks_downloaded(
                 engine.download_and_apply_block(prev2_id, mc_seq_no, pre_apply, depth + 1),
             ];
 
-            futures::future::join_all(futures)
+            futures_util::future::join_all(futures)
                 .await
                 .into_iter()
                 .find(|r| r.is_err())

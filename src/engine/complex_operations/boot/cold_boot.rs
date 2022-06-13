@@ -4,9 +4,9 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use arc_swap::ArcSwapOption;
 use everscale_network::utils::now;
-use futures::future::BoxFuture;
-use futures::stream::FuturesOrdered;
-use futures::{FutureExt, StreamExt};
+use futures_util::future::BoxFuture;
+use futures_util::stream::FuturesOrdered;
+use futures_util::{FutureExt, StreamExt};
 use tokio::sync::mpsc;
 
 use crate::db::*;

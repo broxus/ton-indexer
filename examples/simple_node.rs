@@ -52,7 +52,7 @@ async fn run(app: App) -> Result<()> {
     let engine = Engine::new(config.indexer, global_config, subscribers).await?;
     engine.start().await?;
 
-    futures::future::pending().await
+    futures_util::future::pending().await
 }
 
 #[derive(Default)]

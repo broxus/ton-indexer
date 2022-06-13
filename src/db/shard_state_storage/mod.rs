@@ -5,8 +5,8 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::{Context, Result};
-use futures::stream::FuturesUnordered;
-use futures::StreamExt;
+use futures_util::stream::FuturesUnordered;
+use futures_util::StreamExt;
 use itertools::Itertools;
 use rustc_hash::FxHashMap;
 use smallvec::SmallVec;
