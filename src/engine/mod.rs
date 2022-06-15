@@ -409,9 +409,22 @@ impl Engine {
         };
 
         let engine = Arc::downgrade(self);
+
+        if let Some(ttl) = self.shard_states_cache.ttl() {
+            let engine = engine.clone();
+            tokio::spawn(async move {
+                loop {
+                    tokio::time::sleep(ttl).await;
+                    match engine.upgrade() {
+                        Some(engine) => engine.shard_states_cache.clear(),
+                        None => break,
+                    }
+                }
+            });
+        }
+
         let offset = Duration::from_secs(options.offset_sec);
         let interval = Duration::from_secs(options.interval_sec);
-
         tokio::spawn(async move {
             tokio::time::sleep(offset).await;
             loop {
@@ -431,7 +444,10 @@ impl Engine {
                 };
 
                 let shard_state_storage = engine.db.shard_state_storage();
-                match shard_state_storage.remove_outdated_states(&block_id).await {
+                match shard_state_storage
+                    .remove_outdated_states(block_id.seq_no)
+                    .await
+                {
                     Ok(top_blocks) => engine.shard_states_cache.remove(&top_blocks),
                     Err(e) => log::error!("Failed to GC state: {e:?}"),
                 }

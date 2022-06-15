@@ -147,39 +147,50 @@ async fn compute_and_store_shard_state(
     prev1_id: &ton_block::BlockIdExt,
     prev2_id: &Option<ton_block::BlockIdExt>,
 ) -> Result<Arc<ShardStateStuff>> {
-    let prev_shard_state_root = match prev2_id {
+    enum RefMcStateHandles {
+        Split(Arc<RefMcStateHandle>, Arc<RefMcStateHandle>),
+        Single(Arc<RefMcStateHandle>),
+    }
+
+    let (prev_shard_state_root, _handle) = match prev2_id {
         Some(prev2_id) => {
             if prev1_id.shard().is_masterchain() {
                 return Err(ApplyBlockError::InvalidMasterchainBlockSequence.into());
             }
 
-            let left = engine
-                .wait_state(prev1_id, None, true)
-                .await?
-                .root_cell()
-                .clone();
-            let right = engine
-                .wait_state(prev2_id, None, true)
-                .await?
-                .root_cell()
-                .clone();
+            let left = engine.wait_state(prev1_id, None, true).await?;
+            let right = engine.wait_state(prev2_id, None, true).await?;
 
-            ShardStateStuff::construct_split_root(left, right)?
+            let state = ShardStateStuff::construct_split_root(
+                left.root_cell().clone(),
+                right.root_cell().clone(),
+            )?;
+            let handle = RefMcStateHandles::Split(
+                left.ref_mc_state_handle().clone(),
+                right.ref_mc_state_handle().clone(),
+            );
+
+            (state, handle)
         }
-        None => engine
-            .wait_state(prev1_id, None, true)
-            .await?
-            .root_cell()
-            .clone(),
+        None => {
+            let state = engine.wait_state(prev1_id, None, true).await?;
+            let handle = RefMcStateHandles::Single(state.ref_mc_state_handle().clone());
+            (state.root_cell().clone(), handle)
+        }
     };
 
     let merkle_update = block.block().read_state_update()?;
+    let min_ref_mc_state = engine.db.shard_state_storage().min_ref_mc_state().clone();
 
     let shard_state = tokio::task::spawn_blocking({
         let block_id = block.id().clone();
         move || -> Result<Arc<ShardStateStuff>> {
             let shard_state_root = merkle_update.apply_for(&prev_shard_state_root)?;
-            Ok(Arc::new(ShardStateStuff::new(block_id, shard_state_root)?))
+            Ok(Arc::new(ShardStateStuff::new(
+                block_id,
+                shard_state_root,
+                &min_ref_mc_state,
+            )?))
         }
     })
     .await??;

@@ -16,6 +16,7 @@ use crate::utils::*;
 pub struct ShardStateReplaceTransaction<'a> {
     shard_state_db: &'a Tree<columns::ShardStates>,
     cell_storage: &'a Arc<CellStorage>,
+    min_ref_mc_state: &'a Arc<MinRefMcState>,
     marker: u8,
     reader: ShardStatePacketReader,
     boc_header: Option<BocHeader>,
@@ -26,11 +27,13 @@ impl<'a> ShardStateReplaceTransaction<'a> {
     pub fn new(
         shard_state_db: &'a Tree<columns::ShardStates>,
         cell_storage: &'a Arc<CellStorage>,
+        min_ref_mc_state: &'a Arc<MinRefMcState>,
         marker: u8,
     ) -> Self {
         Self {
             shard_state_db,
             cell_storage,
+            min_ref_mc_state,
             marker,
             reader: ShardStatePacketReader::new(),
             boc_header: None,
@@ -211,6 +214,7 @@ impl<'a> ShardStateReplaceTransaction<'a> {
                 Ok(Arc::new(ShardStateStuff::new(
                     block_id,
                     ton_types::Cell::with_cell_impl_arc(cell),
+                    self.min_ref_mc_state,
                 )?))
             }
             None => Err(ReplaceTransactionError::NotFound.into()),

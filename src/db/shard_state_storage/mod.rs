@@ -33,6 +33,7 @@ pub struct ShardStateStorage {
 
     downloads_dir: Arc<PathBuf>,
     state: Arc<ShardStateStorageState>,
+    min_ref_mc_state: Arc<MinRefMcState>,
     max_new_mc_cell_count: AtomicUsize,
     max_new_sc_cell_count: AtomicUsize,
 }
@@ -55,6 +56,7 @@ impl ShardStateStorage {
             block_storage: block_storage.clone(),
             downloads_dir,
             state: Arc::new(ShardStateStorageState::new(db).await?),
+            min_ref_mc_state: Arc::new(Default::default()),
             max_new_mc_cell_count: AtomicUsize::new(0),
             max_new_sc_cell_count: AtomicUsize::new(0),
         })
@@ -65,6 +67,10 @@ impl ShardStateStorage {
             max_new_mc_cell_count: self.max_new_mc_cell_count.swap(0, Ordering::AcqRel),
             max_new_sc_cell_count: self.max_new_sc_cell_count.swap(0, Ordering::AcqRel),
         }
+    }
+
+    pub fn min_ref_mc_state(&self) -> &Arc<MinRefMcState> {
+        &self.min_ref_mc_state
     }
 
     pub async fn store_state(
@@ -132,8 +138,12 @@ impl ShardStateStorage {
                 let cell_id = UInt256::from_be_bytes(&root);
                 let cell = self.state.cell_storage.load_cell(cell_id)?;
 
-                ShardStateStuff::new(block_id.clone(), ton_types::Cell::with_cell_impl_arc(cell))
-                    .map(Arc::new)
+                ShardStateStuff::new(
+                    block_id.clone(),
+                    ton_types::Cell::with_cell_impl_arc(cell),
+                    &self.min_ref_mc_state,
+                )
+                .map(Arc::new)
             }
             None => Err(ShardStateStorageError::NotFound.into()),
         }
@@ -149,17 +159,25 @@ impl ShardStateStorage {
             ShardStateReplaceTransaction::new(
                 &self.state.shard_state_db,
                 &self.state.cell_storage,
+                &self.min_ref_mc_state,
                 0, // NOTE: zero marker is used for 'persistent' state
             ),
             ctx,
         ))
     }
 
-    pub async fn remove_outdated_states(
-        &self,
-        mc_block_id: &ton_block::BlockIdExt,
-    ) -> Result<TopBlocks> {
-        let top_blocks = match self.block_handle_storage.load_handle(mc_block_id)? {
+    pub async fn remove_outdated_states(&self, mut mc_seq_no: u32) -> Result<TopBlocks> {
+        if let Some(min_ref_mc_seqno) = self.min_ref_mc_state.seq_no() {
+            if min_ref_mc_seqno < mc_seq_no {
+                mc_seq_no = min_ref_mc_seqno;
+            }
+        }
+        let mc_block_id = self
+            .state
+            .find_mc_block_id(mc_seq_no)?
+            .with_context(|| format!("Masterchain state with seqno {mc_seq_no} not found"))?;
+
+        let top_blocks = match self.block_handle_storage.load_handle(&mc_block_id)? {
             Some(handle) => {
                 let state = self
                     .load_state(handle.id())
@@ -552,20 +570,34 @@ impl ShardStateStorageState {
             .context("Failed to update gc state to 'Wait'")
     }
 
-    fn find_unique_shards(&self) -> Result<Vec<ton_block::ShardIdent>> {
-        let db = self.shard_state_db.raw_db_handle();
+    fn find_mc_block_id(&self, mc_seq_no: u32) -> Result<Option<ton_block::BlockIdExt>> {
+        let mut lower_bound = [0u8; ton_block::BlockIdExt::SIZE_HINT];
+        lower_bound[..12].copy_from_slice(&[
+            0xff, 0xff, 0xff, 0xff, // -1 workchain id
+            0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // full shard id
+        ]);
+        lower_bound[12..16].copy_from_slice(&mc_seq_no.to_be_bytes());
 
+        let mut iter = self.shard_state_db.raw_iterator();
+        iter.seek(lower_bound);
+
+        Ok(if let Some(mut key) = iter.key() {
+            let block_id = ton_block::BlockIdExt::deserialize(&mut key)?;
+            if block_id.seq_no == mc_seq_no {
+                Some(block_id)
+            } else {
+                None
+            }
+        } else {
+            None
+        })
+    }
+
+    fn find_unique_shards(&self) -> Result<Vec<ton_block::ShardIdent>> {
         let upper_bound = make_block_id_bound_stub(0);
 
-        // Prepare shard states read options
-        let mut read_options = rocksdb::ReadOptions::default();
-        columns::ShardStates::read_options(&mut read_options);
-
-        // Prepare cf handle
-        let shard_states_cf = db.cf_handle(columns::ShardStates::NAME).context("No cf")?;
-
         // Prepare reverse iterator
-        let mut iter = db.raw_iterator_cf_opt(&shard_states_cf, read_options);
+        let mut iter = self.shard_state_db.raw_iterator();
         iter.seek_for_prev(&upper_bound);
 
         let mut shard_idents = Vec::new();

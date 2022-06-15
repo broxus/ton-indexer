@@ -6,17 +6,16 @@
 use anyhow::{anyhow, Context, Result};
 use rustc_hash::FxHashMap;
 use ton_block::Deserializable;
-use ton_types::{Cell, UInt256};
+use ton_types::UInt256;
 
 use crate::utils::*;
 
 pub type BlockStuffAug = WithArchiveData<BlockStuff>;
 
-#[derive(Debug, Default, Clone, Eq, PartialEq)]
+#[derive(Clone)]
 pub struct BlockStuff {
     id: ton_block::BlockIdExt,
     block: ton_block::Block,
-    root: Cell,
 }
 
 impl BlockStuff {
@@ -35,8 +34,8 @@ impl BlockStuff {
             return Err(anyhow!("wrong root hash for {id}"));
         }
 
-        let block = ton_block::Block::construct_from(&mut root.clone().into())?;
-        Ok(Self { id, block, root })
+        let block = ton_block::Block::construct_from(&mut root.into())?;
+        Ok(Self { id, block })
     }
 
     #[inline(always)]

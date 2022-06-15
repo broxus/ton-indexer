@@ -174,17 +174,11 @@ pub enum BlocksGcKind {
 pub struct ShardStateCacheOptions {
     /// LRU cache item duration. Default: `120`
     pub ttl_sec: u64,
-
-    /// Max element count. Default: `100000`
-    pub capacity: usize,
 }
 
 impl Default for ShardStateCacheOptions {
     fn default() -> Self {
-        Self {
-            ttl_sec: 120,
-            capacity: 100_000,
-        }
+        Self { ttl_sec: 120 }
     }
 }
 

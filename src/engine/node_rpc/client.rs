@@ -316,7 +316,7 @@ impl NodeRpcClient {
             max_size: max_size as u32,
         };
 
-        this.send_adnl_query(query, None, None, neighbour)
+        this.send_adnl_query(query, Some(3), None, neighbour)
             .await
             .and_then(|(key_blocks, neighbour): (proto::KeyBlocks, _)| {
                 if !key_blocks.error {
