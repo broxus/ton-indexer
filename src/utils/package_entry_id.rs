@@ -70,8 +70,6 @@ where
         result.extend_from_slice(&block_id.shard_id.workchain_id().to_be_bytes());
         result.extend_from_slice(&block_id.shard_id.shard_prefix_with_tag().to_be_bytes());
         result.extend_from_slice(&block_id.seq_no.to_be_bytes());
-        result.extend_from_slice(block_id.root_hash.as_slice());
-        result.extend_from_slice(block_id.file_hash.as_slice());
         result.push(ty);
 
         result

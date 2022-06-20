@@ -116,7 +116,7 @@ impl<'a> HistoricalSyncContext<'a> {
             splits.clear();
             let mut tasks = Vec::with_capacity(shard_blocks.len());
             for (_, id) in shard_blocks {
-                // Skip blocks which were referenced in previous mc block (no new blocks werMe
+                // Skip blocks which were referenced in previous mc block (no new blocks were
                 // produced in this shard)
                 if !edge.is_before(&id) {
                     continue;
@@ -170,7 +170,7 @@ impl<'a> HistoricalSyncContext<'a> {
                             .await?;
                     }
 
-                    Result::<_, anyhow::Error>::Ok(())
+                    Ok::<_, anyhow::Error>(())
                 }));
             }
 

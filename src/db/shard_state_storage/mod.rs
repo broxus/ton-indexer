@@ -112,10 +112,15 @@ impl ShardStateStorage {
             self.max_new_sc_cell_count.fetch_max(len, Ordering::Release);
         }
 
+        let mut value = [0; 32 * 3];
+        value[..32].copy_from_slice(cell_id.as_slice());
+        value[32..64].copy_from_slice(block_id.root_hash.as_slice());
+        value[64..96].copy_from_slice(block_id.file_hash.as_slice());
+
         batch.put_cf(
             &self.state.shard_state_db.get_cf(),
-            block_id.to_vec(),
-            cell_id.as_slice(),
+            (block_id.shard_id, block_id.seq_no).to_vec(),
+            value,
         );
 
         self.state.shard_state_db.raw_db_handle().write(batch)?;
@@ -132,7 +137,10 @@ impl ShardStateStorage {
         &self,
         block_id: &ton_block::BlockIdExt,
     ) -> Result<Arc<ShardStateStuff>> {
-        let shard_state = self.state.shard_state_db.get(block_id.to_vec())?;
+        let shard_state = self
+            .state
+            .shard_state_db
+            .get((block_id.shard_id, block_id.seq_no).to_vec())?;
         match shard_state {
             Some(root) => {
                 let cell_id = UInt256::from_be_bytes(&root);
@@ -160,7 +168,7 @@ impl ShardStateStorage {
                 &self.state.shard_state_db,
                 &self.state.cell_storage,
                 &self.min_ref_mc_state,
-                0, // NOTE: zero marker is used for 'persistent' state
+                PS_MARKER,
             ),
             ctx,
         ))
@@ -253,6 +261,8 @@ impl ShardStateStorageState {
             cell_storage: Arc::new(CellStorage::new(db)?),
         };
 
+        // res.cell_storage.check()?;
+
         let gc_state = res.gc_state_storage.load()?;
         let target_marker = gc_state.next_marker();
 
@@ -289,7 +299,7 @@ impl ShardStateStorageState {
     async fn gc(self: &Arc<Self>, top_blocks: &TopBlocks) -> Result<()> {
         let gc_state = self.gc_state_storage.load()?;
         if !matches!(&gc_state.step, Step::Wait) {
-            log::info!("Invalid GC state: {:?}", gc_state);
+            log::info!("Invalid GC state: {gc_state:?}");
         };
 
         self.gc_state_storage
@@ -310,6 +320,17 @@ impl ShardStateStorageState {
         self.sweep_blocks(*target_marker, top_blocks).await
     }
 
+    // async fn update_persistent_state(
+    //     self: &Arc<Self>,
+    //     prev_ps_root: &UInt256,
+    //     new_ps_root: &UInt256,
+    // ) -> Result<()> {
+    //     // Traverse new persistent state and mark it with `PS_TEMP_MARKER`.
+    //     // NOTE: Top cell of the old persistent state will be marked
+    //
+    //     // Traverse old persistent state
+    // }
+
     async fn mark(
         &self,
         current_marker: u8,
@@ -325,7 +346,7 @@ impl ShardStateStorageState {
             .load_last_blocks()
             .context("Failed to load last shard blocks")?;
 
-        log::info!("Last blocks for states GC: {:?}", last_blocks);
+        log::info!("Last blocks for states GC: {last_blocks:?}");
 
         let mut unique_shards = self
             .find_unique_shards()
@@ -354,7 +375,7 @@ impl ShardStateStorageState {
 
                 struct ShardTask {
                     last_block: Option<u32>,
-                    upper_bound: Vec<u8>,
+                    upper_bound: [u8; 16],
                     read_options: rocksdb::ReadOptions,
                     last_shard_block_key:
                         SmallVec<<LastShardBlockKey as StoredValue>::OnStackSlice>,
@@ -412,15 +433,16 @@ impl ShardStateStorageState {
 
                         // Iterate all block states in shard starting from the latest
                         for (key, value) in iter {
-                            let block_id = ton_block::BlockIdExt::deserialize(&mut &*key)?;
+                            let (shard_ident, seq_no) =
+                                ShardStateStorageKey::deserialize(&mut key.as_ref())?;
                             // Stop iterating on first outdated block
-                            if !top_blocks.contains(&block_id) {
+                            if !top_blocks.contains_shard_seq_no(&shard_ident, seq_no) {
                                 break;
                             }
 
                             let edge_block = match &task.last_block {
                                 // Skip blocks which were definitely processed
-                                Some(seq_no) if block_id.seq_no > *seq_no => continue,
+                                Some(last_seq_no) if seq_no > *last_seq_no => continue,
                                 // Block may have been processed
                                 Some(_) => {
                                     task.last_block = None;
@@ -435,7 +457,7 @@ impl ShardStateStorageState {
                             db.put_cf_opt(
                                 &node_states_cf,
                                 &task.last_shard_block_key,
-                                block_id.seq_no.to_le_bytes(),
+                                seq_no.to_le_bytes(),
                                 &write_options,
                             )
                             .context("Failed to update last block")?;
@@ -443,14 +465,16 @@ impl ShardStateStorageState {
                             // Mark all cells of this state recursively with target marker
                             let count = cell_storage.mark_cells_tree(
                                 UInt256::from_be_bytes(&value),
-                                target_marker,
-                                force && edge_block,
+                                Marker::WhileDifferent {
+                                    marker: target_marker,
+                                    force: force && edge_block,
+                                },
                             )?;
                             total.fetch_add(count, Ordering::Relaxed);
                         }
                     }
 
-                    Result::<(), anyhow::Error>::Ok(())
+                    Ok::<_, anyhow::Error>(())
                 }));
             }
 
@@ -537,12 +561,12 @@ impl ShardStateStorageState {
             let iter =
                 db.iterator_cf_opt(&shard_state_cf, read_options, rocksdb::IteratorMode::Start);
 
-            // Iterate all blocks and remove outdated
+            // Iterate all states and remove outdated
             let mut total = 0;
             for (key, _) in iter {
-                let block_id = ton_block::BlockIdExt::deserialize(&mut &*key)?;
+                let (shard_ident, seq_no) = ShardStateStorageKey::deserialize(&mut key.as_ref())?;
                 // Skip blocks from zero state and top blocks
-                if block_id.seq_no == 0 || top_blocks.contains(&block_id) {
+                if seq_no == 0 || top_blocks.contains_shard_seq_no(&shard_ident, seq_no) {
                     continue;
                 }
 
@@ -551,7 +575,7 @@ impl ShardStateStorageState {
                 total += 1;
             }
 
-            Result::<_, anyhow::Error>::Ok(total)
+            Ok::<_, anyhow::Error>(total)
         })
         .await??;
 
@@ -571,46 +595,51 @@ impl ShardStateStorageState {
     }
 
     fn find_mc_block_id(&self, mc_seq_no: u32) -> Result<Option<ton_block::BlockIdExt>> {
-        let mut lower_bound = [0u8; ton_block::BlockIdExt::SIZE_HINT];
-        lower_bound[..12].copy_from_slice(&[
-            0xff, 0xff, 0xff, 0xff, // -1 workchain id
-            0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // full shard id
-        ]);
-        lower_bound[12..16].copy_from_slice(&mc_seq_no.to_be_bytes());
+        Ok(self
+            .shard_state_db
+            .get((ton_block::ShardIdent::masterchain(), mc_seq_no).to_vec())?
+            .and_then(|value| {
+                let value = value.as_ref();
+                if value.len() < 96 {
+                    return None;
+                }
 
-        let mut iter = self.shard_state_db.raw_iterator();
-        iter.seek(lower_bound);
+                let root_hash: [u8; 32] = value[32..64].try_into().unwrap();
+                let file_hash: [u8; 32] = value[64..96].try_into().unwrap();
 
-        Ok(if let Some(mut key) = iter.key() {
-            let block_id = ton_block::BlockIdExt::deserialize(&mut key)?;
-            if block_id.seq_no == mc_seq_no {
-                Some(block_id)
-            } else {
-                None
-            }
-        } else {
-            None
-        })
+                Some(ton_block::BlockIdExt {
+                    shard_id: ton_block::ShardIdent::masterchain(),
+                    seq_no: mc_seq_no,
+                    root_hash: UInt256::from(root_hash),
+                    file_hash: UInt256::from(file_hash),
+                })
+            }))
     }
 
     fn find_unique_shards(&self) -> Result<Vec<ton_block::ShardIdent>> {
-        let upper_bound = make_block_id_bound_stub(0);
+        const BASE_WC_UPPER_BOUND: [u8; 16] = [
+            0, 0, 0, 0, // workchain id
+            0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, // shard id
+            0xff, 0xff, 0xff, 0xff, // seq no
+        ];
 
         // Prepare reverse iterator
         let mut iter = self.shard_state_db.raw_iterator();
-        iter.seek_for_prev(&upper_bound);
+        iter.seek_for_prev(&BASE_WC_UPPER_BOUND);
 
         let mut shard_idents = Vec::new();
         while let Some(mut key) = iter.key() {
-            let block_id = ton_block::BlockIdExt::deserialize(&mut key)?;
-            shard_idents.push(block_id.shard_id);
+            let shard_id = ton_block::ShardIdent::deserialize(&mut key).context("ASD")?;
+            shard_idents.push(shard_id);
 
-            iter.seek_for_prev(&make_block_id_bound(&block_id.shard_id, 0x00));
+            iter.seek_for_prev(&make_block_id_bound(&shard_id, 0x00));
         }
 
         Ok(shard_idents)
     }
 }
+
+pub type ShardStateStorageKey = (ton_block::ShardIdent, u32);
 
 struct GcStateStorage {
     node_states: Tree<columns::NodeStates>,
@@ -673,18 +702,10 @@ impl GcStateStorage {
     }
 }
 
-fn make_block_id_bound(shard_ident: &ton_block::ShardIdent, value: u8) -> Vec<u8> {
-    let mut result = Vec::with_capacity(ton_block::BlockIdExt::SIZE_HINT);
-    shard_ident.serialize(&mut result);
-    result.resize(ton_block::BlockIdExt::SIZE_HINT, value);
-    result
-}
-
-/// Returns serialized upper bound for [ton_block::BlockIdExt]
-fn make_block_id_bound_stub(workchain: i32) -> Vec<u8> {
-    let mut result = Vec::with_capacity(ton_block::BlockIdExt::SIZE_HINT);
-    result.extend_from_slice(&workchain.to_be_bytes());
-    result.resize(ton_block::BlockIdExt::SIZE_HINT, 0xff);
+fn make_block_id_bound(shard_ident: &ton_block::ShardIdent, value: u8) -> [u8; 16] {
+    let mut result = [value; 16];
+    result[..4].copy_from_slice(&shard_ident.workchain_id().to_be_bytes());
+    result[4..12].copy_from_slice(&shard_ident.shard_prefix_with_tag().to_be_bytes());
     result
 }
 
@@ -735,9 +756,13 @@ impl StoredValue for GcState {
 }
 
 impl GcState {
+    /// 0x00 marker is used for persistent state
+    /// 0xff marker is used for persistent state transition
     fn next_marker(&self) -> u8 {
         match self.current_marker {
-            u8::MAX => 1,
+            // Saturate marker
+            254 | 255 => 1,
+            // Increment marker otherwise
             marker => marker + 1,
         }
     }

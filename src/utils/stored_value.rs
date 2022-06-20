@@ -127,6 +127,29 @@ impl StoredValue for ton_block::ShardIdent {
     }
 }
 
+impl StoredValue for (ton_block::ShardIdent, u32) {
+    /// 12 bytes shard ident
+    /// 4 bytes seqno
+    const SIZE_HINT: usize = ton_block::ShardIdent::SIZE_HINT + 4;
+
+    type OnStackSlice = [u8; Self::SIZE_HINT];
+
+    #[inline(always)]
+    fn serialize<T: StoredValueBuffer>(&self, buffer: &mut T) {
+        self.0.serialize(buffer);
+        buffer.write_raw_slice(&self.1.to_be_bytes());
+    }
+
+    fn deserialize(reader: &mut &[u8]) -> Result<Self>
+    where
+        Self: Sized,
+    {
+        let shard_id = ton_block::ShardIdent::deserialize(reader)?;
+        let seq_no = reader.read_be_u32()?;
+        Ok((shard_id, seq_no))
+    }
+}
+
 /// Writes BlockIdExt in little-endian format
 pub fn write_block_id_le(block_id: &ton_block::BlockIdExt) -> [u8; 80] {
     let mut bytes = [0u8; 80];

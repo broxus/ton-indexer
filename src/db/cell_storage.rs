@@ -68,18 +68,30 @@ impl CellStorage {
 
         for i in 0..8 {
             // iii00000, 00000000, ...
-            let mut lower_bound = [0; 32];
-            lower_bound[0] = i << 5;
+            let lower_bound = if i > 0 {
+                let mut lower_bound = [0; 32];
+                lower_bound[0] = i << 5;
+                Some(lower_bound)
+            } else {
+                None
+            };
 
-            // iii11111, 11111111, ...
-            let mut upper_bound = [0xff; 32];
-            upper_bound[0] = (i << 5) | 0b00011111;
+            // jjj00000, 00000000, ... (where jjj = i + 1)
+            let upper_bound = if i < 7 {
+                let mut upper_bound = [0; 32];
+                upper_bound[0] = (i + 1) << 5;
+                Some(upper_bound)
+            } else {
+                None
+            };
 
             // Prepare cells read options
             let mut read_options = rocksdb::ReadOptions::default();
             columns::Cells::read_options(&mut read_options);
             read_options.set_snapshot(&snapshot);
-            read_options.set_iterate_upper_bound(upper_bound);
+            if let Some(upper_bound) = upper_bound {
+                read_options.set_iterate_upper_bound(upper_bound);
+            }
 
             let db = self.cells.raw_db_handle().clone();
             let total = total.clone();
@@ -91,7 +103,11 @@ impl CellStorage {
                 let iter = db.iterator_cf_opt(
                     &cells_cf,
                     read_options,
-                    rocksdb::IteratorMode::From(&lower_bound, rocksdb::Direction::Forward),
+                    if let Some(lower_bound) = &lower_bound {
+                        rocksdb::IteratorMode::From(lower_bound, rocksdb::Direction::Forward)
+                    } else {
+                        rocksdb::IteratorMode::Start
+                    },
                 );
 
                 // Prepare cells write options
@@ -113,7 +129,7 @@ impl CellStorage {
                 }
 
                 total.fetch_add(subtotal, Ordering::Relaxed);
-                Result::<(), anyhow::Error>::Ok(())
+                Ok::<_, anyhow::Error>(())
             }));
         }
 
@@ -126,16 +142,15 @@ impl CellStorage {
         Ok(total.load(Ordering::Relaxed))
     }
 
-    pub fn mark_cells_tree(
-        &self,
-        root_cell: UInt256,
-        target_marker: u8,
-        force: bool,
-    ) -> Result<usize> {
+    pub fn mark_cells_tree(&self, root_cell: UInt256, target_marker: Marker) -> Result<usize> {
+        let (target_marker, force, alter_persistent_edge) = match target_marker {
+            Marker::WhileDifferent { marker, force } => (marker, force, false),
+            // Marker::PersistentStateTransition => (PS_TEMP_MARKER, true, true),
+        };
+
         // Prepare handles
         let cf = self.cells.get_cf();
         let read_config = self.cells.read_config();
-        let write_config = self.cells.write_config();
         let db = self.cells.raw_db_handle();
 
         // NOTE: don't use WriteBatch here to prevent high memory usage.
@@ -147,7 +162,7 @@ impl CellStorage {
 
         let mut total = 0;
 
-        let mut buffer = SmallVec::<[u8; 512]>::with_capacity(512);
+        let mut batch = rocksdb::WriteBatch::default();
 
         // While some cells left
         while let Some(cell_id) = stack.pop() {
@@ -161,15 +176,13 @@ impl CellStorage {
                         let (marker, references) =
                             StorageCell::deserialize_marker_and_references(value)?;
 
-                        let persistent_cell = marker == 0;
-                        let marker_changed = !persistent_cell && marker != target_marker;
+                        let persistent_cell = marker == PS_MARKER || marker == PS_TEMP_MARKER;
+                        let marker_changed =
+                            (!persistent_cell || alter_persistent_edge) && marker != target_marker;
 
                         // Update cell data if marker changed
                         if marker_changed {
-                            buffer.clear();
-                            buffer.extend_from_slice(value);
-                            buffer[0] = target_marker;
-                            db.put_cf_opt(&cf, cell_id.as_slice(), &buffer, write_config)?;
+                            batch.merge_cf(&cf, cell_id.as_slice(), [target_marker]);
                         }
 
                         (persistent_cell, marker_changed, references)
@@ -189,6 +202,8 @@ impl CellStorage {
                 }
             }
         }
+
+        db.write(batch)?;
 
         Ok(total)
     }
@@ -277,6 +292,12 @@ impl CellStorage {
 
         Ok(transaction)
     }
+}
+
+#[derive(Debug, Copy, Clone)]
+pub enum Marker {
+    WhileDifferent { marker: u8, force: bool },
+    // PersistentStateTransition,
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -495,3 +516,8 @@ enum StorageCellError {
     #[error("Accessing invalid cell reference")]
     AccessingInvalidReference,
 }
+
+/// Persistent state marker
+pub const PS_MARKER: u8 = 0;
+/// Persistent state transition marker
+pub const PS_TEMP_MARKER: u8 = u8::MAX;
