@@ -17,7 +17,7 @@ use parking_lot::RwLock;
 
 use super::{
     columns, BlockHandle, BlockHandleStorage, BlockMetaData, Column, HandleCreationStatus,
-    ShardStateStorageKey, StoredValue, Tree,
+    StoredValue, Tree,
 };
 use crate::config::BlocksGcKind;
 use crate::utils::*;
@@ -715,7 +715,7 @@ fn remove_blocks(
     );
     for (key, _) in blocks_iter {
         // Read only prefix with shard ident and seqno
-        let (shard_ident, seq_no) = ShardStateStorageKey::deserialize(&mut key.as_ref())?;
+        let (shard_ident, seq_no) = BlockIdShort::deserialize(&mut key.as_ref())?;
 
         // Don't gc latest blocks
         if top_blocks.contains_shard_seq_no(&shard_ident, seq_no) {

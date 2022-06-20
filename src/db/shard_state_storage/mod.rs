@@ -434,7 +434,7 @@ impl ShardStateStorageState {
                         // Iterate all block states in shard starting from the latest
                         for (key, value) in iter {
                             let (shard_ident, seq_no) =
-                                ShardStateStorageKey::deserialize(&mut key.as_ref())?;
+                                BlockIdShort::deserialize(&mut key.as_ref())?;
                             // Stop iterating on first outdated block
                             if !top_blocks.contains_shard_seq_no(&shard_ident, seq_no) {
                                 break;
@@ -564,7 +564,7 @@ impl ShardStateStorageState {
             // Iterate all states and remove outdated
             let mut total = 0;
             for (key, _) in iter {
-                let (shard_ident, seq_no) = ShardStateStorageKey::deserialize(&mut key.as_ref())?;
+                let (shard_ident, seq_no) = BlockIdShort::deserialize(&mut key.as_ref())?;
                 // Skip blocks from zero state and top blocks
                 if seq_no == 0 || top_blocks.contains_shard_seq_no(&shard_ident, seq_no) {
                     continue;
@@ -638,8 +638,6 @@ impl ShardStateStorageState {
         Ok(shard_idents)
     }
 }
-
-pub type ShardStateStorageKey = (ton_block::ShardIdent, u32);
 
 struct GcStateStorage {
     node_states: Tree<columns::NodeStates>,

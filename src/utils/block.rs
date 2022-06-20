@@ -12,6 +12,8 @@ use crate::utils::*;
 
 pub type BlockStuffAug = WithArchiveData<BlockStuff>;
 
+pub type BlockIdShort = (ton_block::ShardIdent, u32);
+
 #[derive(Clone)]
 pub struct BlockStuff {
     id: ton_block::BlockIdExt,

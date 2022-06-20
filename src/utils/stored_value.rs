@@ -2,6 +2,8 @@ use anyhow::Result;
 use smallvec::SmallVec;
 use ton_types::ByteOrderRead;
 
+use super::block::BlockIdShort;
+
 /// A trait for writing or reading data from a stack-allocated buffer
 pub trait StoredValue {
     /// On-stack buffer size hint
@@ -127,7 +129,7 @@ impl StoredValue for ton_block::ShardIdent {
     }
 }
 
-impl StoredValue for (ton_block::ShardIdent, u32) {
+impl StoredValue for BlockIdShort {
     /// 12 bytes shard ident
     /// 4 bytes seqno
     const SIZE_HINT: usize = ton_block::ShardIdent::SIZE_HINT + 4;
