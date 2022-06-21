@@ -182,22 +182,32 @@ impl ShardStateStorage {
         }
         let mc_block_id = self
             .state
-            .find_mc_block_id(mc_seq_no)?
+            .find_mc_block_id(mc_seq_no)
+            .context("Failed to find block id by seqno")?
             .with_context(|| format!("Masterchain state with seqno {mc_seq_no} not found"))?;
 
         let top_blocks = match self.block_handle_storage.load_handle(&mc_block_id)? {
             Some(handle) => {
+                if !handle.meta().has_state() {
+                    return Err(ShardStateStorageError::NotFound)
+                        .context("Target block has no state")?;
+                }
+                if !handle.meta().has_data() {
+                    return Err(ShardStateStorageError::NotFound)
+                        .context("Target block has no data")?;
+                }
+
                 let state = self
                     .load_state(handle.id())
                     .await
-                    .context("Failed to load shard state for top block")?;
+                    .context("Failed to load shard state for target block")?;
                 let state_extra = state.shard_state_extra()?;
 
                 let block_data = self.block_storage.load_block_data(&handle).await?;
                 let block_info = block_data
                     .block()
                     .read_info()
-                    .context("Failed to read block info")?;
+                    .context("Failed to read target block info")?;
 
                 let target_block_id = state_extra
                     .prev_blocks
@@ -213,16 +223,21 @@ impl ShardStateStorage {
                     .context("Failed to find min ref mc block handle")?
                     .context("Prev ref mc handle not found")?;
 
+                if !target_block_handle.meta().has_data() {
+                    return Err(ShardStateStorageError::NotFound)
+                        .context("Min ref mc block has no data")?;
+                }
+
                 self.block_storage
                     .load_block_data(&target_block_handle)
                     .await
                     .and_then(|block_data| TopBlocks::from_mc_block(&block_data))?
             }
-            None => return Err(ShardStateStorageError::NotFound.into()),
+            None => return Err(ShardStateStorageError::NotFound).context("Target block not found"),
         };
 
         log::info!(
-            "Starting shard states GC for target block: {}",
+            "Starting shard states GC for mc block: {}",
             top_blocks.mc_block
         );
         let instant = Instant::now();
@@ -230,7 +245,7 @@ impl ShardStateStorage {
         self.state.gc(&top_blocks).await?;
 
         log::info!(
-            "Finished shard states GC for target block: {}. Took: {} ms",
+            "Finished shard states GC for mc block: {}. Took: {} ms",
             top_blocks.mc_block,
             instant.elapsed().as_millis()
         );
@@ -358,13 +373,6 @@ impl ShardStateStorageState {
             .load_last_blocks()
             .context("Failed to load last shard blocks")?;
 
-        log::info!("Last blocks for states GC: {last_blocks:?}");
-
-        let mut unique_shards = self
-            .find_unique_shards()
-            .context("Failed to find unique shards")?;
-        unique_shards.push(ton_block::ShardIdent::masterchain());
-
         let total = {
             let db = self.shard_state_db.raw_db_handle();
 
@@ -373,6 +381,11 @@ impl ShardStateStorageState {
 
             // Prepare one database snapshot for all shard states iterators
             let snapshot = db.snapshot();
+
+            let mut unique_shards = self
+                .find_unique_shards(Some(&snapshot))
+                .context("Failed to find unique shards")?;
+            unique_shards.push(ton_block::ShardIdent::masterchain());
 
             // NOTE: `target_marker_lock` must be released after the rocksdb snapshot is made,
             // so that all new inserted cells will be marked with this marker and this method
@@ -639,15 +652,28 @@ impl ShardStateStorageState {
             }))
     }
 
-    fn find_unique_shards(&self) -> Result<Vec<ton_block::ShardIdent>> {
+    fn find_unique_shards(
+        &self,
+        snapshot: Option<&rocksdb::Snapshot>,
+    ) -> Result<Vec<ton_block::ShardIdent>> {
         const BASE_WC_UPPER_BOUND: [u8; 16] = [
             0, 0, 0, 0, // workchain id
             0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, // shard id
             0xff, 0xff, 0xff, 0xff, // seq no
         ];
 
+        let cf = self.shard_state_db.get_cf();
+
+        let db = self.shard_state_db.raw_db_handle();
+        let mut read_options = rocksdb::ReadOptions::default();
+        columns::ShardStates::read_options(&mut read_options);
+
+        if let Some(snapshot) = snapshot {
+            read_options.set_snapshot(snapshot);
+        }
+
         // Prepare reverse iterator
-        let mut iter = self.shard_state_db.raw_iterator();
+        let mut iter = db.raw_iterator_cf_opt(&cf, read_options);
         iter.seek_for_prev(&BASE_WC_UPPER_BOUND);
 
         let mut shard_idents = Vec::new();
