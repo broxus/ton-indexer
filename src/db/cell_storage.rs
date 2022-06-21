@@ -26,7 +26,7 @@ impl CellStorage {
         })
     }
 
-    pub fn store_dynamic_boc(
+    pub fn store_cell(
         &self,
         batch: &mut rocksdb::WriteBatch,
         marker: u8,

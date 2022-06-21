@@ -10,6 +10,7 @@ use futures_util::StreamExt;
 use itertools::Itertools;
 use rustc_hash::FxHashMap;
 use smallvec::SmallVec;
+use tokio::sync::RwLockWriteGuard;
 use ton_block::HashmapAugType;
 use ton_types::{ByteOrderRead, UInt256};
 
@@ -100,11 +101,10 @@ impl ShardStateStorage {
             _ => *current_marker,
         };
 
-        let len = self.state.cell_storage.store_dynamic_boc(
-            &mut batch,
-            marker,
-            state.root_cell().clone(),
-        )?;
+        let len =
+            self.state
+                .cell_storage
+                .store_cell(&mut batch, marker, state.root_cell().clone())?;
 
         if block_id.shard_id.is_masterchain() {
             self.max_new_mc_cell_count.fetch_max(len, Ordering::Release);
@@ -264,60 +264,72 @@ impl ShardStateStorageState {
         // res.cell_storage.check()?;
 
         let gc_state = res.gc_state_storage.load()?;
-        let target_marker = gc_state.next_marker();
 
-        let current_marker = match &gc_state.step {
-            Step::Wait => {
+        match &gc_state.step {
+            None => {
                 log::info!("Shard state GC is pending");
-                gc_state.current_marker
             }
-            Step::Mark(top_blocks) => {
-                res.mark(gc_state.current_marker, target_marker, top_blocks, true)
-                    .await?;
-                res.sweep_cells(gc_state.current_marker, target_marker, top_blocks)
-                    .await?;
-                res.sweep_blocks(target_marker, top_blocks).await?;
-                target_marker
-            }
-            Step::SweepCells(top_blocks) => {
-                res.sweep_cells(gc_state.current_marker, target_marker, top_blocks)
-                    .await?;
-                res.sweep_blocks(target_marker, top_blocks).await?;
-                target_marker
-            }
-            Step::SweepBlocks(top_blocks) => {
-                res.sweep_blocks(target_marker, top_blocks).await?;
-                target_marker
+            Some(step) => {
+                let mut target_marker_lock = res.current_marker.write().await;
+                *target_marker_lock = gc_state.next_marker();
+                let target_marker = *target_marker_lock;
+
+                match step {
+                    Step::Mark(top_blocks) => {
+                        res.mark(
+                            gc_state.current_marker,
+                            target_marker_lock,
+                            top_blocks,
+                            true,
+                        )
+                        .await?;
+                        res.sweep_cells(gc_state.current_marker, target_marker, top_blocks)
+                            .await?;
+                        res.sweep_blocks(target_marker, top_blocks).await?;
+                    }
+                    Step::SweepCells(top_blocks) => {
+                        res.sweep_cells(gc_state.current_marker, target_marker, top_blocks)
+                            .await?;
+                        res.sweep_blocks(target_marker, top_blocks).await?;
+                    }
+                    Step::SweepBlocks(top_blocks) => {
+                        res.sweep_blocks(target_marker, top_blocks).await?;
+                    }
+                }
             }
         };
-
-        *res.current_marker.write().await = current_marker;
 
         Ok(res)
     }
 
     async fn gc(self: &Arc<Self>, top_blocks: &TopBlocks) -> Result<()> {
         let gc_state = self.gc_state_storage.load()?;
-        if !matches!(&gc_state.step, Step::Wait) {
+        if gc_state.step.is_some() {
             log::info!("Invalid GC state: {gc_state:?}");
         };
 
         self.gc_state_storage
             .update(&GcState {
                 current_marker: gc_state.current_marker,
-                step: Step::Mark(top_blocks.clone()),
+                step: Some(Step::Mark(top_blocks.clone())),
             })
             .context("Failed to update gc state to 'Mark'")?;
 
         // NOTE: make sure that target marker lock is dropped after all gc steps are finished
-        let mut target_marker = self.current_marker.write().await;
-        *target_marker = gc_state.next_marker();
+        let mut target_marker_lock = self.current_marker.write().await;
+        *target_marker_lock = gc_state.next_marker();
+        let target_marker = *target_marker_lock;
 
-        self.mark(gc_state.current_marker, *target_marker, top_blocks, false)
+        self.mark(
+            gc_state.current_marker,
+            target_marker_lock,
+            top_blocks,
+            false,
+        )
+        .await?;
+        self.sweep_cells(gc_state.current_marker, target_marker, top_blocks)
             .await?;
-        self.sweep_cells(gc_state.current_marker, *target_marker, top_blocks)
-            .await?;
-        self.sweep_blocks(*target_marker, top_blocks).await
+        self.sweep_blocks(target_marker, top_blocks).await
     }
 
     // async fn update_persistent_state(
@@ -331,10 +343,10 @@ impl ShardStateStorageState {
     //     // Traverse old persistent state
     // }
 
-    async fn mark(
+    async fn mark<'a>(
         &self,
         current_marker: u8,
-        target_marker: u8,
+        target_marker_lock: RwLockWriteGuard<'a, u8>,
         top_blocks: &TopBlocks,
         force: bool,
     ) -> Result<()> {
@@ -361,6 +373,12 @@ impl ShardStateStorageState {
 
             // Prepare one database snapshot for all shard states iterators
             let snapshot = db.snapshot();
+
+            // NOTE: `target_marker_lock` must be released after the rocksdb snapshot is made,
+            // so that all new inserted cells will be marked with this marker and this method
+            // will work only with old shard states
+            let target_marker = *target_marker_lock;
+            drop(target_marker_lock);
 
             let shard_count = unique_shards.len();
             let shards_per_chunk = std::cmp::max(shard_count / num_cpus::get(), 1);
@@ -463,6 +481,11 @@ impl ShardStateStorageState {
                             .context("Failed to update last block")?;
 
                             // Mark all cells of this state recursively with target marker
+                            //
+                            // NOTE: `mark_cells_tree` works with the current db instead of
+                            // using the snapshot, so we can reduce the number of cells
+                            // which will be marked (some new states can already be inserted
+                            // and have overwritten old markers)
                             let count = cell_storage.mark_cells_tree(
                                 UInt256::from_be_bytes(&value),
                                 Marker::WhileDifferent {
@@ -501,7 +524,7 @@ impl ShardStateStorageState {
         self.gc_state_storage
             .update(&GcState {
                 current_marker,
-                step: Step::SweepCells(top_blocks.clone()),
+                step: Some(Step::SweepCells(top_blocks.clone())),
             })
             .context("Failed to update gc state to 'Sweep'")
     }
@@ -532,7 +555,7 @@ impl ShardStateStorageState {
         self.gc_state_storage
             .update(&GcState {
                 current_marker,
-                step: Step::SweepBlocks(top_blocks.clone()),
+                step: Some(Step::SweepBlocks(top_blocks.clone())),
             })
             .context("Failed to update gc state to 'SweepBlocks'")
     }
@@ -589,7 +612,7 @@ impl ShardStateStorageState {
         self.gc_state_storage
             .update(&GcState {
                 current_marker: target_marker,
-                step: Step::Wait,
+                step: None,
             })
             .context("Failed to update gc state to 'Wait'")
     }
@@ -660,7 +683,7 @@ impl GcStateStorage {
             None => {
                 let state = GcState {
                     current_marker: 1, // NOTE: zero marker is reserved for persistent state
-                    step: Step::Wait,
+                    step: None,
                 };
                 self.update(&state)?;
                 state
@@ -710,7 +733,7 @@ fn make_block_id_bound(shard_ident: &ton_block::ShardIdent, value: u8) -> [u8; 1
 #[derive(Debug)]
 struct GcState {
     current_marker: u8,
-    step: Step,
+    step: Option<Step>,
 }
 
 impl StoredValue for GcState {
@@ -720,10 +743,10 @@ impl StoredValue for GcState {
 
     fn serialize<T: StoredValueBuffer>(&self, buffer: &mut T) {
         let (step, blocks) = match &self.step {
-            Step::Wait => (0, None),
-            Step::Mark(blocks) => (1, Some(blocks)),
-            Step::SweepCells(blocks) => (2, Some(blocks)),
-            Step::SweepBlocks(blocks) => (3, Some(blocks)),
+            None => (0, None),
+            Some(Step::Mark(blocks)) => (1, Some(blocks)),
+            Some(Step::SweepCells(blocks)) => (2, Some(blocks)),
+            Some(Step::SweepBlocks(blocks)) => (3, Some(blocks)),
         };
         buffer.write_raw_slice(&[self.current_marker, step]);
 
@@ -739,10 +762,10 @@ impl StoredValue for GcState {
         let mut data = [0u8; 2];
         reader.read_exact(&mut data)?;
         let step = match data[1] {
-            0 => Step::Wait,
-            1 => Step::Mark(TopBlocks::deserialize(reader)?),
-            2 => Step::SweepCells(TopBlocks::deserialize(reader)?),
-            3 => Step::SweepBlocks(TopBlocks::deserialize(reader)?),
+            0 => None,
+            1 => Some(Step::Mark(TopBlocks::deserialize(reader)?)),
+            2 => Some(Step::SweepCells(TopBlocks::deserialize(reader)?)),
+            3 => Some(Step::SweepBlocks(TopBlocks::deserialize(reader)?)),
             _ => return Err(ShardStateStorageError::InvalidStatesGcStep.into()),
         };
 
@@ -768,7 +791,6 @@ impl GcState {
 
 #[derive(Debug)]
 enum Step {
-    Wait,
     Mark(TopBlocks),
     SweepCells(TopBlocks),
     SweepBlocks(TopBlocks),
