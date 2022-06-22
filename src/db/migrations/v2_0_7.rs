@@ -15,12 +15,10 @@ use crate::utils::*;
 //    * `ton_block::BlockIdExt` -> `ton_block::BlockId`
 // - Change value for `ShardStates`:
 //    * Add `ton_types::UInt256` (block root hash), `ton_types::UInt256` (block file hash)
-// - Reduce possible cell marker values
 pub(super) fn register(migrations: &mut Migrations) -> Result<()> {
     migrations.register([2, 0, 6], [2, 0, 7], |db| async move {
         update_package_entries(&db)?;
         update_shard_states(&db)?;
-        // update_cell_markers(&db)?;
         Ok(())
     })
 }
@@ -139,5 +137,3 @@ fn update_shard_states(db: &Arc<rocksdb::DB>) -> Result<()> {
     log::info!("Migrated {total_states} shard states");
     Ok(())
 }
-
-// fn update_cell_markers(db: &Arc<rocksdb::DB>) -> Result<()> {}

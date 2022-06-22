@@ -134,9 +134,6 @@ impl CellStorage {
         let total = Arc::new(AtomicUsize::new(0));
         let mut tasks = FuturesUnordered::new();
 
-        // Prepare one database snapshot for all shard states iterators
-        let snapshot = self.cells.raw_db_handle().snapshot();
-
         for i in 0..8 {
             // iii00000, 00000000, ...
             let lower_bound = if i > 0 {
@@ -159,7 +156,7 @@ impl CellStorage {
             // Prepare cells read options
             let mut read_options = rocksdb::ReadOptions::default();
             columns::Cells::read_options(&mut read_options);
-            read_options.set_snapshot(&snapshot);
+
             if let Some(upper_bound) = upper_bound {
                 read_options.set_iterate_upper_bound(upper_bound);
             }

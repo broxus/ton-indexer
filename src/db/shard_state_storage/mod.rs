@@ -90,10 +90,9 @@ impl ShardStateStorage {
         let block_id = handle.id();
         let cell_id = state.root_cell().repr_hash();
 
-        let current_marker = self.state.current_marker.read().await;
-
         let mut batch = rocksdb::WriteBatch::default();
 
+        let current_marker = self.state.current_marker.read().await;
         let marker = match block_id.seq_no {
             // Mark zero state as persistent
             0 => 0,
@@ -276,8 +275,6 @@ impl ShardStateStorageState {
             cell_storage: Arc::new(CellStorage::new(db)?),
         };
 
-        // res.cell_storage.check()?;
-
         let gc_state = res.gc_state_storage.load()?;
 
         match &gc_state.step {
@@ -285,9 +282,10 @@ impl ShardStateStorageState {
                 log::info!("Shard state GC is pending");
             }
             Some(step) => {
+                let target_marker = gc_state.next_marker();
+
                 let mut target_marker_lock = res.current_marker.write().await;
-                *target_marker_lock = gc_state.next_marker();
-                let target_marker = *target_marker_lock;
+                *target_marker_lock = target_marker;
 
                 match step {
                     Step::Mark(top_blocks) => {
@@ -298,12 +296,15 @@ impl ShardStateStorageState {
                             true,
                         )
                         .await?;
-                        res.sweep_cells(gc_state.current_marker, target_marker, top_blocks)
+
+                        let target_marker_lock = res.current_marker.write().await;
+                        res.sweep_cells(gc_state.current_marker, target_marker_lock, top_blocks)
                             .await?;
+
                         res.sweep_blocks(target_marker, top_blocks).await?;
                     }
                     Step::SweepCells(top_blocks) => {
-                        res.sweep_cells(gc_state.current_marker, target_marker, top_blocks)
+                        res.sweep_cells(gc_state.current_marker, target_marker_lock, top_blocks)
                             .await?;
                         res.sweep_blocks(target_marker, top_blocks).await?;
                     }
@@ -330,10 +331,10 @@ impl ShardStateStorageState {
             })
             .context("Failed to update gc state to 'Mark'")?;
 
-        // NOTE: make sure that target marker lock is dropped after all gc steps are finished
+        let target_marker = gc_state.next_marker();
+
         let mut target_marker_lock = self.current_marker.write().await;
-        *target_marker_lock = gc_state.next_marker();
-        let target_marker = *target_marker_lock;
+        *target_marker_lock = target_marker;
 
         self.mark(
             gc_state.current_marker,
@@ -342,8 +343,12 @@ impl ShardStateStorageState {
             false,
         )
         .await?;
-        self.sweep_cells(gc_state.current_marker, target_marker, top_blocks)
+
+        // Wait until all states are written and prevent writing new states
+        let target_marker_lock = self.current_marker.write().await;
+        self.sweep_cells(gc_state.current_marker, target_marker_lock, top_blocks)
             .await?;
+
         self.sweep_blocks(target_marker, top_blocks).await
     }
 
@@ -365,6 +370,8 @@ impl ShardStateStorageState {
         top_blocks: &TopBlocks,
         force: bool,
     ) -> Result<()> {
+        let target_marker = *target_marker_lock;
+
         let time = Instant::now();
 
         // Load previous intermediate state
@@ -390,7 +397,6 @@ impl ShardStateStorageState {
             // NOTE: `target_marker_lock` must be released after the rocksdb snapshot is made,
             // so that all new inserted cells will be marked with this marker and this method
             // will work only with old shard states
-            let target_marker = *target_marker_lock;
             drop(target_marker_lock);
 
             let shard_count = unique_shards.len();
@@ -542,14 +548,15 @@ impl ShardStateStorageState {
             .context("Failed to update gc state to 'Sweep'")
     }
 
-    async fn sweep_cells(
+    async fn sweep_cells<'a>(
         &self,
         current_marker: u8,
-        target_marker: u8,
+        target_marker_lock: RwLockWriteGuard<'a, u8>,
         top_blocks: &TopBlocks,
     ) -> Result<()> {
-        log::info!("Sweeping cells other than {target_marker}");
+        let target_marker = *target_marker_lock;
 
+        log::info!("Sweeping cells other than {target_marker}");
         let time = Instant::now();
 
         // Remove all unmarked cells
@@ -558,6 +565,13 @@ impl ShardStateStorageState {
             .sweep_cells(target_marker)
             .await
             .context("Failed to sweep cells")?;
+
+        // NOTE: target marker lock must be held during cells sweep.
+        // Because there can be a situation when unmarked cell is
+        // used by the newly inserted state, however it is being deleted
+        // by this functions. So, unless better solution is found,
+        // it will block the insertion of new states.
+        drop(target_marker_lock);
 
         log::info!(
             "Swept {total} cells. Took: {} ms",
