@@ -280,6 +280,7 @@ impl ShardStateStorageState {
         match &gc_state.step {
             None => {
                 log::info!("Shard state GC is pending");
+                *res.current_marker.write().await = gc_state.current_marker;
             }
             Some(step) => {
                 let target_marker = gc_state.next_marker();
