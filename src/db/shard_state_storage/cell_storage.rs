@@ -10,7 +10,7 @@ use rustc_hash::FxHashSet;
 use smallvec::SmallVec;
 use ton_types::{ByteOrderRead, CellImpl, FxDashMap, UInt256};
 
-use super::{columns, Column, Tree};
+use crate::db::{columns, Column, Tree};
 
 pub struct CellStorage {
     cells: Tree<columns::Cells>,
@@ -459,32 +459,7 @@ impl Drop for StorageCell {
     }
 }
 
-impl PartialEq for StorageCell {
-    fn eq(&self, other: &Self) -> bool {
-        if self.cell_data != other.cell_data {
-            return false;
-        }
-
-        let references = self.references.read();
-        let other_references = self.references.read();
-        references.len() == other_references.len()
-            && same_references(&references, &other_references)
-    }
-}
-
-fn same_references(
-    references: &[StorageCellReference],
-    other_references: &[StorageCellReference],
-) -> bool {
-    for i in 0..references.len() {
-        if references[i].hash() != other_references[i].hash() {
-            return false;
-        }
-    }
-    true
-}
-
-#[derive(Clone, PartialEq)]
+#[derive(Clone)]
 pub enum StorageCellReference {
     Loaded(Arc<StorageCell>),
     Unloaded(UInt256),

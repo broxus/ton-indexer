@@ -52,6 +52,7 @@ tokio = { version = "1", features = ["sync", "fs", "rt-multi-thread", "parking_l
 tokio-util = "0.7.0"
 
 rocksdb = { git = "https://github.com/Rexagon/rust-rocksdb.git", features = ["multi-threaded-cf", "zstd", "lz4", "jemalloc"], default-features = false }
+librocksdb-sys = { git = "https://github.com/Rexagon/rust-rocksdb.git" }
 
 ton_block = { git = "https://github.com/broxus/ton-labs-block.git" }
 ton_types = { git = "https://github.com/broxus/ton-labs-types.git" }

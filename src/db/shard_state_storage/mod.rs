@@ -14,26 +14,33 @@ use tokio::sync::RwLockWriteGuard;
 use ton_block::HashmapAugType;
 use ton_types::{ByteOrderRead, UInt256};
 
+use self::cell_storage::*;
 use self::files_context::*;
 use self::replace_transaction::*;
-use super::cell_storage::*;
 use super::{
     columns, BlockHandle, BlockHandleStorage, BlockStorage, Column, StoredValue, StoredValueBuffer,
     TopBlocks, Tree,
 };
 use crate::utils::*;
 
+mod cell_storage;
+mod cell_writer;
 mod entries_buffer;
 mod files_context;
 mod parser;
 mod replace_transaction;
 
 pub struct ShardStateStorage {
+    shard_states: Tree<columns::ShardStates>,
+
     block_handle_storage: Arc<BlockHandleStorage>,
     block_storage: Arc<BlockStorage>,
+    cell_storage: Arc<CellStorage>,
+    gc_state_storage: Arc<GcStateStorage>,
 
     downloads_dir: Arc<PathBuf>,
-    state: Arc<ShardStateStorageState>,
+
+    current_marker: tokio::sync::RwLock<u8>,
     min_ref_mc_state: Arc<MinRefMcState>,
     max_new_mc_cell_count: AtomicUsize,
     max_new_sc_cell_count: AtomicUsize,
@@ -44,27 +51,79 @@ impl ShardStateStorage {
         db: &Arc<rocksdb::DB>,
         block_handle_storage: &Arc<BlockHandleStorage>,
         block_storage: &Arc<BlockStorage>,
-        file_db_path: &P,
+        file_db_path: P,
     ) -> Result<Self>
     where
         P: AsRef<Path>,
     {
-        let downloads_dir = Arc::new(file_db_path.as_ref().join("downloads"));
-        tokio::fs::create_dir_all(downloads_dir.as_ref()).await?;
+        let downloads_dir = prepare_file_db_dir(&file_db_path, "downloads").await?;
+        // let persistent_dir = prepare_file_db_dir(&file_db_path, "persistent").await?;
 
-        Ok(Self {
+        let res = Self {
+            shard_states: Tree::new(db)?,
             block_handle_storage: block_handle_storage.clone(),
             block_storage: block_storage.clone(),
+            cell_storage: Arc::new(CellStorage::new(db)?),
+            gc_state_storage: Arc::new(GcStateStorage::new(db)?),
             downloads_dir,
-            state: Arc::new(ShardStateStorageState::new(db).await?),
+            current_marker: Default::default(),
             min_ref_mc_state: Arc::new(Default::default()),
             max_new_mc_cell_count: AtomicUsize::new(0),
             max_new_sc_cell_count: AtomicUsize::new(0),
-        })
+        };
+
+        let gc_state = res.gc_state_storage.load()?;
+        match &gc_state.step {
+            None => {
+                log::info!("Shard state GC is pending");
+                *res.current_marker.write().await = gc_state.current_marker;
+            }
+            Some(step) => {
+                let target_marker = gc_state.next_marker();
+
+                let mut target_marker_lock = res.current_marker.write().await;
+                *target_marker_lock = target_marker;
+
+                match step {
+                    Step::Mark(top_blocks) => {
+                        res.mark(
+                            gc_state.current_marker,
+                            target_marker_lock,
+                            top_blocks,
+                            true,
+                        )
+                        .await?;
+
+                        let target_marker_lock = res.current_marker.write().await;
+                        res.sweep_cells(gc_state.current_marker, target_marker_lock, top_blocks)
+                            .await?;
+
+                        res.sweep_blocks(target_marker, top_blocks).await?;
+                    }
+                    Step::SweepCells(top_blocks) => {
+                        res.sweep_cells(gc_state.current_marker, target_marker_lock, top_blocks)
+                            .await?;
+                        res.sweep_blocks(target_marker, top_blocks).await?;
+                    }
+                    Step::SweepBlocks(top_blocks) => {
+                        res.sweep_blocks(target_marker, top_blocks).await?;
+                    }
+                }
+            }
+        };
+
+        Ok(res)
     }
 
     pub fn metrics(&self) -> ShardStateStorageMetrics {
+        #[cfg(feature = "count-cells")]
+        let storage_cell = countme::get::<StorageCell>();
+
         ShardStateStorageMetrics {
+            #[cfg(feature = "count-cells")]
+            storage_cell_live_count: storage_cell.live,
+            #[cfg(feature = "count-cells")]
+            storage_cell_max_live_count: storage_cell.max_live,
             max_new_mc_cell_count: self.max_new_mc_cell_count.swap(0, Ordering::AcqRel),
             max_new_sc_cell_count: self.max_new_sc_cell_count.swap(0, Ordering::AcqRel),
         }
@@ -92,7 +151,7 @@ impl ShardStateStorage {
 
         let mut batch = rocksdb::WriteBatch::default();
 
-        let current_marker = self.state.current_marker.read().await;
+        let current_marker = self.current_marker.read().await;
         let marker = match block_id.seq_no {
             // Mark zero state as persistent
             0 => 0,
@@ -100,10 +159,9 @@ impl ShardStateStorage {
             _ => *current_marker,
         };
 
-        let len =
-            self.state
-                .cell_storage
-                .store_cell(&mut batch, marker, state.root_cell().clone())?;
+        let len = self
+            .cell_storage
+            .store_cell(&mut batch, marker, state.root_cell().clone())?;
 
         if block_id.shard_id.is_masterchain() {
             self.max_new_mc_cell_count.fetch_max(len, Ordering::Release);
@@ -117,12 +175,12 @@ impl ShardStateStorage {
         value[64..96].copy_from_slice(block_id.file_hash.as_slice());
 
         batch.put_cf(
-            &self.state.shard_state_db.get_cf(),
+            &self.shard_states.get_cf(),
             (block_id.shard_id, block_id.seq_no).to_vec(),
             value,
         );
 
-        self.state.shard_state_db.raw_db_handle().write(batch)?;
+        self.shard_states.raw_db_handle().write(batch)?;
 
         Ok(if handle.meta().set_has_state() {
             self.block_handle_storage.store_handle(handle)?;
@@ -137,13 +195,12 @@ impl ShardStateStorage {
         block_id: &ton_block::BlockIdExt,
     ) -> Result<Arc<ShardStateStuff>> {
         let shard_state = self
-            .state
-            .shard_state_db
+            .shard_states
             .get((block_id.shard_id, block_id.seq_no).to_vec())?;
         match shard_state {
             Some(root) => {
                 let cell_id = UInt256::from_be_bytes(&root);
-                let cell = self.state.cell_storage.load_cell(cell_id)?;
+                let cell = self.cell_storage.load_cell(cell_id)?;
 
                 ShardStateStuff::new(
                     block_id.clone(),
@@ -164,8 +221,8 @@ impl ShardStateStorage {
 
         Ok((
             ShardStateReplaceTransaction::new(
-                &self.state.shard_state_db,
-                &self.state.cell_storage,
+                &self.shard_states,
+                &self.cell_storage,
                 &self.min_ref_mc_state,
                 PS_MARKER,
             ),
@@ -173,19 +230,18 @@ impl ShardStateStorage {
         ))
     }
 
-    pub async fn remove_outdated_states(&self, mut mc_seq_no: u32) -> Result<TopBlocks> {
+    pub async fn compute_recent_blocks(&self, mut mc_seq_no: u32) -> Result<TopBlocks> {
         if let Some(min_ref_mc_seqno) = self.min_ref_mc_state.seq_no() {
             if min_ref_mc_seqno < mc_seq_no {
                 mc_seq_no = min_ref_mc_seqno;
             }
         }
         let mc_block_id = self
-            .state
             .find_mc_block_id(mc_seq_no)
             .context("Failed to find block id by seqno")?
             .with_context(|| format!("Masterchain state with seqno {mc_seq_no} not found"))?;
 
-        let top_blocks = match self.block_handle_storage.load_handle(&mc_block_id)? {
+        match self.block_handle_storage.load_handle(&mc_block_id)? {
             Some(handle) => {
                 if !handle.meta().has_state() {
                     return Err(ShardStateStorageError::NotFound)
@@ -230,10 +286,15 @@ impl ShardStateStorage {
                 self.block_storage
                     .load_block_data(&target_block_handle)
                     .await
-                    .and_then(|block_data| TopBlocks::from_mc_block(&block_data))?
+                    .and_then(|block_data| TopBlocks::from_mc_block(&block_data))
             }
-            None => return Err(ShardStateStorageError::NotFound).context("Target block not found"),
-        };
+            None => Err(ShardStateStorageError::NotFound).context("Target block not found"),
+        }
+    }
+
+    pub async fn remove_outdated_states(&self, mc_seq_no: u32) -> Result<TopBlocks> {
+        // Compute recent block ids for the specified masterchain seqno
+        let top_blocks = self.compute_recent_blocks(mc_seq_no).await?;
 
         log::info!(
             "Starting shard states GC for mc block: {}",
@@ -241,128 +302,50 @@ impl ShardStateStorage {
         );
         let instant = Instant::now();
 
-        self.state.gc(&top_blocks).await?;
-
-        log::info!(
-            "Finished shard states GC for mc block: {}. Took: {} ms",
-            top_blocks.mc_block,
-            instant.elapsed().as_millis()
-        );
-
-        Ok(top_blocks)
-    }
-}
-
-#[derive(Debug, Copy, Clone)]
-pub struct ShardStateStorageMetrics {
-    pub max_new_mc_cell_count: usize,
-    pub max_new_sc_cell_count: usize,
-}
-
-struct ShardStateStorageState {
-    current_marker: tokio::sync::RwLock<u8>,
-    shard_state_db: Tree<columns::ShardStates>,
-    gc_state_storage: Arc<GcStateStorage>,
-    cell_storage: Arc<CellStorage>,
-}
-
-impl ShardStateStorageState {
-    async fn new(db: &Arc<rocksdb::DB>) -> Result<Self> {
-        let res = Self {
-            current_marker: Default::default(),
-            shard_state_db: Tree::new(db)?,
-            gc_state_storage: Arc::new(GcStateStorage::new(db)?),
-            cell_storage: Arc::new(CellStorage::new(db)?),
-        };
-
-        let gc_state = res.gc_state_storage.load()?;
-
-        match &gc_state.step {
-            None => {
-                log::info!("Shard state GC is pending");
-                *res.current_marker.write().await = gc_state.current_marker;
+        // Reset GC state and compute markers
+        let (current_marker, target_marker) = {
+            let gc_state = self.gc_state_storage.load()?;
+            if gc_state.step.is_some() {
+                log::warn!("Invalid stored GC state: {gc_state:?}");
             }
-            Some(step) => {
-                let target_marker = gc_state.next_marker();
 
-                let mut target_marker_lock = res.current_marker.write().await;
-                *target_marker_lock = target_marker;
+            self.gc_state_storage
+                .update(&GcState {
+                    current_marker: gc_state.current_marker,
+                    step: Some(Step::Mark(top_blocks.clone())),
+                })
+                .context("Failed to update gc state to 'Mark'")?;
 
-                match step {
-                    Step::Mark(top_blocks) => {
-                        res.mark(
-                            gc_state.current_marker,
-                            target_marker_lock,
-                            top_blocks,
-                            true,
-                        )
-                        .await?;
-
-                        let target_marker_lock = res.current_marker.write().await;
-                        res.sweep_cells(gc_state.current_marker, target_marker_lock, top_blocks)
-                            .await?;
-
-                        res.sweep_blocks(target_marker, top_blocks).await?;
-                    }
-                    Step::SweepCells(top_blocks) => {
-                        res.sweep_cells(gc_state.current_marker, target_marker_lock, top_blocks)
-                            .await?;
-                        res.sweep_blocks(target_marker, top_blocks).await?;
-                    }
-                    Step::SweepBlocks(top_blocks) => {
-                        res.sweep_blocks(target_marker, top_blocks).await?;
-                    }
-                }
-            }
+            let target_marker = gc_state.next_marker();
+            (gc_state.current_marker, target_marker)
         };
 
-        Ok(res)
-    }
-
-    async fn gc(self: &Arc<Self>, top_blocks: &TopBlocks) -> Result<()> {
-        let gc_state = self.gc_state_storage.load()?;
-        if gc_state.step.is_some() {
-            log::info!("Invalid GC state: {gc_state:?}");
-        };
-
-        self.gc_state_storage
-            .update(&GcState {
-                current_marker: gc_state.current_marker,
-                step: Some(Step::Mark(top_blocks.clone())),
-            })
-            .context("Failed to update gc state to 'Mark'")?;
-
-        let target_marker = gc_state.next_marker();
-
+        // Wait until all writes will be finished and take write lock of the current marker
         let mut target_marker_lock = self.current_marker.write().await;
+        // Update current marker
         *target_marker_lock = target_marker;
 
-        self.mark(
-            gc_state.current_marker,
-            target_marker_lock,
-            top_blocks,
-            false,
-        )
-        .await?;
+        // Mark all blocks, referenced by `top_blocks`, with target marker
+        self.mark(current_marker, target_marker_lock, &top_blocks, false)
+            .await?;
 
         // Wait until all states are written and prevent writing new states
         let target_marker_lock = self.current_marker.write().await;
-        self.sweep_cells(gc_state.current_marker, target_marker_lock, top_blocks)
+
+        // Remove all cells with different marker
+        self.sweep_cells(current_marker, target_marker_lock, &top_blocks)
             .await?;
+        // Remove all blocks which are not referenced by `top_blocks`
+        self.sweep_blocks(target_marker, &top_blocks).await?;
 
-        self.sweep_blocks(target_marker, top_blocks).await
+        // Done
+        log::info!(
+            "Finished shard states GC for mc block: {}. Took: {} s",
+            top_blocks.mc_block,
+            instant.elapsed().as_secs_f64()
+        );
+        Ok(top_blocks)
     }
-
-    // async fn update_persistent_state(
-    //     self: &Arc<Self>,
-    //     prev_ps_root: &UInt256,
-    //     new_ps_root: &UInt256,
-    // ) -> Result<()> {
-    //     // Traverse new persistent state and mark it with `PS_TEMP_MARKER`.
-    //     // NOTE: Top cell of the old persistent state will be marked
-    //
-    //     // Traverse old persistent state
-    // }
 
     async fn mark<'a>(
         &self,
@@ -382,7 +365,7 @@ impl ShardStateStorageState {
             .context("Failed to load last shard blocks")?;
 
         let total = {
-            let db = self.shard_state_db.raw_db_handle();
+            let db = self.shard_states.raw_db_handle();
 
             let total = Arc::new(AtomicUsize::new(0));
             let mut tasks = FuturesUnordered::new();
@@ -594,7 +577,7 @@ impl ShardStateStorageState {
         let time = Instant::now();
 
         // Prepare context
-        let db = self.shard_state_db.raw_db_handle().clone();
+        let db = self.shard_states.raw_db_handle().clone();
         let top_blocks = top_blocks.clone();
 
         // Spawn blocking thread for iterator
@@ -647,7 +630,7 @@ impl ShardStateStorageState {
 
     fn find_mc_block_id(&self, mc_seq_no: u32) -> Result<Option<ton_block::BlockIdExt>> {
         Ok(self
-            .shard_state_db
+            .shard_states
             .get((ton_block::ShardIdent::masterchain(), mc_seq_no).to_vec())?
             .and_then(|value| {
                 let value = value.as_ref();
@@ -677,9 +660,9 @@ impl ShardStateStorageState {
             0xff, 0xff, 0xff, 0xff, // seq no
         ];
 
-        let cf = self.shard_state_db.get_cf();
+        let cf = self.shard_states.get_cf();
 
-        let db = self.shard_state_db.raw_db_handle();
+        let db = self.shard_states.raw_db_handle();
         let mut read_options = rocksdb::ReadOptions::default();
         columns::ShardStates::read_options(&mut read_options);
 
@@ -701,6 +684,16 @@ impl ShardStateStorageState {
 
         Ok(shard_idents)
     }
+}
+
+#[derive(Debug, Copy, Clone)]
+pub struct ShardStateStorageMetrics {
+    #[cfg(feature = "count-cells")]
+    pub storage_cell_live_count: usize,
+    #[cfg(feature = "count-cells")]
+    pub storage_cell_max_live_count: usize,
+    pub max_new_mc_cell_count: usize,
+    pub max_new_sc_cell_count: usize,
 }
 
 struct GcStateStorage {
@@ -861,6 +854,15 @@ impl StoredValue for LastShardBlockKey {
 
         ton_block::ShardIdent::deserialize(reader).map(Self)
     }
+}
+
+async fn prepare_file_db_dir<P: AsRef<Path>>(
+    file_db_path: P,
+    folder: &str,
+) -> Result<Arc<PathBuf>> {
+    let dir = Arc::new(file_db_path.as_ref().join(folder));
+    tokio::fs::create_dir_all(dir.as_ref()).await?;
+    Ok(dir)
 }
 
 const STATES_GC_STATE_KEY: &[u8] = b"states_gc_state";

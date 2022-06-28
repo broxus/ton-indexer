@@ -22,7 +22,6 @@ mod block_handle;
 mod block_handle_storage;
 mod block_meta;
 mod block_storage;
-mod cell_storage;
 mod columns;
 mod migrations;
 mod node_state_storage;
@@ -175,14 +174,7 @@ impl Db {
     }
 
     pub fn metrics(&self) -> DbMetrics {
-        #[cfg(feature = "count-cells")]
-        let storage_cell = countme::get::<cell_storage::StorageCell>();
-
         DbMetrics {
-            #[cfg(feature = "count-cells")]
-            storage_cell_live_count: storage_cell.live,
-            #[cfg(feature = "count-cells")]
-            storage_cell_max_live_count: storage_cell.max_live,
             shard_state_storage: self.shard_state_storage.metrics(),
         }
     }
@@ -214,9 +206,5 @@ impl Db {
 
 #[derive(Debug, Copy, Clone)]
 pub struct DbMetrics {
-    #[cfg(feature = "count-cells")]
-    pub storage_cell_live_count: usize,
-    #[cfg(feature = "count-cells")]
-    pub storage_cell_max_live_count: usize,
     pub shard_state_storage: ShardStateStorageMetrics,
 }
