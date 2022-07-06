@@ -9,7 +9,9 @@ impl EntriesBuffer {
         &mut self.0[0]
     }
 
-    pub fn iter_child_buffers(&mut self) -> impl Iterator<Item = &mut [u8; HashesEntry::LEN]> {
+    pub fn iter_child_buffers(
+        &mut self,
+    ) -> impl Iterator<Item = &mut [u8; HashesEntry::<'static>::LEN]> {
         self.0.iter_mut().skip(1)
     }
 
@@ -103,7 +105,7 @@ pub struct HashesEntry<'a>(&'a [u8]);
 impl<'a> HashesEntry<'a> {
     // 4 bytes - info (1 byte level mask, 1 byte cell type, 2 bytes padding)
     // 8 bytes - tree bits count
-    // 4 bytes - cell count
+    // 8 bytes - cell count
     // 32 * 4 bytes - hashes
     // 2 * 4 bytes - depths
     pub const LEN: usize = 4 + 8 + 8 + 32 * 4 + 2 * 4;
