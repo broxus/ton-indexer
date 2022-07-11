@@ -9,7 +9,6 @@ use futures_util::StreamExt;
 use itertools::Itertools;
 use smallvec::SmallVec;
 use tokio::sync::RwLockWriteGuard;
-use ton_block::HashmapAugType;
 use ton_types::UInt256;
 
 use self::cell_storage::*;
@@ -229,71 +228,75 @@ impl ShardStateStorage {
         ))
     }
 
-    pub async fn compute_recent_blocks(&self, mut mc_seq_no: u32) -> Result<TopBlocks> {
+    /// Searches for an edge with the least referenced masterchain block
+    ///
+    /// Returns `None` if all states are recent enough
+    pub async fn compute_recent_blocks(&self, mut mc_seq_no: u32) -> Result<Option<TopBlocks>> {
+        // 0. Adjust masterchain seqno with minimal referenced masterchain state
         if let Some(min_ref_mc_seqno) = self.min_ref_mc_state.seq_no() {
             if min_ref_mc_seqno < mc_seq_no {
                 mc_seq_no = min_ref_mc_seqno;
             }
         }
-        let mc_block_id = self
+
+        // 1. Find target block
+
+        // Find block id using states table
+        let mc_block_id = match self
             .find_mc_block_id(mc_seq_no)
             .context("Failed to find block id by seqno")?
-            .with_context(|| format!("Masterchain state with seqno {mc_seq_no} not found"))?;
+        {
+            Some(block_id) => block_id,
+            None => return Ok(None),
+        };
 
-        match self.block_handle_storage.load_handle(&mc_block_id)? {
-            Some(handle) => {
-                if !handle.meta().has_state() {
-                    return Err(ShardStateStorageError::NotFound)
-                        .context("Target block has no state")?;
-                }
-                if !handle.meta().has_data() {
-                    return Err(ShardStateStorageError::NotFound)
-                        .context("Target block has no data")?;
-                }
+        // Find block handle
+        let handle = match self.block_handle_storage.load_handle(&mc_block_id)? {
+            Some(handle) if handle.meta().has_data() => handle,
+            // Skip blocks without handle or data
+            _ => return Ok(None),
+        };
 
-                let state = self
-                    .load_state(handle.id())
-                    .await
-                    .context("Failed to load shard state for target block")?;
-                let state_extra = state.shard_state_extra()?;
+        // 2. Find minimal referenced masterchain block from the target block
 
-                let block_data = self.block_storage.load_block_data(&handle).await?;
-                let block_info = block_data
-                    .block()
-                    .read_info()
-                    .context("Failed to read target block info")?;
+        let block_data = self.block_storage.load_block_data(&handle).await?;
+        let block_info = block_data
+            .block()
+            .read_info()
+            .context("Failed to read target block info")?;
 
-                let target_block_id = state_extra
-                    .prev_blocks
-                    .get(&block_info.min_ref_mc_seqno())
-                    .context("Failed to find min ref mc block id")?
-                    .context("Prev ref mc not found")?
-                    .master_block_id()
-                    .1;
+        // Find full min masterchain reference id
+        let min_ref_mc_seqno = block_info.min_ref_mc_seqno();
+        let min_ref_block_id = match self.find_mc_block_id(min_ref_mc_seqno)? {
+            Some(block_id) => block_id,
+            None => return Ok(None),
+        };
 
-                let target_block_handle = self
-                    .block_handle_storage
-                    .load_handle(&target_block_id)
-                    .context("Failed to find min ref mc block handle")?
-                    .context("Prev ref mc handle not found")?;
+        // Find block handle
+        let min_ref_block_handle = match self
+            .block_handle_storage
+            .load_handle(&min_ref_block_id)
+            .context("Failed to find min ref mc block handle")?
+        {
+            Some(handle) if handle.meta().has_data() => handle,
+            // Skip blocks without handle or data
+            _ => return Ok(None),
+        };
 
-                if !target_block_handle.meta().has_data() {
-                    return Err(ShardStateStorageError::NotFound)
-                        .context("Min ref mc block has no data")?;
-                }
-
-                self.block_storage
-                    .load_block_data(&target_block_handle)
-                    .await
-                    .and_then(|block_data| TopBlocks::from_mc_block(&block_data))
-            }
-            None => Err(ShardStateStorageError::NotFound).context("Target block not found"),
-        }
+        // Compute `TopBlocks` from block data
+        self.block_storage
+            .load_block_data(&min_ref_block_handle)
+            .await
+            .and_then(|block_data| TopBlocks::from_mc_block(&block_data))
+            .map(Some)
     }
 
     pub async fn remove_outdated_states(&self, mc_seq_no: u32) -> Result<TopBlocks> {
         // Compute recent block ids for the specified masterchain seqno
-        let top_blocks = self.compute_recent_blocks(mc_seq_no).await?;
+        let top_blocks = self
+            .compute_recent_blocks(mc_seq_no)
+            .await?
+            .context("Recent blocks edge not found")?;
 
         log::info!(
             "Starting shard states GC for mc block: {}",
