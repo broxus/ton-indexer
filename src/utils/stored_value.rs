@@ -2,6 +2,8 @@ use anyhow::Result;
 use smallvec::SmallVec;
 use ton_types::ByteOrderRead;
 
+use super::block::BlockIdShort;
+
 /// A trait for writing or reading data from a stack-allocated buffer
 pub trait StoredValue {
     /// On-stack buffer size hint
@@ -124,6 +126,29 @@ impl StoredValue for ton_block::ShardIdent {
         let workchain_id = reader.read_be_u32()? as i32;
         let shard_prefix_tagged = reader.read_be_u64()?;
         Ok(unsafe { Self::with_tagged_prefix_unchecked(workchain_id, shard_prefix_tagged) })
+    }
+}
+
+impl StoredValue for BlockIdShort {
+    /// 12 bytes shard ident
+    /// 4 bytes seqno
+    const SIZE_HINT: usize = ton_block::ShardIdent::SIZE_HINT + 4;
+
+    type OnStackSlice = [u8; Self::SIZE_HINT];
+
+    #[inline(always)]
+    fn serialize<T: StoredValueBuffer>(&self, buffer: &mut T) {
+        self.0.serialize(buffer);
+        buffer.write_raw_slice(&self.1.to_be_bytes());
+    }
+
+    fn deserialize(reader: &mut &[u8]) -> Result<Self>
+    where
+        Self: Sized,
+    {
+        let shard_id = ton_block::ShardIdent::deserialize(reader)?;
+        let seq_no = reader.read_be_u32()?;
+        Ok((shard_id, seq_no))
     }
 }
 

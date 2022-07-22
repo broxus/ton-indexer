@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::process::ExitCode;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
@@ -28,11 +29,13 @@ pub struct App {
 }
 
 #[tokio::main]
-async fn main() {
+async fn main() -> ExitCode {
     if let Err(e) = run(argh::from_env()).await {
         eprintln!("Fatal error: {e:?}");
-        std::process::exit(1);
+        return ExitCode::FAILURE;
     }
+
+    ExitCode::SUCCESS
 }
 
 async fn run(app: App) -> Result<()> {

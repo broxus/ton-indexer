@@ -22,15 +22,13 @@ mod block_handle;
 mod block_handle_storage;
 mod block_meta;
 mod block_storage;
-mod cell_storage;
 mod columns;
+mod migrations;
 mod node_state_storage;
 mod persistent_state_keeper;
 mod runtime_storage;
 mod shard_state_storage;
 mod tree;
-
-const CURRENT_VERSION: [u8; 3] = [2, 0, 6];
 
 pub struct Db {
     file_db_path: PathBuf,
@@ -114,7 +112,9 @@ impl Db {
             .build()
             .context("Failed building db")?;
 
-        check_version(&db)?;
+        migrations::apply(&db)
+            .await
+            .context("Failed to apply migrations")?;
 
         let runtime_storage = Arc::new(RuntimeStorage::default());
         let block_handle_storage = Arc::new(BlockHandleStorage::with_db(&db)?);
@@ -174,14 +174,7 @@ impl Db {
     }
 
     pub fn metrics(&self) -> DbMetrics {
-        #[cfg(feature = "count-cells")]
-        let storage_cell = countme::get::<cell_storage::StorageCell>();
-
         DbMetrics {
-            #[cfg(feature = "count-cells")]
-            storage_cell_live_count: storage_cell.live,
-            #[cfg(feature = "count-cells")]
-            storage_cell_max_live_count: storage_cell.max_live,
             shard_state_storage: self.shard_state_storage.metrics(),
         }
     }
@@ -213,47 +206,5 @@ impl Db {
 
 #[derive(Debug, Copy, Clone)]
 pub struct DbMetrics {
-    #[cfg(feature = "count-cells")]
-    pub storage_cell_live_count: usize,
-    #[cfg(feature = "count-cells")]
-    pub storage_cell_max_live_count: usize,
     pub shard_state_storage: ShardStateStorageMetrics,
-}
-
-fn check_version(db: &Arc<rocksdb::DB>) -> Result<()> {
-    const DB_VERSION_KEY: &str = "db_version";
-
-    let state = Tree::<columns::NodeStates>::new(db)?;
-    let is_empty = state
-        .iterator(rocksdb::IteratorMode::Start)
-        .next()
-        .is_none();
-
-    let version = state.get(DB_VERSION_KEY)?.map(|v| v.to_vec());
-
-    match version {
-        Some(version) if version == CURRENT_VERSION => {
-            log::info!("Stored DB version is compatible");
-            Ok(())
-        }
-        Some(version) => Err(DbError::IncompatibleDbVersion).with_context(|| {
-            format!("Found version: {version:?}. Expected version: {CURRENT_VERSION:?}")
-        }),
-        None if is_empty => {
-            log::info!("Starting with empty db");
-            state
-                .insert(DB_VERSION_KEY, CURRENT_VERSION)
-                .context("Failed to save new DB version")?;
-            Ok(())
-        }
-        None => Err(DbError::VersionNotFound.into()),
-    }
-}
-
-#[derive(thiserror::Error, Debug)]
-enum DbError {
-    #[error("Incompatible DB version")]
-    IncompatibleDbVersion,
-    #[error("Existing DB version not found")]
-    VersionNotFound,
 }

@@ -63,21 +63,15 @@ impl HashesEntryWriter<'_> {
     }
 
     pub fn set_tree_bits_count(&mut self, count: u64) {
-        self.get_tree_bits_count_slice()
-            .copy_from_slice(&count.to_le_bytes());
-    }
-
-    pub fn get_tree_bits_count_slice(&mut self) -> &mut [u8] {
-        &mut self.0[4..12]
+        self.0[4..12].copy_from_slice(&count.to_le_bytes());
     }
 
     pub fn set_tree_cell_count(&mut self, count: u64) {
-        self.get_tree_cell_count_slice()
-            .copy_from_slice(&count.to_le_bytes());
+        self.0[12..20].copy_from_slice(&count.to_le_bytes());
     }
 
-    pub fn get_tree_cell_count_slice(&mut self) -> &mut [u8] {
-        &mut self.0[12..20]
+    pub fn get_tree_counters(&mut self) -> &[u8] {
+        &self.0[4..20]
     }
 
     pub fn set_hash(&mut self, i: u8, hash: &[u8]) {

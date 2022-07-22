@@ -67,7 +67,7 @@ pub async fn download_state(
             }
         }
 
-        Result::<_, anyhow::Error>::Ok(total_bytes)
+        Ok::<_, anyhow::Error>(total_bytes)
     };
 
     tokio::spawn(async move {

@@ -3,7 +3,7 @@ use rocksdb::{
     ReadOptions, SliceTransform,
 };
 
-use super::{Column, DbCaches, StoredValue, ARCHIVE_PREFIX};
+use super::{Column, DbCaches, ARCHIVE_PREFIX};
 
 /// Stores prepared archives
 /// - Key: `u32 (BE)` (archive id)
@@ -69,11 +69,6 @@ impl Column for PackageEntries {
     fn options(opts: &mut Options, caches: &DbCaches) {
         default_block_based_table_factory(opts, caches);
 
-        // Root hash, file hash and type are not needed
-        opts.set_prefix_extractor(SliceTransform::create_fixed_prefix(
-            ton_block::ShardIdent::SIZE_HINT + std::mem::size_of::<u32>(),
-        ));
-
         opts.set_optimize_filters_for_hits(true);
     }
 }
@@ -87,11 +82,6 @@ impl Column for ShardStates {
 
     fn options(opts: &mut Options, caches: &DbCaches) {
         default_block_based_table_factory(opts, caches);
-
-        // Root hash and file hash are not needed
-        opts.set_prefix_extractor(SliceTransform::create_fixed_prefix(
-            ton_block::ShardIdent::SIZE_HINT + std::mem::size_of::<u32>(),
-        ))
     }
 }
 
@@ -103,14 +93,14 @@ impl Column for Cells {
     const NAME: &'static str = "cells";
 
     fn options(opts: &mut Options, caches: &DbCaches) {
+        opts.set_merge_operator_associative("cell_merge", cell_merge);
+
         opts.set_write_buffer_size(128 * 1024 * 1024);
-        opts.set_prefix_extractor(SliceTransform::create_fixed_prefix(32));
 
         let mut block_factory = BlockBasedOptions::default();
         block_factory.set_block_cache(&caches.block_cache);
         block_factory.set_block_cache_compressed(&caches.compressed_block_cache);
 
-        block_factory.set_index_type(BlockBasedIndexType::HashSearch);
         block_factory.set_data_block_index_type(DataBlockIndexType::BinaryAndHash);
 
         opts.set_block_based_table_factory(&block_factory);
@@ -208,6 +198,21 @@ impl Column for Next2 {
     fn read_options(opts: &mut ReadOptions) {
         opts.set_verify_checksums(false);
     }
+}
+
+fn cell_merge(_: &[u8], current_value: Option<&[u8]>, operands: &MergeOperands) -> Option<Vec<u8>> {
+    let mut current_value = current_value?.to_vec();
+    if let Some(new_marker) = operands
+        .into_iter()
+        .last()
+        .and_then(|operand| operand.get(0))
+    {
+        if let Some(old_marker) = current_value.get_mut(0) {
+            *old_marker = *new_marker;
+        }
+    }
+
+    Some(current_value)
 }
 
 fn archive_data_merge(

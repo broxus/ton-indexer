@@ -14,7 +14,6 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use parking_lot::RwLock;
-use ton_types::ByteOrderRead;
 
 use super::{
     columns, BlockHandle, BlockHandleStorage, BlockMetaData, Column, HandleCreationStatus,
@@ -716,22 +715,18 @@ fn remove_blocks(
     );
     for (key, _) in blocks_iter {
         // Read only prefix with shard ident and seqno
-        let prefix = PackageEntryIdPrefix::from_slice(key.as_ref())?;
+        let (shard_ident, seq_no) = BlockIdShort::deserialize(&mut key.as_ref())?;
 
         // Don't gc latest blocks
-        if top_blocks.contains_shard_seq_no(&prefix.shard_ident, prefix.seq_no) {
+        if top_blocks.contains_shard_seq_no(&shard_ident, seq_no) {
             continue;
         }
 
         // Additionally check whether this item is a key block
-        if prefix.seq_no == 0
-            || prefix.shard_ident.is_masterchain()
+        if seq_no == 0
+            || shard_ident.is_masterchain()
                 && db
-                    .get_pinned_cf_opt(
-                        &key_blocks_cf,
-                        prefix.seq_no.to_be_bytes(),
-                        &key_blocks_readopts,
-                    )?
+                    .get_pinned_cf_opt(&key_blocks_cf, seq_no.to_be_bytes(), &key_blocks_readopts)?
                     .is_some()
         {
             // Don't remove key blocks
@@ -741,7 +736,7 @@ fn remove_blocks(
         // Add item to the batch
         batch.delete_cf(&blocks_cf, &key);
         stats.total_package_entries_removed += 1;
-        if prefix.shard_ident.is_masterchain() {
+        if shard_ident.is_masterchain() {
             stats.mc_package_entries_removed += 1;
         }
 
@@ -778,24 +773,6 @@ fn remove_blocks(
 
     // Done
     Ok(stats)
-}
-
-struct PackageEntryIdPrefix {
-    shard_ident: ton_block::ShardIdent,
-    seq_no: u32,
-}
-
-impl PackageEntryIdPrefix {
-    fn from_slice(mut data: &[u8]) -> Result<Self> {
-        let reader = &mut data;
-        let shard_ident = ton_block::ShardIdent::deserialize(reader)?;
-        let seq_no = reader.read_be_u32()?;
-
-        Ok(Self {
-            shard_ident,
-            seq_no,
-        })
-    }
 }
 
 #[derive(Debug, Copy, Clone, Default)]

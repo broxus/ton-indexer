@@ -6,10 +6,10 @@ use num_traits::ToPrimitive;
 use rustc_hash::FxHashMap;
 use ton_types::UInt256;
 
+use super::cell_storage::*;
 use super::entries_buffer::*;
 use super::files_context::*;
 use super::parser::*;
-use crate::db::cell_storage::*;
 use crate::db::{columns, Tree};
 use crate::utils::*;
 
@@ -198,15 +198,15 @@ impl<'a> ShardStateReplaceTransaction<'a> {
 
         progress_bar.complete();
 
-        let block_id_key = block_id.to_vec();
+        let shard_state_key = (block_id.shard_id, block_id.seq_no).to_vec();
 
         // Current entry contains root cell
         let current_entry = entries_buffer.split_children(&[]).0;
         self.shard_state_db
-            .insert(block_id_key.as_slice(), current_entry.as_reader().hash(3))?;
+            .insert(&shard_state_key, current_entry.as_reader().hash(3))?;
 
         // Load stored shard state
-        match self.shard_state_db.get(block_id_key)? {
+        match self.shard_state_db.get(shard_state_key)? {
             Some(root) => {
                 let cell_id = UInt256::from_be_bytes(&root);
 
@@ -361,9 +361,7 @@ impl<'a> ShardStateReplaceTransaction<'a> {
         // Write cell data
         output_buffer.clear();
 
-        output_buffer.write_all(&[self.marker])?;
-
-        output_buffer.write_all(&[cell.cell_type.to_u8().unwrap()])?;
+        output_buffer.write_all(&[self.marker, cell.cell_type.to_u8().unwrap()])?;
         output_buffer.write_all(&(cell.bit_len as u16).to_le_bytes())?;
         output_buffer.write_all(&cell.data[0..(cell.bit_len + 8) / 8])?;
         output_buffer.write_all(&[cell.level_mask, 0, 1, hash_count])?; // level_mask, store_hashes, has_hashes, hash_count
@@ -382,8 +380,7 @@ impl<'a> ShardStateReplaceTransaction<'a> {
         }
 
         // Write counters
-        output_buffer.write_all(current_entry.get_tree_bits_count_slice())?;
-        output_buffer.write_all(current_entry.get_tree_cell_count_slice())?;
+        output_buffer.write_all(current_entry.get_tree_counters())?;
 
         // Save serialized data
         if is_pruned_cell {

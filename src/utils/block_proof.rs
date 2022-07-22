@@ -12,10 +12,9 @@ use crate::utils::*;
 
 pub type BlockProofStuffAug = WithArchiveData<BlockProofStuff>;
 
-#[derive(Debug, Default, Clone, Eq, PartialEq)]
+#[derive(Clone)]
 pub struct BlockProofStuff {
     proof: ton_block::BlockProof,
-    root: Cell,
     is_link: bool,
     id: ton_block::BlockIdExt,
 }
@@ -27,7 +26,7 @@ impl BlockProofStuff {
         is_link: bool,
     ) -> Result<Self> {
         let root = ton_types::deserialize_tree_of_cells(&mut data)?;
-        let proof = ton_block::BlockProof::construct_from(&mut root.clone().into())?;
+        let proof = ton_block::BlockProof::construct_from(&mut root.into())?;
 
         if proof.proof_for != block_id {
             return Err(anyhow!(
@@ -42,7 +41,6 @@ impl BlockProofStuff {
 
         Ok(Self {
             proof,
-            root,
             is_link,
             id: block_id,
         })
@@ -53,7 +51,7 @@ impl BlockProofStuff {
             ton_block::MerkleProof::construct_from(&mut self.proof.root.clone().into())?;
         let block_virt_root = merkle_proof.proof.virtualize(1);
 
-        if *self.proof.proof_for.root_hash() != block_virt_root.repr_hash() {
+        if self.proof.proof_for.root_hash() != block_virt_root.repr_hash() {
             return Err(anyhow!(
                 "merkle proof has invalid virtual hash (found: {}, expected: {})",
                 block_virt_root.repr_hash(),

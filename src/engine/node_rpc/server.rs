@@ -198,7 +198,7 @@ impl QueryHandler {
                 }
             }
 
-            Result::<_, anyhow::Error>::Ok(ids)
+            Ok::<_, anyhow::Error>(ids)
         };
 
         let (incomplete, error, blocks) = match get_next_key_block_ids() {
