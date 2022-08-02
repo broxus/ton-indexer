@@ -355,12 +355,23 @@ fn deserialize_cell<'a>(
     Some((d1, d2, data))
 }
 
+#[cfg(not(target_os = "macos"))]
 fn alloc_file(file: &File, len: usize) -> std::io::Result<()> {
     let res = unsafe { libc::posix_fallocate(file.as_raw_fd(), 0, len as i64) };
     if res == 0 {
         Ok(())
     } else {
         Err(std::io::Error::last_os_error())
+    }
+}
+
+#[cfg(target_os = "macos")]
+pub fn alloc_file(file: &File, len: usize) -> std::io::Result<()> {
+    let res = unsafe { libc::ftruncate(file.as_raw_fd(), len as i64) };
+    if res < 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
     }
 }
 
