@@ -45,7 +45,7 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sha2 = "0.9"
 smallvec = { version = "1.8.0", features = ["const_generics", "serde", "write", "union"] }
-sysinfo = { version = "0.24.3", default-features = false }
+sysinfo = { version = "0.25.1", default-features = false }
 thiserror = "1.0"
 tl-proto = { version = "0.3.2", features = ["derive"] }
 tokio = { version = "1", features = ["sync", "fs", "rt-multi-thread", "parking_lot"] }
@@ -63,9 +63,9 @@ global-config = { path = "global-config" }
 [dev-dependencies]
 argh = "0.1"
 cargo-husky = { version = "1.5.0", features = ["precommit-hook", "run-cargo-test", "run-cargo-clippy", "run-cargo-fmt"] }
-config = { version = "0.11", default-features = false, features = ["yaml"] }
+config = { version = "0.13", default-features = false, features = ["yaml"] }
 log4rs = "1.0"
-serde_yaml = "0.8"
+serde_yaml = "0.9"
 tokio = { version = "1", features = ["full"] }
 
 ip-resolver = { path = "./ip-resolver" }

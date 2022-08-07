@@ -3,7 +3,7 @@ use std::process::ExitCode;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use argh::FromArgs;
 use everscale_network::utils::now;
 use serde::{Deserialize, Serialize};
@@ -109,12 +109,13 @@ fn read_config<T>(path: T) -> Result<Config>
 where
     T: AsRef<Path>,
 {
-    let mut config = config::Config::new();
-    config.merge(config::File::from(path.as_ref()).format(config::FileFormat::Yaml))?;
-    config.merge(config::Environment::new())?;
-
-    let config: Config = config.try_into()?;
-    Ok(config)
+    config::Config::builder()
+        .add_source(config::File::from(path.as_ref()).format(config::FileFormat::Yaml))
+        .add_source(config::Environment::default())
+        .build()
+        .context("Failed to build config")?
+        .try_deserialize()
+        .context("Failed to parse config")
 }
 
 fn read_global_config<T>(path: T) -> Result<GlobalConfig>
