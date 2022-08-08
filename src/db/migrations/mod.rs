@@ -23,6 +23,7 @@ pub async fn apply(db: &Arc<rocksdb::DB>) -> Result<()> {
     let is_empty = state
         .iterator(rocksdb::IteratorMode::Start)
         .next()
+        .transpose()?
         .is_none();
     if is_empty {
         log::info!("Starting with empty db");

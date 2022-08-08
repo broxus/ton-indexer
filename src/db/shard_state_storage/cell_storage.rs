@@ -168,15 +168,12 @@ impl CellStorage {
                 let cells_cf = db.cf_handle(columns::Cells::NAME).context("No cf")?;
 
                 // Prepare iterator
-                let iter = db.iterator_cf_opt(
-                    &cells_cf,
-                    read_options,
-                    if let Some(lower_bound) = &lower_bound {
-                        rocksdb::IteratorMode::From(lower_bound, rocksdb::Direction::Forward)
-                    } else {
-                        rocksdb::IteratorMode::Start
-                    },
-                );
+                let mut iter = db.raw_iterator_cf_opt(&cells_cf, read_options);
+                if let Some(lower_bound) = &lower_bound {
+                    iter.seek(lower_bound);
+                } else {
+                    iter.seek_to_first();
+                }
 
                 // Prepare cells write options
                 let mut write_options = rocksdb::WriteOptions::default();
@@ -184,16 +181,22 @@ impl CellStorage {
 
                 // Iterate all cells in range
                 let mut subtotal = 0;
-                for (key, value) in iter {
-                    if value.is_empty() {
-                        continue;
-                    }
-                    let marker = value[0];
+                loop {
+                    let (key, value) = match iter.item() {
+                        Some(item) => item,
+                        None => break iter.status()?,
+                    };
 
-                    if marker > 0 && marker != target_marker {
-                        db.delete_cf_opt(&cells_cf, key, &write_options)?;
-                        subtotal += 1;
+                    if !value.is_empty() {
+                        let marker = value[0];
+
+                        if marker > 0 && marker != target_marker {
+                            db.delete_cf_opt(&cells_cf, key, &write_options)?;
+                            subtotal += 1;
+                        }
                     }
+
+                    iter.next();
                 }
 
                 total.fetch_add(subtotal, Ordering::Relaxed);

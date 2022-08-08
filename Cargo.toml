@@ -7,9 +7,6 @@ rust-version = "1.60"
 
 [workspace]
 members = [
-    "ip-resolver",
-    "ip-resolver-server",
-    "ton-indexer-alloc",
     "global-config",
     "archive-uploader"
 ]
@@ -50,14 +47,14 @@ thiserror = "1.0"
 tl-proto = { version = "0.3.2", features = ["derive"] }
 tokio = { version = "1", features = ["sync", "fs", "rt-multi-thread", "parking_lot"] }
 tokio-util = "0.7.0"
+broxus-util = { version = "0.1", default-features = false, features = ["alloc"] }
 
-rocksdb = { git = "https://github.com/Rexagon/rust-rocksdb.git", features = ["multi-threaded-cf", "zstd", "lz4", "jemalloc"], default-features = false }
+rocksdb = { version = "0.19", features = ["multi-threaded-cf", "zstd", "lz4", "jemalloc"], default-features = false }
 
 ton_block = { git = "https://github.com/broxus/ton-labs-block.git" }
 ton_types = { git = "https://github.com/broxus/ton-labs-types.git" }
 
 archive-uploader = { path = "archive-uploader", optional = true }
-ton-indexer-alloc = { path = "ton-indexer-alloc" }
 global-config = { path = "global-config" }
 
 [dev-dependencies]
@@ -67,12 +64,12 @@ config = { version = "0.13", default-features = false, features = ["yaml"] }
 log4rs = "1.0"
 serde_yaml = "0.9"
 tokio = { version = "1", features = ["full"] }
-
-ip-resolver = { path = "./ip-resolver" }
+broxus-util = { version = "0.1", default-features = false, features = ["config", "log4rs", "alloc", "public-ip"] }
 
 [features]
 default = []
 count-cells = ["countme/enable", "ton_types/profile"]
+io-uring = ["rocksdb/io-uring"]
 
 [profile.release]
 debug = true

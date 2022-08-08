@@ -3,7 +3,7 @@ use std::process::ExitCode;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use argh::FromArgs;
 use everscale_network::utils::now;
 use serde::{Deserialize, Serialize};
@@ -39,15 +39,17 @@ async fn main() -> ExitCode {
 }
 
 async fn run(app: App) -> Result<()> {
-    let mut config = read_config(app.config)?;
+    // SAFETY: global allocator is set to jemalloc
+    unsafe { ton_indexer::alloc::apply_config() };
 
-    let ip_address = ip_resolver::Ip::Public
-        .resolve(config.indexer.ip_address.port())
-        .await?;
-    config.indexer.ip_address = ip_address;
+    let mut config: Config = broxus_util::read_config(app.config)?;
+    config
+        .indexer
+        .ip_address
+        .set_ip(broxus_util::resolve_public_ip(None).await?);
 
     let global_config = read_global_config(app.global_config)?;
-    init_logger(&config.logger_settings)?;
+    broxus_util::init_logger(&config.logger_settings)?;
 
     let subscribers =
         vec![Arc::new(LoggerSubscriber::default()) as Arc<dyn ton_indexer::Subscriber>];
@@ -105,19 +107,6 @@ struct Config {
     logger_settings: serde_yaml::Value,
 }
 
-fn read_config<T>(path: T) -> Result<Config>
-where
-    T: AsRef<Path>,
-{
-    config::Config::builder()
-        .add_source(config::File::from(path.as_ref()).format(config::FileFormat::Yaml))
-        .add_source(config::Environment::default())
-        .build()
-        .context("Failed to build config")?
-        .try_deserialize()
-        .context("Failed to parse config")
-}
-
 fn read_global_config<T>(path: T) -> Result<GlobalConfig>
 where
     T: AsRef<Path>,
@@ -126,10 +115,4 @@ where
     let reader = std::io::BufReader::new(file);
     let config = serde_json::from_reader(reader)?;
     Ok(config)
-}
-
-fn init_logger(config: &serde_yaml::Value) -> Result<()> {
-    let config = serde_yaml::from_value(config.clone())?;
-    log4rs::config::init_raw_config(config)?;
-    Ok(())
 }

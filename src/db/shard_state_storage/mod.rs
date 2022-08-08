@@ -1,3 +1,4 @@
+use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -373,7 +374,7 @@ impl ShardStateStorage {
             let mut tasks = FuturesUnordered::new();
 
             // Prepare one database snapshot for all shard states iterators
-            let snapshot = db.snapshot();
+            let snapshot = Arc::new(OwnedSnapshot::new(db.clone()));
 
             let mut unique_shards = self
                 .find_unique_shards(Some(&snapshot))
@@ -391,7 +392,7 @@ impl ShardStateStorage {
             // Iterate all shards
             for shard_idents in &unique_shards.into_iter().chunks(shards_per_chunk) {
                 // Prepare context
-                let db = db.clone();
+                let snapshot = snapshot.clone();
                 let top_blocks = top_blocks.clone();
                 let cell_storage = self.cell_storage.clone();
                 let total = total.clone();
@@ -416,7 +417,6 @@ impl ShardStateStorage {
                         // Prepare shard states read options
                         let mut read_options = rocksdb::ReadOptions::default();
                         columns::ShardStates::read_options(&mut read_options);
-                        read_options.set_snapshot(&snapshot);
                         read_options.set_iterate_lower_bound(lower_bound);
 
                         // Compute intermediate state key
@@ -433,6 +433,8 @@ impl ShardStateStorage {
 
                 // Spawn task
                 tasks.push(tokio::task::spawn_blocking(move || {
+                    let db = &snapshot.db;
+
                     // Prepare cf handles
                     let shard_states_cf =
                         db.cf_handle(columns::ShardStates::NAME).context("No cf")?;
@@ -445,19 +447,18 @@ impl ShardStateStorage {
 
                     for mut task in shard_tasks {
                         // Prepare reverse iterator
-                        let iter = db.iterator_cf_opt(
-                            &shard_states_cf,
-                            task.read_options,
-                            rocksdb::IteratorMode::From(
-                                &task.upper_bound,
-                                rocksdb::Direction::Reverse,
-                            ),
-                        );
+                        let mut iter =
+                            snapshot.raw_iterator_cf_opt(&shard_states_cf, task.read_options);
+                        iter.seek_for_prev(&task.upper_bound);
 
                         // Iterate all block states in shard starting from the latest
-                        for (key, value) in iter {
-                            let (shard_ident, seq_no) =
-                                BlockIdShort::deserialize(&mut key.as_ref())?;
+                        loop {
+                            let (mut key, value) = match iter.item() {
+                                Some(item) => item,
+                                None => break iter.status()?,
+                            };
+
+                            let (shard_ident, seq_no) = BlockIdShort::deserialize(&mut key)?;
                             // Stop iterating on first outdated block
                             if !top_blocks.contains_shard_seq_no(&shard_ident, seq_no) {
                                 break;
@@ -465,7 +466,10 @@ impl ShardStateStorage {
 
                             let edge_block = match &task.last_block {
                                 // Skip blocks which were definitely processed
-                                Some(last_seq_no) if seq_no > *last_seq_no => continue,
+                                Some(last_seq_no) if seq_no > *last_seq_no => {
+                                    iter.prev();
+                                    continue;
+                                }
                                 // Block may have been processed
                                 Some(_) => {
                                     task.last_block = None;
@@ -492,13 +496,15 @@ impl ShardStateStorage {
                             // which will be marked (some new states can already be inserted
                             // and have overwritten old markers)
                             let count = cell_storage.mark_cells_tree(
-                                UInt256::from_be_bytes(&value),
+                                UInt256::from_be_bytes(value),
                                 Marker::WhileDifferent {
                                     marker: target_marker,
                                     force: force && edge_block,
                                 },
                             )?;
                             total.fetch_add(count, Ordering::Relaxed);
+
+                            iter.prev();
                         }
                     }
 
@@ -594,21 +600,30 @@ impl ShardStateStorage {
             columns::ShardStates::write_options(&mut write_options);
 
             // Create iterator
-            let iter =
-                db.iterator_cf_opt(&shard_state_cf, read_options, rocksdb::IteratorMode::Start);
+            let mut iter = db.raw_iterator_cf_opt(&shard_state_cf, read_options);
+            iter.seek_to_first();
 
             // Iterate all states and remove outdated
             let mut total = 0;
-            for (key, _) in iter {
-                let (shard_ident, seq_no) = BlockIdShort::deserialize(&mut key.as_ref())?;
+            loop {
+                let key = match iter.key() {
+                    Some(key) => key,
+                    None => break iter.status()?,
+                };
+
+                let (shard_ident, seq_no) =
+                    BlockIdShort::deserialize(&mut std::convert::identity(key))?;
                 // Skip blocks from zero state and top blocks
                 if seq_no == 0 || top_blocks.contains_shard_seq_no(&shard_ident, seq_no) {
+                    iter.next();
                     continue;
                 }
 
                 db.delete_cf_opt(&shard_state_cf, key, &write_options)
                     .context("Failed to remove swept block")?;
                 total += 1;
+
+                iter.next();
             }
 
             Ok::<_, anyhow::Error>(total)
@@ -668,12 +683,11 @@ impl ShardStateStorage {
         let mut read_options = rocksdb::ReadOptions::default();
         columns::ShardStates::read_options(&mut read_options);
 
-        if let Some(snapshot) = snapshot {
-            read_options.set_snapshot(snapshot);
-        }
-
         // Prepare reverse iterator
-        let mut iter = db.raw_iterator_cf_opt(&cf, read_options);
+        let mut iter = match snapshot {
+            Some(snapshot) => snapshot.raw_iterator_cf_opt(&cf, read_options),
+            None => db.raw_iterator_cf_opt(&cf, read_options),
+        };
         iter.seek_for_prev(&BASE_WC_UPPER_BOUND);
 
         let mut shard_idents = Vec::new();
@@ -685,6 +699,38 @@ impl ShardStateStorage {
         }
 
         Ok(shard_idents)
+    }
+}
+
+struct OwnedSnapshot {
+    inner: rocksdb::Snapshot<'static>,
+    db: Arc<rocksdb::DB>,
+}
+
+impl OwnedSnapshot {
+    fn new(db: Arc<rocksdb::DB>) -> Self {
+        use rocksdb::Snapshot;
+
+        unsafe fn extend_lifetime<'a>(r: Snapshot<'a>) -> Snapshot<'static> {
+            std::mem::transmute::<Snapshot<'a>, Snapshot<'static>>(r)
+        }
+
+        // SAFETY: `Snapshot` requires the same lifetime as `rocksdb::DB` but
+        // `tokio::task::spawn_blocking` requires 'static. This object ensures
+        // that `rocksdb::DB` object lifetime will exceed the lifetime of the snapshot
+        //
+        // See https://github.com/rust-rocksdb/rust-rocksdb/issues/673
+        let inner = unsafe { extend_lifetime(db.as_ref().snapshot()) };
+        Self { inner, db }
+    }
+}
+
+impl Deref for OwnedSnapshot {
+    type Target = rocksdb::Snapshot<'static>;
+
+    #[inline(always)]
+    fn deref(&self) -> &Self::Target {
+        &self.inner
     }
 }
 

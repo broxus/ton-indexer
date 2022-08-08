@@ -181,12 +181,20 @@ where
         self.db.iterator_cf_opt(&cf, read_config, mode)
     }
 
-    pub fn prefix_iterator<P>(&'_ self, prefix: P) -> DBIterator
+    pub fn prefix_iterator<P>(&'_ self, prefix: P) -> DBRawIterator
     where
         P: AsRef<[u8]>,
     {
         let cf = self.get_cf();
-        self.db.prefix_iterator_cf(&cf, prefix)
+
+        let mut read_config = Default::default();
+        T::read_options(&mut read_config);
+        read_config.set_prefix_same_as_start(true);
+
+        let mut iter = self.db.raw_iterator_cf_opt(&cf, read_config);
+        iter.seek(prefix.as_ref());
+
+        iter
     }
 
     pub fn raw_iterator(&'_ self) -> DBRawIterator {
