@@ -10,7 +10,7 @@ use super::cell_storage::*;
 use super::entries_buffer::*;
 use super::files_context::*;
 use super::parser::*;
-use crate::db::{columns, Tree};
+use crate::db::{columns, Column, Tree};
 use crate::utils::*;
 
 pub struct ShardStateReplaceTransaction<'a> {
@@ -112,6 +112,7 @@ impl<'a> ShardStateReplaceTransaction<'a> {
     ) -> Result<Arc<ShardStateStuff>> {
         // 2^7 bits + 1 bytes
         const MAX_DATA_SIZE: usize = 128;
+        const CELLS_PER_BATCH: u64 = 1_000_000;
 
         let header = match &self.boc_header {
             Some(header) => header,
@@ -125,13 +126,15 @@ impl<'a> ShardStateReplaceTransaction<'a> {
             ctx.create_mapped_hashes_file(header.cell_count as usize * HashesEntry::LEN)?;
         let cells_file = ctx.create_mapped_cells_file().await?;
 
+        let db = self.shard_state_db.raw_db_handle();
+        let mut write_options = rocksdb::WriteOptions::default();
+        columns::Cells::write_options(&mut write_options);
+
         let mut tail = [0; 4];
-        let mut entries_buffer = EntriesBuffer::new();
-        let mut pruned_branches = FxHashMap::default();
+        let mut ctx = FinalizationContext::new();
 
         // Allocate on heap to prevent big future size
         let mut chunk_buffer = Vec::with_capacity(1 << 20);
-        let mut output_buffer = Vec::with_capacity(1 << 10);
         let mut data_buffer = vec![0u8; MAX_DATA_SIZE];
 
         let total_size = cells_file.length();
@@ -139,6 +142,7 @@ impl<'a> ShardStateReplaceTransaction<'a> {
 
         let mut file_pos = total_size;
         let mut cell_index = header.cell_count;
+        let mut batch_len = 0;
         while file_pos >= 4 {
             file_pos -= 4;
             unsafe { cells_file.read_exact_at(file_pos, &mut tail) };
@@ -151,49 +155,60 @@ impl<'a> ShardStateReplaceTransaction<'a> {
 
             log::debug!("Processing chunk of size: {chunk_size}");
 
-            while chunk_size > 0 {
-                cell_index -= 1;
-                let cell_size = chunk_buffer[chunk_size - 1] as usize;
-                chunk_size -= cell_size + 1;
+            {
+                // NOTE: create CF on each iteration to make this future Send+Sync
+                let cells_cf = db.cf_handle(columns::Cells::NAME).expect("Shouldn't fail");
 
-                let cell = RawCell::from_stored_data(
-                    &mut &chunk_buffer[chunk_size..chunk_size + cell_size],
-                    header.ref_size,
-                    header.cell_count as usize,
-                    cell_index as usize,
-                    &mut data_buffer,
-                )?;
+                while chunk_size > 0 {
+                    cell_index -= 1;
+                    batch_len += 1;
+                    let cell_size = chunk_buffer[chunk_size - 1] as usize;
+                    chunk_size -= cell_size + 1;
 
-                for (&index, buffer) in cell
-                    .reference_indices
-                    .iter()
-                    .zip(entries_buffer.iter_child_buffers())
-                {
-                    // SAFETY: `buffer` is guaranteed to be in separate memory area
-                    unsafe { hashes_file.read_exact_at(index as usize * HashesEntry::LEN, buffer) }
+                    let cell = RawCell::from_stored_data(
+                        &mut &chunk_buffer[chunk_size..chunk_size + cell_size],
+                        header.ref_size,
+                        header.cell_count as usize,
+                        cell_index as usize,
+                        &mut data_buffer,
+                    )?;
+
+                    for (&index, buffer) in cell
+                        .reference_indices
+                        .iter()
+                        .zip(ctx.entries_buffer.iter_child_buffers())
+                    {
+                        // SAFETY: `buffer` is guaranteed to be in separate memory area
+                        unsafe {
+                            hashes_file.read_exact_at(index as usize * HashesEntry::LEN, buffer)
+                        }
+                    }
+
+                    self.finalize_cell(&mut ctx, &cells_cf, cell_index as u32, cell)?;
+
+                    // SAFETY: `entries_buffer` is guaranteed to be in separate memory area
+                    unsafe {
+                        hashes_file.write_all_at(
+                            cell_index as usize * HashesEntry::LEN,
+                            ctx.entries_buffer.current_entry_buffer(),
+                        )
+                    };
+
+                    chunk_buffer.truncate(chunk_size);
                 }
+            }
 
-                self.finalize_cell(
-                    cell_index as u32,
-                    cell,
-                    &mut pruned_branches,
-                    &mut entries_buffer,
-                    &mut output_buffer,
-                )?;
-
-                // SAFETY: `entries_buffer` is guaranteed to be in separate memory area
-                unsafe {
-                    hashes_file.write_all_at(
-                        cell_index as usize * HashesEntry::LEN,
-                        entries_buffer.current_entry_buffer(),
-                    )
-                };
-
-                chunk_buffer.truncate(chunk_size);
+            if batch_len > CELLS_PER_BATCH {
+                db.write_opt(std::mem::take(&mut ctx.write_batch), &write_options)?;
+                batch_len = 0;
             }
 
             progress_bar.set_progress((total_size - file_pos) as u64);
             tokio::task::yield_now().await;
+        }
+
+        if batch_len > 0 {
+            db.write_opt(std::mem::take(&mut ctx.write_batch), &write_options)?;
         }
 
         progress_bar.complete();
@@ -201,7 +216,7 @@ impl<'a> ShardStateReplaceTransaction<'a> {
         let shard_state_key = (block_id.shard_id, block_id.seq_no).to_vec();
 
         // Current entry contains root cell
-        let current_entry = entries_buffer.split_children(&[]).0;
+        let current_entry = ctx.entries_buffer.split_children(&[]).0;
         self.shard_state_db
             .insert(&shard_state_key, current_entry.as_reader().hash(3))?;
 
@@ -223,15 +238,15 @@ impl<'a> ShardStateReplaceTransaction<'a> {
 
     fn finalize_cell(
         &self,
+        ctx: &mut FinalizationContext,
+        cells_cf: &Arc<rocksdb::BoundColumnFamily<'_>>,
         cell_index: u32,
         cell: RawCell<'_>,
-        pruned_branches: &mut FxHashMap<u32, Vec<u8>>,
-        entries_buffer: &mut EntriesBuffer,
-        output_buffer: &mut Vec<u8>,
     ) -> Result<()> {
         use sha2::{Digest, Sha256};
 
-        let (mut current_entry, children) = entries_buffer.split_children(&cell.reference_indices);
+        let (mut current_entry, children) =
+            ctx.entries_buffer.split_children(&cell.reference_indices);
 
         current_entry.clear();
 
@@ -315,7 +330,8 @@ impl<'a> ShardStateReplaceTransaction<'a> {
 
             for (index, child) in children.iter() {
                 let child_depth = if child.cell_type() == ton_types::CellType::PrunedBranch {
-                    let child_data = pruned_branches
+                    let child_data = ctx
+                        .pruned_branches
                         .get(index)
                         .ok_or(ReplaceTransactionError::InvalidCell)
                         .context("Pruned branch data not found")?;
@@ -338,7 +354,8 @@ impl<'a> ShardStateReplaceTransaction<'a> {
 
             for (index, child) in children.iter() {
                 if child.cell_type() == ton_types::CellType::PrunedBranch {
-                    let child_data = pruned_branches
+                    let child_data = ctx
+                        .pruned_branches
                         .get(index)
                         .ok_or(ReplaceTransactionError::InvalidCell)
                         .context("Pruned branch data not found")?;
@@ -355,10 +372,12 @@ impl<'a> ShardStateReplaceTransaction<'a> {
 
         // Update pruned branches
         if is_pruned_cell {
-            pruned_branches.insert(cell_index, cell.data[..data_size].to_vec());
+            ctx.pruned_branches
+                .insert(cell_index, cell.data[..data_size].to_vec());
         }
 
         // Write cell data
+        let output_buffer = &mut ctx.output_buffer;
         output_buffer.clear();
 
         output_buffer.write_all(&[self.marker, cell.cell_type.to_u8().unwrap()])?;
@@ -388,15 +407,36 @@ impl<'a> ShardStateReplaceTransaction<'a> {
                 .as_reader()
                 .pruned_branch_hash(3, &cell.data[..data_size]);
 
-            self.cell_storage
-                .store_single_cell(repr_hash, output_buffer.as_slice())?;
+            ctx.write_batch
+                .put_cf(cells_cf, repr_hash, output_buffer.as_slice());
         } else {
-            self.cell_storage
-                .store_single_cell(current_entry.as_reader().hash(3), output_buffer.as_slice())?;
+            ctx.write_batch.put_cf(
+                cells_cf,
+                current_entry.as_reader().hash(3),
+                output_buffer.as_slice(),
+            );
         };
 
         // Done
         Ok(())
+    }
+}
+
+struct FinalizationContext {
+    pruned_branches: FxHashMap<u32, Vec<u8>>,
+    entries_buffer: EntriesBuffer,
+    output_buffer: Vec<u8>,
+    write_batch: rocksdb::WriteBatch,
+}
+
+impl FinalizationContext {
+    fn new() -> Self {
+        Self {
+            pruned_branches: Default::default(),
+            entries_buffer: EntriesBuffer::new(),
+            output_buffer: Vec::with_capacity(1 << 10),
+            write_batch: rocksdb::WriteBatch::default(),
+        }
     }
 }
 

@@ -274,10 +274,6 @@ impl CellStorage {
         Ok(total)
     }
 
-    pub fn store_single_cell(&self, hash: &[u8], value: &[u8]) -> Result<()> {
-        self.cells.insert(hash, value)
-    }
-
     pub fn drop_cell(&self, hash: &UInt256) {
         self.cells_cache.remove(hash);
     }
