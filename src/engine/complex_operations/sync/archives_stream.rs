@@ -1,7 +1,7 @@
-use std::cmp::Ordering;
 use std::collections::binary_heap::PeekMut;
 use std::collections::BinaryHeap;
 use std::ops::{Bound, Deref, DerefMut, RangeBounds};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
@@ -234,25 +234,49 @@ struct DownloaderContext {
 
 #[derive(Default)]
 struct GoodPeers {
-    neighbour: parking_lot::RwLock<Option<Arc<Neighbour>>>,
+    neighbours: parking_lot::RwLock<[GoodPeerSlot; GOOD_PEER_COUNT]>,
+    index: AtomicUsize,
 }
 
 impl GoodPeers {
-    fn add(&self, neighbour: Arc<Neighbour>) {
-        *self.neighbour.write() = Some(neighbour);
+    fn add(&self, neighbour: &Arc<Neighbour>) {
+        if !self.neighbours.read().iter().any(|item| item.is_none()) {
+            // Do nothing if there are no empty slots
+            // NOTE: neighbours don't change during read lock.
+            return;
+        }
+
+        // Update first empty slot
+        let mut neighbours = self.neighbours.write();
+        for slot in neighbours.iter_mut() {
+            if slot.is_none() {
+                *slot = Some(neighbour.clone());
+                break;
+            }
+        }
     }
 
     fn remove(&self, bad_neighbour: &Arc<Neighbour>) {
-        let mut good_neigbour = self.neighbour.write();
-        if matches!(&*good_neigbour, Some(n) if n.peer_id() == bad_neighbour.peer_id()) {
-            *good_neigbour = None;
+        let mut neighbours = self.neighbours.write();
+        // Reset all slots with the specified peer id
+        for slot in neighbours.iter_mut() {
+            if matches!(slot, Some(n) if n.peer_id() == bad_neighbour.peer_id()) {
+                *slot = None;
+            }
         }
     }
 
     fn get(&self) -> Option<Arc<Neighbour>> {
-        self.neighbour.read().clone()
+        let neighbours = self.neighbours.read();
+        // Move index each time good neighbour is requested
+        let index = self.index.fetch_add(1, Ordering::Acquire) % neighbours.len();
+        neighbours.get(index).cloned().flatten()
     }
 }
+
+type GoodPeerSlot = Option<Arc<Neighbour>>;
+
+const GOOD_PEER_COUNT: usize = 4;
 
 struct PendingBlockMaps {
     index: u32,
@@ -268,13 +292,13 @@ impl PartialEq for PendingBlockMaps {
 impl Eq for PendingBlockMaps {}
 
 impl PartialOrd for PendingBlockMaps {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         Some(self.cmp(other))
     }
 }
 
 impl Ord for PendingBlockMaps {
-    fn cmp(&self, other: &Self) -> Ordering {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         // NOTE: reverse comparison here because `BinaryHeap` is a max-heap
         other.index.cmp(&self.index)
     }
@@ -385,7 +409,7 @@ async fn download_archive(
 
         match result {
             Ok(ArchiveDownloadStatus::Downloaded { neighbour, len }) => {
-                ctx.good_peers.add(neighbour.clone());
+                ctx.good_peers.add(&neighbour);
                 log::info!(
                     "sync: Downloaded archive for block {mc_seq_no}, size {} bytes. Took: {} ms",
                     len,
