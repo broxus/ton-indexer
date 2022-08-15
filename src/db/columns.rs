@@ -205,7 +205,7 @@ fn cell_merge(_: &[u8], current_value: Option<&[u8]>, operands: &MergeOperands) 
     if let Some(new_marker) = operands
         .into_iter()
         .last()
-        .and_then(|operand| operand.get(0))
+        .and_then(|operand| operand.first())
     {
         if let Some(old_marker) = current_value.get_mut(0) {
             *old_marker = *new_marker;

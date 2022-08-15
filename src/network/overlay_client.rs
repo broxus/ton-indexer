@@ -136,7 +136,12 @@ impl OverlayClient {
         data: Vec<u8>,
         source: Option<&Arc<adnl::Key>>,
     ) -> overlay::OutgoingBroadcastInfo {
-        self.overlay_shard.broadcast(self.rldp.adnl(), data, source)
+        self.overlay_shard.broadcast(
+            self.rldp.adnl(),
+            data,
+            source,
+            overlay::BroadcastTarget::RandomNeighbours,
+        )
     }
 
     pub async fn wait_for_broadcast(&self) -> overlay::IncomingBroadcastInfo {

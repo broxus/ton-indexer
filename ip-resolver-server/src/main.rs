@@ -7,7 +7,7 @@ use tokio::net::UdpSocket;
 
 use ip_resolver::proto;
 
-#[derive(Debug, PartialEq, FromArgs)]
+#[derive(Debug, FromArgs)]
 #[argh(description = "UDP hole punching server")]
 pub struct App {
     /// listen port
