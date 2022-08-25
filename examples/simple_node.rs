@@ -16,7 +16,7 @@ use ton_indexer::{Engine, GlobalConfig, NodeConfig, ProcessBlockContext};
 #[global_allocator]
 static GLOBAL: ton_indexer::alloc::Allocator = ton_indexer::alloc::allocator();
 
-#[derive(Debug, PartialEq, FromArgs)]
+#[derive(Debug, FromArgs)]
 #[argh(description = "")]
 pub struct App {
     /// path to config

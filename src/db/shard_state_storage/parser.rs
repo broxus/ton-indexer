@@ -46,9 +46,13 @@ impl ShardStatePacketReader {
         }
 
         let mut src = self.begin();
+        let mut total_size = 0u64;
 
         let magic = try_read!(src.read_be_u32());
+        total_size += 4;
+
         let first_byte = try_read!(src.read_byte());
+        total_size += 1;
 
         let index_included;
         let mut has_crc = false;
@@ -82,14 +86,20 @@ impl ShardStatePacketReader {
         }
 
         let offset_size = try_read!(src.read_byte()) as u64;
+        total_size += 1;
         if offset_size == 0 || offset_size > 8 {
             return Err(ShardStateParserError::InvalidShardStateHeader)
                 .context("Offset size must be in range [1;8]");
         }
 
         let cell_count = try_read!(src.read_be_uint(ref_size));
+        total_size += ref_size as u64;
+
         let root_count = try_read!(src.read_be_uint(ref_size));
+        total_size += ref_size as u64;
+
         try_read!(src.read_be_uint(ref_size)); // skip absent
+        total_size += ref_size as u64;
 
         if root_count != 1 {
             return Err(ShardStateParserError::InvalidShardStateHeader)
@@ -100,18 +110,27 @@ impl ShardStatePacketReader {
                 .context("Root count is greater then cell count");
         }
 
-        try_read!(src.read_be_uint(offset_size as usize)); // skip total cells size
+        total_size += try_read!(src.read_be_uint(offset_size as usize)); // total cells size
+        total_size += offset_size;
 
         let root_index = if magic == BOC_GENERIC_TAG {
-            Some(try_read!(src.read_be_uint(ref_size)))
+            let root_index = try_read!(src.read_be_uint(ref_size));
+            total_size += ref_size as u64;
+            root_index
         } else {
-            None
+            0
         };
 
         src.end();
 
         if index_included {
-            self.set_skip((cell_count * offset_size) as usize);
+            let index_size = cell_count * offset_size;
+            total_size += index_size;
+            self.set_skip(index_size as usize);
+        }
+
+        if has_crc {
+            total_size += 4;
         }
 
         Ok(Some(BocHeader {
@@ -121,6 +140,7 @@ impl ShardStatePacketReader {
             ref_size,
             offset_size,
             cell_count,
+            total_size,
         }))
     }
 
@@ -257,12 +277,13 @@ static CRC: Crc<u32> = Crc::<u32>::new(&CRC_32_ISCSI);
 
 #[derive(Debug)]
 pub struct BocHeader {
-    pub root_index: Option<u64>,
+    pub root_index: u64,
     pub index_included: bool,
     pub has_crc: bool,
     pub ref_size: usize,
     pub offset_size: u64,
     pub cell_count: u64,
+    pub total_size: u64,
 }
 
 pub struct RawCell<'a> {

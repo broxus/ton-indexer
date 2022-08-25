@@ -70,6 +70,7 @@ broxus-util = { version = "0.1", default-features = false, features = ["config",
 default = []
 count-cells = ["countme/enable", "ton_types/profile"]
 io-uring = ["rocksdb/io-uring"]
+archive-uploader = ["dep:archive-uploader"]
 
 [profile.release]
 debug = true

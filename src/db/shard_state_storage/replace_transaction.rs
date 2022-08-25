@@ -19,7 +19,7 @@ pub struct ShardStateReplaceTransaction<'a> {
     min_ref_mc_state: &'a Arc<MinRefMcState>,
     marker: u8,
     reader: ShardStatePacketReader,
-    boc_header: Option<BocHeader>,
+    header: Option<BocHeader>,
     cells_read: u64,
 }
 
@@ -36,9 +36,13 @@ impl<'a> ShardStateReplaceTransaction<'a> {
             min_ref_mc_state,
             marker,
             reader: ShardStatePacketReader::new(),
-            boc_header: None,
+            header: None,
             cells_read: 0,
         }
+    }
+
+    pub fn header(&self) -> &Option<BocHeader> {
+        &self.header
     }
 
     pub async fn process_packet(
@@ -54,7 +58,7 @@ impl<'a> ShardStateReplaceTransaction<'a> {
         self.reader.set_next_packet(packet);
 
         let header = loop {
-            if let Some(header) = &self.boc_header {
+            if let Some(header) = &self.header {
                 break header;
             }
 
@@ -66,7 +70,7 @@ impl<'a> ShardStateReplaceTransaction<'a> {
             log::debug!("State header: {header:?}");
             progress_bar.set_total(header.cell_count);
 
-            self.boc_header = Some(header);
+            self.header = Some(header);
         };
 
         let mut chunk_size = 0u32;
@@ -114,7 +118,7 @@ impl<'a> ShardStateReplaceTransaction<'a> {
         const MAX_DATA_SIZE: usize = 128;
         const CELLS_PER_BATCH: u64 = 1_000_000;
 
-        let header = match &self.boc_header {
+        let header = match &self.header {
             Some(header) => header,
             None => {
                 return Err(ReplaceTransactionError::InvalidShardStatePacket)
