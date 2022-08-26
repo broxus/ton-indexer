@@ -373,7 +373,7 @@ impl Neighbours {
 
             let (hint, unreliable_peer) = cache.insert_or_replace_unreliable(&mut rng, peer_id);
             if let Some(unreliable_peer) = unreliable_peer {
-                self.overlay_shard.delete_public_peer(&unreliable_peer);
+                self.overlay_shard.remove_public_peer(&unreliable_peer);
                 self.overlay_peers.remove(&unreliable_peer);
             }
 
