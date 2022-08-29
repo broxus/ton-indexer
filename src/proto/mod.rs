@@ -1,14 +1,14 @@
 use bytes::Bytes;
 use tl_proto::{TlError, TlPacket, TlRead, TlResult, TlWrite};
 
-#[derive(Copy, Clone, TlWrite)]
-#[tl(boxed, id = 0x3d1b1867)]
+#[derive(Copy, Clone, TlWrite, TlRead)]
+#[tl(boxed, id = "tonNode.externalMessageBroadcast", scheme = "scheme.tl")]
 pub struct ExternalMessageBroadcast<'tl> {
     pub data: &'tl [u8],
 }
 
 #[derive(Clone, TlRead)]
-#[tl(boxed, id = 0xae2e1105)]
+#[tl(boxed, id = "tonNode.blockBroadcast", scheme = "scheme.tl")]
 pub struct BlockBroadcast {
     #[tl(with = "tl_block_id")]
     pub id: ton_block::BlockIdExt,
@@ -21,26 +21,26 @@ pub struct BlockBroadcast {
 }
 
 #[derive(Clone, TlRead, TlWrite)]
-#[tl(boxed, id = 0x1455b0f3)]
+#[tl(boxed, id = "tonNode.getNextBlockDescription", scheme = "scheme.tl")]
 pub struct RpcGetNextBlockDescription {
     #[tl(with = "tl_block_id")]
     pub prev_block: ton_block::BlockIdExt,
 }
 
 #[derive(Clone, TlRead, TlWrite)]
-#[tl(boxed)]
+#[tl(boxed, scheme = "scheme.tl")]
 pub enum BlockDescription {
-    #[tl(id = 0x46a1d088)]
+    #[tl(id = "tonNode.blockDescription")]
     Found {
         #[tl(with = "tl_block_id")]
         id: ton_block::BlockIdExt,
     },
-    #[tl(id = 0x8384ae95)]
+    #[tl(id = "tonNode.blockDescriptionEmpty")]
     Empty,
 }
 
 #[derive(Clone, TlRead, TlWrite)]
-#[tl(boxed, id = 0x875c3308)]
+#[tl(boxed, id = "tonNode.prepareBlockProof", scheme = "scheme.tl")]
 pub struct RpcPrepareBlockProof {
     #[tl(with = "tl_block_id")]
     pub block: ton_block::BlockIdExt,
@@ -48,7 +48,7 @@ pub struct RpcPrepareBlockProof {
 }
 
 #[derive(Clone, TlRead, TlWrite)]
-#[tl(boxed, id = 0x77364c38)]
+#[tl(boxed, id = "tonNode.prepareKeyBlockProof", scheme = "scheme.tl")]
 pub struct RpcPrepareKeyBlockProof {
     #[tl(with = "tl_block_id")]
     pub block: ton_block::BlockIdExt,
@@ -56,14 +56,14 @@ pub struct RpcPrepareKeyBlockProof {
 }
 
 #[derive(Clone, TlRead, TlWrite)]
-#[tl(boxed, id = 0x75a37f4e)]
+#[tl(boxed, id = "tonNode.prepareBlock", scheme = "scheme.tl")]
 pub struct RpcPrepareBlock {
     #[tl(with = "tl_block_id")]
     pub block: ton_block::BlockIdExt,
 }
 
 #[derive(Clone, TlRead, TlWrite)]
-#[tl(boxed, id = 0xfeea269e)]
+#[tl(boxed, id = "tonNode.preparePersistentState", scheme = "scheme.tl")]
 pub struct RpcPreparePersistentState {
     #[tl(with = "tl_block_id")]
     pub block: ton_block::BlockIdExt,
@@ -72,7 +72,11 @@ pub struct RpcPreparePersistentState {
 }
 
 #[derive(Clone, TlRead, TlWrite)]
-#[tl(boxed, id = 0xf5e9e6e3)]
+#[tl(
+    boxed,
+    id = "tonNode.downloadPersistentStateSlice",
+    scheme = "scheme.tl"
+)]
 pub struct RpcDownloadPersistentStateSlice {
     #[tl(with = "tl_block_id")]
     pub block: ton_block::BlockIdExt,
@@ -83,21 +87,21 @@ pub struct RpcDownloadPersistentStateSlice {
 }
 
 #[derive(Clone, TlRead, TlWrite)]
-#[tl(boxed, id = 0x41ce0825)]
+#[tl(boxed, id = "tonNode.prepareZeroState", scheme = "scheme.tl")]
 pub struct RpcPrepareZeroState {
     #[tl(with = "tl_block_id")]
     pub block: ton_block::BlockIdExt,
 }
 
 #[derive(Clone, TlRead, TlWrite)]
-#[tl(boxed, id = 0xadcc1e5a)]
+#[tl(boxed, id = "tonNode.downloadZeroState", scheme = "scheme.tl")]
 pub struct RpcDownloadZeroState {
     #[tl(with = "tl_block_id")]
     pub block: ton_block::BlockIdExt,
 }
 
 #[derive(Clone, TlRead, TlWrite)]
-#[tl(boxed, id = 0xf2e7cfbb)]
+#[tl(boxed, id = "tonNode.getNextKeyBlockIds", scheme = "scheme.tl")]
 pub struct RpcGetNextKeyBlockIds {
     #[tl(with = "tl_block_id")]
     pub block: ton_block::BlockIdExt,
@@ -105,62 +109,72 @@ pub struct RpcGetNextKeyBlockIds {
 }
 
 #[derive(Clone, TlRead, TlWrite)]
-#[tl(boxed, id = 0x6ea0374a)]
+#[tl(boxed, id = "tonNode.downloadNextBlockFull", scheme = "scheme.tl")]
 pub struct RpcDownloadNextBlockFull {
     #[tl(with = "tl_block_id")]
     pub prev_block: ton_block::BlockIdExt,
 }
 
 #[derive(Clone, TlRead, TlWrite)]
-#[tl(boxed, id = 0x6a27c49d)]
+#[tl(boxed, id = "tonNode.downloadBlockFull", scheme = "scheme.tl")]
 pub struct RpcDownloadBlockFull {
     #[tl(with = "tl_block_id")]
     pub block: ton_block::BlockIdExt,
 }
 
 #[derive(Clone, TlRead, TlWrite)]
-#[tl(boxed, id = 0xe27279c3)]
+#[tl(boxed, id = "tonNode.downloadBlock", scheme = "scheme.tl")]
 pub struct RpcDownloadBlock {
     #[tl(with = "tl_block_id")]
     pub block: ton_block::BlockIdExt,
 }
 
 #[derive(Clone, TlRead, TlWrite)]
-#[tl(boxed, id = 0x4bd6478a)]
+#[tl(boxed, id = "tonNode.downloadBlockProof", scheme = "scheme.tl")]
 pub struct RpcDownloadBlockProof {
     #[tl(with = "tl_block_id")]
     pub block: ton_block::BlockIdExt,
 }
 
 #[derive(Clone, TlRead, TlWrite)]
-#[tl(boxed, id = 0xec23483a)]
+#[tl(boxed, id = "tonNode.downloadKeyBlockProof", scheme = "scheme.tl")]
 pub struct RpcDownloadKeyBlockProof {
     #[tl(with = "tl_block_id")]
     pub block: ton_block::BlockIdExt,
 }
 
 #[derive(Clone, TlRead, TlWrite)]
-#[tl(boxed, id = 0x25b300c6)]
+#[tl(boxed, id = "tonNode.downloadBlockProofLink", scheme = "scheme.tl")]
 pub struct RpcDownloadBlockProofLink {
     #[tl(with = "tl_block_id")]
     pub block: ton_block::BlockIdExt,
 }
 
 #[derive(Clone, TlRead, TlWrite)]
-#[tl(boxed, id = 0x12e42ad2)]
+#[tl(boxed, id = "tonNode.downloadKeyBlockProofLink", scheme = "scheme.tl")]
 pub struct RpcDownloadKeyBlockProofLink {
     #[tl(with = "tl_block_id")]
     pub block: ton_block::BlockIdExt,
 }
 
 #[derive(Clone, TlRead, TlWrite)]
-#[tl(boxed, id = 0x7b2dd941)]
+#[tl(
+    boxed,
+    id = "tonNode.getArchiveInfo",
+    size_hint = 4,
+    scheme = "scheme.tl"
+)]
 pub struct RpcGetArchiveInfo {
     pub masterchain_seqno: u32,
 }
 
 #[derive(Clone, TlRead, TlWrite)]
-#[tl(boxed, id = 0x203b5168, size_hint = 20)]
+#[tl(
+    boxed,
+    id = "tonNode.getArchiveSlice",
+    size_hint = 20,
+    scheme = "scheme.tl"
+)]
 pub struct RpcGetArchiveSlice {
     pub archive_id: u64,
     pub offset: u64,
@@ -168,42 +182,42 @@ pub struct RpcGetArchiveSlice {
 }
 
 #[derive(TlWrite, TlRead)]
-#[tl(boxed, id = 0xdee618f8)]
+#[tl(boxed, id = "tonNode.getCapabilities", scheme = "scheme.tl")]
 pub struct RpcGetCapabilities;
 
 #[derive(Copy, Clone, Eq, PartialEq, TlRead, TlWrite)]
-#[tl(boxed)]
+#[tl(boxed, scheme = "scheme.tl")]
 pub enum PreparedProof {
-    #[tl(id = 0x899f9a4b)]
+    #[tl(id = "tonNode.preparedProof")]
     Found,
-    #[tl(id = 0xc769c17a)]
+    #[tl(id = "tonNode.preparedProofEmpty")]
     Empty,
-    #[tl(id = 0x3dff328d)]
+    #[tl(id = "tonNode.preparedProofLink")]
     Link,
 }
 
 #[derive(Copy, Clone, Eq, PartialEq, TlRead, TlWrite)]
-#[tl(boxed)]
+#[tl(boxed, scheme = "scheme.tl")]
 pub enum Prepared {
-    #[tl(id = 0xe2c33da6)]
+    #[tl(id = "tonNode.notFound")]
     NotFound,
-    #[tl(id = 0xeac4bbcd)]
+    #[tl(id = "tonNode.prepared")]
     Found,
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, TlRead, TlWrite)]
-#[tl(boxed)]
+#[tl(boxed, scheme = "scheme.tl")]
 pub enum PreparedState {
-    #[tl(id = 0x32390a51)]
+    #[tl(id = "tonNode.notFoundState")]
     NotFound,
-    #[tl(id = 0x375bcb6d)]
+    #[tl(id = "tonNode.preparedState")]
     Found,
 }
 
 #[derive(Clone, TlRead, TlWrite)]
-#[tl(boxed)]
+#[tl(boxed, scheme = "scheme.tl")]
 pub enum DataFull {
-    #[tl(id = 0xbe589f93)]
+    #[tl(id = "tonNode.dataFull")]
     Found {
         #[tl(with = "tl_block_id")]
         block_id: ton_block::BlockIdExt,
@@ -211,12 +225,12 @@ pub enum DataFull {
         block: Bytes,
         is_link: bool,
     },
-    #[tl(id = 0x576e85ca)]
+    #[tl(id = "tonNode.dataFullEmpty")]
     Empty,
 }
 
 #[derive(Clone, TlRead, TlWrite)]
-#[tl(boxed, id = 0x07664d59)]
+#[tl(boxed, id = "tonNode.keyBlocks", scheme = "scheme.tl")]
 pub struct KeyBlocks {
     #[tl(with = "tl_block_id_vec")]
     pub blocks: Vec<ton_block::BlockIdExt>,
@@ -225,16 +239,21 @@ pub struct KeyBlocks {
 }
 
 #[derive(Clone, TlRead, TlWrite)]
-#[tl(boxed)]
+#[tl(boxed, scheme = "scheme.tl")]
 pub enum ArchiveInfo {
-    #[tl(id = 0x19efff8c, size_hint = 8)]
+    #[tl(id = "tonNode.archiveInfo", size_hint = 8)]
     Found { id: u64 },
-    #[tl(id = 0x99291683)]
+    #[tl(id = "tonNode.archiveNotFound")]
     NotFound,
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, TlWrite, TlRead)]
-#[tl(boxed, id = 0xf5bf60c0)]
+#[tl(
+    boxed,
+    id = "tonNode.capabilities",
+    size_hint = 12,
+    scheme = "scheme.tl"
+)]
 pub struct Capabilities {
     pub version: u32,
     pub capabilities: u64,

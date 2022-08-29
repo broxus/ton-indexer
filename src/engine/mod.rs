@@ -15,6 +15,7 @@ use everscale_network::overlay;
 use everscale_network::utils::now;
 pub use rocksdb::perf::MemoryUsageStats;
 use rustc_hash::FxHashSet;
+use tokio::sync::Notify;
 
 use global_config::GlobalConfig;
 
@@ -248,6 +249,14 @@ impl Engine {
             None => return Ok(()),
         };
 
+        struct LowerBound {
+            archive_id: AtomicU32,
+            changed: Notify,
+        }
+
+        #[allow(unused_mut)]
+        let mut lower_bound = None::<Arc<LowerBound>>;
+
         #[cfg(feature = "archive-uploader")]
         if let Some(options) = options.uploader_options.clone() {
             async fn get_latest_mc_block_seq_no(engine: &Engine) -> Result<u32> {
@@ -270,11 +279,19 @@ impl Engine {
 
             let mut last_uploaded_archive = self.db.node_state().load_last_uploaded_archive()?;
 
+            let lower_bound = lower_bound
+                .insert(Arc::new(LowerBound {
+                    archive_id: AtomicU32::new(last_uploaded_archive.unwrap_or_default()),
+                    changed: Notify::new(),
+                }))
+                .clone();
+
             let engine = self.clone();
             tokio::spawn(async move {
                 let node_state = engine.db.node_state();
 
                 loop {
+                    // Compute archives range
                     let until_id = match get_latest_mc_block_seq_no(&engine).await {
                         Ok(seqno) => seqno,
                         Err(e) => {
@@ -293,6 +310,11 @@ impl Engine {
                         None => 0..until_id,
                     };
 
+                    // Update lower bound
+                    lower_bound.archive_id.store(range.start, Ordering::Release);
+                    lower_bound.changed.notify_waiters();
+
+                    // Upload archives
                     let mut archives_iter =
                         engine.db.block_storage().get_archives(range).peekable();
                     while let Some((archive_id, archive_data)) = archives_iter.next() {
@@ -356,6 +378,20 @@ impl Engine {
                                 _ = tokio::time::sleep(Duration::from_secs(interval)) => {},
                                 _ = &mut new_state_found => continue,
                             );
+                        }
+
+                        if let Some(lower_bound) = &lower_bound {
+                            loop {
+                                tokio::pin!(let lower_bound_changed = lower_bound.changed.notified(););
+
+                                let lower_bound = lower_bound.archive_id.load(Ordering::Acquire);
+                                if until_id < lower_bound {
+                                    break;
+                                }
+
+                                log::info!("Waiting archives barrier. Requested id: {until_id}, lower bound: {lower_bound}");
+                                lower_bound_changed.await;
+                            }
                         }
 
                         if let Err(e) = engine.db.block_storage().remove_outdated_archives(until_id)

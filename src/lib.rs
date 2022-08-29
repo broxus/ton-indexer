@@ -8,7 +8,6 @@ pub use crate::network::{NeighboursOptions, NetworkMetrics};
 #[cfg(feature = "archive-uploader")]
 pub use archive_uploader;
 pub use global_config::*;
-pub use ton_indexer_alloc as alloc;
 
 mod config;
 mod db;
@@ -16,3 +15,25 @@ mod engine;
 mod network;
 mod proto;
 pub mod utils;
+
+pub mod alloc {
+    use broxus_util::alloc::set_jemalloc_param;
+    pub use broxus_util::alloc::{allocator, Allocator};
+
+    /// Configures jemalloc
+    ///
+    /// # Safety
+    /// Jemalloc must be set as global allocator
+    pub unsafe fn apply_config() {
+        log::info!("Applying jemalloc conf");
+
+        set_jemalloc_param("opt.abort_conf", true);
+        set_jemalloc_param("opt.lg_extent_max_active_fit", 2_usize);
+        set_jemalloc_param("opt.narenas", 2_u32);
+        set_jemalloc_param("opt.lg_tcache_max", 10_usize);
+        set_jemalloc_param("opt.muzzy_decay_ms", 100_isize);
+        set_jemalloc_param("opt.dirty_decay_ms", 100_isize);
+
+        log::info!("Done");
+    }
+}

@@ -708,17 +708,21 @@ fn remove_blocks(
     columns::KeyBlocks::read_options(&mut key_blocks_readopts);
 
     // Iterate all entries and find expired items
-    let blocks_iter = db.iterator_cf_opt(
-        &blocks_cf,
-        package_entries_readopts,
-        rocksdb::IteratorMode::Start,
-    );
-    for (key, _) in blocks_iter {
+    let mut blocks_iter = db.raw_iterator_cf_opt(&blocks_cf, package_entries_readopts);
+    blocks_iter.seek_to_first();
+
+    loop {
+        let key = match blocks_iter.key() {
+            Some(key) => key,
+            None => break blocks_iter.status()?,
+        };
+
         // Read only prefix with shard ident and seqno
-        let (shard_ident, seq_no) = BlockIdShort::deserialize(&mut key.as_ref())?;
+        let (shard_ident, seq_no) = BlockIdShort::deserialize(&mut std::convert::identity(key))?;
 
         // Don't gc latest blocks
         if top_blocks.contains_shard_seq_no(&shard_ident, seq_no) {
+            blocks_iter.next();
             continue;
         }
 
@@ -730,6 +734,7 @@ fn remove_blocks(
                     .is_some()
         {
             // Don't remove key blocks
+            blocks_iter.next();
             continue;
         }
 
@@ -764,6 +769,8 @@ fn remove_blocks(
             db.write(batch)?;
             batch_len = 0;
         }
+
+        blocks_iter.next();
     }
 
     if batch_len > 0 {

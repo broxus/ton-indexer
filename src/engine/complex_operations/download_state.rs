@@ -4,7 +4,7 @@
 /// - replaced old `failure` crate with `anyhow`
 /// - optimized state downloading and processing
 ///
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -43,10 +43,15 @@ pub async fn download_state(
 
     let (_completion_trigger, completion_signal) = trigger_on_drop();
 
+    let total_size = Arc::new(AtomicU64::new(u64::MAX));
+
     tokio::spawn({
         let engine = engine.clone();
         let block_id = full_state_id.block_id.clone();
-        async move { result_tx.send(background_process(&engine, block_id, packets_rx).await) }
+        let total_size = total_size.clone();
+        async move {
+            result_tx.send(background_process(&engine, block_id, total_size, packets_rx).await)
+        }
     });
 
     let downloader = async move {
@@ -54,6 +59,7 @@ pub async fn download_state(
             mc_client,
             full_state_id,
             neighbour,
+            total_size,
             DOWNLOADING_QUEUE_LEN,
             PACKET_SIZE,
         )
@@ -93,6 +99,7 @@ pub async fn download_state(
 async fn background_process(
     engine: &Arc<Engine>,
     block_id: ton_block::BlockIdExt,
+    total_size: Arc<AtomicU64>,
     mut packets_rx: PacketsRx,
 ) -> Result<Arc<ShardStateStuff>> {
     let (mut transaction, mut ctx) = engine
@@ -104,8 +111,18 @@ async fn background_process(
     let mut pg = ProgressBar::builder("Downloading state")
         .exact_unit("cells")
         .build();
+
     let mut full = false;
+    let mut total_size_known = false;
+
     while let Some(packet) = packets_rx.recv().await {
+        if !total_size_known {
+            if let Some(header) = transaction.header() {
+                total_size.store(header.total_size, Ordering::Release);
+                total_size_known = true;
+            }
+        }
+
         match transaction.process_packet(&mut ctx, packet, &mut pg).await {
             Ok(true) => {
                 full = true;
@@ -140,7 +157,7 @@ struct Scheduler {
     offset_txs: Vec<OffsetsTx>,
     pending_packets: Vec<(usize, PacketStatus)>,
     response_rx: ResponseRx,
-    max_size: usize,
+    packet_size: usize,
     current_offset: usize,
     complete: Arc<AtomicBool>,
     cancellation_token: CancellationToken,
@@ -151,8 +168,9 @@ impl Scheduler {
         mc_client: NodeRpcClient,
         full_state_id: FullStateId,
         neighbour: Arc<Neighbour>,
+        total_size: Arc<AtomicU64>,
         worker_count: usize,
-        max_size: usize,
+        packet_size: usize,
     ) -> Result<Self> {
         let (response_tx, response_rx) = mpsc::channel(worker_count);
 
@@ -163,10 +181,11 @@ impl Scheduler {
             mc_client,
             full_state_id,
             neighbour,
-            max_size,
+            packet_size,
             response_tx,
             peer_attempt: AtomicU32::new(0),
             complete: complete.clone(),
+            total_size,
             cancellation_token: cancellation_token.clone(),
         });
 
@@ -182,14 +201,14 @@ impl Scheduler {
             offsets_tx.send(offset).await?;
             offset_txs.push(offsets_tx);
 
-            offset += max_size;
+            offset += packet_size;
         }
 
         Ok(Self {
             offset_txs,
             pending_packets,
             response_rx,
-            max_size,
+            packet_size,
             current_offset: 0,
             complete,
             cancellation_token,
@@ -247,12 +266,12 @@ impl Scheduler {
                 PacketStatus::Done => return Ok(None),
             };
 
-            if data.len() < self.max_size {
+            if data.len() < self.packet_size {
                 *packet = PacketStatus::Done;
                 self.complete.store(true, Ordering::Release);
                 self.cancellation_token.cancel();
             } else {
-                *offset += self.max_size * self.offset_txs.len();
+                *offset += self.packet_size * self.offset_txs.len();
                 self.offset_txs[worker_id]
                     .send(*offset)
                     .await
@@ -271,10 +290,11 @@ struct DownloadContext {
     mc_client: NodeRpcClient,
     full_state_id: FullStateId,
     neighbour: Arc<Neighbour>,
-    max_size: usize,
+    packet_size: usize,
     response_tx: ResponseTx,
     peer_attempt: AtomicU32,
     complete: Arc<AtomicBool>,
+    total_size: Arc<AtomicU64>,
     cancellation_token: CancellationToken,
 }
 
@@ -291,7 +311,7 @@ async fn download_packet_worker(ctx: Arc<DownloadContext>, mut offsets_rx: Offse
             let recv_fut = ctx.mc_client.download_persistent_state_part(
                 &ctx.full_state_id,
                 offset,
-                ctx.max_size,
+                ctx.packet_size,
                 ctx.neighbour.clone(),
                 ctx.peer_attempt.load(Ordering::Acquire),
             );
@@ -315,7 +335,9 @@ async fn download_packet_worker(ctx: Arc<DownloadContext>, mut offsets_rx: Offse
                     part_attempt += 1;
                     ctx.peer_attempt.fetch_add(1, Ordering::Release);
 
-                    if !ctx.complete.load(Ordering::Acquire) {
+                    if !ctx.complete.load(Ordering::Acquire)
+                        && offset < ctx.total_size.load(Ordering::Acquire) as usize
+                    {
                         log::error!("Failed to download persistent state part {offset}: {e:?}");
                     }
 

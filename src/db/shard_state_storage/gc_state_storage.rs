@@ -44,9 +44,18 @@ impl GcStateStorage {
     }
 
     pub fn clear_last_blocks(&self) -> Result<()> {
-        let iter = self.node_states.prefix_iterator(GC_LAST_BLOCK_KEY);
-        for (key, _) in iter.filter(|(key, _)| key.starts_with(GC_LAST_BLOCK_KEY)) {
-            self.node_states.remove(key)?
+        let mut iter = self.node_states.prefix_iterator(GC_LAST_BLOCK_KEY);
+        loop {
+            let key = match iter.key() {
+                Some(key) => key,
+                None => break iter.status()?,
+            };
+
+            if key.starts_with(GC_LAST_BLOCK_KEY) {
+                self.node_states.remove(key)?;
+            }
+
+            iter.next();
         }
         Ok(())
     }
@@ -54,15 +63,24 @@ impl GcStateStorage {
     pub fn load_last_blocks(&self) -> Result<FxHashMap<ton_block::ShardIdent, u32>> {
         let mut result = FxHashMap::default();
 
-        let iter = self.node_states.prefix_iterator(GC_LAST_BLOCK_KEY);
-        for (key, value) in iter.filter(|(key, _)| key.starts_with(GC_LAST_BLOCK_KEY)) {
-            let shard_ident = LastShardBlockKey::from_slice(&key)
-                .context("Failed to load last shard id")?
-                .0;
-            let top_block = (&mut &*value)
-                .read_le_u32()
-                .context("Failed to load top block")?;
-            result.insert(shard_ident, top_block);
+        let mut iter = self.node_states.prefix_iterator(GC_LAST_BLOCK_KEY);
+        loop {
+            let (key, mut value) = match iter.item() {
+                Some(item) => item,
+                None => break iter.status()?,
+            };
+
+            if key.starts_with(GC_LAST_BLOCK_KEY) {
+                let shard_ident = LastShardBlockKey::from_slice(key)
+                    .context("Failed to load last shard id")?
+                    .0;
+                let top_block = (&mut value)
+                    .read_le_u32()
+                    .context("Failed to load top block")?;
+                result.insert(shard_ident, top_block);
+            }
+
+            iter.next();
         }
 
         Ok(result)
