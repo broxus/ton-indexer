@@ -71,6 +71,7 @@ default = []
 count-cells = ["countme/enable", "ton_types/profile"]
 io-uring = ["rocksdb/io-uring"]
 archive-uploader = ["dep:archive-uploader"]
+alloc-profiling = ["broxus-util/alloc-profiling"]
 
 [profile.release]
 debug = true

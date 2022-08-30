@@ -76,7 +76,7 @@ impl ShardStateStuff {
             return Err(anyhow!("Wrong zero state's {id} root hash"));
         }
 
-        Self::new(id, root, &*ZEROSTATE_REFS)
+        Self::new(id, root, &ZEROSTATE_REFS)
     }
 
     pub fn state(&self) -> &ton_block::ShardStateUnsplit {
@@ -151,7 +151,7 @@ impl MinRefMcState {
     fn insert(self: &Arc<Self>, mc_seq_no: u32) -> Arc<RefMcStateHandle> {
         // Fast path, just increase existing counter
         let counters = self.counters.read();
-        if let Some(counter) = (*counters).1.get(&mc_seq_no) {
+        if let Some(counter) = (counters).1.get(&mc_seq_no) {
             counter.fetch_add(1, Ordering::Release);
             return Arc::new(RefMcStateHandle {
                 min_ref_mc_state: self.clone(),
@@ -187,7 +187,7 @@ impl MinRefMcState {
     fn remove(&self, mc_seq_no: u32) {
         // Fast path, just decrease existing counter
         let counters = self.counters.read();
-        if let Some(counter) = (*counters).1.get(&mc_seq_no) {
+        if let Some(counter) = (counters).1.get(&mc_seq_no) {
             if counter.fetch_sub(1, Ordering::AcqRel) > 1 {
                 return;
             }

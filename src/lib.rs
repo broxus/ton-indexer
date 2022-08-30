@@ -18,7 +18,7 @@ pub mod utils;
 
 pub mod alloc {
     use broxus_util::alloc::set_jemalloc_param;
-    pub use broxus_util::alloc::{allocator, Allocator};
+    pub use broxus_util::alloc::*;
 
     /// Configures jemalloc
     ///
