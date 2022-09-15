@@ -12,7 +12,7 @@ use std::str::FromStr;
 use anyhow::Result;
 use smallvec::SmallVec;
 
-use super::StoredValue;
+use super::{BlockIdShort, StoredValue};
 
 /// Package entry id
 #[derive(Debug, Hash, Eq, PartialEq)]
@@ -58,8 +58,8 @@ where
     }
 
     /// Constructs on-stack buffer with the serialized object
-    pub fn to_vec(&self) -> SmallVec<[u8; ton_block::BlockIdExt::SIZE_HINT + 1]> {
-        let mut result = SmallVec::with_capacity(ton_block::BlockIdExt::SIZE_HINT + 1);
+    pub fn to_vec(&self) -> SmallVec<[u8; BlockIdShort::SIZE_HINT + 32 + 1]> {
+        let mut result = SmallVec::with_capacity(BlockIdShort::SIZE_HINT + 32 + 1);
         let (block_id, ty) = match self {
             Self::Block(id) => (id, 0),
             Self::Proof(id) => (id, 1),
@@ -70,6 +70,7 @@ where
         result.extend_from_slice(&block_id.shard_id.workchain_id().to_be_bytes());
         result.extend_from_slice(&block_id.shard_id.shard_prefix_with_tag().to_be_bytes());
         result.extend_from_slice(&block_id.seq_no.to_be_bytes());
+        result.extend_from_slice(block_id.root_hash.as_slice());
         result.push(ty);
 
         result

@@ -60,7 +60,7 @@ impl Column for KeyBlocks {
 }
 
 /// Maps package entry id to entry data
-/// - Key: `ton_block::BlockIdExt, package type (1 byte)`
+/// - Key: `BlockIdShort (16 bytes), ton_types::Uint256, package type (1 byte)`
 /// - Value: `Vec<u8>`
 pub struct PackageEntries;
 impl Column for PackageEntries {

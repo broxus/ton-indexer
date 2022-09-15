@@ -10,14 +10,16 @@ use super::columns;
 use super::tree::Tree;
 
 mod v2_0_7;
+mod v2_0_8;
 
-const CURRENT_VERSION: Semver = [2, 0, 7];
+const CURRENT_VERSION: Semver = [2, 0, 8];
 
 pub async fn apply(db: &Arc<rocksdb::DB>) -> Result<()> {
     const DB_VERSION_KEY: &str = "db_version";
 
     let mut migrations = Migrations::default();
     v2_0_7::register(&mut migrations).context("Failed to register v2.0.7")?;
+    v2_0_8::register(&mut migrations).context("Failed to register v2.0.8")?;
 
     let state = Tree::<columns::NodeStates>::new(db)?;
     let is_empty = state

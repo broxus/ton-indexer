@@ -371,7 +371,7 @@ async fn process_overlay_peers(neighbours: &Neighbours, dht: &Arc<dht::Node>) ->
         let ip = match dht.find_address(&peer_id).await {
             Ok((ip, _)) => ip,
             Err(e) => {
-                log::warn!("Failed to find peer address: {e:?}");
+                log::debug!("Failed to find peer address: {e:?}");
                 continue;
             }
         };
