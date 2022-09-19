@@ -5,7 +5,7 @@ use ton_block::Deserializable;
 
 use super::Migrations;
 use crate::db::columns;
-use crate::db::tree::Tree;
+use crate::db::tree::{Column, Tree};
 use crate::utils::*;
 
 // 2.0.7 to 2.0.8
@@ -21,17 +21,23 @@ pub(super) fn register(migrations: &mut Migrations) -> Result<()> {
 fn update_package_entries(db: &Arc<rocksdb::DB>) -> Result<()> {
     let package_entries = Tree::<columns::PackageEntries>::new(db)?;
     let package_entries_cf = package_entries.get_cf();
+
+    let mut read_options = Default::default();
+    columns::PackageEntries::read_options(&mut read_options);
     let write_options = package_entries.write_config();
 
-    let mut iter = package_entries.raw_iterator();
+    let snapshot = db.snapshot();
+
+    let mut iter = snapshot.raw_iterator_cf_opt(&package_entries_cf, read_options);
     iter.seek_to_first();
 
     const ENTRIES_PER_BATCH: usize = 10000;
 
+    // Iterate through the snapshot
     let mut total_entries = 0;
     let mut batch = rocksdb::WriteBatch::default();
     let mut entries_in_batch = 0;
-    while let (Some(old_key), Some(mut value)) = (iter.key(), iter.value()) {
+    while let (Some(old_key), Some(value)) = (iter.key(), iter.value()) {
         // Workchain, shard, seqno
         const OLD_KEY_PREFIX_LEN: usize = BlockIdShort::SIZE_HINT;
         // Workchain, shard, seqno, root hash
@@ -41,7 +47,7 @@ fn update_package_entries(db: &Arc<rocksdb::DB>) -> Result<()> {
         const NEW_KEY_LEN: usize = NEW_KEY_PREFIX_LEN + 1;
 
         if old_key.len() < NEW_KEY_LEN {
-            let cell = ton_types::deserialize_tree_of_cells(&mut value)
+            let cell = ton_types::deserialize_tree_of_cells(&mut std::convert::identity(value))
                 .context("Invalid package entry value")?;
 
             let root_hash = match old_key.get(OLD_KEY_PREFIX_LEN) {
