@@ -25,7 +25,8 @@ pub async fn sync(engine: &Arc<Engine>) -> Result<()> {
     let mut archives = ArchivesStream::new(engine, last_mc_block_id.seq_no + 1.., None);
 
     let mut last_gen_utime = 0;
-    while let Some(archive) = archives.recv().await {
+    loop {
+        let archive = archives.recv().await;
         if let Err(e) = import_package_with_apply(
             engine,
             archive.clone(),

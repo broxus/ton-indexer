@@ -86,7 +86,7 @@ impl ArchivesStream {
     }
 
     /// Wait next archive
-    pub async fn recv(&'_ mut self) -> Option<ReceivedBlockMaps<'_>> {
+    pub async fn recv(&'_ mut self) -> ReceivedBlockMaps<'_> {
         const STEP: u32 = BlockMaps::MAX_MC_BLOCK_COUNT as u32;
 
         let next_index = self.next_mc_seq_no;
@@ -182,13 +182,13 @@ impl ArchivesStream {
             self.start_downloading(self.max_mc_seq_no + STEP);
         }
 
-        Some(ReceivedBlockMaps {
+        ReceivedBlockMaps {
             stream: self,
             index: next_index,
             neighbour,
             block_maps,
             accepted: false,
-        })
+        }
     }
 
     fn start_downloading(&mut self, mc_block_seq_no: u32) {

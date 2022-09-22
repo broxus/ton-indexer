@@ -20,7 +20,8 @@ pub async fn historical_sync(engine: &Arc<Engine>, from_seqno: u32) -> Result<()
     let mut ctx = HistoricalSyncContext::new(engine, from, to);
 
     let mut archives = ArchivesStream::new(engine, from..=to, None);
-    while let Some(archive) = archives.recv().await {
+    loop {
+        let archive = archives.recv().await;
         match ctx.handle(archive.clone()).await {
             Ok(ControlFlow::Break(())) => break,
             Ok(_) => {
@@ -60,7 +61,7 @@ impl<'a> HistoricalSyncContext<'a> {
         };
         log::debug!("sync: Saving archive. Low id: {lowest_id}. High id: {highest_id}");
 
-        let mut block_edge = maps.build_block_maps_edge(lowest_id)?;
+        let mut block_edge = self.last_archive_edge.clone();
 
         self.process_blocks(&maps, &mut block_edge).await?;
         log::info!("sync: Saved archive from {lowest_id} to {highest_id}");
@@ -69,7 +70,7 @@ impl<'a> HistoricalSyncContext<'a> {
             if highest_id.seq_no >= self.to {
                 ControlFlow::Break(())
             } else {
-                self.last_archive_edge = Some(block_edge);
+                self.last_archive_edge = block_edge;
                 ControlFlow::Continue(())
             }
         })
@@ -78,7 +79,7 @@ impl<'a> HistoricalSyncContext<'a> {
     async fn process_blocks(
         &mut self,
         maps: &Arc<BlockMaps>,
-        edge: &mut BlockMapsEdge,
+        edge: &mut Option<BlockMapsEdge>,
     ) -> Result<()> {
         let node_state = self.engine.db.node_state();
 
@@ -105,7 +106,7 @@ impl<'a> HistoricalSyncContext<'a> {
 
             // Skip already saved blocks
             if mc_seq_no <= self.from {
-                *edge = new_edge;
+                *edge = Some(new_edge);
                 continue;
             }
 
@@ -116,9 +117,22 @@ impl<'a> HistoricalSyncContext<'a> {
             splits.clear();
             let mut tasks = Vec::with_capacity(shard_blocks.len());
             for (_, id) in shard_blocks {
+                fn should_process(
+                    maps: &BlockMaps,
+                    edge: &Option<BlockMapsEdge>,
+                    id: &ton_block::BlockIdExt,
+                ) -> bool {
+                    match edge {
+                        // Process blocks only if they are after the current edge
+                        Some(edge) => edge.is_before(id),
+                        // Always process all blocks in archive when block edge is not specified
+                        None => maps.blocks.contains_key(id),
+                    }
+                }
+
                 // Skip blocks which were referenced in previous mc block (no new blocks were
                 // produced in this shard)
-                if !edge.is_before(&id) {
+                if !should_process(maps, edge, &id) {
                     continue;
                 }
 
@@ -144,13 +158,13 @@ impl<'a> HistoricalSyncContext<'a> {
                         }
 
                         // Push left predecessor
-                        if edge.is_before(&prev1) {
+                        if should_process(&maps, &edge, &prev1) {
                             stack.push(prev1);
                         }
 
                         // Push right predecessor
                         if let Some(prev2) = prev2 {
-                            if edge.is_before(&prev2) {
+                            if should_process(&maps, &edge, &prev2) {
                                 stack.push(prev2);
                             }
                         }
@@ -180,7 +194,7 @@ impl<'a> HistoricalSyncContext<'a> {
                 .find(|item| item.is_err())
                 .unwrap_or(Ok(()))?;
 
-            *edge = new_edge;
+            *edge = Some(new_edge);
 
             node_state.store_historical_sync_start(mc_block_id)?;
         }

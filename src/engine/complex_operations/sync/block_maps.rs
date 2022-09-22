@@ -140,25 +140,6 @@ impl BlockMaps {
         // Archive is not empty and all blocks are contiguous
         Ok(())
     }
-
-    pub fn build_block_maps_edge(
-        &self,
-        id: &ton_block::BlockIdExt,
-    ) -> Result<BlockMapsEdge, BlockMapsError> {
-        let entry = self.blocks.get(id).ok_or(BlockMapsError::BlockNotFound)?;
-        let block = &entry
-            .block
-            .as_ref()
-            .ok_or(BlockMapsError::BlockDataNotFound)?
-            .data;
-
-        Ok(BlockMapsEdge {
-            mc_block_seq_no: id.seq_no,
-            top_shard_blocks: block
-                .shard_blocks_seq_no()
-                .map_err(|_| BlockMapsError::InvalidMasterchainBlock)?,
-        })
-    }
 }
 
 #[derive(Default)]
@@ -658,14 +639,10 @@ pub enum BlockMapsError {
         shard_ident: ton_block::ShardIdent,
         seqno: u32,
     },
-    #[error("Block not found")]
-    BlockNotFound,
     #[error("Block not found in archive")]
     BlockDataNotFound,
     #[error("Block proof not found in archive")]
     BlockProofNotFound,
-    #[error("Invalid masterchain block")]
-    InvalidMasterchainBlock,
     #[error("Invalid block maps edge")]
     InvalidBlockMapsEdge(#[from] BlockMapsEdgeVerificationError),
 }
