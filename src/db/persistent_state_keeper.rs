@@ -1,37 +1,70 @@
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 
+use anyhow::Result;
 use arc_swap::ArcSwapOption;
 use tokio::sync::Notify;
 
+use super::BlockHandleStorage;
 use crate::db::BlockHandle;
 use crate::utils::*;
 
-#[derive(Default)]
 pub struct PersistentStateKeeper {
+    block_handle_storage: Arc<BlockHandleStorage>,
+    initialized: AtomicBool,
     persistent_state_changed: Notify,
     current_persistent_state: ArcSwapOption<BlockHandle>,
     last_utime: AtomicU32,
 }
 
 impl PersistentStateKeeper {
-    pub fn update(&self, block_handle: &Arc<BlockHandle>) {
+    pub fn new(block_handle_storage: &Arc<BlockHandleStorage>) -> Self {
+        Self {
+            block_handle_storage: block_handle_storage.clone(),
+            initialized: Default::default(),
+            persistent_state_changed: Default::default(),
+            current_persistent_state: Default::default(),
+            last_utime: Default::default(),
+        }
+    }
+
+    pub fn update(&self, block_handle: &Arc<BlockHandle>) -> Result<()> {
+        if !self.initialized.load(Ordering::Acquire) {
+            let prev_persistent_key_block = self
+                .block_handle_storage
+                .find_prev_persistent_key_block(block_handle.id().seq_no)?;
+
+            if let Some(handle) = &prev_persistent_key_block {
+                self.last_utime
+                    .store(handle.meta().gen_utime(), Ordering::Release);
+            }
+            self.current_persistent_state
+                .store(prev_persistent_key_block);
+
+            self.initialized.store(true, Ordering::Release);
+
+            self.persistent_state_changed.notify_waiters();
+        }
+
         if !block_handle.is_key_block() {
-            return;
+            return Ok(());
         }
 
         let block_utime = block_handle.meta().gen_utime();
         let prev_utime = self.last_utime();
 
         if prev_utime > block_utime {
-            return;
+            return Ok(());
         }
 
         if is_persistent_state(block_utime, prev_utime) {
+            self.last_utime.store(block_utime, Ordering::Release);
             self.current_persistent_state
                 .store(Some(block_handle.clone()));
             self.persistent_state_changed.notify_waiters();
         }
+
+        Ok(())
     }
 
     pub fn last_utime(&self) -> u32 {

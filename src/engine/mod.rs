@@ -347,13 +347,6 @@ impl Engine {
         match options.gc_interval {
             ArchivesGcInterval::Manual => Ok(()),
             ArchivesGcInterval::PersistentStates { offset_sec } => {
-                // Get current persistent state
-                let last_key_block = self.db.block_handle_storage().find_last_key_block()?;
-                let prev_persistent_key_block = self
-                    .db
-                    .block_handle_storage()
-                    .find_prev_persistent_key_block(last_key_block.id().seq_no)?;
-
                 let engine = self.clone();
                 tokio::spawn(async move {
                     let persistent_state_keeper =
@@ -402,13 +395,6 @@ impl Engine {
                         new_state_found.await;
                     }
                 });
-
-                if let Some(prev_persistent_key_block) = prev_persistent_key_block {
-                    self.db
-                        .runtime_storage()
-                        .persistent_state_keeper()
-                        .update(&prev_persistent_key_block);
-                }
 
                 Ok(())
             }
@@ -905,6 +891,14 @@ impl Engine {
 
         let applied = self.db.block_handle_storage().store_block_applied(handle)?;
 
+        if handle.id().shard_id.is_masterchain() {
+            self.on_masterchain_block(handle).await?;
+        }
+
+        Ok(applied)
+    }
+
+    async fn on_masterchain_block(&self, handle: &Arc<BlockHandle>) -> Result<()> {
         if handle.is_key_block() {
             if let Some(blocks_gc) = &self.blocks_gc_state {
                 if blocks_gc.enabled.load(Ordering::Acquire) {
@@ -918,14 +912,12 @@ impl Engine {
                         .await?
                 }
             }
-
-            self.db
-                .runtime_storage()
-                .persistent_state_keeper()
-                .update(handle);
         }
 
-        Ok(applied)
+        self.db
+            .runtime_storage()
+            .persistent_state_keeper()
+            .update(handle)
     }
 
     pub fn load_last_applied_mc_block_id(&self) -> Result<ton_block::BlockIdExt> {

@@ -247,7 +247,13 @@ impl Engine {
             block.new_archive_data()?,
             proof.new_archive_data()?,
         )
-        .await
+        .await?;
+
+        if handle.id().shard_id.is_masterchain() {
+            self.on_masterchain_block(&handle).await?;
+        }
+
+        Ok(())
     }
 
     fn historical_sync_range(&self, from_seqno: u32) -> Result<(u32, u32)> {
