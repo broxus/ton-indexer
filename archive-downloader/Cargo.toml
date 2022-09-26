@@ -1,0 +1,16 @@
+[package]
+name = "archive-downloader"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1.0.56"
+futures-util = "0.3.21"
+log = "0.4.16"
+pin-project-lite = "0.2"
+rusoto_core = "0.48.0"
+rusoto_credential = "0.48.0"
+rusoto_s3 = "0.48.0"
+rusoto_signature = "0.48.0"
+serde = { version = "1.0.136", features = ["derive"] }
+tokio = { version = "1", features = ["time"] }

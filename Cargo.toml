@@ -8,6 +8,7 @@ rust-version = "1.60"
 [workspace]
 members = [
     "global-config",
+    "archive-downloader",
     "archive-uploader"
 ]
 
@@ -23,7 +24,6 @@ bytes = "1.1.0"
 countme = { version = "3.0.0" }
 crc = "3.0"
 dashmap = "5.3"
-either = "1.6.1"
 everscale-network = "0.3.0"
 fdlimit = "0.2.1"
 futures-util = "0.3"
