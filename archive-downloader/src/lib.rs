@@ -26,14 +26,6 @@ pub struct ArchiveDownloaderConfig {
     /// The bucket name
     pub bucket: String,
 
-    /// Since masterchain seqno (including)
-    #[serde(default)]
-    pub from_seqno: Option<u32>,
-
-    /// Until masterchain seqno (including)
-    #[serde(default)]
-    pub until_seqno: Option<u32>,
-
     /// Retry interval in case of failure (Default: 1000)
     #[serde(default = "default_retry_interval_ms")]
     pub retry_interval_ms: u64,
@@ -295,8 +287,6 @@ mod tests {
             name: "".to_owned(),
             endpoint: "http://127.0.0.1:9000".to_owned(),
             bucket: "archives3".to_owned(),
-            from_seqno: None,
-            until_seqno: None,
             retry_interval_ms: 100,
             retry_count: 4,
             credentials: Some(AwsCredentials {
