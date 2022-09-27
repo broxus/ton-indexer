@@ -157,7 +157,7 @@ where
                                 Poll::Pending => return Poll::Pending,
                             };
 
-                            *this.has_more_keys = !objects.is_truncated.unwrap_or_default();
+                            *this.has_more_keys = objects.is_truncated.unwrap_or_default();
                             *this.continuation_token = objects.next_continuation_token;
 
                             let objects = objects
