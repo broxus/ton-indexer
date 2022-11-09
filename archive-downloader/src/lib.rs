@@ -217,7 +217,7 @@ impl SharedState {
             match self.s3_client.list_objects_v2(req).await {
                 Ok(res) => return Ok(res),
                 Err(e) if attempt < self.retry_count => {
-                    log::info!("Failed to get archives list (attempt {attempt}). {e:?}");
+                    tracing::info!(attempt, "failed to get archives list: {e:?}");
                     attempt += 1;
                     tokio::time::sleep(self.retry_interval).await;
                     continue;
@@ -264,7 +264,7 @@ impl SharedState {
             match res {
                 Ok(body) => return Ok((key, body)),
                 Err(e) if attempt < self.retry_count => {
-                    log::info!("Failed to get archive {key} (attempt {attempt}). {e:?}");
+                    tracing::info!(attempt, key, "failed to get archive: {e:?}");
                     attempt += 1;
                     tokio::time::sleep(self.retry_interval).await;
                     continue;

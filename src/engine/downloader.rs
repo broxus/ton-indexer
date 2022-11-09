@@ -183,10 +183,10 @@ impl<'a, T> DownloadContext<'a, T> {
         loop {
             match self.downloader.try_download(self).await {
                 Ok(Some(result)) => break Ok(result),
-                Ok(None) => log::debug!("Got no data for {}", self.name),
+                Ok(None) => tracing::debug!("fot no data for {}", self.name),
                 Err(e) => {
                     self.explicit_neighbour = None;
-                    log::debug!("Error in {}: {e:?}", self.name)
+                    tracing::debug!("error in {}: {e:?}", self.name)
                 }
             }
 

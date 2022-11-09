@@ -15,15 +15,18 @@ pub struct NeighboursCache {
 impl NeighboursCache {
     pub fn new(
         initial_peers: &[adnl::NodeIdShort],
-        max_len: usize,
+        max_len: u32,
         neighbour_options: NeighbourOptions,
     ) -> Self {
         let result = Self {
-            state: RwLock::new(NeighboursCacheState::new(max_len, neighbour_options)),
+            state: RwLock::new(NeighboursCacheState::new(
+                max_len as usize,
+                neighbour_options,
+            )),
         };
 
         let mut state = result.state.write();
-        for peer_id in initial_peers.iter().take(max_len) {
+        for peer_id in initial_peers.iter().take(max_len as usize) {
             state.insert(*peer_id);
         }
         drop(state);

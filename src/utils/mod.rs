@@ -9,7 +9,6 @@ pub use shard_state::*;
 pub use shard_state_cache::*;
 pub use stored_value::*;
 pub use top_blocks::*;
-pub use trigger::*;
 pub use with_archive_data::*;
 
 mod archive_package;
@@ -23,5 +22,4 @@ mod shard_state;
 mod shard_state_cache;
 mod stored_value;
 mod top_blocks;
-mod trigger;
 mod with_archive_data;

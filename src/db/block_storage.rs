@@ -68,14 +68,14 @@ impl BlockStorage {
             );
 
             if let Some(Err(e)) = value.map(check_archive) {
-                log::error!("Failed to read archive {archive_id}: {e:?}")
+                tracing::error!(archive_id, "failed to read archive: {e:?}")
             }
 
             archive_ids.insert(archive_id);
             iter.next();
         }
 
-        log::info!("Selfcheck complete");
+        tracing::info!("selfcheck complete");
         Ok(())
     }
 
@@ -480,9 +480,10 @@ impl BlockStorage {
         // Load target block data
         let top_blocks = match target_block {
             Some(handle) if handle.meta().has_data() => {
-                log::info!(
-                    "Starting blocks GC for key block: {key_block_id}. Target block: {}",
-                    handle.id()
+                tracing::info!(
+                    %key_block_id,
+                    target_block_id = %handle.id(),
+                    "starting blocks GC",
                 );
                 self.load_block_data(&handle)
                     .await
@@ -491,7 +492,7 @@ impl BlockStorage {
                     .context("Failed to compute top blocks for target block")?
             }
             _ => {
-                log::info!("Blocks GC skipped for key block: {key_block_id}");
+                tracing::info!(%key_block_id, "blocks GC skipped");
                 return Ok(());
             }
         };
@@ -509,12 +510,13 @@ impl BlockStorage {
         })
         .await??;
 
-        log::info!(
-            "Finished blocks GC for key block: {key_block_id}\n\
-             total_cached_handles_removed: {total_cached_handles_removed}\n\
-             mc_package_entries_removed: {mc_package_entries_removed}\n\
-             total_package_entries_removed: {total_package_entries_removed}\n\
-             total_handles_removed: {total_handles_removed}"
+        tracing::info!(
+            %key_block_id,
+            total_cached_handles_removed,
+            mc_package_entries_removed,
+            total_package_entries_removed,
+            total_handles_removed,
+            "finished blocks GC"
         );
 
         // Done
@@ -529,7 +531,7 @@ impl BlockStorage {
             // `archive_ids` will now contain [..until_id]
             Some(until_id) => archive_ids.split_off(&until_id),
             None => {
-                log::info!("Archives GC: nothing to remove");
+                tracing::info!("archives GC: nothing to remove");
                 return Ok(());
             }
         };
@@ -540,10 +542,15 @@ impl BlockStorage {
         match (removed_ids.iter().next(), removed_ids.iter().next_back()) {
             (Some(first), Some(last)) => {
                 let len = removed_ids.len();
-                log::info!("Archives GC: removing {len} archives (from {first} to {last})...");
+                tracing::info!(
+                    archive_count = len,
+                    first,
+                    last,
+                    "archives GC: removing archives"
+                );
             }
             _ => {
-                log::info!("Archives GC: nothing to remove");
+                tracing::info!("archives GC: nothing to remove");
                 return Ok(());
             }
         }
@@ -558,7 +565,7 @@ impl BlockStorage {
 
         self.archives.raw_db_handle().write(batch)?;
 
-        log::info!("Archives GC: done");
+        tracing::info!("archives GC: done");
         Ok(())
     }
 
@@ -761,9 +768,9 @@ fn remove_blocks(
             max_blocks_per_batch,
             Some(max_blocks_per_batch) if batch_len >= max_blocks_per_batch
         ) {
-            log::info!(
-                "Applying intermediate batch {}...",
-                stats.total_package_entries_removed
+            tracing::info!(
+                total_package_entries_removed = stats.total_package_entries_removed,
+                "applying intermediate batch",
             );
             let batch = std::mem::take(&mut batch);
             db.write(batch)?;
@@ -774,7 +781,7 @@ fn remove_blocks(
     }
 
     if batch_len > 0 {
-        log::info!("Applying final batch...");
+        tracing::info!("applying final batch");
         db.write(batch)?;
     }
 

@@ -111,7 +111,11 @@ impl Drop for ArchiveWriter {
             }
             ArchiveWriterState::File { path, .. } => {
                 if let Err(e) = std::fs::remove_file(&path) {
-                    log::error!("Failed to remove temp archive file {path:?}: {e:?}");
+                    tracing::error!(
+                        target: "sync",
+                        path = %path.display(),
+                        "failed to remove temp archive file: {e:?}"
+                    );
                 }
             }
         }

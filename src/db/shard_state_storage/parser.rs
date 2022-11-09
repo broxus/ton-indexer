@@ -163,13 +163,13 @@ impl ShardStatePacketReader {
             let data_size = 32 * ((ton_types::LevelMask::with_mask(l).level() + 1) as usize);
             try_read!(src.read_exact(&mut buffer[1..1 + data_size]));
 
-            log::info!("ABSENT");
+            tracing::info!("ABSENT");
 
             // 1 byte of d1 + fixed data size of absent cell
             1 + data_size
         } else {
             if r > 4 {
-                log::error!("CELLS: {r}");
+                tracing::error!("CELLS: {r}");
                 return Err(ShardStateParserError::InvalidShardStateCell)
                     .context("Cell must contain at most 4 references");
             }

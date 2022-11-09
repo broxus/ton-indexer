@@ -74,7 +74,7 @@ impl ShardStateStorage {
         let gc_state = res.gc_state_storage.load()?;
         match &gc_state.step {
             None => {
-                log::info!("Shard state GC is pending");
+                tracing::info!("shard state GC is pending");
                 *res.current_marker.write().await = gc_state.current_marker;
             }
             Some(step) => {
@@ -299,9 +299,9 @@ impl ShardStateStorage {
             .await?
             .context("Recent blocks edge not found")?;
 
-        log::info!(
-            "Starting shard states GC for mc block: {}",
-            top_blocks.mc_block
+        tracing::info!(
+            block_id = %top_blocks.mc_block,
+            "starting shard states GC",
         );
         let instant = Instant::now();
 
@@ -309,7 +309,7 @@ impl ShardStateStorage {
         let (current_marker, target_marker) = {
             let gc_state = self.gc_state_storage.load()?;
             if gc_state.step.is_some() {
-                log::warn!("Invalid stored GC state: {gc_state:?}");
+                tracing::warn!(?gc_state, "invalid stored GC state");
             }
 
             self.gc_state_storage
@@ -342,10 +342,10 @@ impl ShardStateStorage {
         self.sweep_blocks(target_marker, &top_blocks).await?;
 
         // Done
-        log::info!(
-            "Finished shard states GC for mc block: {}. Took: {} s",
-            top_blocks.mc_block,
-            instant.elapsed().as_secs_f64()
+        tracing::info!(
+            block_id = %top_blocks.mc_block,
+            elapsed_sec = instant.elapsed().as_secs_f64(),
+            "finished shard states GC",
         );
         Ok(top_blocks)
     }
@@ -526,9 +526,10 @@ impl ShardStateStorage {
             .clear_last_blocks()
             .context("Failed to reset last block")?;
 
-        log::info!(
-            "Marked {total} cells. Took: {} ms",
-            time.elapsed().as_millis()
+        tracing::info!(
+            marked_count = total,
+            elapsed_ms = time.elapsed().as_millis(),
+            "marked cells",
         );
 
         // Update gc state
@@ -548,7 +549,7 @@ impl ShardStateStorage {
     ) -> Result<()> {
         let target_marker = *target_marker_lock;
 
-        log::info!("Sweeping cells other than {target_marker}");
+        tracing::info!(target_marker, "sweeping cells");
         let time = Instant::now();
 
         // Remove all unmarked cells
@@ -565,9 +566,10 @@ impl ShardStateStorage {
         // it will block the insertion of new states.
         drop(target_marker_lock);
 
-        log::info!(
-            "Swept {total} cells. Took: {} ms",
-            time.elapsed().as_millis()
+        tracing::info!(
+            swept_count = total,
+            elapsed_ms = time.elapsed().as_millis(),
+            "swept cells",
         );
 
         // Update gc state
@@ -580,7 +582,7 @@ impl ShardStateStorage {
     }
 
     async fn sweep_blocks(&self, target_marker: u8, top_blocks: &TopBlocks) -> Result<()> {
-        log::info!("Sweeping block states");
+        tracing::info!("sweeping block states");
 
         let time = Instant::now();
 
@@ -630,10 +632,10 @@ impl ShardStateStorage {
         })
         .await??;
 
-        log::info!(
-            "Swept {} block states. Took: {} ms",
-            total,
-            time.elapsed().as_millis()
+        tracing::info!(
+            swept_count = total,
+            elapsed_ms = time.elapsed().as_millis(),
+            "swept block states",
         );
 
         // Update gc state

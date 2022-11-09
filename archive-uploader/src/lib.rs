@@ -119,7 +119,10 @@ impl ArchiveUploader {
             match archive.try_upload().await {
                 Ok(()) => return,
                 Err(e) => {
-                    log::error!("Failed to upload archive {}: {e:?}", archive.archive_id);
+                    tracing::error!(
+                        archive_id = archive.archive_id,
+                        "failed to upload archive: {e:?}"
+                    );
                     tokio::time::sleep(archive.retry_interval()).await;
                 }
             }

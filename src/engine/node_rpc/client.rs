@@ -44,7 +44,7 @@ impl NodeRpcClient {
 
         match prepare {
             proto::PreparedState::Found => {
-                log::info!("Found state from peer {}", neighbour.peer_id());
+                tracing::info!(peer_id = %neighbour.peer_id(), "found peer with requested state");
                 Ok(Some(neighbour))
             }
             proto::PreparedState::NotFound => Ok(None),
@@ -252,9 +252,10 @@ impl NodeRpcClient {
                     WithArchiveData::new(proof, proof_data),
                 )))
             }
+
             proto::DataFull::Empty => {
-                log::warn!(
-                    "prepareBlock receives Prepared, but DownloadBlockFull receives DataFullEmpty"
+                tracing::warn!(
+                    "prepareBlock received Prepared, but DownloadBlockFull received DataFullEmpty"
                 );
                 Ok(None)
             }
@@ -402,9 +403,11 @@ impl NodeRpcClient {
                 Ok(Err(e)) => {
                     peer_attempt += 1;
                     part_attempt += 1;
-                    log::error!(
-                        "Failed to download archive {}: {e:?}, offset: {offset}, attempt: {part_attempt}",
+                    tracing::error!(
                         archive_id,
+                        offset,
+                        part_attempt,
+                        "Failed to download archive: {e:?}",
                     );
 
                     if part_attempt > 2 {

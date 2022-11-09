@@ -1,8 +1,8 @@
+use std::net::SocketAddrV4;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
-use everscale_network::utils::PackedSocketAddr;
 use everscale_network::{adnl, overlay, rldp};
 use tl_proto::{TlRead, TlWrite};
 
@@ -11,35 +11,35 @@ use super::neighbours::Neighbours;
 
 pub struct OverlayClient {
     rldp: Arc<rldp::Node>,
-    overlay_shard: Arc<overlay::Shard>,
+    overlay: Arc<overlay::Overlay>,
     neighbours: Arc<Neighbours>,
 }
 
 impl OverlayClient {
     pub fn new(
         rldp: Arc<rldp::Node>,
-        overlay_shard: Arc<overlay::Shard>,
+        overlay: Arc<overlay::Overlay>,
         neighbours: Arc<Neighbours>,
     ) -> Self {
         Self {
             rldp,
-            overlay_shard,
+            overlay,
             neighbours,
         }
     }
 
-    pub fn overlay_shard(&self) -> &Arc<overlay::Shard> {
-        &self.overlay_shard
+    pub fn overlay(&self) -> &Arc<overlay::Overlay> {
+        &self.overlay
     }
 
     pub fn neighbours(&self) -> &Arc<Neighbours> {
         &self.neighbours
     }
 
-    pub fn resolve_ip(&self, neighbour: &Neighbour) -> Option<PackedSocketAddr> {
+    pub fn resolve_address(&self, neighbour: &Neighbour) -> Option<SocketAddrV4> {
         self.rldp
             .adnl()
-            .get_peer_ip(self.overlay_shard.overlay_key().id(), neighbour.peer_id())
+            .get_peer_address(self.overlay.overlay_key().id(), neighbour.peer_id())
     }
 
     #[track_caller]
@@ -136,7 +136,7 @@ impl OverlayClient {
         data: Vec<u8>,
         source: Option<&Arc<adnl::Key>>,
     ) -> overlay::OutgoingBroadcastInfo {
-        self.overlay_shard.broadcast(
+        self.overlay.broadcast(
             self.rldp.adnl(),
             data,
             source,
@@ -145,7 +145,7 @@ impl OverlayClient {
     }
 
     pub async fn wait_for_broadcast(&self) -> overlay::IncomingBroadcastInfo {
-        self.overlay_shard.wait_for_broadcast().await
+        self.overlay.wait_for_broadcast().await
     }
 
     async fn send_adnl_query_to_neighbour<Q, A>(
@@ -165,7 +165,7 @@ impl OverlayClient {
 
         let now = Instant::now();
         let answer = self
-            .overlay_shard
+            .overlay
             .adnl_query(adnl, peer_id, query, timeout)
             .await?;
         let roundtrip = now.elapsed().as_millis() as u64;
@@ -176,15 +176,17 @@ impl OverlayClient {
                 return Ok(Some(answer));
             }
             Some(Err(e)) => {
-                log::warn!(
-                    "Invalid answer from {peer_id} ({}): {e:?}",
-                    ResolvedIp(self.resolve_ip(neighbour))
+                tracing::warn!(
+                    %peer_id,
+                    addr = %ResolvedAddress(self.resolve_address(neighbour)),
+                    "invalid answer: {e:?}",
                 );
             }
             None => {
-                log::warn!(
-                    "No reply from {peer_id} ({})",
-                    ResolvedIp(self.resolve_ip(neighbour))
+                tracing::warn!(
+                    %peer_id,
+                    addr = %ResolvedAddress(self.resolve_address(neighbour)),
+                    "no reply",
                 );
             }
         }
@@ -205,13 +207,13 @@ impl OverlayClient {
     {
         const ATTEMPT_INTERVAL: u64 = 50; // Milliseconds
 
-        let prefix = self.overlay_shard.query_prefix();
+        let prefix = self.overlay.query_prefix();
         let mut query_data = Vec::with_capacity(prefix.len() + query.max_size_hint());
         query_data.extend_from_slice(prefix);
         query.write_to(&mut query_data);
 
         let (answer, roundtrip) = self
-            .overlay_shard
+            .overlay
             .rldp_query(
                 &self.rldp,
                 neighbour.peer_id(),
@@ -240,9 +242,9 @@ impl OverlayClient {
 
 const DEFAULT_ADNL_ATTEMPTS: u32 = 50;
 
-struct ResolvedIp(Option<PackedSocketAddr>);
+struct ResolvedAddress(Option<SocketAddrV4>);
 
-impl std::fmt::Display for ResolvedIp {
+impl std::fmt::Display for ResolvedAddress {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match &self.0 {
             Some(ip) => ip.fmt(f),

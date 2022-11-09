@@ -67,7 +67,7 @@ impl<'a> ShardStateReplaceTransaction<'a> {
                 None => return Ok(false),
             };
 
-            log::debug!("State header: {header:?}");
+            tracing::debug!(?header);
             progress_bar.set_total(header.cell_count);
 
             self.header = Some(header);
@@ -92,7 +92,7 @@ impl<'a> ShardStateReplaceTransaction<'a> {
         progress_bar.set_progress(self.cells_read);
 
         if chunk_size > 0 {
-            log::debug!("Creating chunk of size: {chunk_size} bytes");
+            tracing::debug!(chunk_size, "creating chunk");
             cells_file.write_u32_le(chunk_size).await?;
         }
 
@@ -157,7 +157,7 @@ impl<'a> ShardStateReplaceTransaction<'a> {
             file_pos -= chunk_size;
             unsafe { cells_file.read_exact_at(file_pos, &mut chunk_buffer) };
 
-            log::debug!("Processing chunk of size: {chunk_size}");
+            tracing::debug!(chunk_size, "processing chunk");
 
             {
                 // NOTE: create CF on each iteration to make this future Send+Sync

@@ -120,7 +120,7 @@ impl TryFrom<AddressJson> for proto::adnl::Address {
     fn try_from(value: AddressJson) -> Result<Self, Self::Error> {
         require_type(value.ty, "adnl.address.udp")?;
 
-        Ok(proto::adnl::Address::Udp {
+        Ok(proto::adnl::Address {
             ip: value.ip as u32,
             port: value.port as u32,
         })

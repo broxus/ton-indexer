@@ -1,5 +1,4 @@
 pub struct ProgressBar {
-    log_level: log::Level,
     name: &'static str,
     percentage_step: u64,
     current: u64,
@@ -52,7 +51,7 @@ impl ProgressBar {
 
     #[inline(always)]
     fn message(&self, text: impl std::fmt::Display) {
-        log::log!(self.log_level, "{}... {text}", self.name);
+        tracing::info!("{}... {text}", self.name);
     }
 
     fn compute_current_progress(&self) -> Option<u64> {
@@ -64,7 +63,6 @@ impl ProgressBar {
 }
 
 pub struct ProgressBarBuilder {
-    log_level: log::Level,
     name: &'static str,
     percentage_step: u64,
     total: Option<u64>,
@@ -74,17 +72,11 @@ pub struct ProgressBarBuilder {
 impl ProgressBarBuilder {
     pub fn new(name: &'static str) -> Self {
         Self {
-            log_level: log::Level::Info,
             name,
             percentage_step: PERCENTAGE_STEP,
             total: None,
             exact_unit: None,
         }
-    }
-
-    pub fn log_level(mut self, log_level: log::Level) -> Self {
-        self.log_level = log_level;
-        self
     }
 
     pub fn percentage_step(mut self, step: u64) -> Self {
@@ -104,7 +96,6 @@ impl ProgressBarBuilder {
 
     pub fn build(self) -> ProgressBar {
         let pg = ProgressBar {
-            log_level: self.log_level,
             name: self.name,
             percentage_step: self.percentage_step,
             current: 0,

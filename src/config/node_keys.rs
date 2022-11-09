@@ -50,7 +50,7 @@ impl NodeKeys {
             match serde_json::from_reader(&file) {
                 Ok(keys) => keys,
                 Err(_) => {
-                    log::warn!("Failed to read ADNL keys. Generating new");
+                    tracing::warn!("failed to read ADNL keys, generating new");
                     Self::generate()
                 }
             }

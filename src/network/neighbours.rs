@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
-use everscale_network::utils::FxDashSet;
+use everscale_network::util::FxDashSet;
 use everscale_network::{adnl, dht, overlay};
 use tokio::sync::Semaphore;
 
@@ -12,7 +12,7 @@ use super::neighbours_cache::*;
 
 pub struct Neighbours {
     dht: Arc<dht::Node>,
-    overlay_shard: Arc<overlay::Shard>,
+    overlay: Arc<overlay::Overlay>,
     options: NeighboursOptions,
 
     cache: Arc<NeighboursCache>,
@@ -30,7 +30,7 @@ pub struct Neighbours {
 #[serde(default)]
 pub struct NeighboursOptions {
     /// Default: 16
-    pub max_neighbours: usize,
+    pub max_neighbours: u32,
     /// Default: 10
     pub reloading_min_interval_sec: u32,
     /// Default: 30
@@ -71,7 +71,7 @@ impl Default for NeighboursOptions {
 impl Neighbours {
     pub fn new(
         dht: &Arc<dht::Node>,
-        overlay_shard: &Arc<overlay::Shard>,
+        overlay: &Arc<overlay::Overlay>,
         initial_peers: &[adnl::NodeIdShort],
         options: NeighboursOptions,
     ) -> Arc<Self> {
@@ -85,7 +85,7 @@ impl Neighbours {
 
         Arc::new(Self {
             dht: dht.clone(),
-            overlay_shard: overlay_shard.clone(),
+            overlay: overlay.clone(),
             options,
             cache,
             overlay_peers: Default::default(),
@@ -96,8 +96,8 @@ impl Neighbours {
         })
     }
 
-    pub fn overlay_shard(&self) -> &Arc<overlay::Shard> {
-        &self.overlay_shard
+    pub fn overlay(&self) -> &Arc<overlay::Overlay> {
+        &self.overlay
     }
 
     /// Starts background process of sending ping queries to all neighbours
@@ -113,7 +113,7 @@ impl Neighbours {
                 };
 
                 if let Err(e) = neighbours.ping_neighbours().await {
-                    log::warn!("Failed to ping neighbours: {e}");
+                    tracing::warn!("failed to ping neighbours: {e}");
                     tokio::time::sleep(interval).await;
                 }
             }
@@ -143,7 +143,7 @@ impl Neighbours {
                 };
 
                 if let Err(e) = neighbours.reload_neighbours() {
-                    log::warn!("Failed to reload neighbours: {e}");
+                    tracing::warn!("failed to reload neighbours: {e}");
                 }
             }
         });
@@ -171,7 +171,7 @@ impl Neighbours {
                     index += 1;
 
                     let new_peers = match neighbours
-                        .overlay_shard
+                        .overlay
                         .exchange_random_peers(&adnl, &peer_id, &neighbours.overlay_peers, None)
                         .await
                     {
@@ -184,12 +184,12 @@ impl Neighbours {
                     tokio::spawn(async move {
                         for peer_id in new_peers.into_iter() {
                             match neighbours.dht.find_address(&peer_id).await {
-                                Ok((ip, _)) => {
-                                    log::debug!("Found overlay peer {peer_id}: {ip}");
+                                Ok((addr, _)) => {
+                                    tracing::debug!(%peer_id, %addr, "found overlay peer");
                                     neighbours.add_overlay_peer(peer_id);
                                 }
                                 Err(e) => {
-                                    log::debug!("Failed to find overlay peer address: {e}");
+                                    tracing::debug!("failed to find overlay peer address: {e}");
                                 }
                             }
                         }
@@ -259,11 +259,12 @@ impl Neighbours {
     async fn ping_neighbours(self: &Arc<Self>) -> Result<()> {
         let neighbour_count = self.cache.len();
         if neighbour_count == 0 {
-            return Err(NeighboursError::NoPeersInOverlay(*self.overlay_shard.id()).into());
+            return Err(NeighboursError::NoPeersInOverlay(*self.overlay.id()).into());
         } else {
-            log::trace!(
-                "Pinging neighbours in overlay {} (count: {neighbour_count})",
-                *self.overlay_shard.id(),
+            tracing::trace!(
+                overlay_id = %self.overlay.id(),
+                %neighbour_count,
+                "pinging neighbours in overlay",
             )
         }
 
@@ -273,7 +274,7 @@ impl Neighbours {
             let neighbour = match self.cache.get_next_for_ping(&self.start) {
                 Some(neighbour) => neighbour,
                 None => {
-                    log::trace!("No neighbours to ping");
+                    tracing::trace!("no neighbours to ping");
                     tokio::time::sleep(Duration::from_millis(self.options.ping_min_timeout_ms))
                         .await;
                     continue;
@@ -294,7 +295,7 @@ impl Neighbours {
             let neighbours = self.clone();
             tokio::spawn(async move {
                 if let Err(e) = neighbours.update_capabilities(neighbour).await {
-                    log::debug!("Failed to ping peer: {e}");
+                    tracing::debug!("failed to ping peer: {e}");
                 }
                 // Explicitly release acquired semaphore
                 drop(guard);
@@ -303,28 +304,22 @@ impl Neighbours {
     }
 
     fn reload_neighbours(&self) -> Result<()> {
-        log::trace!(
-            "Start reload_neighbours (overlay: {})",
-            self.overlay_shard.id()
-        );
+        tracing::trace!(overlay_id = %self.overlay.id(), "started reloading neighbours");
 
         let peers = adnl::PeersSet::with_capacity(self.options.max_neighbours * 2 + 1);
-        self.overlay_shard
+        self.overlay
             .write_cached_peers(self.options.max_neighbours * 2, &peers);
         self.process_neighbours(peers)?;
 
-        log::trace!(
-            "Finish reload_neighbours (overlay: {})",
-            self.overlay_shard.id()
-        );
+        tracing::trace!(overlay_id = %self.overlay.id(), "finished reloading neighbours");
         Ok(())
     }
 
     async fn update_capabilities(self: &Arc<Self>, neighbour: Arc<Neighbour>) -> Result<()> {
-        log::trace!(
-            "Query capabilities from {} in {}",
-            neighbour.peer_id(),
-            self.overlay_shard.id()
+        tracing::trace!(
+            overlay_id = %self.overlay.id(),
+            peer_id = %neighbour.peer_id(),
+            "quering capabilities",
         );
 
         let timeout = self
@@ -337,16 +332,17 @@ impl Neighbours {
 
         let query = crate::proto::RpcGetCapabilities;
         match self
-            .overlay_shard
+            .overlay
             .adnl_query(self.dht.adnl(), neighbour.peer_id(), query, Some(timeout))
             .await
         {
             Ok(Some(answer)) => {
                 let capabilities = tl_proto::deserialize(&answer)?;
-                log::debug!(
-                    "Got capabilities from {} {}: {capabilities:?}",
-                    neighbour.peer_id(),
-                    self.overlay_shard.id(),
+                tracing::debug!(
+                    peer_id = %neighbour.peer_id(),
+                    overlay_id = %self.overlay.id(),
+                    ?capabilities,
+                    "got capabilities",
                 );
 
                 let roundtrip = now.elapsed().as_millis() as u64;
@@ -373,7 +369,7 @@ impl Neighbours {
 
             let (hint, unreliable_peer) = cache.insert_or_replace_unreliable(&mut rng, peer_id);
             if let Some(unreliable_peer) = unreliable_peer {
-                self.overlay_shard.remove_public_peer(&unreliable_peer);
+                self.overlay.remove_public_peer(&unreliable_peer);
                 self.overlay_peers.remove(&unreliable_peer);
             }
 

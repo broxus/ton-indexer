@@ -15,7 +15,12 @@ pub async fn historical_sync(engine: &Arc<Engine>, from_seqno: u32) -> Result<()
         return Ok(());
     }
 
-    log::info!("sync: Started historical sync from {from} to {to}");
+    tracing::info!(
+        target: "sync",
+        from_seq_no = from,
+        to_seq_no = to,
+        "started historical sync"
+    );
 
     let mut ctx = HistoricalSyncContext::new(engine, from, to);
 
@@ -28,12 +33,12 @@ pub async fn historical_sync(engine: &Arc<Engine>, from_seqno: u32) -> Result<()
                 archive.accept(ctx.last_archive_edge.clone());
             }
             Err(e) => {
-                log::error!("sync: Failed to save archive: {e:?}");
+                tracing::error!(target: "sync", "failed to save archive: {e:?}");
             }
         }
     }
 
-    log::info!("sync: Historical sync complete");
+    tracing::info!(target: "sync", "historical sync complete");
     Ok(())
 }
 
@@ -59,12 +64,12 @@ impl<'a> HistoricalSyncContext<'a> {
             (Some(lowest), Some(highest)) => (lowest, highest),
             _ => return Err(HistoricalSyncError::EmptyArchivePackage.into()),
         };
-        log::debug!("sync: Saving archive. Low id: {lowest_id}. High id: {highest_id}");
+        tracing::debug!(target: "sync", { %lowest_id, %highest_id }, "saving archive");
 
         let mut block_edge = self.last_archive_edge.clone();
 
         self.process_blocks(&maps, &mut block_edge).await?;
-        log::info!("sync: Saved archive from {lowest_id} to {highest_id}");
+        tracing::info!(target: "sync", { %lowest_id, %highest_id }, "saved archive");
 
         Ok({
             if highest_id.seq_no >= self.to {

@@ -30,10 +30,10 @@ pub async fn download_state(
         match mc_client.find_persistent_state(&full_state_id).await {
             Ok(Some(peer)) => break peer,
             Ok(None) => {
-                log::trace!("Failed to download state: state not found");
+                tracing::trace!(block_id = %full_state_id.block_id, "failed to download state: state not found");
             }
             Err(e) => {
-                log::trace!("Failed to download state: {e:?}");
+                tracing::trace!(block_id = %full_state_id.block_id, "failed to download state: {e:?}");
             }
         };
     };
@@ -41,7 +41,8 @@ pub async fn download_state(
     let (result_tx, result_rx) = oneshot::channel();
     let (packets_tx, packets_rx) = mpsc::channel(PROCESSING_QUEUE_LEN);
 
-    let (_completion_trigger, completion_signal) = trigger_on_drop();
+    let completion_signal = CancellationToken::new();
+    let _completion_trigger = completion_signal.clone().drop_guard();
 
     let total_size = Arc::new(AtomicU64::new(u64::MAX));
 
@@ -80,13 +81,13 @@ pub async fn download_state(
         tokio::select! {
             result = downloader => match result {
                 Ok(total_bytes) => {
-                    log::info!(
-                        "Persistent state downloader finished. Total size: {} bytes",
-                        total_bytes
+                    tracing::info!(
+                        total_bytes,
+                        "persistent state downloader finished",
                     );
                 },
                 Err(e) => {
-                    log::error!("Persistent state downloader failed: {:?}", e);
+                    tracing::error!("persistent state downloader failed: {e:?}");
                 },
             },
             _ = completion_signal.cancelled() => {}
@@ -319,7 +320,7 @@ async fn download_packet_worker(ctx: Arc<DownloadContext>, mut offsets_rx: Offse
             let result = tokio::select! {
                 data = recv_fut => data,
                 _ = &mut complete_signal => {
-                    log::debug!("Got last_part_signal: {offset}");
+                    tracing::debug!(offset, "got last_part_signal");
                     continue;
                 }
             };
@@ -338,7 +339,7 @@ async fn download_packet_worker(ctx: Arc<DownloadContext>, mut offsets_rx: Offse
                     if !ctx.complete.load(Ordering::Acquire)
                         && offset < ctx.total_size.load(Ordering::Acquire) as usize
                     {
-                        log::error!("Failed to download persistent state part {offset}: {e:?}");
+                        tracing::error!(offset, "failed to download persistent state part: {e:?}");
                     }
 
                     if part_attempt > 10 {
