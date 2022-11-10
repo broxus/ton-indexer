@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use argh::FromArgs;
-use everscale_network::util::now;
+use broxus_util::now;
 use serde::{Deserialize, Serialize};
 use ton_block::{DepthBalanceInfo, Deserializable, ShardAccount};
 use ton_types::{HashmapType, UInt256};
@@ -84,19 +84,19 @@ impl ton_indexer::Subscriber for LoggerSubscriber {
 
         tracing::info!(time_diff = (now() as i64 - created_at));
 
-        // if let Some(state) = ctx.shard_state() {
-        //     let state = state.read_accounts()?;
-        //     state
-        //         .iterate_slices(|ref mut key, ref mut value| {
-        //             UInt256::construct_from(key)?;
-        //             DepthBalanceInfo::construct_from(value)?;
-        //             let shard_acc = ShardAccount::construct_from(value)?;
-        //             let _acc = shard_acc.read_account()?;
+        if let Some(state) = ctx.shard_state() {
+            let state = state.read_accounts()?;
+            state
+                .iterate_slices(|ref mut key, ref mut value| {
+                    UInt256::construct_from(key)?;
+                    DepthBalanceInfo::construct_from(value)?;
+                    let shard_acc = ShardAccount::construct_from(value)?;
+                    let _acc = shard_acc.read_account()?;
 
-        //             Ok(true)
-        //         })
-        //         .ok();
-        // }
+                    Ok(true)
+                })
+                .ok();
+        }
 
         Ok(())
     }

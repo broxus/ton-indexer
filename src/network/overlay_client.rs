@@ -207,17 +207,12 @@ impl OverlayClient {
     {
         const ATTEMPT_INTERVAL: u64 = 50; // Milliseconds
 
-        let prefix = self.overlay.query_prefix();
-        let mut query_data = Vec::with_capacity(prefix.len() + query.max_size_hint());
-        query_data.extend_from_slice(prefix);
-        query.write_to(&mut query_data);
-
         let (answer, roundtrip) = self
             .overlay
             .rldp_query(
                 &self.rldp,
                 neighbour.peer_id(),
-                query_data,
+                query,
                 neighbour
                     .roundtrip_rldp()
                     .map(|roundtrip| roundtrip + attempt as u64 * ATTEMPT_INTERVAL),

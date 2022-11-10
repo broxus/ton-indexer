@@ -3,12 +3,12 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
-use everscale_network::util::FxDashSet;
 use everscale_network::{adnl, dht, overlay};
 use tokio::sync::Semaphore;
 
 use super::neighbour::*;
 use super::neighbours_cache::*;
+use crate::utils::FxDashSet;
 
 pub struct Neighbours {
     dht: Arc<dht::Node>,

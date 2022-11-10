@@ -1,3 +1,7 @@
+use std::hash::BuildHasherDefault;
+
+use rustc_hash::FxHasher;
+
 pub use archive_package::*;
 pub use block::*;
 pub use block_proof::*;
@@ -23,3 +27,5 @@ mod shard_state_cache;
 mod stored_value;
 mod top_blocks;
 mod with_archive_data;
+
+pub(crate) type FxDashSet<K> = dashmap::DashSet<K, BuildHasherDefault<FxHasher>>;

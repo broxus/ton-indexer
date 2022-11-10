@@ -11,8 +11,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+use broxus_util::now;
 use everscale_network::overlay;
-use everscale_network::util::now;
 pub use rocksdb::perf::MemoryUsageStats;
 use rustc_hash::FxHashSet;
 use tokio::sync::Notify;

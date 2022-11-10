@@ -286,7 +286,7 @@ fn start_broadcasting_our_ip(
 
     tokio::spawn(async move {
         while working_state.is_working() {
-            if let Err(e) = dht.store_address(&key, &addr).await {
+            if let Err(e) = dht.store_address(&key, addr).await {
                 tracing::warn!("failed to store address in DHT: {e:?}")
             }
 
