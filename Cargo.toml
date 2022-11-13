@@ -6,11 +6,7 @@ edition = "2021"
 rust-version = "1.60"
 
 [workspace]
-members = [
-    "global-config",
-    "archive-downloader",
-    "archive-uploader"
-]
+members = ["global-config", "archive-downloader", "archive-uploader"]
 
 [[example]]
 name = "simple_node"
@@ -24,13 +20,12 @@ bytes = "1.1.0"
 countme = { version = "3.0.0" }
 crc = "3.0"
 dashmap = "5.3"
-everscale-network = "0.3.0"
+everscale-network = "0.4.0"
 fdlimit = "0.2.1"
 futures-util = "0.3"
 hex = "0.4"
 itertools = "0.10.3"
 libc = "0.2"
-log = "0.4"
 num-traits = "0.2"
 num_cpus = "1.13.1"
 once_cell = "1.12.0"
@@ -47,9 +42,15 @@ thiserror = "1.0"
 tl-proto = { version = "0.3.2", features = ["derive"] }
 tokio = { version = "1", features = ["sync", "fs", "rt-multi-thread", "parking_lot"] }
 tokio-util = "0.7.0"
+tracing = "0.1"
 broxus-util = { version = "0.1", default-features = false, features = ["alloc"] }
 
-rocksdb = { version = "0.19", features = ["multi-threaded-cf", "zstd", "lz4", "jemalloc"], default-features = false }
+rocksdb = { version = "0.19", features = [
+    "multi-threaded-cf",
+    "zstd",
+    "lz4",
+    "jemalloc",
+], default-features = false }
 
 ton_block = { git = "https://github.com/broxus/ton-labs-block.git" }
 ton_types = { git = "https://github.com/broxus/ton-labs-types.git" }
@@ -59,12 +60,21 @@ global-config = { path = "global-config" }
 
 [dev-dependencies]
 argh = "0.1"
-cargo-husky = { version = "1.5.0", features = ["precommit-hook", "run-cargo-test", "run-cargo-clippy", "run-cargo-fmt"] }
+cargo-husky = { version = "1.5.0", features = [
+    "precommit-hook",
+    "run-cargo-test",
+    "run-cargo-clippy",
+    "run-cargo-fmt",
+] }
 config = { version = "0.13", default-features = false, features = ["yaml"] }
-log4rs = "1.0"
 serde_yaml = "0.9"
 tokio = { version = "1", features = ["full"] }
-broxus-util = { version = "0.1", default-features = false, features = ["config", "log4rs", "alloc", "public-ip"] }
+tracing-subscriber = "0.3"
+broxus-util = { version = "0.1", default-features = false, features = [
+    "config",
+    "alloc",
+    "public-ip",
+] }
 
 [features]
 default = []

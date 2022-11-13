@@ -31,8 +31,9 @@ pub struct NodeNetwork {
     overlay: Arc<overlay::Node>,
     rldp: Arc<rldp::Node>,
     neighbours_options: NeighboursOptions,
-    overlay_shard_options: overlay::ShardOptions,
+    overlay_shard_options: overlay::OverlayOptions,
     overlays: Arc<FxDashMap<overlay::IdShort, Arc<OverlayClient>>>,
+    zero_state_file_hash: [u8; 32],
     working_state: Arc<WorkingState>,
 }
 
@@ -54,21 +55,16 @@ impl NodeNetwork {
         rldp_options: rldp::NodeOptions,
         dht_options: dht::NodeOptions,
         neighbours_options: NeighboursOptions,
-        overlay_shard_options: overlay::ShardOptions,
+        overlay_shard_options: overlay::OverlayOptions,
         global_config: GlobalConfig,
     ) -> Result<Arc<Self>> {
         let working_state = Arc::new(WorkingState::new());
-
-        let masterchain_zero_state_id = global_config.zero_state;
 
         let (adnl, dht, rldp, overlay) =
             NetworkBuilder::with_adnl(socket_addr, keystore, adnl_options)
                 .with_dht(Self::TAG_DHT_KEY, dht_options)
                 .with_rldp(rldp_options)
-                .with_overlay(
-                    masterchain_zero_state_id.file_hash.into(),
-                    Self::TAG_OVERLAY_KEY,
-                )
+                .with_overlay(Self::TAG_OVERLAY_KEY)
                 .build()?;
 
         for peer in global_config.dht_nodes {
@@ -76,11 +72,11 @@ impl NodeNetwork {
         }
 
         let dht_key = adnl.key_by_tag(Self::TAG_DHT_KEY)?.clone();
-        log::info!("DHT adnl id: {}", dht_key.id());
+        tracing::info!(local_id = %dht_key.id(), "created DHT node");
         start_broadcasting_our_ip(working_state.clone(), dht.clone(), dht_key);
 
         let overlay_key = adnl.key_by_tag(Self::TAG_OVERLAY_KEY)?.clone();
-        log::info!("Overlay adnl id: {}", overlay_key.id());
+        tracing::info!(local_id = %overlay_key.id(), "created overlay node");
         start_broadcasting_our_ip(working_state.clone(), dht.clone(), overlay_key);
 
         let node_network = Arc::new(NodeNetwork {
@@ -91,6 +87,7 @@ impl NodeNetwork {
             neighbours_options,
             overlay_shard_options,
             overlays: Arc::new(Default::default()),
+            zero_state_file_hash: *global_config.zero_state.file_hash.as_array(),
             working_state,
         });
 
@@ -115,12 +112,8 @@ impl NodeNetwork {
 
     pub fn overlay_metrics(
         &self,
-    ) -> impl Iterator<Item = (overlay::IdShort, overlay::ShardMetrics)> + '_ {
+    ) -> impl Iterator<Item = (overlay::IdShort, overlay::OverlayMetrics)> + '_ {
         self.overlay.metrics()
-    }
-
-    pub fn start(self: &Arc<Self>) -> Result<()> {
-        self.adnl.start()
     }
 
     pub fn shutdown(&self) {
@@ -129,7 +122,7 @@ impl NodeNetwork {
     }
 
     pub fn compute_overlay_id(&self, workchain: i32) -> (overlay::IdFull, overlay::IdShort) {
-        let full_id = self.overlay.compute_overlay_id(workchain);
+        let full_id = overlay::IdFull::for_workchain_overlay(workchain, &self.zero_state_file_hash);
         let short_id = full_id.compute_short_id();
         (full_id, short_id)
     }
@@ -159,7 +152,7 @@ impl NodeNetwork {
 
         let peers = self.update_overlay_peers(&shard).await?;
         if peers.is_empty() {
-            log::warn!("No nodes were found in overlay {overlay_id}");
+            tracing::warn!(%overlay_id, "no nodes found");
         }
 
         let neighbours = Neighbours::new(&self.dht, &shard, &peers, self.neighbours_options);
@@ -198,19 +191,21 @@ impl NodeNetwork {
 
         tokio::spawn(async move {
             while working_state.is_working() {
-                log::trace!("find overlay nodes by dht...");
+                tracing::trace!("searching for overlay nodes in DHT");
 
                 if let Err(e) = network.update_peers(&overlay_client).await {
-                    log::warn!("Failed to find overlay nodes by dht: {e:?}");
+                    tracing::warn!("failed to find overlay nodes in DHT: {e:?}");
                 }
 
-                if overlay_client.neighbours().len() >= network.neighbours_options.max_neighbours {
-                    log::trace!("Finish searching for overlay nodes");
+                if overlay_client.neighbours().len()
+                    >= network.neighbours_options.max_neighbours as usize
+                {
+                    tracing::trace!("finished searching for overlay nodes in DHT");
                     return;
                 }
 
                 if working_state.wait_or_complete(interval).await {
-                    log::warn!("Stopped updating peers");
+                    tracing::warn!("stopped updating peers");
                     return;
                 }
             }
@@ -218,9 +213,7 @@ impl NodeNetwork {
     }
 
     async fn update_peers(&self, overlay_client: &OverlayClient) -> Result<()> {
-        let peers = self
-            .update_overlay_peers(overlay_client.overlay_shard())
-            .await?;
+        let peers = self.update_overlay_peers(overlay_client.overlay()).await?;
         for peer_id in peers {
             overlay_client.neighbours().add(peer_id);
         }
@@ -229,13 +222,13 @@ impl NodeNetwork {
 
     async fn update_overlay_peers(
         &self,
-        overlay_shard: &overlay::Shard,
+        overlay: &overlay::Overlay,
     ) -> Result<Vec<adnl::NodeIdShort>> {
-        log::info!("Overlay {} node search in progress...", overlay_shard.id());
-        let nodes = self.dht.find_overlay_nodes(overlay_shard.id()).await?;
-        log::trace!("Found overlay nodes ({})", nodes.len());
+        tracing::info!(overlay_id = %overlay.id(), "searching for overlay nodes");
+        let nodes = self.dht.find_overlay_nodes(overlay.id()).await?;
+        tracing::trace!(node_count = nodes.len(), "found overlay nodes");
 
-        overlay_shard.add_public_peers(
+        overlay.add_public_peers(
             &self.adnl,
             nodes
                 .iter()
@@ -289,19 +282,19 @@ fn start_broadcasting_our_ip(
 ) {
     const IP_BROADCASTING_INTERVAL: u64 = 500; // Seconds
     let interval = Duration::from_secs(IP_BROADCASTING_INTERVAL);
-    let ip = dht.adnl().socket_addr();
+    let addr = dht.adnl().socket_addr();
 
     tokio::spawn(async move {
         while working_state.is_working() {
-            if let Err(e) = dht.store_ip_address(&key, ip).await {
-                log::warn!("Failed to store ip address in DHT: {e:?}")
+            if let Err(e) = dht.store_address(&key, addr).await {
+                tracing::warn!("failed to store address in DHT: {e:?}")
             }
 
             if working_state.wait_or_complete(interval).await {
                 break;
             }
         }
-        log::warn!("Stopped broadcasting our ip");
+        tracing::warn!("stopped broadcasting our ip");
     });
 }
 
@@ -320,13 +313,13 @@ fn start_broadcasting_our_node(
                 .store_overlay_node(&overlay_full_id, overlay_node.as_equivalent_ref())
                 .await;
 
-            log::info!("overlay_store status: {result:?}");
+            tracing::info!("overlay_store status: {result:?}");
 
             if working_state.wait_or_complete(interval).await {
                 break;
             }
         }
-        log::warn!("Stopped broadcasting our node");
+        tracing::warn!("stopped broadcasting our node");
     });
 }
 
@@ -341,19 +334,19 @@ fn start_processing_peers(
     tokio::spawn(async move {
         while working_state.is_working() {
             if let Err(e) = process_overlay_peers(&neighbours, &dht).await {
-                log::warn!("Failed to process overlay peers: {e:?}");
+                tracing::warn!("failed to process overlay peers: {e:?}");
             };
 
             if working_state.wait_or_complete(interval).await {
                 break;
             }
         }
-        log::warn!("Stopped processing peers");
+        tracing::warn!("stopped processing peers");
     });
 }
 
 async fn process_overlay_peers(neighbours: &Neighbours, dht: &Arc<dht::Node>) -> Result<()> {
-    let overlay_shard = neighbours.overlay_shard();
+    let overlay_shard = neighbours.overlay();
     let peers = overlay_shard.take_new_peers();
 
     for peer in peers.into_values() {
@@ -363,24 +356,22 @@ async fn process_overlay_peers(neighbours: &Neighbours, dht: &Arc<dht::Node>) ->
             Ok(peer_id) if !neighbours.contains_overlay_peer(&peer_id) => peer_id,
             Ok(_) => continue,
             Err(e) => {
-                log::warn!("Invalid peer id: {e:?}");
+                tracing::warn!("invalid peer id: {e:?}");
                 continue;
             }
         };
 
-        let ip = match dht.find_address(&peer_id).await {
+        let addr = match dht.find_address(&peer_id).await {
             Ok((ip, _)) => ip,
             Err(e) => {
-                log::debug!("Failed to find peer address: {e:?}");
+                tracing::debug!("failed to find peer address: {e:?}");
                 continue;
             }
         };
 
-        log::trace!("add_overlay_peers: add overlay peer {peer:?}, address: {ip}");
-
         neighbours
-            .overlay_shard()
-            .add_public_peer(dht.adnl(), ip, peer.as_equivalent_ref())?;
+            .overlay()
+            .add_public_peer(dht.adnl(), addr, peer.as_equivalent_ref())?;
         neighbours.add_overlay_peer(peer_id);
     }
 

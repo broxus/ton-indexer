@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use argh::FromArgs;
-use everscale_network::utils::now;
+use broxus_util::now;
 use serde::{Deserialize, Serialize};
 use ton_block::{DepthBalanceInfo, Deserializable, ShardAccount};
 use ton_types::{HashmapType, UInt256};
@@ -30,6 +30,8 @@ pub struct App {
 
 #[tokio::main]
 async fn main() -> ExitCode {
+    tracing_subscriber::fmt::init();
+
     if let Err(e) = run(argh::from_env()).await {
         eprintln!("Fatal error: {e:?}");
         return ExitCode::FAILURE;
@@ -49,7 +51,6 @@ async fn run(app: App) -> Result<()> {
         .set_ip(broxus_util::resolve_public_ip(None).await?);
 
     let global_config = read_global_config(app.global_config)?;
-    broxus_util::init_logger(&config.logger_settings)?;
 
     let subscribers =
         vec![Arc::new(LoggerSubscriber::default()) as Arc<dyn ton_indexer::Subscriber>];
@@ -81,7 +82,7 @@ impl ton_indexer::Subscriber for LoggerSubscriber {
         ctx.block().read_info()?;
         ctx.block().read_value_flow()?;
 
-        log::info!("TIME_DIFF: {}", now() as i64 - created_at);
+        tracing::info!(time_diff = (now() as i64 - created_at));
 
         if let Some(state) = ctx.shard_state() {
             let state = state.read_accounts()?;
@@ -104,7 +105,6 @@ impl ton_indexer::Subscriber for LoggerSubscriber {
 #[derive(Serialize, Deserialize)]
 struct Config {
     indexer: NodeConfig,
-    logger_settings: serde_yaml::Value,
 }
 
 fn read_global_config<T>(path: T) -> Result<GlobalConfig>

@@ -43,7 +43,7 @@ impl CellStorage {
 
         // Check root cell
         let cell_id = root.repr_hash();
-        match db.get_pinned_cf_opt(&cf, &cell_id, read_options)? {
+        match db.get_pinned_cf_opt(&cf, cell_id.as_array(), read_options)? {
             Some(value) => {
                 // NOTE: dereference value only once to prevent multiple ffi calls
                 let value = value.as_ref();
@@ -79,7 +79,7 @@ impl CellStorage {
                 let cell = current.reference(i)?;
                 let cell_id = cell.repr_hash();
 
-                match db.get_pinned_cf_opt(&cf, &cell_id, read_options)? {
+                match db.get_pinned_cf_opt(&cf, cell_id.as_array(), read_options)? {
                     Some(value) => {
                         // NOTE: dereference value only once to prevent multiple ffi calls
                         let value = value.as_ref();

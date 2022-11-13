@@ -32,7 +32,7 @@ pub struct NodeConfig {
     pub adnl_options: adnl::NodeOptions,
     pub rldp_options: rldp::NodeOptions,
     pub dht_options: dht::NodeOptions,
-    pub overlay_shard_options: overlay::ShardOptions,
+    pub overlay_shard_options: overlay::OverlayOptions,
     pub neighbours_options: NeighboursOptions,
 }
 

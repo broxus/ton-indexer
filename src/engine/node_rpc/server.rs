@@ -204,7 +204,7 @@ impl QueryHandler {
         let (incomplete, error, blocks) = match get_next_key_block_ids() {
             Ok(ids) => (ids.len() < limit, false, ids),
             Err(e) => {
-                log::warn!("get_next_key_block_ids failed: {e:?}");
+                tracing::warn!("get_next_key_block_ids failed: {e:?}");
                 (false, true, Vec::new())
             }
         };

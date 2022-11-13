@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use everscale_network::utils::now;
+use broxus_util::now;
 use parking_lot::Mutex;
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
@@ -86,6 +86,7 @@ impl ArchivesStream {
     }
 
     /// Wait next archive
+    #[tracing::instrument(skip(self))]
     pub async fn recv(&'_ mut self) -> ReceivedBlockMaps<'_> {
         const STEP: u32 = BlockMaps::MAX_MC_BLOCK_COUNT as u32;
 
@@ -121,9 +122,7 @@ impl ArchivesStream {
                                     }
                                 }
                                 Err(e) => {
-                                    log::warn!(
-                                        "Failed to preload archive for mc block {next_index}: {e:?}"
-                                    );
+                                    tracing::warn!(target: "sync", next_index, "failed to preload archive: {e:?}");
                                 }
                             }
                         }
@@ -144,7 +143,7 @@ impl ArchivesStream {
                                 break (block_maps, data.neighbour);
                             }
                             None => {
-                                log::error!("Retrying invalid archive for mc block {next_index}");
+                                tracing::error!(target: "sync", next_index, "retrying invalid archive");
                                 continue;
                             }
                         }
@@ -380,7 +379,7 @@ impl Drop for ReceivedBlockMaps<'_> {
                 self.stream.ctx.good_peers.remove(neighbour);
             }
 
-            log::info!("Archive for mc block {} is not accepted", self.index);
+            tracing::info!(target: "sync", index = self.index, "archive not accepted");
             self.stream.start_downloading(self.index);
         }
     }
@@ -394,7 +393,7 @@ async fn download_archive(
         let signal = ctx.cancellation_token.cancelled();
     );
 
-    log::info!("sync: Downloading archive for block {mc_seq_no}");
+    tracing::info!(target: "sync", mc_seq_no, "downloading archive");
 
     loop {
         let mut writer = ctx.writers_pool.acquire();
@@ -410,10 +409,12 @@ async fn download_archive(
         match result {
             Ok(ArchiveDownloadStatus::Downloaded { neighbour, len }) => {
                 ctx.good_peers.add(&neighbour);
-                log::info!(
-                    "sync: Downloaded archive for block {mc_seq_no}, size {} bytes. Took: {} ms",
-                    len,
-                    start.elapsed().as_millis()
+                tracing::info!(
+                    target: "sync",
+                    mc_seq_no,
+                    bytes_len = len,
+                    elapsed_ms = start.elapsed().as_millis(),
+                    "downloaded archive",
                 );
                 break Some((writer, neighbour));
             }
@@ -421,13 +422,13 @@ async fn download_archive(
                 if let Some(neighbour) = &good_peer {
                     ctx.good_peers.remove(neighbour);
                 }
-                log::trace!("sync: No archive found for block {mc_seq_no}");
+                tracing::trace!(target: "sync", mc_seq_no, "no archive found");
             }
             Err(e) => {
                 if let Some(neighbour) = &good_peer {
                     ctx.good_peers.remove(neighbour);
                 }
-                log::warn!("sync: Failed to download archive for block {mc_seq_no}: {e:?}")
+                tracing::warn!(target: "sync", mc_seq_no, "failed to download archive: {e:?}")
             }
         }
     }

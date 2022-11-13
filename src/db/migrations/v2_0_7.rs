@@ -71,7 +71,7 @@ fn update_package_entries(db: &Arc<rocksdb::DB>) -> Result<()> {
             .context("Failed to apply write batch")?;
     }
 
-    log::info!("Migrated {total_entries} package entries");
+    tracing::info!(entry_count = total_entries, "migrated package entries");
     Ok(())
 }
 
@@ -134,6 +134,6 @@ fn update_shard_states(db: &Arc<rocksdb::DB>) -> Result<()> {
             .context("Failed to apply write batch")?;
     }
 
-    log::info!("Migrated {total_states} shard states");
+    tracing::info!(state_count = total_states, "migrated shard states");
     Ok(())
 }

@@ -25,7 +25,7 @@ pub mod alloc {
     /// # Safety
     /// Jemalloc must be set as global allocator
     pub unsafe fn apply_config() {
-        log::info!("Applying jemalloc conf");
+        tracing::debug!("applying jemalloc config");
 
         set_jemalloc_param("opt.abort_conf", true);
         set_jemalloc_param("opt.lg_extent_max_active_fit", 2_usize);
@@ -34,6 +34,6 @@ pub mod alloc {
         set_jemalloc_param("opt.muzzy_decay_ms", 100_isize);
         set_jemalloc_param("opt.dirty_decay_ms", 100_isize);
 
-        log::info!("Done");
+        tracing::debug!("applied jemalloc config");
     }
 }

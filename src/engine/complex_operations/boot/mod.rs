@@ -3,6 +3,7 @@ use std::sync::Arc;
 use anyhow::Result;
 
 use crate::engine::Engine;
+use crate::utils::*;
 
 use self::cold_boot::*;
 use self::warm_boot::*;
@@ -14,12 +15,12 @@ mod warm_boot;
 ///
 /// Returns last masterchain key block id and last shard client block id
 pub async fn boot(engine: &Arc<Engine>) -> Result<()> {
-    log::info!("Starting boot");
+    tracing::info!("starting boot");
 
     let last_key_block_id = match engine.load_last_applied_mc_block_id() {
         Ok(block_id) => warm_boot(engine, block_id).await?,
         Err(e) => {
-            log::warn!("Failed to load last masterchain block id: {e}. Node is not synced yet");
+            tracing::warn!("failed to load last masterchain block id: {e}. node is not synced yet");
             let last_mc_block_id = cold_boot(engine).await?;
 
             engine.store_last_applied_mc_block_id(&last_mc_block_id)?;
@@ -41,9 +42,10 @@ pub async fn boot(engine: &Arc<Engine>) -> Result<()> {
         }
     };
 
-    log::info!("Boot finished");
-    log::info!("Last key block: {last_key_block_id}");
-    log::info!("Last shards client block: {shards_client_mc_block_id}");
-
+    tracing::info!(
+        last_key_block_id = %last_key_block_id.display(),
+        shards_client_mc_block_id = %shards_client_mc_block_id.display(),
+        "boot finished"
+    );
     Ok(())
 }

@@ -28,7 +28,7 @@ pub async fn apply(db: &Arc<rocksdb::DB>) -> Result<()> {
         .transpose()?
         .is_none();
     if is_empty {
-        log::info!("Starting with empty db");
+        tracing::info!("starting with empty db");
         state
             .insert(DB_VERSION_KEY, CURRENT_VERSION)
             .context("Failed to save new DB version")?;
@@ -46,7 +46,7 @@ pub async fn apply(db: &Arc<rocksdb::DB>) -> Result<()> {
         match version.cmp(&CURRENT_VERSION) {
             std::cmp::Ordering::Less => {}
             std::cmp::Ordering::Equal => {
-                log::info!("Stored DB version is compatible");
+                tracing::info!("stored DB version is compatible");
                 break Ok(());
             }
             std::cmp::Ordering::Greater => {
@@ -61,7 +61,7 @@ pub async fn apply(db: &Arc<rocksdb::DB>) -> Result<()> {
         let migration = migrations
             .get(&version)
             .with_context(|| format!("No suitable migration found for version {version:?}"))?;
-        log::info!("Applying migration for version: {version:?}");
+        tracing::info!(?version, "applying migration");
 
         state
             .insert(DB_VERSION_KEY, (*migration)(db.clone()).await?)

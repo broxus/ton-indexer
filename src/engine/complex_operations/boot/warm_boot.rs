@@ -3,6 +3,7 @@ use std::sync::Arc;
 use anyhow::Result;
 
 use crate::engine::Engine;
+use crate::utils::*;
 
 /// Boot type when already synced or started syncing (there are states for each workchain).
 ///
@@ -11,7 +12,7 @@ pub async fn warm_boot(
     engine: &Arc<Engine>,
     mut last_mc_block_id: ton_block::BlockIdExt,
 ) -> Result<ton_block::BlockIdExt> {
-    log::info!("Starting warm boot");
+    tracing::info!("starting warm boot");
     let block_handle_storage = engine.db.block_handle_storage();
     let handle = block_handle_storage
         .load_handle(&last_mc_block_id)?
@@ -19,7 +20,7 @@ pub async fn warm_boot(
 
     let state = engine.load_state(&last_mc_block_id).await?;
     if last_mc_block_id.seq_no != 0 && !handle.meta().is_key_block() {
-        log::info!("Started from non-key block");
+        tracing::info!("started from non-key block");
 
         last_mc_block_id = state
             .shard_state_extra()?
@@ -29,10 +30,10 @@ pub async fn warm_boot(
             .master_block_id()
             .1;
 
-        log::info!("Last key block: {last_mc_block_id}");
+        tracing::info!(last_mc_block_id = %last_mc_block_id.display());
     }
 
-    log::info!("Warm boot finished");
+    tracing::info!("warm boot finished");
     Ok(last_mc_block_id)
 }
 

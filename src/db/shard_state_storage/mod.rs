@@ -74,7 +74,7 @@ impl ShardStateStorage {
         let gc_state = res.gc_state_storage.load()?;
         match &gc_state.step {
             None => {
-                log::info!("Shard state GC is pending");
+                tracing::info!("shard state GC is pending");
                 *res.current_marker.write().await = gc_state.current_marker;
             }
             Some(step) => {
@@ -299,9 +299,9 @@ impl ShardStateStorage {
             .await?
             .context("Recent blocks edge not found")?;
 
-        log::info!(
-            "Starting shard states GC for mc block: {}",
-            top_blocks.mc_block
+        tracing::info!(
+            block_id = %top_blocks.mc_block.display(),
+            "starting shard states GC",
         );
         let instant = Instant::now();
 
@@ -309,7 +309,7 @@ impl ShardStateStorage {
         let (current_marker, target_marker) = {
             let gc_state = self.gc_state_storage.load()?;
             if gc_state.step.is_some() {
-                log::warn!("Invalid stored GC state: {gc_state:?}");
+                tracing::warn!(?gc_state, "invalid stored GC state");
             }
 
             self.gc_state_storage
@@ -342,10 +342,10 @@ impl ShardStateStorage {
         self.sweep_blocks(target_marker, &top_blocks).await?;
 
         // Done
-        log::info!(
-            "Finished shard states GC for mc block: {}. Took: {} s",
-            top_blocks.mc_block,
-            instant.elapsed().as_secs_f64()
+        tracing::info!(
+            block_id = %top_blocks.mc_block.display(),
+            elapsed_sec = instant.elapsed().as_secs_f64(),
+            "finished shard states GC",
         );
         Ok(top_blocks)
     }
@@ -449,7 +449,7 @@ impl ShardStateStorage {
                         // Prepare reverse iterator
                         let mut iter =
                             snapshot.raw_iterator_cf_opt(&shard_states_cf, task.read_options);
-                        iter.seek_for_prev(&task.upper_bound);
+                        iter.seek_for_prev(task.upper_bound.as_slice());
 
                         // Iterate all block states in shard starting from the latest
                         loop {
@@ -526,9 +526,10 @@ impl ShardStateStorage {
             .clear_last_blocks()
             .context("Failed to reset last block")?;
 
-        log::info!(
-            "Marked {total} cells. Took: {} ms",
-            time.elapsed().as_millis()
+        tracing::info!(
+            marked_count = total,
+            elapsed_ms = time.elapsed().as_millis(),
+            "marked cells",
         );
 
         // Update gc state
@@ -548,7 +549,7 @@ impl ShardStateStorage {
     ) -> Result<()> {
         let target_marker = *target_marker_lock;
 
-        log::info!("Sweeping cells other than {target_marker}");
+        tracing::info!(target_marker, "sweeping cells");
         let time = Instant::now();
 
         // Remove all unmarked cells
@@ -565,9 +566,10 @@ impl ShardStateStorage {
         // it will block the insertion of new states.
         drop(target_marker_lock);
 
-        log::info!(
-            "Swept {total} cells. Took: {} ms",
-            time.elapsed().as_millis()
+        tracing::info!(
+            swept_count = total,
+            elapsed_ms = time.elapsed().as_millis(),
+            "swept cells",
         );
 
         // Update gc state
@@ -580,7 +582,7 @@ impl ShardStateStorage {
     }
 
     async fn sweep_blocks(&self, target_marker: u8, top_blocks: &TopBlocks) -> Result<()> {
-        log::info!("Sweeping block states");
+        tracing::info!("sweeping block states");
 
         let time = Instant::now();
 
@@ -630,10 +632,10 @@ impl ShardStateStorage {
         })
         .await??;
 
-        log::info!(
-            "Swept {} block states. Took: {} ms",
-            total,
-            time.elapsed().as_millis()
+        tracing::info!(
+            swept_count = total,
+            elapsed_ms = time.elapsed().as_millis(),
+            "swept block states",
         );
 
         // Update gc state
@@ -688,14 +690,14 @@ impl ShardStateStorage {
             Some(snapshot) => snapshot.raw_iterator_cf_opt(&cf, read_options),
             None => db.raw_iterator_cf_opt(&cf, read_options),
         };
-        iter.seek_for_prev(&BASE_WC_UPPER_BOUND);
+        iter.seek_for_prev(BASE_WC_UPPER_BOUND.as_slice());
 
         let mut shard_idents = Vec::new();
         while let Some(mut key) = iter.key() {
             let shard_id = ton_block::ShardIdent::deserialize(&mut key)?;
             shard_idents.push(shard_id);
 
-            iter.seek_for_prev(&make_block_id_bound(&shard_id, 0x00));
+            iter.seek_for_prev(make_block_id_bound(&shard_id, 0x00).as_slice());
         }
 
         Ok(shard_idents)

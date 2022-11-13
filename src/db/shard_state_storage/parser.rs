@@ -163,13 +163,13 @@ impl ShardStatePacketReader {
             let data_size = 32 * ((ton_types::LevelMask::with_mask(l).level() + 1) as usize);
             try_read!(src.read_exact(&mut buffer[1..1 + data_size]));
 
-            log::info!("ABSENT");
+            tracing::info!("ABSENT");
 
             // 1 byte of d1 + fixed data size of absent cell
             1 + data_size
         } else {
             if r > 4 {
-                log::error!("CELLS: {r}");
+                tracing::error!("CELLS: {r}");
                 return Err(ShardStateParserError::InvalidShardStateCell)
                     .context("Cell must contain at most 4 references");
             }
@@ -183,7 +183,7 @@ impl ShardStatePacketReader {
                 return Ok(None);
             }
 
-            let data_size = ((d2 >> 1) + if d2 & 1 != 0 { 1 } else { 0 }) as usize;
+            let data_size = ((d2 >> 1) + u8::from(d2 & 1 != 0)) as usize;
             try_read!(src.read_exact(&mut buffer[2..2 + data_size + r * ref_size]));
 
             // 2 bytes for d1 and d2 + data size + total references size
@@ -328,10 +328,10 @@ impl<'a> RawCell<'a> {
         }
 
         let d2 = src.read_byte()?;
-        let data_size = ((d2 >> 1) + if d2 & 1 != 0 { 1 } else { 0 }) as usize;
+        let data_size = ((d2 >> 1) + u8::from(d2 & 1 != 0)) as usize;
         let no_completion_tag = d2 & 1 == 0;
 
-        let cell_data = &mut data_buffer[0..data_size + if no_completion_tag { 1 } else { 0 }];
+        let cell_data = &mut data_buffer[0..data_size + usize::from(no_completion_tag)];
         src.read_exact(&mut cell_data[..data_size])?;
 
         if no_completion_tag {

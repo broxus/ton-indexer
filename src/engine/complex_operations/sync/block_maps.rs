@@ -73,12 +73,14 @@ impl BlockMaps {
 
         let (left, right) = match (self.lowest_mc_id(), self.highest_mc_id()) {
             (Some(left), Some(right)) => {
-                log::info!(
-                    "Archive {index} [{}..{}]. Blocks in masterchain: {}. Total: {}",
-                    left.seq_no,
-                    right.seq_no,
+                tracing::info!(
+                    target: "sync",
+                    index,
+                    left_seq_no = left.seq_no,
+                    right_seq_no = right.seq_no,
                     mc_block_count,
-                    self.blocks.len()
+                    total_block_count = self.blocks.len(),
+                    "checking archive",
                 );
                 (left.seq_no, right.seq_no)
             }

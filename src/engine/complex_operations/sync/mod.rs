@@ -17,10 +17,14 @@ mod block_maps;
 mod historical_sync;
 
 pub async fn sync(engine: &Arc<Engine>) -> Result<()> {
-    log::info!("sync: Started normal sync");
+    tracing::info!(target: "sync", "started normal sync");
 
     let mut last_mc_block_id = engine.last_applied_block()?;
-    log::info!("sync: Creating archives stream from {last_mc_block_id}");
+    tracing::info!(
+        target: "sync",
+        last_mc_block_id = %last_mc_block_id.display(),
+        "creating archives stream"
+    );
 
     let mut archives = ArchivesStream::new(engine, last_mc_block_id.seq_no + 1.., None);
 
@@ -35,7 +39,11 @@ pub async fn sync(engine: &Arc<Engine>) -> Result<()> {
         )
         .await
         {
-            log::error!("sync: Failed to apply queued archive for block {last_mc_block_id}: {e:?}");
+            tracing::error!(
+                target: "sync",
+                block_id = %last_mc_block_id.display(),
+                "failed to apply queued archive: {e:?}"
+            );
             continue;
         }
 
@@ -50,6 +58,10 @@ pub async fn sync(engine: &Arc<Engine>) -> Result<()> {
     Ok(())
 }
 
+#[tracing::instrument(
+    skip(engine, maps, last_mc_block_id),
+    fields(last_mc_block_id = %last_mc_block_id.display())
+)]
 async fn import_package_with_apply(
     engine: &Arc<Engine>,
     maps: Arc<BlockMaps>,
@@ -65,9 +77,13 @@ async fn import_package_with_apply(
     import_mc_blocks_with_apply(engine, &maps, last_mc_block_id, last_gen_utime).await?;
     import_shard_blocks_with_apply(engine, &maps).await?;
 
-    let elapsed = import_start.elapsed().as_millis();
-    log::info!("sync: Imported archive package for block {last_mc_block_id}. Took: {elapsed} ms");
-
+    let elapsed_ms = import_start.elapsed().as_millis();
+    tracing::info!(
+        target: "sync",
+        block_id = %last_mc_block_id.display(),
+        elapsed_ms,
+        "imported archive package"
+    );
     Ok(())
 }
 
@@ -90,10 +106,11 @@ async fn import_mc_blocks_with_apply(
 
         // Ensure that we have all previous blocks
         if id.seq_no != last_mc_block_id.seq_no + 1 {
-            log::error!(
-                "sync: Failed to apply mc block. Seqno: {}, expected: {}",
-                id.seq_no,
-                last_mc_block_id.seq_no + 1
+            tracing::error!(
+                target: "sync",
+                seq_no = id.seq_no,
+                expected = last_mc_block_id.seq_no + 1,
+                "masterchain block seqno mismatch",
             );
             return Err(SyncError::BlocksSkippedInArchive.into());
         }
@@ -112,7 +129,7 @@ async fn import_mc_blocks_with_apply(
         let entry = maps
             .blocks
             .get(id)
-            .context("sync: Failed to get masterchain block entry")?;
+            .context("Failed to get masterchain block entry")?;
 
         let (block, block_proof) = entry.get_data()?;
         let handle = engine.save_block(block, block_proof, id.seq_no).await?;
@@ -124,7 +141,11 @@ async fn import_mc_blocks_with_apply(
             .await?;
     }
 
-    log::info!("sync: Last applied masterchain block id: {last_mc_block_id}");
+    tracing::info!(
+        target: "sync",
+        last_mc_block_id = %last_mc_block_id.display(),
+        "imported masterchain blocks from archive"
+    );
     Ok(())
 }
 
@@ -212,7 +233,7 @@ async fn import_shard_blocks_with_apply(engine: &Arc<Engine>, maps: &Arc<BlockMa
                             .await
                     }
                     None => {
-                        log::info!("sync: Downloading shardchain block for {mc_seq_no}");
+                        tracing::info!(target: "sync", mc_seq_no, "downloading shardchain block");
                         engine
                             .download_and_apply_block(handle.id(), mc_seq_no, false, 0)
                             .await
@@ -238,8 +259,6 @@ impl Engine {
     fn last_applied_block(&self) -> Result<ton_block::BlockIdExt> {
         let mc_block_id = self.load_last_applied_mc_block_id()?;
         let sc_block_id = self.load_shards_client_mc_block_id()?;
-        log::info!("sync: Last applied block id: {mc_block_id}");
-        log::info!("sync: Last shards client block id: {sc_block_id}");
 
         Ok(match (mc_block_id, sc_block_id) {
             (mc_block_id, sc_block_id) if mc_block_id.seq_no > sc_block_id.seq_no => sc_block_id,

@@ -33,10 +33,10 @@ impl<'a> CellWriter<'a> {
             .context("Failed to create target file")?;
 
         // Load cells from db in reverse order into the temp file
-        log::info!("Started loading cells");
+        tracing::info!("started loading cells");
         let mut intermediate = write_rev_cells(self.cells, self.base_path, root_hash)
             .context("Failed to write reversed cells data")?;
-        log::info!("Finished loading cells");
+        tracing::info!("finished loading cells");
         let cell_count = intermediate.cell_sizes.len() as u32;
 
         // Compute offset type size (usually 4 bytes)
@@ -72,7 +72,7 @@ impl<'a> CellWriter<'a> {
         buffer.write_all(&[0, 0, 0, 0])?;
 
         // Cells index       | current len: 22 + offset_size
-        log::info!("Started building index");
+        tracing::info!("started building index");
         {
             let mut next_offset = 0;
             for &cell_size in intermediate.cell_sizes.iter().rev() {
@@ -80,7 +80,7 @@ impl<'a> CellWriter<'a> {
                 buffer.write_all(&next_offset.to_be_bytes()[(8 - offset_size)..8])?;
             }
         }
-        log::info!("Finished building index");
+        tracing::info!("finished building index");
 
         // Cells             | current len: 22 + offset_size * (1 + cell_sizes.len())
         let mut cell_buffer = [0; 2 + 128 + 4 * REF_SIZE];
@@ -262,7 +262,7 @@ fn write_rev_cells<P: AsRef<Path>>(
 
                 iteration += 1;
                 if iteration % 100000 == 0 {
-                    log::info!("Progress: {iteration}");
+                    tracing::info!(iteration);
                 }
 
                 let cell_size = 2 + loaded.data.len() + loaded.indices.len() * REF_SIZE;
@@ -310,7 +310,7 @@ fn deserialize_cell<'a>(
     let d2 = (((bit_length >> 2) as u8) & !0b1) | ((bit_length % 8 != 0) as u8);
 
     // TODO: Replace with `(big_length + 7) / 8`
-    let data_len = ((d2 >> 1) + if d2 & 1 != 0 { 1 } else { 0 }) as usize;
+    let data_len = ((d2 >> 1) + u8::from(d2 & 1 != 0)) as usize;
     index.require(data_len)?;
     let data = &value[*index..*index + data_len];
 
@@ -384,7 +384,7 @@ struct RemoveOnDrop(PathBuf);
 impl Drop for RemoveOnDrop {
     fn drop(&mut self) {
         if let Err(e) = std::fs::remove_file(&self.0) {
-            log::error!("Failed to remove file {:?}: {e:?}", self.0);
+            tracing::error!(path = %self.0.display(), "failed to remove file: {e:?}");
         }
     }
 }

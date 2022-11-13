@@ -11,8 +11,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+use broxus_util::now;
 use everscale_network::overlay;
-use everscale_network::utils::now;
 pub use rocksdb::perf::MemoryUsageStats;
 use rustc_hash::FxHashSet;
 use tokio::sync::Notify;
@@ -111,7 +111,10 @@ impl Engine {
                 init_mc_block_id = block_id.clone();
             }
         }
-        log::info!("Init MC block id: {init_mc_block_id}");
+        tracing::info!(
+            init_mc_block_id = %init_mc_block_id.display(),
+            "selected init block"
+        );
 
         let hard_forks = global_config.hard_forks.clone().into_iter().collect();
 
@@ -127,8 +130,6 @@ impl Engine {
         )
         .await
         .context("Failed to init network")?;
-
-        network.start().context("Failed to start network")?;
 
         let (masterchain_client, basechain_client) = {
             let (masterchain, basechain) = futures_util::future::join(
@@ -147,9 +148,9 @@ impl Engine {
             )
         };
 
-        log::info!("Network started");
+        tracing::info!("network started");
 
-        let engine = Arc::new(Self {
+        Ok(Arc::new(Self {
             is_working: AtomicBool::new(true),
             db: db.clone(),
             states_gc_options: config.state_gc_options,
@@ -174,10 +175,7 @@ impl Engine {
             download_block_operations: OperationsPool::new("download_block_operations"),
             shard_states_cache: ShardStateCache::new(config.shard_state_cache_options),
             metrics: Arc::new(Default::default()),
-        });
-
-        log::info!("Overlay connected");
-        Ok(engine)
+        }))
     }
 
     pub async fn start(self: &Arc<Self>) -> Result<()> {
@@ -211,7 +209,7 @@ impl Engine {
         if !self.is_synced()? {
             sync(self).await?;
         }
-        log::info!("Synced!");
+        tracing::info!("node synced");
 
         self.notify_subscribers_with_status(EngineStatus::Synced)
             .await;
@@ -295,13 +293,13 @@ impl Engine {
                     let until_id = match get_latest_mc_block_seq_no(&engine).await {
                         Ok(seqno) => seqno,
                         Err(e) => {
-                            log::error!("Failed to compute latest archive id: {e:?}");
+                            tracing::error!("failed to compute latest archive id: {e:?}");
                             tokio::time::sleep(Duration::from_millis(100)).await;
                             continue;
                         }
                     };
 
-                    log::info!("Started uploading archives until {until_id}");
+                    tracing::info!(until_id, "started uploading archives");
 
                     let range = match last_uploaded_archive {
                         // Exclude last uploaded archive
@@ -329,13 +327,15 @@ impl Engine {
                         uploader.upload(archive_id, archive_data).await;
 
                         if let Err(e) = node_state.store_last_uploaded_archive(archive_id) {
-                            log::error!("Failed to store last uploaded archive: {e:?}");
+                            tracing::error!("failed to store last uploaded archive: {e:?}");
                         }
                         last_uploaded_archive = Some(archive_id);
 
-                        log::info!(
-                            "Uploading archive {archive_id} of length {data_len} bytes. Took {}s",
-                            now.elapsed().as_secs_f64()
+                        tracing::info!(
+                            archive_id,
+                            data_len,
+                            duration = now.elapsed().as_secs_f64(),
+                            "uploaded archive",
                         );
                     }
 
@@ -382,14 +382,18 @@ impl Engine {
                                     break;
                                 }
 
-                                log::info!("Waiting archives barrier. Requested id: {until_id}, lower bound: {lower_bound}");
+                                tracing::info!(
+                                    until_id,
+                                    lower_bound,
+                                    "waiting for the archives barrier"
+                                );
                                 lower_bound_changed.await;
                             }
                         }
 
                         if let Err(e) = engine.db.block_storage().remove_outdated_archives(until_id)
                         {
-                            log::error!("Failed to remove outdated archives: {e:?}");
+                            tracing::error!("failed to remove outdated archives: {e:?}");
                         }
 
                         new_state_found.await;
@@ -409,7 +413,7 @@ impl Engine {
         let engine = self.clone();
         tokio::spawn(async move {
             if let Err(e) = walk_masterchain_blocks(&engine, last_mc_block_id).await {
-                log::error!("FATAL ERROR while walking though masterchain blocks: {e:?}");
+                tracing::error!("FATAL ERROR while walking though masterchain blocks: {e:?}");
             }
         });
 
@@ -417,7 +421,7 @@ impl Engine {
         let engine = self.clone();
         tokio::spawn(async move {
             if let Err(e) = walk_shard_blocks(&engine, shards_client_mc_block_id).await {
-                log::error!("FATAL ERROR while walking though shard blocks: {e:?}");
+                tracing::error!("FATAL ERROR while walking though shard blocks: {e:?}");
             }
         });
 
@@ -460,7 +464,7 @@ impl Engine {
                 let block_id = match engine.load_shards_client_mc_block_id() {
                     Ok(block_id) => block_id,
                     Err(e) => {
-                        log::error!("Failed to load last shards client block: {:?}", e);
+                        tracing::error!("failed to load last shards client block: {e:?}");
                         continue;
                     }
                 };
@@ -471,7 +475,7 @@ impl Engine {
                     .await
                 {
                     Ok(top_blocks) => engine.shard_states_cache.remove(&top_blocks),
-                    Err(e) => log::error!("Failed to GC state: {e:?}"),
+                    Err(e) => tracing::error!("failed to GC state: {e:?}"),
                 }
             }
         });
@@ -521,7 +525,7 @@ impl Engine {
 
     pub fn network_overlay_metrics(
         &self,
-    ) -> impl Iterator<Item = (overlay::IdShort, overlay::ShardMetrics)> + '_ {
+    ) -> impl Iterator<Item = (overlay::IdShort, overlay::OverlayMetrics)> + '_ {
         self.network.overlay_metrics()
     }
 
@@ -557,7 +561,7 @@ impl Engine {
                 let engine = engine.clone();
                 tokio::spawn(async move {
                     if let Err(e) = process_block_broadcast(&engine, block).await {
-                        log::error!("Failed to process block broadcast: {e:?}");
+                        tracing::error!("failed to process block broadcast: {e:?}");
                     }
                 });
             }
@@ -798,8 +802,9 @@ impl Engine {
                 let block_id = block_id.clone();
                 tokio::spawn(async move {
                     if let Err(e) = engine.download_and_apply_block(&block_id, 0, true, 0).await {
-                        log::error!(
-                            "Error while pre-apply block {block_id} (while waiting state): {e:?}",
+                        tracing::error!(
+                            block_id = %block_id.display(),
+                            "error while pre-apply block (while waiting state): {e:?}",
                         );
                     }
                 });
@@ -1001,7 +1006,10 @@ impl Engine {
                 }
             }
 
-            log::trace!("Start downloading block {} for apply", block_id);
+            tracing::trace!(
+                block_id = %block_id.display(),
+                "started downloading block for apply"
+            );
 
             // Prepare params
             let (max_attempts, timeouts) = if pre_apply {
@@ -1043,7 +1051,10 @@ impl Engine {
                     .await?
                     .handle;
 
-                log::trace!("Downloaded block {block_id} for apply");
+                tracing::trace!(
+                    block_id = %block_id.display(),
+                    "downloaded block for apply"
+                );
                 self.apply_block_ext(&handle, &block, mc_seq_no, pre_apply, 0)
                     .await?;
                 return Ok(());
@@ -1205,9 +1216,9 @@ impl Engine {
                 }
 
                 // Allow invalid proofs for hard forks
-                log::warn!(
-                    "Received hard fork key block {}. Ignoring proof",
-                    handle.id()
+                tracing::warn!(
+                    block_id = %handle.id().display(),
+                    "received hard fork key block, ignoring proof",
                 );
             }
         }

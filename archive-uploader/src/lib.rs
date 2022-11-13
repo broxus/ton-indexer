@@ -97,7 +97,7 @@ impl ArchiveUploader {
 
     /// Prepares a new archive to upload
     pub fn prepare_upload(&self, archive_id: u32, archive_data: Vec<u8>) -> PreparedArchiveUpload {
-        let content_md5 = Some(md5::compute(&archive_data)).map(|x| base64::encode(&x.as_slice()));
+        let content_md5 = Some(md5::compute(&archive_data)).map(|x| base64::encode(x.as_slice()));
         let content_length = Some(archive_data.len() as i64);
 
         let body = bytes::Bytes::from(archive_data);
@@ -119,7 +119,10 @@ impl ArchiveUploader {
             match archive.try_upload().await {
                 Ok(()) => return,
                 Err(e) => {
-                    log::error!("Failed to upload archive {}: {e:?}", archive.archive_id);
+                    tracing::error!(
+                        archive_id = archive.archive_id,
+                        "failed to upload archive: {e:?}"
+                    );
                     tokio::time::sleep(archive.retry_interval()).await;
                 }
             }
