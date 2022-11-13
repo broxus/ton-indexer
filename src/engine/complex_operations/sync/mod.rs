@@ -20,7 +20,11 @@ pub async fn sync(engine: &Arc<Engine>) -> Result<()> {
     tracing::info!(target: "sync", "started normal sync");
 
     let mut last_mc_block_id = engine.last_applied_block()?;
-    tracing::info!(target: "sync", { %last_mc_block_id }, "creating archives stream");
+    tracing::info!(
+        target: "sync",
+        last_mc_block_id = %last_mc_block_id.display(),
+        "creating archives stream"
+    );
 
     let mut archives = ArchivesStream::new(engine, last_mc_block_id.seq_no + 1.., None);
 
@@ -37,7 +41,7 @@ pub async fn sync(engine: &Arc<Engine>) -> Result<()> {
         {
             tracing::error!(
                 target: "sync",
-                block_id = %last_mc_block_id,
+                block_id = %last_mc_block_id.display(),
                 "failed to apply queued archive: {e:?}"
             );
             continue;
@@ -54,7 +58,10 @@ pub async fn sync(engine: &Arc<Engine>) -> Result<()> {
     Ok(())
 }
 
-#[tracing::instrument(skip(engine, maps))]
+#[tracing::instrument(
+    skip(engine, maps, last_mc_block_id),
+    fields(last_mc_block_id = %last_mc_block_id.display())
+)]
 async fn import_package_with_apply(
     engine: &Arc<Engine>,
     maps: Arc<BlockMaps>,
@@ -70,8 +77,13 @@ async fn import_package_with_apply(
     import_mc_blocks_with_apply(engine, &maps, last_mc_block_id, last_gen_utime).await?;
     import_shard_blocks_with_apply(engine, &maps).await?;
 
-    let elapsed = import_start.elapsed().as_millis();
-    tracing::info!(target: "sync", block_id = %last_mc_block_id, elapsed, "imported archive package");
+    let elapsed_ms = import_start.elapsed().as_millis();
+    tracing::info!(
+        target: "sync",
+        block_id = %last_mc_block_id.display(),
+        elapsed_ms,
+        "imported archive package"
+    );
     Ok(())
 }
 
@@ -129,7 +141,11 @@ async fn import_mc_blocks_with_apply(
             .await?;
     }
 
-    tracing::info!(target: "sync", { %last_mc_block_id }, "imported masterchain blocks from archive");
+    tracing::info!(
+        target: "sync",
+        last_mc_block_id = %last_mc_block_id.display(),
+        "imported masterchain blocks from archive"
+    );
     Ok(())
 }
 

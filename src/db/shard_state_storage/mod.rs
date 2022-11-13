@@ -300,7 +300,7 @@ impl ShardStateStorage {
             .context("Recent blocks edge not found")?;
 
         tracing::info!(
-            block_id = %top_blocks.mc_block,
+            block_id = %top_blocks.mc_block.display(),
             "starting shard states GC",
         );
         let instant = Instant::now();
@@ -343,7 +343,7 @@ impl ShardStateStorage {
 
         // Done
         tracing::info!(
-            block_id = %top_blocks.mc_block,
+            block_id = %top_blocks.mc_block.display(),
             elapsed_sec = instant.elapsed().as_secs_f64(),
             "finished shard states GC",
         );
@@ -449,7 +449,7 @@ impl ShardStateStorage {
                         // Prepare reverse iterator
                         let mut iter =
                             snapshot.raw_iterator_cf_opt(&shard_states_cf, task.read_options);
-                        iter.seek_for_prev(&task.upper_bound);
+                        iter.seek_for_prev(task.upper_bound.as_slice());
 
                         // Iterate all block states in shard starting from the latest
                         loop {
@@ -690,14 +690,14 @@ impl ShardStateStorage {
             Some(snapshot) => snapshot.raw_iterator_cf_opt(&cf, read_options),
             None => db.raw_iterator_cf_opt(&cf, read_options),
         };
-        iter.seek_for_prev(&BASE_WC_UPPER_BOUND);
+        iter.seek_for_prev(BASE_WC_UPPER_BOUND.as_slice());
 
         let mut shard_idents = Vec::new();
         while let Some(mut key) = iter.key() {
             let shard_id = ton_block::ShardIdent::deserialize(&mut key)?;
             shard_idents.push(shard_id);
 
-            iter.seek_for_prev(&make_block_id_bound(&shard_id, 0x00));
+            iter.seek_for_prev(make_block_id_bound(&shard_id, 0x00).as_slice());
         }
 
         Ok(shard_idents)

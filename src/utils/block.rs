@@ -14,6 +14,30 @@ pub type BlockStuffAug = WithArchiveData<BlockStuff>;
 
 pub type BlockIdShort = (ton_block::ShardIdent, u32);
 
+pub trait BlockIdExtDisplay {
+    fn display(&self) -> DisplayShortBlockIdExt<'_>;
+}
+
+impl BlockIdExtDisplay for ton_block::BlockIdExt {
+    fn display(&self) -> DisplayShortBlockIdExt<'_> {
+        DisplayShortBlockIdExt(self)
+    }
+}
+
+#[derive(Clone, Copy)]
+pub struct DisplayShortBlockIdExt<'a>(&'a ton_block::BlockIdExt);
+
+impl std::fmt::Display for DisplayShortBlockIdExt<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_fmt(format_args!(
+            "{}:{:016x}:{}",
+            self.0.shard_id.workchain_id(),
+            self.0.shard_id.shard_prefix_with_tag(),
+            self.0.seq_no
+        ))
+    }
+}
+
 #[derive(Clone)]
 pub struct BlockStuff {
     id: ton_block::BlockIdExt,

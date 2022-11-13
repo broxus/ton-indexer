@@ -3,6 +3,7 @@ use std::sync::Arc;
 use anyhow::Result;
 
 use crate::engine::Engine;
+use crate::utils::*;
 
 /// Boot type when already synced or started syncing (there are states for each workchain).
 ///
@@ -29,7 +30,7 @@ pub async fn warm_boot(
             .master_block_id()
             .1;
 
-        tracing::info!(%last_mc_block_id);
+        tracing::info!(last_mc_block_id = %last_mc_block_id.display());
     }
 
     tracing::info!("warm boot finished");

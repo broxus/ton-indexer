@@ -19,11 +19,17 @@ pub async fn walk_masterchain_blocks(
     mut block_id: ton_block::BlockIdExt,
 ) -> Result<()> {
     while engine.is_working() {
-        tracing::info!(%block_id, "walking through masterchain blocks");
+        tracing::info!(
+            block_id = %block_id.display(),
+            "walking through masterchain blocks"
+        );
         block_id = match load_next_masterchain_block(engine, &block_id).await {
             Ok(id) => id,
             Err(e) => {
-                tracing::error!(%block_id, "failed to load next masterchain block: {e:?}");
+                tracing::error!(
+                    block_id = %block_id.display(),
+                    "failed to load next masterchain block: {e:?}"
+                );
                 continue;
             }
         }
@@ -43,7 +49,10 @@ pub async fn walk_shard_blocks(
         .ok_or(ShardClientError::ShardchainBlockHandleNotFound)?;
 
     while engine.is_working() {
-        tracing::info!(block_id = %handle.id(), "walking through shard blocks");
+        tracing::info!(
+            block_id = %handle.id().display(),
+            "walking through shard blocks"
+        );
         let (next_handle, next_block) = engine.wait_next_applied_mc_block(&handle, None).await?;
         handle = next_handle;
 
@@ -103,7 +112,10 @@ async fn load_next_masterchain_block(
         // Handle doesn't exist or doesn't have block data
         handle => {
             if handle.is_some() {
-                tracing::warn!(%block_id, "partially initialized handle detected");
+                tracing::warn!(
+                    block_id = %block_id.display(),
+                    "partially initialized handle detected"
+                );
             }
             block_storage
                 .store_block_data(&block, brief_info.with_mc_seq_no(block_id.seq_no))
@@ -149,7 +161,10 @@ async fn load_shard_blocks(
                 .download_and_apply_block(&shard_block_id, mc_seq_no, false, 0)
                 .await
             {
-                tracing::error!(block_id = %shard_block_id, "failed to apply shard block: {e:?}");
+                tracing::error!(
+                    block_id = %shard_block_id.display(),
+                    "failed to apply shard block: {e:?}"
+                );
             }
         }));
     }

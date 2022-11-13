@@ -300,11 +300,11 @@ impl BlockStorage {
         let mut batch = rocksdb::WriteBatch::default();
         // 1. Append archive segment with block data
         if let Some((_, data)) = &block_data {
-            batch.merge_cf(&storage_cf, &archive_id_bytes, data);
+            batch.merge_cf(&storage_cf, archive_id_bytes, data);
         }
         // 2. Append archive segment with block proof data
         if let Some((_, data)) = &block_proof_data {
-            batch.merge_cf(&storage_cf, &archive_id_bytes, data);
+            batch.merge_cf(&storage_cf, archive_id_bytes, data);
         }
         // 3. Update block handle meta
         if handle.meta().set_is_archived() {
@@ -351,13 +351,13 @@ impl BlockStorage {
 
         batch.merge_cf(
             &storage_cf,
-            &archive_id_bytes,
+            archive_id_bytes,
             make_archive_segment(&PackageEntryId::Block(handle.id()).filename(), block_data),
         );
 
         batch.merge_cf(
             &storage_cf,
-            &archive_id_bytes,
+            archive_id_bytes,
             make_archive_segment(
                 &if is_link {
                     PackageEntryId::ProofLink(block_id)
@@ -481,8 +481,8 @@ impl BlockStorage {
         let top_blocks = match target_block {
             Some(handle) if handle.meta().has_data() => {
                 tracing::info!(
-                    %key_block_id,
-                    target_block_id = %handle.id(),
+                    key_block_id = %key_block_id.display(),
+                    target_block_id = %handle.id().display(),
                     "starting blocks GC",
                 );
                 self.load_block_data(&handle)
@@ -492,7 +492,10 @@ impl BlockStorage {
                     .context("Failed to compute top blocks for target block")?
             }
             _ => {
-                tracing::info!(%key_block_id, "blocks GC skipped");
+                tracing::info!(
+                    key_block_id = %key_block_id.display(),
+                    "blocks GC skipped"
+                );
                 return Ok(());
             }
         };
@@ -511,7 +514,7 @@ impl BlockStorage {
         .await??;
 
         tracing::info!(
-            %key_block_id,
+            key_block_id = %key_block_id.display(),
             total_cached_handles_removed,
             mc_package_entries_removed,
             total_package_entries_removed,
@@ -746,7 +749,7 @@ fn remove_blocks(
         }
 
         // Add item to the batch
-        batch.delete_cf(&blocks_cf, &key);
+        batch.delete_cf(&blocks_cf, key);
         stats.total_package_entries_removed += 1;
         if shard_ident.is_masterchain() {
             stats.mc_package_entries_removed += 1;

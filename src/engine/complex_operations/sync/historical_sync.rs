@@ -64,12 +64,22 @@ impl<'a> HistoricalSyncContext<'a> {
             (Some(lowest), Some(highest)) => (lowest, highest),
             _ => return Err(HistoricalSyncError::EmptyArchivePackage.into()),
         };
-        tracing::debug!(target: "sync", { %lowest_id, %highest_id }, "saving archive");
+        tracing::debug!(
+            target: "sync",
+            lowest_id = %lowest_id.display(),
+            highest_id = %highest_id.display(),
+            "saving archive"
+        );
 
         let mut block_edge = self.last_archive_edge.clone();
 
         self.process_blocks(&maps, &mut block_edge).await?;
-        tracing::info!(target: "sync", { %lowest_id, %highest_id }, "saved archive");
+        tracing::info!(
+            target: "sync",
+            lowest_id = %lowest_id.display(),
+            highest_id = %highest_id.display(),
+            "saved archive"
+        );
 
         Ok({
             if highest_id.seq_no >= self.to {

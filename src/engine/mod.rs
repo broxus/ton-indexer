@@ -111,7 +111,10 @@ impl Engine {
                 init_mc_block_id = block_id.clone();
             }
         }
-        tracing::info!(%init_mc_block_id, "selected init block");
+        tracing::info!(
+            init_mc_block_id = %init_mc_block_id.display(),
+            "selected init block"
+        );
 
         let hard_forks = global_config.hard_forks.clone().into_iter().collect();
 
@@ -800,7 +803,7 @@ impl Engine {
                 tokio::spawn(async move {
                     if let Err(e) = engine.download_and_apply_block(&block_id, 0, true, 0).await {
                         tracing::error!(
-                            %block_id,
+                            block_id = %block_id.display(),
                             "error while pre-apply block (while waiting state): {e:?}",
                         );
                     }
@@ -1003,7 +1006,10 @@ impl Engine {
                 }
             }
 
-            tracing::trace!(%block_id, "started downloading block for apply");
+            tracing::trace!(
+                block_id = %block_id.display(),
+                "started downloading block for apply"
+            );
 
             // Prepare params
             let (max_attempts, timeouts) = if pre_apply {
@@ -1045,7 +1051,10 @@ impl Engine {
                     .await?
                     .handle;
 
-                tracing::trace!(%block_id, "downloaded block for apply");
+                tracing::trace!(
+                    block_id = %block_id.display(),
+                    "downloaded block for apply"
+                );
                 self.apply_block_ext(&handle, &block, mc_seq_no, pre_apply, 0)
                     .await?;
                 return Ok(());
@@ -1208,7 +1217,7 @@ impl Engine {
 
                 // Allow invalid proofs for hard forks
                 tracing::warn!(
-                    block_id = %handle.id(),
+                    block_id = %handle.id().display(),
                     "received hard fork key block, ignoring proof",
                 );
             }

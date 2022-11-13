@@ -255,7 +255,7 @@ impl<'a> ShardStateReplaceTransaction<'a> {
         current_entry.clear();
 
         // Prepare mask and counters
-        let data_size = (cell.bit_len / 8) + if cell.bit_len % 8 != 0 { 1 } else { 0 };
+        let data_size = (cell.bit_len / 8) + usize::from(cell.bit_len % 8 != 0);
 
         let mut children_mask = ton_types::LevelMask::with_mask(0);
         let mut tree_bits_count = cell.bit_len as u64;
@@ -324,7 +324,7 @@ impl<'a> ShardStateReplaceTransaction<'a> {
                 false,
             );
 
-            hasher.update(&[d1, d2]);
+            hasher.update([d1, d2]);
 
             if i == 0 {
                 hasher.update(&cell.data[..data_size]);
@@ -343,7 +343,7 @@ impl<'a> ShardStateReplaceTransaction<'a> {
                 } else {
                     child.depth(if is_merkle_cell { i + 1 } else { i })
                 };
-                hasher.update(&child_depth.to_be_bytes());
+                hasher.update(child_depth.to_be_bytes());
 
                 let depth = &mut max_depths[i as usize];
                 *depth = std::cmp::max(*depth, child_depth + 1);

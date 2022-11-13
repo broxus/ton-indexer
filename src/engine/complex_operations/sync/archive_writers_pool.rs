@@ -110,7 +110,7 @@ impl Drop for ArchiveWriter {
                 *self.pool_state.acquired_memory.lock() -= buffer.len();
             }
             ArchiveWriterState::File { path, .. } => {
-                if let Err(e) = std::fs::remove_file(&path) {
+                if let Err(e) = std::fs::remove_file(path) {
                     tracing::error!(
                         target: "sync",
                         path = %path.display(),

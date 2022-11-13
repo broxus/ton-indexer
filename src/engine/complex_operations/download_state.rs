@@ -30,10 +30,16 @@ pub async fn download_state(
         match mc_client.find_persistent_state(&full_state_id).await {
             Ok(Some(peer)) => break peer,
             Ok(None) => {
-                tracing::trace!(block_id = %full_state_id.block_id, "failed to download state: state not found");
+                tracing::trace!(
+                    block_id = %full_state_id.block_id.display(),
+                    "failed to download state: state not found"
+                );
             }
             Err(e) => {
-                tracing::trace!(block_id = %full_state_id.block_id, "failed to download state: {e:?}");
+                tracing::trace!(
+                    block_id = %full_state_id.block_id.display(),
+                    "failed to download state: {e:?}"
+                );
             }
         };
     };
@@ -109,7 +115,7 @@ async fn background_process(
         .begin_replace(&block_id)
         .await?;
 
-    let mut pg = ProgressBar::builder("Downloading state")
+    let mut pg = ProgressBar::builder("downloading state")
         .exact_unit("cells")
         .build();
 
@@ -145,7 +151,7 @@ async fn background_process(
         return Err(DownloadStateError::UnexpectedEof.into());
     }
 
-    let mut pg = ProgressBar::builder("Processing state")
+    let mut pg = ProgressBar::builder("processing state")
         .exact_unit("bytes")
         .build();
     let result = transaction.finalize(&mut ctx, block_id, &mut pg).await;

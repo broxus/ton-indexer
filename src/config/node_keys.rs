@@ -87,7 +87,7 @@ mod serde_key {
         T: AsRef<[u8]> + Sized,
         S: serde::Serializer,
     {
-        hex::encode(&data.as_ref()).serialize(serializer)
+        hex::encode(data.as_ref()).serialize(serializer)
     }
 
     pub fn deserialize<'de, D, const N: usize>(deserializer: D) -> Result<[u8; N], D::Error>

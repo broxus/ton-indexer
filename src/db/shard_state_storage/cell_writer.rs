@@ -310,7 +310,7 @@ fn deserialize_cell<'a>(
     let d2 = (((bit_length >> 2) as u8) & !0b1) | ((bit_length % 8 != 0) as u8);
 
     // TODO: Replace with `(big_length + 7) / 8`
-    let data_len = ((d2 >> 1) + if d2 & 1 != 0 { 1 } else { 0 }) as usize;
+    let data_len = ((d2 >> 1) + u8::from(d2 & 1 != 0)) as usize;
     index.require(data_len)?;
     let data = &value[*index..*index + data_len];
 
