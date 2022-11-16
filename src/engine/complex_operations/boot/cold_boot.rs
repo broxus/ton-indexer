@@ -200,7 +200,7 @@ async fn download_key_blocks(engine: &Arc<Engine>, mut prev_key_block: PrevKeyBl
 
     let sync_start_utime = prev_key_block.handle().meta().gen_utime();
     let mut pg = ProgressBarBuilder::new("downloading key blocks")
-        .total((now() as u32).checked_sub(sync_start_utime).unwrap_or(1))
+        .total(now().checked_sub(sync_start_utime).unwrap_or(1))
         .build();
 
     // Continue downloading key blocks from the last known block
@@ -214,6 +214,12 @@ async fn download_key_blocks(engine: &Arc<Engine>, mut prev_key_block: PrevKeyBl
             Some(block_id) => {
                 tracing::debug!(last_key_block_id = %block_id.display());
                 tasks_tx.send(block_id.clone()).ok();
+            }
+            // Allow empty response for syncing from zerostate
+            None if prev_handle.id().seq_no == 0
+                && !is_persistent_state(now(), sync_start_utime) =>
+            {
+                tracing::debug!("starting from zerostate");
             }
             // Retry request in case of empty response
             None => {
