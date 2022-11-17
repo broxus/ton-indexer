@@ -696,14 +696,14 @@ impl ShardStateStorage {
         let mut shard_idents = Vec::new();
         while let Some(mut key) = iter.key() {
             let shard_id = ton_block::ShardIdent::deserialize(&mut key)?;
-            shard_idents.push(shard_id);
-
-            iter.seek_for_prev(make_block_id_bound(&shard_id, 0x00).as_slice());
-
             if matches!(&prev_shard_id, Some(prev_shard_id) if prev_shard_id == &shard_id) {
                 break;
             }
+
             prev_shard_id = Some(shard_id);
+            shard_idents.push(shard_id);
+
+            iter.seek_for_prev(make_block_id_bound(&shard_id, 0x00).as_slice());
         }
 
         Ok(shard_idents)
