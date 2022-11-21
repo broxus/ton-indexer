@@ -15,6 +15,7 @@ use broxus_util::now;
 use everscale_network::overlay;
 pub use rocksdb::perf::MemoryUsageStats;
 use rustc_hash::FxHashSet;
+use serde::{Deserialize, Serialize};
 use tokio::sync::Notify;
 
 use global_config::GlobalConfig;
@@ -1370,7 +1371,7 @@ impl ProcessBlockContext<'_> {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Serialize, Deserialize)]
 pub struct EngineMetrics {
     pub last_mc_block_seqno: AtomicU32,
     pub last_shard_client_mc_block_seqno: AtomicU32,
@@ -1379,7 +1380,7 @@ pub struct EngineMetrics {
     pub shard_client_time_diff: AtomicI64,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Serialize, Deserialize, Clone, Copy)]
 pub struct InternalEngineMetrics {
     pub shard_states_cache_len: usize,
     pub shard_states_operations_len: usize,
