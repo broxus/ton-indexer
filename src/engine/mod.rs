@@ -89,6 +89,7 @@ impl Engine {
     pub async fn new(
         config: NodeConfig,
         global_config: GlobalConfig,
+        network: Arc<NodeNetwork>,
         subscribers: Vec<Arc<dyn Subscriber>>,
     ) -> Result<Arc<Self>> {
         let old_blocks_policy = config.sync_options.old_blocks_policy;
@@ -118,19 +119,6 @@ impl Engine {
         );
 
         let hard_forks = global_config.hard_forks.clone().into_iter().collect();
-
-        let network = NodeNetwork::new(
-            config.ip_address,
-            config.adnl_keys.build_keystore()?,
-            config.adnl_options,
-            config.rldp_options,
-            config.dht_options,
-            config.neighbours_options,
-            config.overlay_shard_options,
-            global_config,
-        )
-        .await
-        .context("Failed to init network")?;
 
         let (masterchain_client, basechain_client) = {
             let (masterchain, basechain) = futures_util::future::join(

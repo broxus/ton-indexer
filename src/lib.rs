@@ -3,7 +3,7 @@ pub use crate::db::{BriefBlockMeta, DbMetrics, RocksdbStats};
 pub use crate::engine::{
     Engine, EngineMetrics, EngineStatus, InternalEngineMetrics, ProcessBlockContext, Subscriber,
 };
-pub use crate::network::{NeighboursOptions, NetworkMetrics};
+pub use crate::network::{NeighboursOptions, NetworkMetrics, NodeNetwork};
 
 #[cfg(feature = "archive-uploader")]
 pub use archive_uploader;

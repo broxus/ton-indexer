@@ -3,7 +3,7 @@ use std::process::ExitCode;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use argh::FromArgs;
 use broxus_util::now;
 use serde::{Deserialize, Serialize};
@@ -11,7 +11,7 @@ use ton_block::{DepthBalanceInfo, Deserializable, ShardAccount};
 use ton_types::{HashmapType, UInt256};
 
 use ton_indexer::utils::*;
-use ton_indexer::{Engine, GlobalConfig, NodeConfig, ProcessBlockContext};
+use ton_indexer::{Engine, GlobalConfig, NodeConfig, NodeNetwork, ProcessBlockContext};
 
 #[global_allocator]
 static GLOBAL: ton_indexer::alloc::Allocator = ton_indexer::alloc::allocator();
@@ -55,7 +55,20 @@ async fn run(app: App) -> Result<()> {
     let subscribers =
         vec![Arc::new(LoggerSubscriber::default()) as Arc<dyn ton_indexer::Subscriber>];
 
-    let engine = Engine::new(config.indexer, global_config, subscribers).await?;
+    let network = NodeNetwork::new(
+        config.indexer.ip_address,
+        config.indexer.adnl_keys.build_keystore()?,
+        config.indexer.adnl_options,
+        config.indexer.rldp_options,
+        config.indexer.dht_options,
+        config.indexer.neighbours_options,
+        config.indexer.overlay_shard_options,
+        global_config.clone(),
+    )
+    .await
+    .context("Failed to init network")?;
+
+    let engine = Engine::new(config.indexer, global_config, network, subscribers).await?;
     engine.start().await?;
 
     futures_util::future::pending().await
