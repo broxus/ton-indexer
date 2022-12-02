@@ -102,6 +102,10 @@ impl NodeNetwork {
         }
     }
 
+    pub fn dht(&self) -> &Arc<dht::Node> {
+        &self.dht
+    }
+
     pub fn neighbour_metrics(
         &self,
     ) -> impl Iterator<Item = (overlay::IdShort, NeighboursMetrics)> + '_ {

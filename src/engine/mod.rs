@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use broxus_util::now;
-use everscale_network::overlay;
+use everscale_network::{dht, overlay};
 pub use rocksdb::perf::MemoryUsageStats;
 use rustc_hash::FxHashSet;
 use serde::{Deserialize, Serialize};
@@ -221,6 +221,10 @@ impl Engine {
 
         // Engine started
         Ok(())
+    }
+
+    pub fn dht(&self) -> &Arc<dht::Node> {
+        self.network.dht()
     }
 
     async fn prepare_blocks_gc(self: &Arc<Self>) -> Result<()> {
