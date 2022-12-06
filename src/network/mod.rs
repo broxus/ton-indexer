@@ -102,6 +102,22 @@ impl NodeNetwork {
         }
     }
 
+    pub fn adnl(&self) -> &Arc<adnl::Node> {
+        &self.adnl
+    }
+
+    pub fn rldp(&self) -> &Arc<rldp::Node> {
+        &self.rldp
+    }
+
+    pub fn overlay(&self) -> &Arc<overlay::Node> {
+        &self.overlay
+    }
+
+    pub fn dht(&self) -> &Arc<dht::Node> {
+        &self.dht
+    }
+
     pub fn neighbour_metrics(
         &self,
     ) -> impl Iterator<Item = (overlay::IdShort, NeighboursMetrics)> + '_ {
