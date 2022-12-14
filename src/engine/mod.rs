@@ -725,6 +725,13 @@ impl Engine {
             .context("Failed to load key block data")
     }
 
+    pub fn current_persistent_state_meta(&self) -> Option<(u32, BriefBlockMeta)> {
+        self.db
+            .runtime_storage()
+            .persistent_state_keeper()
+            .current_meta()
+    }
+
     async fn wait_next_applied_mc_block(
         &self,
         prev_handle: &Arc<BlockHandle>,

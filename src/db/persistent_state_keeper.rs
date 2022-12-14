@@ -5,7 +5,7 @@ use anyhow::Result;
 use arc_swap::ArcSwapOption;
 use tokio::sync::Notify;
 
-use super::BlockHandleStorage;
+use super::{BlockHandleStorage, BriefBlockMeta};
 use crate::db::BlockHandle;
 use crate::utils::*;
 
@@ -73,6 +73,13 @@ impl PersistentStateKeeper {
 
     pub fn current(&self) -> Option<Arc<BlockHandle>> {
         self.current_persistent_state.load_full()
+    }
+
+    pub fn current_meta(&self) -> Option<(u32, BriefBlockMeta)> {
+        self.current_persistent_state
+            .load()
+            .as_ref()
+            .map(|handle| (handle.id().seq_no, handle.meta().brief()))
     }
 
     pub fn new_state_found(&self) -> tokio::sync::futures::Notified {
