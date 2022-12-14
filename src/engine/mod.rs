@@ -1306,6 +1306,11 @@ pub struct ProcessBlockContext<'a> {
 
 impl ProcessBlockContext<'_> {
     #[inline(always)]
+    pub fn engine(&self) -> &Engine {
+        self.engine
+    }
+
+    #[inline(always)]
     pub fn id(&self) -> &ton_block::BlockIdExt {
         self.handle.id()
     }
