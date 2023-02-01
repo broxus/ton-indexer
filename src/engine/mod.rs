@@ -434,7 +434,7 @@ impl Engine {
     }
 
     fn start_states_gc(self: &Arc<Self>) {
-        let options = match &self.states_gc_options {
+        let options = match self.states_gc_options {
             Some(options) => options,
             None => return,
         };
@@ -454,12 +454,18 @@ impl Engine {
             });
         }
 
-        let offset = Duration::from_secs(options.offset_sec);
-        let interval = Duration::from_secs(options.interval_sec);
+        // Compute gc timestamp aligned to `interval_sec` with an offset `offset_sec`
+        let mut gc_at = broxus_util::now_sec_u64();
+        gc_at = (gc_at - gc_at % options.interval_sec) + options.offset_sec;
+
         tokio::spawn(async move {
-            tokio::time::sleep(offset).await;
             loop {
-                tokio::time::sleep(interval).await;
+                // Shift gc timestamp one iteration further
+                gc_at += options.interval_sec;
+                // Check if there is some time left before the GC
+                if let Some(interval) = gc_at.checked_sub(broxus_util::now_sec_u64()) {
+                    tokio::time::sleep(Duration::from_secs(interval)).await;
+                }
 
                 let engine = match engine.upgrade() {
                     Some(engine) => engine,
@@ -887,7 +893,7 @@ impl Engine {
             .load_handle(&last_applied_mc_block_id)?
             .ok_or(EngineError::FailedToLoadLastMasterchainBlockHandle)?;
 
-        if last_mc_block_handle.meta().gen_utime() + 600 > now() as u32 {
+        if last_mc_block_handle.meta().gen_utime() + 600 > now() {
             return Ok(true);
         }
 

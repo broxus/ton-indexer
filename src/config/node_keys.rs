@@ -1,4 +1,4 @@
-use std::io::{Seek, SeekFrom, Write};
+use std::io::{Seek, Write};
 use std::path::Path;
 
 use anyhow::{Context, Result};
@@ -65,7 +65,7 @@ impl NodeKeys {
     where
         W: Write + Seek,
     {
-        file.seek(SeekFrom::Start(0))?;
+        file.rewind()?;
         serde_json::to_writer_pretty(file, self)?;
         Ok(())
     }

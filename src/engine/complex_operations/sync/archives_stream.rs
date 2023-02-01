@@ -352,7 +352,7 @@ impl ReceivedBlockMaps<'_> {
     }
 
     pub fn accept_with_time(self, time: u32, edge: Option<BlockMapsEdge>) {
-        self.stream.prefetch_enabled = time + ARCHIVE_EXISTENCE_THRESHOLD <= now() as u32;
+        self.stream.prefetch_enabled = time + ARCHIVE_EXISTENCE_THRESHOLD <= now();
         self.accept(edge);
     }
 }

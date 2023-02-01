@@ -162,7 +162,7 @@ impl BlockProofStuff {
             ));
         }
 
-        if info.seq_no() != self.id.seq_no as u32 {
+        if info.seq_no() != self.id.seq_no {
             return Err(anyhow!(
                 "proof for block {} contains a Merkle proof with seq_no {}, but {} is expected",
                 self.id,
@@ -344,7 +344,7 @@ impl BlockProofStuff {
             ));
         }
 
-        if (state.block_id().seq_no as u32) < block_info.prev_key_block_seqno() {
+        if state.block_id().seq_no < block_info.prev_key_block_seqno() {
             return Err(anyhow!(
                 "Can't check proof for block {} using master state {}, because it is older than the previous key block with seqno {}",
                 self.id,
@@ -435,7 +435,7 @@ pub fn check_with_prev_key_block_proof(
     }
 
     let prev_key_block_seqno = virt_block_info.prev_key_block_seqno();
-    if prev_key_block_proof.id.seq_no as u32 != prev_key_block_seqno {
+    if prev_key_block_proof.id.seq_no != prev_key_block_seqno {
         return Err(anyhow!(
             "Can't verify block {} using key block {} because the block declares different previous key block seqno {}",
             proof.id,

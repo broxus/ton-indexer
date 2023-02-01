@@ -252,7 +252,7 @@ async fn download_key_blocks(engine: &Arc<Engine>, mut prev_key_block: PrevKeyBl
         }
 
         let last_utime = prev_handle.meta().gen_utime();
-        let current_utime = now() as u32;
+        let current_utime = now();
 
         pg.set_progress(last_utime.saturating_sub(sync_start_utime));
 

@@ -304,7 +304,7 @@ pub struct StorageCell {
 
 impl StorageCell {
     pub fn repr_hash(&self) -> UInt256 {
-        self.hash(ton_types::MAX_LEVEL as usize)
+        self.hash(ton_types::MAX_LEVEL)
     }
 
     pub fn deserialize(boc_db: Arc<CellStorage>, mut data: &[u8]) -> Result<Self> {

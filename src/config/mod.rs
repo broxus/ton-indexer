@@ -118,7 +118,7 @@ impl Default for OldBlocksPolicy {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Copy, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct StateGcOptions {
     /// Default: rand[0,900)

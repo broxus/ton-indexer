@@ -240,7 +240,7 @@ where
     let data = String::deserialize(deserializer)?;
     let data = base64::decode(data).map_err(Error::custom)?;
     data.try_into()
-        .map_err(|_| D::Error::custom(format!("Invalid array length, expected: {}", N)))
+        .map_err(|_| Error::custom(format!("Invalid array length, expected: {N}")))
 }
 
 #[cfg(test)]

@@ -42,7 +42,6 @@ impl OverlayClient {
             .get_peer_address(self.overlay.overlay_key().id(), neighbour.peer_id())
     }
 
-    #[track_caller]
     pub async fn send_rldp_query<Q, A>(
         &self,
         query: Q,
