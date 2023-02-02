@@ -43,7 +43,7 @@ tl-proto = { version = "0.3.2", features = ["derive"] }
 tokio = { version = "1", features = ["sync", "fs", "rt-multi-thread", "parking_lot"] }
 tokio-util = "0.7.0"
 tracing = "0.1"
-broxus-util = { version = "0.1", default-features = false, features = ["alloc"] }
+broxus-util = { version = "0.2", default-features = false, features = ["alloc"] }
 
 rocksdb = { version = "0.19", features = [
     "multi-threaded-cf",
@@ -70,7 +70,7 @@ config = { version = "0.13", default-features = false, features = ["yaml"] }
 serde_yaml = "0.9"
 tokio = { version = "1", features = ["full"] }
 tracing-subscriber = "0.3"
-broxus-util = { version = "0.1", default-features = false, features = [
+broxus-util = { version = "0.2", default-features = false, features = [
     "config",
     "alloc",
     "public-ip",
