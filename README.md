@@ -1,7 +1,20 @@
 ## TON Indexer
 
-This project is a simplified, refactored and optimized version of [ton-labs-node](https://github.com/tonlabs/ton-labs-node)
-and would not have been implemented without their gigantic work of reverse engineering the original С++ node.
+This project is a simplified, refactored and optimized version of
+[ton-labs-node](https://github.com/tonlabs/ton-labs-node) and would not have
+been implemented without their gigantic work of reverse engineering the original
+С++ node.
+
+---
+
+**NOTE**
+
+It's worth noting that the name "ton-indexer" can be a bit misleading, as it
+implies that the repository is focused on indexing the TVM network. However, the
+repository is primarily focused on providing a simplified implementation of a
+TVM light node.
+
+---
 
 ### Run examples
 
