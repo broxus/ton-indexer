@@ -9,21 +9,20 @@ use std::sync::{Arc, Weak};
 use anyhow::Result;
 use ton_types::FxDashMap;
 
-use super::{columns, BlockHandle, BlockMeta, BlockMetaData, StoredValue, Tree};
+use super::models::*;
+use crate::db::*;
 use crate::utils::*;
 
 pub struct BlockHandleStorage {
+    db: Arc<Db>,
     cache: Arc<FxDashMap<ton_block::BlockIdExt, Weak<BlockHandle>>>,
-    block_handles: Tree<columns::BlockHandles>,
-    key_blocks: Tree<columns::KeyBlocks>,
 }
 
 impl BlockHandleStorage {
-    pub fn with_db(db: &Arc<rocksdb::DB>) -> Result<Self> {
+    pub fn new(db: Arc<Db>) -> Result<Self> {
         Ok(Self {
+            db,
             cache: Arc::new(Default::default()),
-            block_handles: Tree::new(db)?,
-            key_blocks: Tree::new(db)?,
         })
     }
 
@@ -80,7 +79,7 @@ impl BlockHandleStorage {
                 }
             }
 
-            if let Some(meta) = self.block_handles.get(block_id.root_hash.as_slice())? {
+            if let Some(meta) = self.db.block_handles.get(block_id.root_hash.as_slice())? {
                 let meta = BlockMeta::from_slice(meta.as_ref())?;
                 if let Some(handle) = self.create_handle(block_id.clone(), meta)? {
                     break Some(handle);
@@ -94,11 +93,13 @@ impl BlockHandleStorage {
     pub fn store_handle(&self, handle: &BlockHandle) -> Result<()> {
         let id = handle.id();
 
-        self.block_handles
+        self.db
+            .block_handles
             .insert(id.root_hash.as_slice(), handle.meta().to_vec())?;
 
         if handle.is_key_block() {
-            self.key_blocks
+            self.db
+                .key_blocks
                 .insert(id.seq_no.to_be_bytes(), id.to_vec())?;
         }
 
@@ -107,6 +108,7 @@ impl BlockHandleStorage {
 
     pub fn load_key_block_handle(&self, seq_no: u32) -> Result<Arc<BlockHandle>> {
         let key_block_id = self
+            .db
             .key_blocks
             .get(seq_no.to_be_bytes())?
             .map(|value| ton_block::BlockIdExt::from_slice(value.as_ref()))
@@ -119,7 +121,7 @@ impl BlockHandleStorage {
     }
 
     pub fn find_last_key_block(&self) -> Result<Arc<BlockHandle>> {
-        let mut iter = self.key_blocks.raw_iterator();
+        let mut iter = self.db.key_blocks.raw_iterator();
         iter.seek_to_last();
 
         // Load key block from current iterator value
@@ -140,7 +142,7 @@ impl BlockHandleStorage {
         }
 
         // Create iterator and move it to the previous key block before the specified
-        let mut iter = self.key_blocks.raw_iterator();
+        let mut iter = self.db.key_blocks.raw_iterator();
         iter.seek_for_prev((seq_no - 1u32).to_be_bytes());
 
         // Load key block from current iterator value
@@ -161,7 +163,7 @@ impl BlockHandleStorage {
         }
 
         // Create iterator and move it to the previous key block before the specified
-        let mut iter = self.key_blocks.raw_iterator();
+        let mut iter = self.db.key_blocks.raw_iterator();
         iter.seek_for_prev((seq_no - 1u32).to_be_bytes());
 
         // Loads key block from current iterator value and moves it backward
@@ -214,7 +216,7 @@ impl BlockHandleStorage {
         &self,
         direction: KeyBlocksDirection,
     ) -> impl Iterator<Item = Result<ton_block::BlockIdExt>> + '_ {
-        let mut raw_iterator = self.key_blocks.raw_iterator();
+        let mut raw_iterator = self.db.key_blocks.raw_iterator();
         let reverse = match direction {
             KeyBlocksDirection::ForwardFrom(seq_no) => {
                 raw_iterator.seek(seq_no.to_be_bytes());

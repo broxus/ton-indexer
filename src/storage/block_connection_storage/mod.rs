@@ -2,28 +2,18 @@ use std::sync::Arc;
 
 use anyhow::Result;
 
-use super::{columns, read_block_id_le, write_block_id_le, BlockHandle, Column, StoredValue, Tree};
+use super::models::BlockHandle;
+use crate::db::*;
+use crate::utils::{read_block_id_le, write_block_id_le, StoredValue};
 
 /// Stores relations between blocks
 pub struct BlockConnectionStorage {
-    block_handles: Tree<columns::BlockHandles>,
-    key_blocks: Tree<columns::KeyBlocks>,
-    prev1_block_db: Tree<columns::Prev1>,
-    prev2_block_db: Tree<columns::Prev2>,
-    next1_block_db: Tree<columns::Next1>,
-    next2_block_db: Tree<columns::Next2>,
+    db: Arc<Db>,
 }
 
 impl BlockConnectionStorage {
-    pub fn with_db(db: &Arc<rocksdb::DB>) -> Result<Self> {
-        Ok(Self {
-            block_handles: Tree::new(db)?,
-            key_blocks: Tree::new(db)?,
-            prev1_block_db: Tree::new(db)?,
-            prev2_block_db: Tree::new(db)?,
-            next1_block_db: Tree::new(db)?,
-            next2_block_db: Tree::new(db)?,
-        })
+    pub fn new(db: Arc<Db>) -> Result<Self> {
+        Ok(Self { db })
     }
 
     pub fn store_connection(
@@ -38,28 +28,28 @@ impl BlockConnectionStorage {
                 if handle.meta().has_prev1() {
                     return Ok(());
                 }
-                store_block_connection_impl(&self.prev1_block_db, handle, connected_block_id)?;
+                store_block_connection_impl(&self.db.prev1, handle, connected_block_id)?;
                 handle.meta().set_has_prev1()
             }
             BlockConnection::Prev2 => {
                 if handle.meta().has_prev2() {
                     return Ok(());
                 }
-                store_block_connection_impl(&self.prev2_block_db, handle, connected_block_id)?;
+                store_block_connection_impl(&self.db.prev2, handle, connected_block_id)?;
                 handle.meta().set_has_prev2()
             }
             BlockConnection::Next1 => {
                 if handle.meta().has_next1() {
                     return Ok(());
                 }
-                store_block_connection_impl(&self.next1_block_db, handle, connected_block_id)?;
+                store_block_connection_impl(&self.db.next1, handle, connected_block_id)?;
                 handle.meta().set_has_next1()
             }
             BlockConnection::Next2 => {
                 if handle.meta().has_next2() {
                     return Ok(());
                 }
-                store_block_connection_impl(&self.next2_block_db, handle, connected_block_id)?;
+                store_block_connection_impl(&self.db.next2, handle, connected_block_id)?;
                 handle.meta().set_has_next2()
             }
         };
@@ -71,19 +61,20 @@ impl BlockConnectionStorage {
                 let mut write_batch = rocksdb::WriteBatch::default();
 
                 write_batch.put_cf(
-                    &self.block_handles.get_cf(),
+                    &self.db.block_handles.cf(),
                     id.root_hash.as_slice(),
                     handle.meta().to_vec(),
                 );
                 write_batch.put_cf(
-                    &self.key_blocks.get_cf(),
+                    &self.db.key_blocks.cf(),
                     id.seq_no.to_be_bytes(),
                     id.to_vec(),
                 );
 
-                self.block_handles.raw_db_handle().write(write_batch)?;
+                self.db.raw().write(write_batch)?;
             } else {
-                self.block_handles
+                self.db
+                    .block_handles
                     .insert(id.root_hash.as_slice(), handle.meta().to_vec())?;
             }
         }
@@ -97,10 +88,10 @@ impl BlockConnectionStorage {
         direction: BlockConnection,
     ) -> Result<ton_block::BlockIdExt> {
         match direction {
-            BlockConnection::Prev1 => load_block_connection_impl(&self.prev1_block_db, block_id),
-            BlockConnection::Prev2 => load_block_connection_impl(&self.prev2_block_db, block_id),
-            BlockConnection::Next1 => load_block_connection_impl(&self.next1_block_db, block_id),
-            BlockConnection::Next2 => load_block_connection_impl(&self.next2_block_db, block_id),
+            BlockConnection::Prev1 => load_block_connection_impl(&self.db.prev1, block_id),
+            BlockConnection::Prev2 => load_block_connection_impl(&self.db.prev2, block_id),
+            BlockConnection::Next1 => load_block_connection_impl(&self.db.next1, block_id),
+            BlockConnection::Next2 => load_block_connection_impl(&self.db.next2, block_id),
         }
     }
 }
@@ -115,12 +106,12 @@ pub enum BlockConnection {
 
 #[inline]
 fn store_block_connection_impl<T>(
-    db: &Tree<T>,
+    db: &Table<T>,
     handle: &BlockHandle,
     block_id: &ton_block::BlockIdExt,
-) -> Result<()>
+) -> Result<(), rocksdb::Error>
 where
-    T: Column,
+    T: ColumnFamily,
 {
     db.insert(
         handle.id().root_hash.as_slice(),
@@ -130,11 +121,11 @@ where
 
 #[inline]
 fn load_block_connection_impl<T>(
-    db: &Tree<T>,
+    db: &Table<T>,
     block_id: &ton_block::BlockIdExt,
 ) -> Result<ton_block::BlockIdExt>
 where
-    T: Column,
+    T: ColumnFamily,
 {
     match db.get(block_id.root_hash.as_slice())? {
         Some(value) => read_block_id_le(value.as_ref())

@@ -1,5 +1,5 @@
 use std::ops::Deref;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
@@ -16,9 +16,8 @@ use self::cell_storage::*;
 use self::files_context::FilesContext;
 use self::gc_state_storage::{GcState, GcStateStorage, LastShardBlockKey, Step};
 use self::replace_transaction::ShardStateReplaceTransaction;
-use super::{
-    columns, BlockHandle, BlockHandleStorage, BlockStorage, Column, StoredValue, TopBlocks, Tree,
-};
+use super::{BlockHandle, BlockHandleStorage, BlockStorage};
+use crate::db::*;
 use crate::utils::*;
 
 mod cell_storage;
@@ -26,11 +25,11 @@ mod cell_writer;
 mod entries_buffer;
 mod files_context;
 mod gc_state_storage;
-mod parser;
 mod replace_transaction;
+mod shard_state_reader;
 
 pub struct ShardStateStorage {
-    shard_states: Tree<columns::ShardStates>,
+    db: Arc<Db>,
 
     block_handle_storage: Arc<BlockHandleStorage>,
     block_storage: Arc<BlockStorage>,
@@ -46,24 +45,24 @@ pub struct ShardStateStorage {
 }
 
 impl ShardStateStorage {
-    pub async fn with_db<P>(
-        db: &Arc<rocksdb::DB>,
-        block_handle_storage: &Arc<BlockHandleStorage>,
-        block_storage: &Arc<BlockStorage>,
-        file_db_path: P,
-    ) -> Result<Self>
-    where
-        P: AsRef<Path>,
-    {
-        let downloads_dir = prepare_file_db_dir(&file_db_path, "downloads").await?;
+    pub async fn new(
+        db: Arc<Db>,
+        block_handle_storage: Arc<BlockHandleStorage>,
+        block_storage: Arc<BlockStorage>,
+        file_db_path: PathBuf,
+    ) -> Result<Self> {
+        let downloads_dir = prepare_file_db_dir(file_db_path, "downloads").await?;
         // let persistent_dir = prepare_file_db_dir(&file_db_path, "persistent").await?;
 
+        let cell_storage = CellStorage::new(db.clone())?;
+        let gc_state_storage = GcStateStorage::new(db.clone())?;
+
         let res = Self {
-            shard_states: Tree::new(db)?,
-            block_handle_storage: block_handle_storage.clone(),
-            block_storage: block_storage.clone(),
-            cell_storage: Arc::new(CellStorage::new(db)?),
-            gc_state_storage: Arc::new(GcStateStorage::new(db)?),
+            db,
+            block_handle_storage,
+            block_storage,
+            cell_storage,
+            gc_state_storage,
             downloads_dir,
             current_marker: Default::default(),
             min_ref_mc_state: Arc::new(Default::default()),
@@ -174,12 +173,12 @@ impl ShardStateStorage {
         value[64..96].copy_from_slice(block_id.file_hash.as_slice());
 
         batch.put_cf(
-            &self.shard_states.get_cf(),
+            &self.db.shard_states.cf(),
             (block_id.shard_id, block_id.seq_no).to_vec(),
             value,
         );
 
-        self.shard_states.raw_db_handle().write(batch)?;
+        self.db.raw().write(batch)?;
 
         Ok(if handle.meta().set_has_state() {
             self.block_handle_storage.store_handle(handle)?;
@@ -193,9 +192,8 @@ impl ShardStateStorage {
         &self,
         block_id: &ton_block::BlockIdExt,
     ) -> Result<Arc<ShardStateStuff>> {
-        let shard_state = self
-            .shard_states
-            .get((block_id.shard_id, block_id.seq_no).to_vec())?;
+        let shard_states = &self.db.shard_states;
+        let shard_state = shard_states.get((block_id.shard_id, block_id.seq_no).to_vec())?;
         match shard_state {
             Some(root) => {
                 let cell_id = UInt256::from_be_bytes(&root);
@@ -220,7 +218,7 @@ impl ShardStateStorage {
 
         Ok((
             ShardStateReplaceTransaction::new(
-                &self.shard_states,
+                &self.db,
                 &self.cell_storage,
                 &self.min_ref_mc_state,
                 PS_MARKER,
@@ -367,14 +365,24 @@ impl ShardStateStorage {
             .load_last_blocks()
             .context("Failed to load last shard blocks")?;
 
+        #[derive(thiserror::Error, Debug)]
+        enum MarkBlocksError {
+            #[error("Internal rocksdb error")]
+            Internal(#[source] rocksdb::Error),
+            #[error("Invalid block id")]
+            InvalidBlockId,
+            #[error("Invalid cell")]
+            MarkCellsTreeFailed,
+        }
+
         let total = {
-            let db = self.shard_states.raw_db_handle();
+            let raw = self.db.raw();
 
             let total = Arc::new(AtomicUsize::new(0));
             let mut tasks = FuturesUnordered::new();
 
             // Prepare one database snapshot for all shard states iterators
-            let snapshot = Arc::new(OwnedSnapshot::new(db.clone()));
+            let snapshot = Arc::new(OwnedSnapshot::new(raw.clone()));
 
             let mut unique_shards = self
                 .find_unique_shards(Some(&snapshot))
@@ -415,8 +423,7 @@ impl ShardStateStorage {
                         let upper_bound = make_block_id_bound(&shard_ident, 0xff);
 
                         // Prepare shard states read options
-                        let mut read_options = rocksdb::ReadOptions::default();
-                        columns::ShardStates::read_options(&mut read_options);
+                        let mut read_options = self.db.shard_states.new_read_config();
                         read_options.set_iterate_lower_bound(lower_bound);
 
                         // Compute intermediate state key
@@ -431,19 +438,18 @@ impl ShardStateStorage {
                     })
                     .collect::<Vec<_>>();
 
+                let shard_states_cf = self.db.shard_states.get_unbounded_cf();
+                let node_states_cf = self.db.node_states.get_unbounded_cf();
+
+                let write_options = self.db.node_states.new_write_config();
+
                 // Spawn task
                 tasks.push(tokio::task::spawn_blocking(move || {
-                    let db = &snapshot.db;
+                    let db = snapshot.db.as_ref();
 
                     // Prepare cf handles
-                    let shard_states_cf =
-                        db.cf_handle(columns::ShardStates::NAME).context("No cf")?;
-                    let node_states_cf =
-                        db.cf_handle(columns::NodeStates::NAME).context("No cf")?;
-
-                    // Prepare intermediate state write options
-                    let mut write_options = rocksdb::WriteOptions::default();
-                    columns::NodeStates::write_options(&mut write_options);
+                    let shard_states_cf = shard_states_cf.bound();
+                    let node_states_cf = node_states_cf.bound();
 
                     for mut task in shard_tasks {
                         // Prepare reverse iterator
@@ -455,10 +461,16 @@ impl ShardStateStorage {
                         loop {
                             let (mut key, value) = match iter.item() {
                                 Some(item) => item,
-                                None => break iter.status()?,
+                                None => match iter.status() {
+                                    Ok(()) => break,
+                                    Err(e) => return Err(MarkBlocksError::Internal(e)),
+                                },
                             };
 
-                            let (shard_ident, seq_no) = BlockIdShort::deserialize(&mut key)?;
+                            let (shard_ident, seq_no) = match BlockIdShort::deserialize(&mut key) {
+                                Ok(id) => id,
+                                Err(_) => return Err(MarkBlocksError::InvalidBlockId),
+                            };
                             // Stop iterating on first outdated block
                             if !top_blocks.contains_shard_seq_no(&shard_ident, seq_no) {
                                 break;
@@ -481,13 +493,14 @@ impl ShardStateStorage {
 
                             // Update intermediate state for this shard to continue
                             // from this block on accidental restart
-                            db.put_cf_opt(
+                            if let Err(e) = db.put_cf_opt(
                                 &node_states_cf,
                                 &task.last_shard_block_key,
                                 seq_no.to_le_bytes(),
                                 &write_options,
-                            )
-                            .context("Failed to update last block")?;
+                            ) {
+                                return Err(MarkBlocksError::Internal(e));
+                            };
 
                             // Mark all cells of this state recursively with target marker
                             //
@@ -495,20 +508,22 @@ impl ShardStateStorage {
                             // using the snapshot, so we can reduce the number of cells
                             // which will be marked (some new states can already be inserted
                             // and have overwritten old markers)
-                            let count = cell_storage.mark_cells_tree(
+                            match cell_storage.mark_cells_tree(
                                 UInt256::from_be_bytes(value),
                                 Marker::WhileDifferent {
                                     marker: target_marker,
                                     force: force && edge_block,
                                 },
-                            )?;
-                            total.fetch_add(count, Ordering::Relaxed);
+                            ) {
+                                Ok(count) => total.fetch_add(count, Ordering::Relaxed),
+                                Err(_) => return Err(MarkBlocksError::MarkCellsTreeFailed),
+                            };
 
                             iter.prev();
                         }
                     }
 
-                    Ok::<_, anyhow::Error>(())
+                    Ok::<_, MarkBlocksError>(())
                 }));
             }
 
@@ -584,25 +599,31 @@ impl ShardStateStorage {
     async fn sweep_blocks(&self, target_marker: u8, top_blocks: &TopBlocks) -> Result<()> {
         tracing::info!("sweeping block states");
 
+        #[derive(thiserror::Error, Debug)]
+        enum SweepBlocksError {
+            #[error("internal rocksdb error")]
+            Internal(#[source] rocksdb::Error),
+            #[error("invalid block id")]
+            InvalidBlockId,
+        }
+
         let time = Instant::now();
 
         // Prepare context
-        let db = self.shard_states.raw_db_handle().clone();
+        let db = self.db.clone();
         let top_blocks = top_blocks.clone();
 
         // Spawn blocking thread for iterator
         let total = tokio::task::spawn_blocking(move || {
+            let raw = db.raw().as_ref();
+
             // Manually get required column factory and r/w options
-            let shard_state_cf = db.cf_handle(columns::ShardStates::NAME).context("No cf")?;
-
-            let mut read_options = rocksdb::ReadOptions::default();
-            columns::ShardStates::read_options(&mut read_options);
-
-            let mut write_options = rocksdb::WriteOptions::default();
-            columns::ShardStates::write_options(&mut write_options);
+            let shard_states_cf = db.shard_states.cf();
+            let read_options = db.shard_states.new_read_config();
+            let write_options = db.shard_states.write_config();
 
             // Create iterator
-            let mut iter = db.raw_iterator_cf_opt(&shard_state_cf, read_options);
+            let mut iter = raw.raw_iterator_cf_opt(&shard_states_cf, read_options);
             iter.seek_to_first();
 
             // Iterate all states and remove outdated
@@ -610,25 +631,33 @@ impl ShardStateStorage {
             loop {
                 let key = match iter.key() {
                     Some(key) => key,
-                    None => break iter.status()?,
+                    None => match iter.status() {
+                        Ok(()) => break,
+                        Err(e) => return Err(SweepBlocksError::Internal(e)),
+                    },
                 };
 
                 let (shard_ident, seq_no) =
-                    BlockIdShort::deserialize(&mut std::convert::identity(key))?;
+                    match BlockIdShort::deserialize(&mut std::convert::identity(key)) {
+                        Ok(id) => id,
+                        Err(_) => return Err(SweepBlocksError::InvalidBlockId),
+                    };
+
                 // Skip blocks from zero state and top blocks
                 if seq_no == 0 || top_blocks.contains_shard_seq_no(&shard_ident, seq_no) {
                     iter.next();
                     continue;
                 }
 
-                db.delete_cf_opt(&shard_state_cf, key, &write_options)
-                    .context("Failed to remove swept block")?;
+                if let Err(e) = raw.delete_cf_opt(&shard_states_cf, key, write_options) {
+                    return Err(SweepBlocksError::Internal(e));
+                }
                 total += 1;
 
                 iter.next();
             }
 
-            Ok::<_, anyhow::Error>(total)
+            Ok::<_, SweepBlocksError>(total)
         })
         .await??;
 
@@ -648,8 +677,8 @@ impl ShardStateStorage {
     }
 
     fn find_mc_block_id(&self, mc_seq_no: u32) -> Result<Option<ton_block::BlockIdExt>> {
-        Ok(self
-            .shard_states
+        let shard_states = &self.db.shard_states;
+        Ok(shard_states
             .get((ton_block::ShardIdent::masterchain(), mc_seq_no).to_vec())?
             .and_then(|value| {
                 let value = value.as_ref();
@@ -679,16 +708,14 @@ impl ShardStateStorage {
             0xff, 0xff, 0xff, 0xff, // seq no
         ];
 
-        let cf = self.shard_states.get_cf();
-
-        let db = self.shard_states.raw_db_handle();
-        let mut read_options = rocksdb::ReadOptions::default();
-        columns::ShardStates::read_options(&mut read_options);
+        let raw = self.db.raw();
+        let cf = self.db.shard_states.cf();
+        let read_options = self.db.shard_states.new_read_config();
 
         // Prepare reverse iterator
         let mut iter = match snapshot {
             Some(snapshot) => snapshot.raw_iterator_cf_opt(&cf, read_options),
-            None => db.raw_iterator_cf_opt(&cf, read_options),
+            None => raw.raw_iterator_cf_opt(&cf, read_options),
         };
         iter.seek_for_prev(BASE_WC_UPPER_BOUND.as_slice());
 
@@ -759,11 +786,8 @@ fn make_block_id_bound(shard_ident: &ton_block::ShardIdent, value: u8) -> [u8; 1
     result
 }
 
-async fn prepare_file_db_dir<P: AsRef<Path>>(
-    file_db_path: P,
-    folder: &str,
-) -> Result<Arc<PathBuf>> {
-    let dir = Arc::new(file_db_path.as_ref().join(folder));
+async fn prepare_file_db_dir(file_db_path: PathBuf, folder: &str) -> Result<Arc<PathBuf>> {
+    let dir = Arc::new(file_db_path.join(folder));
     tokio::fs::create_dir_all(dir.as_ref()).await?;
     Ok(dir)
 }

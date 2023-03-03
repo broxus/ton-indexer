@@ -3,19 +3,20 @@ use std::sync::Arc;
 use anyhow::Result;
 use parking_lot::Mutex;
 
-use super::{columns, read_block_id_le, write_block_id_le, StoredValue, Tree};
+use crate::db::*;
+use crate::utils::{read_block_id_le, write_block_id_le, StoredValue};
 
 pub struct NodeStateStorage {
-    db: Tree<columns::NodeStates>,
+    db: Arc<Db>,
     last_mc_block_id: BlockIdCache,
     init_mc_block_id: BlockIdCache,
     shards_client_mc_block_id: BlockIdCache,
 }
 
 impl NodeStateStorage {
-    pub fn with_db(db: &Arc<rocksdb::DB>) -> Result<Self> {
+    pub fn new(db: Arc<Db>) -> Result<Self> {
         Ok(Self {
-            db: Tree::new(db)?,
+            db,
             last_mc_block_id: (Default::default(), LAST_MC_BLOCK_ID),
             init_mc_block_id: (Default::default(), INIT_MC_BLOCK_ID),
             shards_client_mc_block_id: (Default::default(), SHARDS_CLIENT_MC_BLOCK_ID),
@@ -23,23 +24,27 @@ impl NodeStateStorage {
     }
 
     pub fn store_historical_sync_start(&self, id: &ton_block::BlockIdExt) -> Result<()> {
-        self.db.insert(HISTORICAL_SYNC_LOW, id.to_vec())
+        let node_states = &self.db.node_states;
+        node_states.insert(HISTORICAL_SYNC_LOW, id.to_vec())?;
+        Ok(())
     }
 
     pub fn load_historical_sync_start(&self) -> Result<Option<ton_block::BlockIdExt>> {
-        Ok(match self.db.get(HISTORICAL_SYNC_LOW)? {
+        Ok(match self.db.node_states.get(HISTORICAL_SYNC_LOW)? {
             Some(data) => Some(ton_block::BlockIdExt::from_slice(data.as_ref())?),
             None => None,
         })
     }
 
     pub fn store_historical_sync_end(&self, id: &ton_block::BlockIdExt) -> Result<()> {
-        self.db.insert(HISTORICAL_SYNC_HIGH, id.to_vec())
+        let node_states = &self.db.node_states;
+        node_states.insert(HISTORICAL_SYNC_HIGH, id.to_vec())?;
+        Ok(())
     }
 
     pub fn load_historical_sync_end(&self) -> Result<ton_block::BlockIdExt> {
-        let data = self
-            .db
+        let node_states = &self.db.node_states;
+        let data = node_states
             .get(HISTORICAL_SYNC_HIGH)?
             .ok_or(NodeStateStorageError::HighBlockNotFound)?;
         ton_block::BlockIdExt::from_slice(data.as_ref())
@@ -47,13 +52,14 @@ impl NodeStateStorage {
 
     #[allow(unused)]
     pub fn store_last_uploaded_archive(&self, archive_id: u32) -> Result<()> {
-        self.db
-            .insert(LAST_UPLOADED_ARCHIVE, archive_id.to_le_bytes())
+        let node_states = &self.db.node_states;
+        node_states.insert(LAST_UPLOADED_ARCHIVE, archive_id.to_le_bytes())?;
+        Ok(())
     }
 
     #[allow(unused)]
     pub fn load_last_uploaded_archive(&self) -> Result<Option<u32>> {
-        Ok(match self.db.get(LAST_UPLOADED_ARCHIVE)? {
+        Ok(match self.db.node_states.get(LAST_UPLOADED_ARCHIVE)? {
             Some(data) if data.len() >= 4 => {
                 Some(u32::from_le_bytes(data[..4].try_into().unwrap()))
             }
@@ -91,7 +97,8 @@ impl NodeStateStorage {
         (cache, key): &BlockIdCache,
         block_id: &ton_block::BlockIdExt,
     ) -> Result<()> {
-        self.db.insert(key, write_block_id_le(block_id))?;
+        let node_states = &self.db.node_states;
+        node_states.insert(key, write_block_id_le(block_id))?;
         *cache.lock() = Some(block_id.clone());
         Ok(())
     }
@@ -102,7 +109,7 @@ impl NodeStateStorage {
             return Ok(a.clone());
         }
 
-        let value = match self.db.get(key)? {
+        let value = match self.db.node_states.get(key)? {
             Some(data) => read_block_id_le(&data).ok_or(NodeStateStorageError::InvalidBlockId)?,
             None => return Err(NodeStateStorageError::ParamNotFound.into()),
         };

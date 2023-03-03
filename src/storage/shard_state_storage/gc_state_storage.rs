@@ -5,24 +5,22 @@ use anyhow::{Context, Result};
 use rustc_hash::FxHashMap;
 use ton_types::ByteOrderRead;
 
-use crate::db::{columns, StoredValue, Tree};
-use crate::utils::{StoredValueBuffer, TopBlocks};
+use crate::db::*;
+use crate::utils::{StoredValue, StoredValueBuffer, TopBlocks};
 
 pub struct GcStateStorage {
-    node_states: Tree<columns::NodeStates>,
+    db: Arc<Db>,
 }
 
 impl GcStateStorage {
-    pub fn new(db: &Arc<rocksdb::DB>) -> Result<Self> {
-        let storage = Self {
-            node_states: Tree::new(db)?,
-        };
+    pub fn new(db: Arc<Db>) -> Result<Arc<Self>> {
+        let storage = Arc::new(Self { db });
         let _ = storage.load()?;
         Ok(storage)
     }
 
     pub fn load(&self) -> Result<GcState> {
-        Ok(match self.node_states.get(STATES_GC_STATE_KEY)? {
+        Ok(match self.db.node_states.get(STATES_GC_STATE_KEY)? {
             Some(value) => {
                 GcState::from_slice(&value).context("Failed to decode states GC state")?
             }
@@ -38,13 +36,14 @@ impl GcStateStorage {
     }
 
     pub fn update(&self, state: &GcState) -> Result<()> {
-        self.node_states
+        let node_states = &self.db.node_states;
+        node_states
             .insert(STATES_GC_STATE_KEY, state.to_vec())
             .context("Failed to update shards GC state")
     }
 
     pub fn clear_last_blocks(&self) -> Result<()> {
-        let mut iter = self.node_states.prefix_iterator(GC_LAST_BLOCK_KEY);
+        let mut iter = self.db.node_states.prefix_iterator(GC_LAST_BLOCK_KEY);
         loop {
             let key = match iter.key() {
                 Some(key) => key,
@@ -52,7 +51,7 @@ impl GcStateStorage {
             };
 
             if key.starts_with(GC_LAST_BLOCK_KEY) {
-                self.node_states.remove(key)?;
+                self.db.node_states.remove(key)?;
             }
 
             iter.next();
@@ -63,7 +62,7 @@ impl GcStateStorage {
     pub fn load_last_blocks(&self) -> Result<FxHashMap<ton_block::ShardIdent, u32>> {
         let mut result = FxHashMap::default();
 
-        let mut iter = self.node_states.prefix_iterator(GC_LAST_BLOCK_KEY);
+        let mut iter = self.db.node_states.prefix_iterator(GC_LAST_BLOCK_KEY);
         loop {
             let (key, mut value) = match iter.item() {
                 Some(item) => item,

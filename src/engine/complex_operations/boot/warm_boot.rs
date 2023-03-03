@@ -13,7 +13,7 @@ pub async fn warm_boot(
     mut last_mc_block_id: ton_block::BlockIdExt,
 ) -> Result<ton_block::BlockIdExt> {
     tracing::info!("starting warm boot");
-    let block_handle_storage = engine.db.block_handle_storage();
+    let block_handle_storage = engine.storage.block_handle_storage();
     let handle = block_handle_storage
         .load_handle(&last_mc_block_id)?
         .ok_or(WarmBootError::FailedToLoadInitialBlock)?;

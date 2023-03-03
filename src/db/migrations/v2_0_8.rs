@@ -3,27 +3,25 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use ton_block::Deserializable;
 
-use super::Migrations;
-use crate::db::columns;
-use crate::db::tree::{Column, Tree};
+use super::{tables, ColumnFamily, Migrations, Table};
 use crate::utils::*;
 
 // 2.0.7 to 2.0.8
 // - Change key for `package_entries`:
 //    * `BlockIdShort, package type (1 byte)` -> `BlockIdShort, ton_types::Uint256, package type (1 byte)`
 pub(super) fn register(migrations: &mut Migrations) -> Result<()> {
-    migrations.register([2, 0, 7], [2, 0, 8], |db| async move {
+    migrations.register([2, 0, 7], [2, 0, 8], |db| {
         update_package_entries(&db)?;
         Ok(())
     })
 }
 
 fn update_package_entries(db: &Arc<rocksdb::DB>) -> Result<()> {
-    let package_entries = Tree::<columns::PackageEntries>::new(db)?;
-    let package_entries_cf = package_entries.get_cf();
+    let package_entries = Table::<tables::PackageEntries>::new(db);
+    let package_entries_cf = package_entries.cf();
 
     let mut read_options = Default::default();
-    columns::PackageEntries::read_options(&mut read_options);
+    tables::PackageEntries::read_options(&mut read_options);
     let write_options = package_entries.write_config();
 
     let snapshot = db.snapshot();

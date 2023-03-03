@@ -10,10 +10,10 @@ use futures_util::{FutureExt, StreamExt};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use crate::db::*;
 use crate::engine::complex_operations::download_state::*;
 use crate::engine::{Engine, FullStateId};
 use crate::network::Neighbour;
+use crate::storage::*;
 use crate::utils::*;
 
 /// Boot type when the node has not yet started syncing
@@ -48,8 +48,8 @@ pub async fn cold_boot(engine: &Arc<Engine>) -> Result<ton_block::BlockIdExt> {
 /// Searches for the last key block (or zerostate) from which
 /// we can start downloading other key blocks
 async fn prepare_prev_key_block(engine: &Arc<Engine>) -> Result<PrevKeyBlock> {
-    let block_handle_storage = engine.db.block_handle_storage();
-    let block_storage = engine.db.block_storage();
+    let block_handle_storage = engine.storage.block_handle_storage();
+    let block_storage = engine.storage.block_storage();
 
     let block_id = &engine.init_mc_block_id;
 
@@ -207,7 +207,7 @@ async fn download_key_blocks(engine: &Arc<Engine>, mut prev_key_block: PrevKeyBl
     let mut prev_handle = prev_key_block.handle().clone();
     tasks_tx.send(prev_handle.id().clone()).ok();
 
-    let node_state = engine.db.node_state();
+    let node_state = engine.storage.node_state();
     while let Some((ids, neighbour)) = ids_rx.recv().await {
         match ids.last() {
             // Start downloading next key blocks in background
@@ -307,8 +307,8 @@ impl<'a> BlockProofStream<'a> {
             None => return Ok(None),
         };
 
-        let block_handle_storage = self.engine.db.block_handle_storage();
-        let block_storage = self.engine.db.block_storage();
+        let block_handle_storage = self.engine.storage.block_handle_storage();
+        let block_storage = self.engine.storage.block_storage();
 
         // Check whether block proof is already stored locally
         if let Some(handle) = block_handle_storage.load_handle(&block_id)? {
@@ -380,7 +380,7 @@ impl<'a> BlockProofStream<'a> {
 
 /// Selectes the latest suitable key block with persistent state
 fn choose_key_block(engine: &Engine) -> Result<Arc<BlockHandle>> {
-    let block_handle_storage = engine.db.block_handle_storage();
+    let block_handle_storage = engine.storage.block_handle_storage();
     let mut key_blocks = block_handle_storage
         .key_blocks_iterator(KeyBlocksDirection::Backward)
         .map(|item| {
@@ -551,8 +551,8 @@ async fn download_block_with_state(
     engine: &Arc<Engine>,
     full_state_id: FullStateId,
 ) -> Result<(Arc<BlockHandle>, BlockStuff)> {
-    let block_handle_storage = engine.db.block_handle_storage();
-    let block_storage = engine.db.block_storage();
+    let block_handle_storage = engine.storage.block_handle_storage();
+    let block_storage = engine.storage.block_storage();
 
     let mc_seq_no = full_state_id.mc_block_id.seq_no;
 

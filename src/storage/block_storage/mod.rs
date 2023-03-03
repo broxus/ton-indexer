@@ -15,32 +15,23 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use parking_lot::RwLock;
 
-use super::{
-    columns, BlockHandle, BlockHandleStorage, BlockMetaData, Column, HandleCreationStatus,
-    StoredValue, Tree,
-};
+use super::block_handle_storage::{BlockHandleStorage, HandleCreationStatus};
+use super::models::*;
 use crate::config::BlocksGcKind;
+use crate::db::*;
 use crate::utils::*;
 
 pub struct BlockStorage {
+    db: Arc<Db>,
     block_handle_storage: Arc<BlockHandleStorage>,
-
-    archives: Tree<columns::Archives>,
-    package_entries: Tree<columns::PackageEntries>,
-    block_handles: Tree<columns::BlockHandles>,
     archive_ids: RwLock<BTreeSet<u32>>,
 }
 
 impl BlockStorage {
-    pub fn with_db(
-        db: &Arc<rocksdb::DB>,
-        block_handle_storage: &Arc<BlockHandleStorage>,
-    ) -> Result<Self> {
+    pub fn new(db: Arc<Db>, block_handle_storage: Arc<BlockHandleStorage>) -> Result<Self> {
         let manager = Self {
-            block_handle_storage: block_handle_storage.clone(),
-            archives: Tree::new(db)?,
-            package_entries: Tree::new(db)?,
-            block_handles: Tree::new(db)?,
+            db,
+            block_handle_storage,
             archive_ids: Default::default(),
         };
 
@@ -56,7 +47,7 @@ impl BlockStorage {
             verifier.final_check()
         }
 
-        let mut iter = self.archives.raw_iterator();
+        let mut iter = self.db.archives.raw_iterator();
         iter.seek_to_first();
 
         let mut archive_ids = self.archive_ids.write();
@@ -289,8 +280,8 @@ impl BlockStorage {
         };
 
         // Prepare cf
-        let storage_cf = self.archives.get_cf();
-        let handle_cf = self.block_handles.get_cf();
+        let storage_cf = self.db.archives.cf();
+        let handle_cf = self.db.block_handles.cf();
 
         // Prepare archive
         let archive_id = self.compute_archive_id(handle);
@@ -315,7 +306,7 @@ impl BlockStorage {
             );
         }
         // 5. Execute transaction
-        self.archives.raw_db_handle().write(batch)?;
+        self.db.raw().write(batch)?;
 
         // Block will be removed after blocks gc
 
@@ -340,8 +331,8 @@ impl BlockStorage {
         let block_id = handle.id();
 
         // Prepare cf
-        let storage_cf = self.archives.get_cf();
-        let handle_cf = self.block_handles.get_cf();
+        let archives_cf = self.db.archives.cf();
+        let block_handles_cf = self.db.block_handles.cf();
 
         // Prepare archive
         let archive_id = self.compute_archive_id(handle);
@@ -350,13 +341,13 @@ impl BlockStorage {
         let mut batch = rocksdb::WriteBatch::default();
 
         batch.merge_cf(
-            &storage_cf,
+            &archives_cf,
             archive_id_bytes,
             make_archive_segment(&PackageEntryId::Block(handle.id()).filename(), block_data),
         );
 
         batch.merge_cf(
-            &storage_cf,
+            &archives_cf,
             archive_id_bytes,
             make_archive_segment(
                 &if is_link {
@@ -371,13 +362,13 @@ impl BlockStorage {
 
         if handle.meta().set_is_archived() {
             batch.put_cf(
-                &handle_cf,
+                &block_handles_cf,
                 block_id.root_hash.as_slice(),
                 handle.meta().to_vec(),
             );
         }
 
-        self.archives.raw_db_handle().write(batch)?;
+        self.db.raw().write(batch)?;
 
         Ok(())
     }
@@ -441,7 +432,7 @@ impl BlockStorage {
         ArchivesIterator {
             first: true,
             ids: (range.start_bound().cloned(), range.end_bound().cloned()),
-            iter: self.archives.raw_iterator(),
+            iter: self.db.archives.raw_iterator(),
         }
     }
 
@@ -451,7 +442,7 @@ impl BlockStorage {
         offset: usize,
         limit: usize,
     ) -> Result<Option<Vec<u8>>> {
-        match self.archives.get(id.to_be_bytes())? {
+        match self.db.archives.get(id.to_be_bytes())? {
             Some(slice) if offset < slice.len() => {
                 let end = std::cmp::min(offset.saturating_add(limit), slice.len());
                 Ok(Some(slice[offset..end].to_vec()))
@@ -503,13 +494,13 @@ impl BlockStorage {
         // Remove all expired entries
         let total_cached_handles_removed = self.block_handle_storage.gc_handles_cache(&top_blocks);
 
-        let db = self.package_entries.raw_db_handle().clone();
+        let db = self.db.clone();
         let BlockGcStats {
             mc_package_entries_removed,
             total_package_entries_removed,
             total_handles_removed,
         } = tokio::task::spawn_blocking(move || {
-            remove_blocks(&db, max_blocks_per_batch, &top_blocks)
+            remove_blocks(db, max_blocks_per_batch, &top_blocks)
         })
         .await??;
 
@@ -559,32 +550,32 @@ impl BlockStorage {
         }
 
         // Remove archives
-        let archives_cf = self.archives.get_cf();
+        let archives_cf = self.db.archives.cf();
 
         let mut batch = rocksdb::WriteBatch::default();
         for id in removed_ids {
             batch.delete_cf(&archives_cf, id.to_be_bytes());
         }
 
-        self.archives.raw_db_handle().write(batch)?;
+        self.db.raw().write(batch)?;
 
         tracing::info!("archives GC: done");
         Ok(())
     }
 
-    fn add_data<I>(&self, id: &PackageEntryId<I>, data: &[u8]) -> Result<()>
+    fn add_data<I>(&self, id: &PackageEntryId<I>, data: &[u8]) -> Result<(), rocksdb::Error>
     where
         I: Borrow<ton_block::BlockIdExt> + Hash,
     {
-        self.package_entries.insert(id.to_vec(), data)
+        self.db.package_entries.insert(id.to_vec(), data)
     }
 
     #[allow(dead_code)]
-    fn has_data<I>(&self, id: &PackageEntryId<I>) -> Result<bool>
+    fn has_data<I>(&self, id: &PackageEntryId<I>) -> Result<bool, rocksdb::Error>
     where
         I: Borrow<ton_block::BlockIdExt> + Hash,
     {
-        self.package_entries.contains_key(id.to_vec())
+        self.db.package_entries.contains_key(id.to_vec())
     }
 
     async fn get_data<I>(&self, handle: &BlockHandle, id: &PackageEntryId<I>) -> Result<Vec<u8>>
@@ -598,7 +589,7 @@ impl BlockStorage {
             }
         };
 
-        match self.package_entries.get(id.to_vec())? {
+        match self.db.package_entries.get(id.to_vec())? {
             Some(a) => Ok(a.to_vec()),
             None => Err(BlockStorageError::InvalidBlockData.into()),
         }
@@ -619,7 +610,7 @@ impl BlockStorage {
             }
         };
 
-        match self.package_entries.get(id.to_vec())? {
+        match self.db.package_entries.get(id.to_vec())? {
             Some(data) => Ok(BlockContentsLock { _lock: lock, data }),
             None => Err(BlockStorageError::InvalidBlockData.into()),
         }
@@ -658,7 +649,7 @@ impl BlockStorage {
     where
         I: Borrow<ton_block::BlockIdExt> + Hash,
     {
-        match self.package_entries.get(entry_id.to_vec())? {
+        match self.db.package_entries.get(entry_id.to_vec())? {
             Some(data) => Ok(make_archive_segment(&entry_id.filename(), &data)),
             None => Err(BlockStorageError::InvalidBlockData.into()),
         }
@@ -690,35 +681,26 @@ pub struct StoreBlockResult {
 }
 
 fn remove_blocks(
-    db: &Arc<rocksdb::DB>,
+    db: Arc<Db>,
     max_blocks_per_batch: Option<usize>,
     top_blocks: &TopBlocks,
 ) -> Result<BlockGcStats> {
     let mut stats = BlockGcStats::default();
 
-    // Cache cfs before loop
-    let blocks_cf = db
-        .cf_handle(columns::PackageEntries::NAME)
-        .expect("Shouldn't fail");
-    let block_handles_cf = db
-        .cf_handle(columns::BlockHandles::NAME)
-        .expect("Shouldn't fail");
-    let key_blocks_cf = db
-        .cf_handle(columns::KeyBlocks::NAME)
-        .expect("Shouldn't fail");
+    let raw = db.raw().as_ref();
+    let package_entries_cf = db.package_entries.cf();
+    let block_handles_cf = db.block_handles.cf();
+    let key_blocks_cf = db.key_blocks.cf();
 
     // Create batch
     let mut batch = rocksdb::WriteBatch::default();
     let mut batch_len = 0;
 
-    let mut package_entries_readopts = Default::default();
-    columns::PackageEntries::read_options(&mut package_entries_readopts);
-
-    let mut key_blocks_readopts = Default::default();
-    columns::KeyBlocks::read_options(&mut key_blocks_readopts);
+    let package_entries_readopts = db.package_entries.new_read_config();
+    let key_blocks_readopts = db.key_blocks.new_read_config();
 
     // Iterate all entries and find expired items
-    let mut blocks_iter = db.raw_iterator_cf_opt(&blocks_cf, package_entries_readopts);
+    let mut blocks_iter = raw.raw_iterator_cf_opt(&package_entries_cf, package_entries_readopts);
     blocks_iter.seek_to_first();
 
     loop {
@@ -739,7 +721,7 @@ fn remove_blocks(
         // Additionally check whether this item is a key block
         if seq_no == 0
             || shard_ident.is_masterchain()
-                && db
+                && raw
                     .get_pinned_cf_opt(&key_blocks_cf, seq_no.to_be_bytes(), &key_blocks_readopts)?
                     .is_some()
         {
@@ -749,7 +731,7 @@ fn remove_blocks(
         }
 
         // Add item to the batch
-        batch.delete_cf(&blocks_cf, key);
+        batch.delete_cf(&package_entries_cf, key);
         stats.total_package_entries_removed += 1;
         if shard_ident.is_masterchain() {
             stats.mc_package_entries_removed += 1;
@@ -776,7 +758,7 @@ fn remove_blocks(
                 "applying intermediate batch",
             );
             let batch = std::mem::take(&mut batch);
-            db.write(batch)?;
+            raw.write(batch)?;
             batch_len = 0;
         }
 
@@ -785,7 +767,7 @@ fn remove_blocks(
 
     if batch_len > 0 {
         tracing::info!("applying final batch");
-        db.write(batch)?;
+        raw.write(batch)?;
     }
 
     // Done

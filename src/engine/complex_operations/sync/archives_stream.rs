@@ -64,7 +64,7 @@ impl ArchivesStream {
             ctx: Arc::new(DownloaderContext {
                 engine: engine.clone(),
                 writers_pool: ArchiveWritersPool::new(
-                    engine.db.file_db_path(),
+                    engine.storage.file_db_path(),
                     engine.sync_options.save_to_disk_threshold,
                 ),
                 new_archive_notification: Default::default(),

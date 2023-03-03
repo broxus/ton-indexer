@@ -2,7 +2,7 @@ use std::io::Read;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Weak};
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use futures_util::stream::FuturesUnordered;
 use futures_util::StreamExt;
 use parking_lot::RwLock;
@@ -10,20 +10,20 @@ use rustc_hash::FxHashSet;
 use smallvec::SmallVec;
 use ton_types::{ByteOrderRead, CellImpl, FxDashMap, UInt256};
 
-use crate::db::{columns, Column, Tree};
+use crate::db::*;
 
 pub struct CellStorage {
-    cells: Tree<columns::Cells>,
+    db: Arc<Db>,
     cells_cache: Arc<FxDashMap<UInt256, Weak<StorageCell>>>,
 }
 
 impl CellStorage {
-    pub fn new(db: &Arc<rocksdb::DB>) -> Result<Self> {
+    pub fn new(db: Arc<Db>) -> Result<Arc<Self>> {
         let cache = Arc::new(FxDashMap::default());
-        Ok(Self {
-            cells: Tree::new(db)?,
+        Ok(Arc::new(Self {
+            db,
             cells_cache: cache,
-        })
+        }))
     }
 
     pub fn store_cell(
@@ -31,11 +31,12 @@ impl CellStorage {
         batch: &mut rocksdb::WriteBatch,
         marker: u8,
         root: ton_types::Cell,
-    ) -> Result<usize> {
+    ) -> Result<usize, CellStorageError> {
         // Prepare handles
-        let cf = self.cells.get_cf();
-        let db = self.cells.raw_db_handle();
-        let read_options = self.cells.read_config();
+        let cells = &self.db.cells;
+        let raw = cells.db();
+        let cf = cells.cf();
+        let read_options = cells.read_config();
 
         let mut transaction = FxHashSet::default();
 
@@ -43,14 +44,14 @@ impl CellStorage {
 
         // Check root cell
         let cell_id = root.repr_hash();
-        match db.get_pinned_cf_opt(&cf, cell_id.as_array(), read_options)? {
-            Some(value) => {
+        match raw.get_pinned_cf_opt(&cf, cell_id.as_array(), read_options) {
+            Ok(Some(value)) => {
                 // NOTE: dereference value only once to prevent multiple ffi calls
                 let value = value.as_ref();
                 // Overwrite value if it has different marker
                 if value.is_empty() {
                     // Empty cell is invalid
-                    return Err(CellStorageError::InvalidCell.into());
+                    return Err(CellStorageError::InvalidCell);
                 } else if value[0] > 0 && value[0] != marker {
                     // Proceed if cell was updated
                     buffer.clear();
@@ -64,11 +65,14 @@ impl CellStorage {
                 }
             }
             // Insert cell value if it doesn't exist
-            None => {
-                StorageCell::serialize_to(marker, &*root, &mut buffer)?;
+            Ok(None) => {
+                if StorageCell::serialize_to(marker, &*root, &mut buffer).is_err() {
+                    return Err(CellStorageError::InvalidCell);
+                }
                 batch.put_cf(&cf, cell_id.as_slice(), &buffer);
                 transaction.insert(cell_id);
             }
+            Err(e) => return Err(CellStorageError::Internal(e)),
         }
 
         let mut stack = Vec::with_capacity(16);
@@ -76,16 +80,19 @@ impl CellStorage {
 
         while let Some(current) = stack.pop() {
             for i in 0..current.references_count() {
-                let cell = current.reference(i)?;
+                let cell = match current.reference(i) {
+                    Ok(cell) => cell,
+                    Err(_) => return Err(CellStorageError::InvalidCell),
+                };
                 let cell_id = cell.repr_hash();
 
-                match db.get_pinned_cf_opt(&cf, cell_id.as_array(), read_options)? {
-                    Some(value) => {
+                match raw.get_pinned_cf_opt(&cf, cell_id.as_array(), read_options) {
+                    Ok(Some(value)) => {
                         // NOTE: dereference value only once to prevent multiple ffi calls
                         let value = value.as_ref();
                         if value.is_empty() {
                             // Empty cell is invalid
-                            return Err(CellStorageError::InvalidCell.into());
+                            return Err(CellStorageError::InvalidCell);
                         } else if value[0] > 0 && value[0] != marker {
                             buffer.clear();
                             buffer.extend_from_slice(value);
@@ -99,12 +106,15 @@ impl CellStorage {
                         }
                     }
                     // Already inserting this cell
-                    None if transaction.contains(&cell_id) => continue,
-                    None => {
-                        StorageCell::serialize_to(marker, &*cell, &mut buffer)?;
+                    Ok(None) if transaction.contains(&cell_id) => continue,
+                    Ok(None) => {
+                        if StorageCell::serialize_to(marker, &*cell, &mut buffer).is_err() {
+                            return Err(CellStorageError::InvalidCell);
+                        }
                         batch.put_cf(&cf, cell_id.as_slice(), &buffer);
                         transaction.insert(cell_id);
                     }
+                    Err(e) => return Err(CellStorageError::Internal(e)),
                 }
 
                 stack.push(cell);
@@ -114,16 +124,23 @@ impl CellStorage {
         Ok(transaction.len())
     }
 
-    pub fn load_cell(self: &Arc<Self>, hash: UInt256) -> Result<Arc<StorageCell>> {
+    pub fn load_cell(
+        self: &Arc<Self>,
+        hash: UInt256,
+    ) -> Result<Arc<StorageCell>, CellStorageError> {
         if let Some(cell) = self.cells_cache.get(&hash) {
             if let Some(cell) = cell.upgrade() {
                 return Ok(cell);
             }
         }
 
-        let cell = match self.cells.get(hash.as_slice())? {
-            Some(value) => Arc::new(StorageCell::deserialize(self.clone(), &value)?),
-            None => return Err(CellStorageError::CellNotFound.into()),
+        let cell = match self.db.cells.get(hash.as_slice()) {
+            Ok(Some(value)) => match StorageCell::deserialize(self.clone(), &value) {
+                Ok(cell) => Arc::new(cell),
+                Err(_) => return Err(CellStorageError::InvalidCell),
+            },
+            Ok(None) => return Err(CellStorageError::CellNotFound),
+            Err(e) => return Err(CellStorageError::Internal(e)),
         };
         self.cells_cache.insert(hash, Arc::downgrade(&cell));
 
@@ -154,30 +171,28 @@ impl CellStorage {
             };
 
             // Prepare cells read options
-            let mut read_options = rocksdb::ReadOptions::default();
-            columns::Cells::read_options(&mut read_options);
+            let raw = self.db.raw().clone();
+            let cells = &self.db.cells;
+            let cells_cf = cells.get_unbounded_cf();
 
+            let mut read_options = cells.new_read_config();
             if let Some(upper_bound) = upper_bound {
                 read_options.set_iterate_upper_bound(upper_bound);
             }
 
-            let db = self.cells.raw_db_handle().clone();
-            let total = total.clone();
+            let write_options = cells.new_write_config();
 
+            let total = total.clone();
             tasks.push(tokio::task::spawn_blocking(move || {
-                let cells_cf = db.cf_handle(columns::Cells::NAME).context("No cf")?;
+                let cells_cf = cells_cf.bound();
 
                 // Prepare iterator
-                let mut iter = db.raw_iterator_cf_opt(&cells_cf, read_options);
+                let mut iter = raw.raw_iterator_cf_opt(&cells_cf, read_options);
                 if let Some(lower_bound) = &lower_bound {
                     iter.seek(lower_bound);
                 } else {
                     iter.seek_to_first();
                 }
-
-                // Prepare cells write options
-                let mut write_options = rocksdb::WriteOptions::default();
-                columns::Cells::write_options(&mut write_options);
 
                 // Iterate all cells in range
                 let mut subtotal = 0;
@@ -191,7 +206,7 @@ impl CellStorage {
                         let marker = value[0];
 
                         if marker > 0 && marker != target_marker {
-                            db.delete_cf_opt(&cells_cf, key, &write_options)?;
+                            raw.delete_cf_opt(&cells_cf, key, &write_options)?;
                             subtotal += 1;
                         }
                     }
@@ -200,7 +215,7 @@ impl CellStorage {
                 }
 
                 total.fetch_add(subtotal, Ordering::Relaxed);
-                Ok::<_, anyhow::Error>(())
+                Ok::<_, rocksdb::Error>(())
             }));
         }
 
@@ -213,17 +228,23 @@ impl CellStorage {
         Ok(total.load(Ordering::Relaxed))
     }
 
-    pub fn mark_cells_tree(&self, root_cell: UInt256, target_marker: Marker) -> Result<usize> {
+    pub fn mark_cells_tree(
+        &self,
+        root_cell: UInt256,
+        target_marker: Marker,
+    ) -> Result<usize, CellStorageError> {
         let (target_marker, force, alter_persistent_edge) = match target_marker {
             Marker::WhileDifferent { marker, force } => (marker, force, false),
             // Marker::PersistentStateTransition => (PS_TEMP_MARKER, true, true),
         };
 
         // Prepare handles
-        let cf = self.cells.get_cf();
-        let read_config = self.cells.read_config();
-        let write_config = self.cells.write_config();
-        let db = self.cells.raw_db_handle();
+        let raw = self.db.raw();
+        let cells = &self.db.cells;
+
+        let cf = cells.cf();
+        let read_config = cells.read_config();
+        let write_config = cells.write_config();
 
         // Start from the root cell
         let mut stack = SmallVec::<[_; 256]>::with_capacity(256);
@@ -237,10 +258,13 @@ impl CellStorage {
         while let Some(cell_id) = stack.pop() {
             // Load cell marker and references from the top of the stack
             let (persistent_cell, marker_changed, references) =
-                match db.get_pinned_cf_opt(&cf, cell_id.as_slice(), read_config)? {
-                    Some(value) => {
+                match raw.get_pinned_cf_opt(&cf, cell_id.as_slice(), read_config) {
+                    Ok(Some(value)) => {
                         let (marker, references) =
-                            StorageCell::deserialize_marker_and_references(value.as_ref())?;
+                            match StorageCell::deserialize_marker_and_references(value.as_ref()) {
+                                Ok(cell) => cell,
+                                Err(_) => return Err(CellStorageError::InvalidCell),
+                            };
 
                         let persistent_cell = marker == PS_MARKER || marker == PS_TEMP_MARKER;
                         let marker_changed =
@@ -253,10 +277,8 @@ impl CellStorage {
 
                         (persistent_cell, marker_changed, references)
                     }
-                    None => {
-                        return Err(CellStorageError::CellNotFound)
-                            .with_context(|| format!("Child not found. Depth: {}", stack.len()))
-                    }
+                    Ok(None) => return Err(CellStorageError::CellNotFound),
+                    Err(e) => return Err(CellStorageError::Internal(e)),
                 };
 
             total += marker_changed as usize;
@@ -269,7 +291,9 @@ impl CellStorage {
             }
         }
 
-        db.write_opt(batch, write_config)?;
+        if let Err(e) = raw.write_opt(batch, write_config) {
+            return Err(CellStorageError::Internal(e));
+        }
 
         Ok(total)
     }
@@ -286,11 +310,13 @@ pub enum Marker {
 }
 
 #[derive(thiserror::Error, Debug)]
-enum CellStorageError {
+pub enum CellStorageError {
     #[error("Cell not found in cell db")]
     CellNotFound,
     #[error("Invalid cell")]
     InvalidCell,
+    #[error("Internal rocksdb error")]
+    Internal(#[source] rocksdb::Error),
 }
 
 pub struct StorageCell {

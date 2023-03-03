@@ -10,8 +10,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use anyhow::Result;
 use ton_types::ByteOrderRead;
 
-use super::{StoredValue, StoredValueBuffer};
-use crate::utils::BriefBlockInfo;
+use crate::utils::{BriefBlockInfo, StoredValue, StoredValueBuffer};
 
 #[derive(Debug, Copy, Clone)]
 pub struct BlockMetaData {

@@ -45,7 +45,8 @@ tokio-util = "0.7.0"
 tracing = "0.1"
 broxus-util = { version = "0.2", default-features = false, features = ["alloc"] }
 
-rocksdb = { version = "0.19", features = [
+librocksdb-sys = "0.10.0" # don't update, 6.x.y is a trap
+rocksdb = { version = "0.20", features = [
     "multi-threaded-cf",
     "zstd",
     "lz4",

@@ -10,7 +10,7 @@ use anyhow::Result;
 use tokio::sync::RwLock;
 use ton_types::FxDashMap;
 
-use super::block_meta::BlockMeta;
+use super::BlockMeta;
 
 pub struct BlockHandle {
     id: ton_block::BlockIdExt,
