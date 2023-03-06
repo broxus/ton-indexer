@@ -28,3 +28,9 @@ wget https://raw.githubusercontent.com/tonlabs/net.ton.dev/master/configs/net.to
 ```bash
 cargo run --release --example simple_node -- --config config.yaml --global-config ton-global.config.json
 ```
+
+<p align="center">
+  <a href="https://github.com/venom-blockchain/developer-program">
+    <img src="https://raw.githubusercontent.com/venom-blockchain/developer-program/main/vf-dev-program.png" alt="Logo" width="366.8" height="146.4">
+  </a>
+</p>
