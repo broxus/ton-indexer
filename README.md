@@ -1,7 +1,17 @@
-## TON Indexer
+<p align="center">
+  <a href="https://github.com/venom-blockchain/developer-program">
+    <img src="https://raw.githubusercontent.com/venom-blockchain/developer-program/main/vf-dev-program.png" alt="Logo" width="366.8" height="146.4">
+  </a>
+</p>
 
-This project is a simplified, refactored and optimized version of [ton-labs-node](https://github.com/tonlabs/ton-labs-node)
+# TON Indexer
+
+## About
+
+This project is a simplified, refactored and optimized version of [ever-node](https://github.com/tonlabs/ever-node)
 and would not have been implemented without their gigantic work of reverse engineering the original С++ node.
+
+## Usage
 
 ### Run examples
 
@@ -29,8 +39,10 @@ wget https://raw.githubusercontent.com/tonlabs/net.ton.dev/master/configs/net.to
 cargo run --release --example simple_node -- --config config.yaml --global-config ton-global.config.json
 ```
 
-<p align="center">
-  <a href="https://github.com/venom-blockchain/developer-program">
-    <img src="https://raw.githubusercontent.com/venom-blockchain/developer-program/main/vf-dev-program.png" alt="Logo" width="366.8" height="146.4">
-  </a>
-</p>
+## Contributing
+
+We welcome contributions to the project! If you notice any issues or errors, feel free to open an issue or submit a pull request.
+
+## License
+
+This project is licensed under the [License Apache].
