@@ -293,6 +293,11 @@ where
         write_config
     }
 
+    pub fn trigger_compaction(&self) {
+        let bound = Option::<[u8; 0]>::None;
+        self.db.compact_range_cf(&self.cf, bound, bound);
+    }
+
     #[inline]
     pub fn get<K: AsRef<[u8]>>(
         &self,

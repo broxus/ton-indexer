@@ -15,6 +15,7 @@ use ton_types::UInt256;
 use self::cell_storage::*;
 use self::files_context::FilesContext;
 use self::gc_state_storage::{GcState, GcStateStorage, LastShardBlockKey, Step};
+use self::marker::Marker;
 use self::replace_transaction::ShardStateReplaceTransaction;
 use super::{BlockHandle, BlockHandleStorage, BlockStorage};
 use crate::db::*;
@@ -25,6 +26,7 @@ mod cell_writer;
 mod entries_buffer;
 mod files_context;
 mod gc_state_storage;
+mod marker;
 mod replace_transaction;
 mod shard_state_reader;
 
@@ -38,7 +40,7 @@ pub struct ShardStateStorage {
 
     downloads_dir: Arc<PathBuf>,
 
-    current_marker: tokio::sync::RwLock<u8>,
+    current_marker: tokio::sync::RwLock<Marker>,
     min_ref_mc_state: Arc<MinRefMcState>,
     max_new_mc_cell_count: AtomicUsize,
     max_new_sc_cell_count: AtomicUsize,
@@ -77,7 +79,10 @@ impl ShardStateStorage {
                 *res.current_marker.write().await = gc_state.current_marker;
             }
             Some(step) => {
-                let target_marker = gc_state.next_marker();
+                let target_marker = gc_state
+                    .current_marker
+                    .next()
+                    .context("Invalid target marker")?;
 
                 let mut target_marker_lock = res.current_marker.write().await;
                 *target_marker_lock = target_marker;
@@ -96,20 +101,24 @@ impl ShardStateStorage {
                         res.sweep_cells(gc_state.current_marker, target_marker_lock, top_blocks)
                             .await?;
 
-                        res.sweep_blocks(target_marker, top_blocks).await?;
+                        res.sweep_block_states(target_marker, top_blocks).await?;
                     }
                     Step::SweepCells(top_blocks) => {
                         res.sweep_cells(gc_state.current_marker, target_marker_lock, top_blocks)
                             .await?;
-                        res.sweep_blocks(target_marker, top_blocks).await?;
+                        res.sweep_block_states(target_marker, top_blocks).await?;
                     }
                     Step::SweepBlocks(top_blocks) => {
-                        res.sweep_blocks(target_marker, top_blocks).await?;
+                        res.sweep_block_states(target_marker, top_blocks).await?;
                     }
                 }
             }
         };
 
+        // Trigger compaction on load
+        res.trigger_compaction();
+
+        // Done
         Ok(res)
     }
 
@@ -152,7 +161,7 @@ impl ShardStateStorage {
         let current_marker = self.current_marker.read().await;
         let marker = match block_id.seq_no {
             // Mark zero state as persistent
-            0 => 0,
+            0 => Marker::PERSISTENT,
             // Mark all other states with current marker
             _ => *current_marker,
         };
@@ -221,7 +230,7 @@ impl ShardStateStorage {
                 &self.db,
                 &self.cell_storage,
                 &self.min_ref_mc_state,
-                PS_MARKER,
+                Marker::PERSISTENT,
             ),
             ctx,
         ))
@@ -317,7 +326,10 @@ impl ShardStateStorage {
                 })
                 .context("Failed to update gc state to 'Mark'")?;
 
-            let target_marker = gc_state.next_marker();
+            let target_marker = gc_state
+                .current_marker
+                .next()
+                .context("Invalid target marker")?;
             (gc_state.current_marker, target_marker)
         };
 
@@ -337,7 +349,10 @@ impl ShardStateStorage {
         self.sweep_cells(current_marker, target_marker_lock, &top_blocks)
             .await?;
         // Remove all blocks which are not referenced by `top_blocks`
-        self.sweep_blocks(target_marker, &top_blocks).await?;
+        self.sweep_block_states(target_marker, &top_blocks).await?;
+
+        // Trigger compaction for touched column families
+        self.trigger_compaction();
 
         // Done
         tracing::info!(
@@ -350,8 +365,8 @@ impl ShardStateStorage {
 
     async fn mark<'a>(
         &self,
-        current_marker: u8,
-        target_marker_lock: RwLockWriteGuard<'a, u8>,
+        current_marker: Marker,
+        target_marker_lock: RwLockWriteGuard<'a, Marker>,
         top_blocks: &TopBlocks,
         force: bool,
     ) -> Result<()> {
@@ -510,7 +525,7 @@ impl ShardStateStorage {
                             // and have overwritten old markers)
                             match cell_storage.mark_cells_tree(
                                 UInt256::from_be_bytes(value),
-                                Marker::WhileDifferent {
+                                MarkerStrategy::WhileDifferent {
                                     marker: target_marker,
                                     force: force && edge_block,
                                 },
@@ -558,13 +573,13 @@ impl ShardStateStorage {
 
     async fn sweep_cells<'a>(
         &self,
-        current_marker: u8,
-        target_marker_lock: RwLockWriteGuard<'a, u8>,
+        current_marker: Marker,
+        target_marker_lock: RwLockWriteGuard<'a, Marker>,
         top_blocks: &TopBlocks,
     ) -> Result<()> {
         let target_marker = *target_marker_lock;
 
-        tracing::info!(target_marker, "sweeping cells");
+        tracing::info!(?target_marker, "sweeping cells");
         let time = Instant::now();
 
         // Remove all unmarked cells
@@ -596,7 +611,11 @@ impl ShardStateStorage {
             .context("Failed to update gc state to 'SweepBlocks'")
     }
 
-    async fn sweep_blocks(&self, target_marker: u8, top_blocks: &TopBlocks) -> Result<()> {
+    async fn sweep_block_states(
+        &self,
+        target_marker: Marker,
+        top_blocks: &TopBlocks,
+    ) -> Result<()> {
         tracing::info!("sweeping block states");
 
         #[derive(thiserror::Error, Debug)]
@@ -734,6 +753,24 @@ impl ShardStateStorage {
         }
 
         Ok(shard_idents)
+    }
+
+    fn trigger_compaction(&self) {
+        tracing::info!("shard states compaction started");
+        let instant = Instant::now();
+        self.db.shard_states.trigger_compaction();
+        tracing::info!(
+            elapsed_ms = instant.elapsed().as_millis(),
+            "shard states compaction finished"
+        );
+
+        tracing::info!("cells compaction started");
+        let instant = Instant::now();
+        self.db.cells.trigger_compaction();
+        tracing::info!(
+            elapsed_ms = instant.elapsed().as_millis(),
+            "cells compaction finished"
+        );
     }
 }
 

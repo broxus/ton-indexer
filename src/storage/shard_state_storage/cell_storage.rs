@@ -10,6 +10,7 @@ use rustc_hash::FxHashSet;
 use smallvec::SmallVec;
 use ton_types::{ByteOrderRead, CellImpl, FxDashMap, UInt256};
 
+use super::marker::Marker;
 use crate::db::*;
 
 pub struct CellStorage {
@@ -29,7 +30,7 @@ impl CellStorage {
     pub fn store_cell(
         &self,
         batch: &mut rocksdb::WriteBatch,
-        marker: u8,
+        marker: Marker,
         root: ton_types::Cell,
     ) -> Result<usize, CellStorageError> {
         // Prepare handles
@@ -40,7 +41,7 @@ impl CellStorage {
 
         let mut transaction = FxHashSet::default();
 
-        let mut buffer = SmallVec::<[u8; 512]>::with_capacity(512);
+        let mut buffer = Vec::with_capacity(512);
 
         // Check root cell
         let cell_id = root.repr_hash();
@@ -56,7 +57,7 @@ impl CellStorage {
                     // Proceed if cell was updated
                     buffer.clear();
                     buffer.extend_from_slice(value);
-                    buffer[0] = marker;
+                    buffer[0] = marker.0;
                     batch.put_cf(&cf, cell_id.as_slice(), &buffer);
                     transaction.insert(cell_id);
                 } else {
@@ -97,7 +98,7 @@ impl CellStorage {
                             buffer.clear();
                             buffer.extend_from_slice(value);
                             // SAFETY: bounds are checked above. Definitely removes bounds check
-                            unsafe { *buffer.get_unchecked_mut(0) = marker };
+                            unsafe { *buffer.get_unchecked_mut(0) = marker.0 };
                             batch.put_cf(&cf, cell_id.as_slice(), &buffer);
                             transaction.insert(cell_id);
                         } else {
@@ -147,7 +148,7 @@ impl CellStorage {
         Ok(cell)
     }
 
-    pub async fn sweep_cells(&self, target_marker: u8) -> Result<usize> {
+    pub async fn sweep_cells(&self, target_marker: Marker) -> Result<usize> {
         let total = Arc::new(AtomicUsize::new(0));
         let mut tasks = FuturesUnordered::new();
 
@@ -231,10 +232,10 @@ impl CellStorage {
     pub fn mark_cells_tree(
         &self,
         root_cell: UInt256,
-        target_marker: Marker,
+        target_marker: MarkerStrategy,
     ) -> Result<usize, CellStorageError> {
         let (target_marker, force, alter_persistent_edge) = match target_marker {
-            Marker::WhileDifferent { marker, force } => (marker, force, false),
+            MarkerStrategy::WhileDifferent { marker, force } => (marker, force, false),
             // Marker::PersistentStateTransition => (PS_TEMP_MARKER, true, true),
         };
 
@@ -266,13 +267,13 @@ impl CellStorage {
                                 Err(_) => return Err(CellStorageError::InvalidCell),
                             };
 
-                        let persistent_cell = marker == PS_MARKER || marker == PS_TEMP_MARKER;
+                        let persistent_cell = marker.is_persistent();
                         let marker_changed =
                             (!persistent_cell || alter_persistent_edge) && marker != target_marker;
 
                         // Update cell data if marker changed
                         if marker_changed {
-                            batch.merge_cf(&cf, cell_id.as_slice(), [target_marker]);
+                            batch.merge_cf(&cf, cell_id.as_slice(), [target_marker.0]);
                         }
 
                         (persistent_cell, marker_changed, references)
@@ -304,8 +305,8 @@ impl CellStorage {
 }
 
 #[derive(Debug, Copy, Clone)]
-pub enum Marker {
-    WhileDifferent { marker: u8, force: bool },
+pub enum MarkerStrategy {
+    WhileDifferent { marker: Marker, force: bool },
     // PersistentStateTransition,
 }
 
@@ -370,12 +371,12 @@ impl StorageCell {
 
     pub fn deserialize_marker_and_references(
         mut data: &[u8],
-    ) -> Result<(u8, SmallVec<[StorageCellReference; 4]>)> {
+    ) -> Result<(Marker, SmallVec<[StorageCellReference; 4]>)> {
         let reader = &mut data;
 
         // skip marker
-        let mut marker = [0u8];
-        reader.read_exact(&mut marker)?;
+        let mut marker = 0u8;
+        reader.read_exact(std::slice::from_mut(&mut marker))?;
 
         // deserialize cell
         let _cell_data = ton_types::CellData::deserialize(reader)?;
@@ -386,18 +387,14 @@ impl StorageCell {
             let hash = UInt256::from(reader.read_u256()?);
             references.push(StorageCellReference::Unloaded(hash));
         }
-        Ok((marker[0], references))
+        Ok((Marker(marker), references))
     }
 
-    pub fn serialize_to(
-        marker: u8,
-        cell: &dyn CellImpl,
-        target: &mut SmallVec<[u8; 512]>,
-    ) -> Result<()> {
+    pub fn serialize_to(marker: Marker, cell: &dyn CellImpl, target: &mut Vec<u8>) -> Result<()> {
         target.clear();
 
         // write marker
-        target.push(marker);
+        target.push(marker.0);
 
         // serialize cell
         let references_count = cell.references_count() as u8;
@@ -506,8 +503,3 @@ enum StorageCellError {
     #[error("Accessing invalid cell reference")]
     AccessingInvalidReference,
 }
-
-/// Persistent state marker
-pub const PS_MARKER: u8 = 0;
-/// Persistent state transition marker
-pub const PS_TEMP_MARKER: u8 = u8::MAX;

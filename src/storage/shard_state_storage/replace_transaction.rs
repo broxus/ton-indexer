@@ -9,6 +9,7 @@ use ton_types::UInt256;
 use super::cell_storage::*;
 use super::entries_buffer::*;
 use super::files_context::*;
+use super::marker::*;
 use super::shard_state_reader::*;
 use crate::db::{BoundedCfHandle, Db};
 use crate::utils::*;
@@ -17,7 +18,7 @@ pub struct ShardStateReplaceTransaction<'a> {
     db: &'a Db,
     cell_storage: &'a Arc<CellStorage>,
     min_ref_mc_state: &'a Arc<MinRefMcState>,
-    marker: u8,
+    marker: Marker,
     reader: ShardStatePacketReader,
     header: Option<BocHeader>,
     cells_read: u64,
@@ -28,7 +29,7 @@ impl<'a> ShardStateReplaceTransaction<'a> {
         db: &'a Db,
         cell_storage: &'a Arc<CellStorage>,
         min_ref_mc_state: &'a Arc<MinRefMcState>,
-        marker: u8,
+        marker: Marker,
     ) -> Self {
         Self {
             db,
@@ -211,6 +212,9 @@ impl<'a> ShardStateReplaceTransaction<'a> {
 
         let shard_state_key = (block_id.shard_id, block_id.seq_no).to_vec();
 
+        // Trigger cells column family compaction
+        self.db.cells.trigger_compaction();
+
         // Current entry contains root cell
         let current_entry = ctx.entries_buffer.split_children(&[]).0;
         self.db
@@ -376,7 +380,7 @@ impl<'a> ShardStateReplaceTransaction<'a> {
         let output_buffer = &mut ctx.output_buffer;
         output_buffer.clear();
 
-        output_buffer.write_all(&[self.marker, cell.cell_type.to_u8().unwrap()])?;
+        output_buffer.write_all(&[self.marker.0, cell.cell_type.to_u8().unwrap()])?;
         output_buffer.write_all(&(cell.bit_len as u16).to_le_bytes())?;
         output_buffer.write_all(&cell.data[0..(cell.bit_len + 8) / 8])?;
         output_buffer.write_all(&[cell.level_mask, 0, 1, hash_count])?; // level_mask, store_hashes, has_hashes, hash_count
