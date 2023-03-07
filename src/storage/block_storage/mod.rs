@@ -537,8 +537,8 @@ impl BlockStorage {
         // so we must swap maps to retain [until_id..] and get ids to remove
         let removed_ids = std::mem::replace(&mut *archive_ids, retained_ids);
 
-        // Print removed range bounds
-        match (removed_ids.iter().next(), removed_ids.iter().next_back()) {
+        // Print removed range bounds and compute real `until_id`
+        let until_id = match (removed_ids.first(), removed_ids.last()) {
             (Some(first), Some(last)) => {
                 let len = removed_ids.len();
                 tracing::info!(
@@ -547,22 +547,28 @@ impl BlockStorage {
                     last,
                     "archives GC: removing archives"
                 );
+
+                match archive_ids.first() {
+                    Some(until_id) => *until_id,
+                    None => *last + 1,
+                }
             }
             _ => {
                 tracing::info!("archives GC: nothing to remove");
                 return Ok(());
             }
-        }
+        };
 
         // Remove archives
         let archives_cf = self.db.archives.cf();
+        let write_options = self.db.archives.write_config();
 
-        let mut batch = rocksdb::WriteBatch::default();
-        for id in removed_ids {
-            batch.delete_cf(&archives_cf, id.to_be_bytes());
-        }
-
-        self.db.raw().write(batch)?;
+        self.db.raw().delete_range_cf_opt(
+            &archives_cf,
+            [0; 4],
+            until_id.to_be_bytes(),
+            write_options,
+        )?;
 
         self.trigger_archives_compaction();
         tracing::info!("archives GC: done");

@@ -1,9 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
-use std::hash::BuildHasherDefault;
 use std::sync::Arc;
 
 use anyhow::Result;
-use rustc_hash::FxHashMap;
 
 use crate::utils::*;
 
@@ -93,7 +91,7 @@ impl BlockMaps {
         }
 
         // Group all block ids by shards
-        let mut map = FxHashMap::with_capacity_and_hasher(16, BuildHasherDefault::default());
+        let mut map = FastHashMap::with_capacity_and_hasher(16, FastHasherState::new());
         for block_id in self.blocks.keys() {
             map.entry(block_id.shard_id)
                 .or_insert_with(BTreeSet::new)
@@ -270,7 +268,7 @@ pub struct BlockMapsEdge {
     /// Last masterchain block seqno
     pub mc_block_seq_no: u32,
     /// Top blocks seqnos in shards for [BlockMapsEdge::mc_block_seq_no]
-    pub top_shard_blocks: FxHashMap<ton_block::ShardIdent, u32>,
+    pub top_shard_blocks: FastHashMap<ton_block::ShardIdent, u32>,
 }
 
 impl BlockMapsEdge {
@@ -368,16 +366,16 @@ impl BlockMapsEdge {
 struct BlockMapsEdgeVerification<'a> {
     edge: &'a Option<BlockMapsEdge>,
     touches_mc_block: bool,
-    top_shard_blocks: FxHashMap<ton_block::ShardIdent, EdgeBlockStatus>,
+    top_shard_blocks: FastHashMap<ton_block::ShardIdent, EdgeBlockStatus>,
 }
 
 impl<'a> BlockMapsEdgeVerification<'a> {
     fn new(edge: &'a Option<BlockMapsEdge>) -> Self {
         let top_shard_blocks = match edge {
             Some(edge) => {
-                let mut top_shard_blocks = FxHashMap::with_capacity_and_hasher(
+                let mut top_shard_blocks = FastHashMap::with_capacity_and_hasher(
                     edge.top_shard_blocks.len(),
-                    Default::default(),
+                    FastHasherState::default(),
                 );
                 for shard_ident in edge.top_shard_blocks.keys() {
                     top_shard_blocks.insert(*shard_ident, EdgeBlockStatus::Empty);
@@ -595,7 +593,7 @@ impl BlockMapsEdgeShardVerification<'_, '_> {
 }
 
 fn contains_previous_block(
-    map: &FxHashMap<ton_block::ShardIdent, BTreeSet<u32>>,
+    map: &FastHashMap<ton_block::ShardIdent, BTreeSet<u32>>,
     shard_ident: &ton_block::ShardIdent,
     prev_seqno: u32,
 ) -> bool {

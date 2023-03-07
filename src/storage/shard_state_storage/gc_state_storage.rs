@@ -2,12 +2,11 @@ use std::io::Read;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use rustc_hash::FxHashMap;
 use ton_types::ByteOrderRead;
 
 use super::Marker;
 use crate::db::*;
-use crate::utils::{StoredValue, StoredValueBuffer, TopBlocks};
+use crate::utils::{FastHashMap, StoredValue, StoredValueBuffer, TopBlocks};
 
 pub struct GcStateStorage {
     db: Arc<Db>,
@@ -57,8 +56,8 @@ impl GcStateStorage {
         Ok(())
     }
 
-    pub fn load_last_blocks(&self) -> Result<FxHashMap<ton_block::ShardIdent, u32>> {
-        let mut result = FxHashMap::default();
+    pub fn load_last_blocks(&self) -> Result<FastHashMap<ton_block::ShardIdent, u32>> {
+        let mut result = FastHashMap::default();
 
         let mut iter = self.db.node_states.prefix_iterator(GC_LAST_BLOCK_KEY);
         loop {

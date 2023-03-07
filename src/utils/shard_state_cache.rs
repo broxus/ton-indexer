@@ -1,10 +1,9 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use ton_types::FxDashMap;
-
 use super::shard_state::ShardStateStuff;
 use super::top_blocks::*;
+use super::FastDashMap;
 use crate::config::ShardStateCacheOptions;
 
 /// LRU cache for shard states
@@ -95,4 +94,4 @@ impl ShardStateCache {
     }
 }
 
-type ShardStatesMap = FxDashMap<ton_block::BlockIdExt, Arc<ShardStateStuff>>;
+type ShardStatesMap = FastDashMap<ton_block::BlockIdExt, Arc<ShardStateStuff>>;

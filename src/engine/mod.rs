@@ -14,7 +14,6 @@ use anyhow::{Context, Result};
 use broxus_util::now;
 use everscale_network::overlay;
 pub use rocksdb::perf::MemoryUsageStats;
-use rustc_hash::FxHashSet;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Notify;
 
@@ -55,7 +54,7 @@ pub struct Engine {
     old_blocks_policy: OldBlocksPolicy,
     zero_state_id: ton_block::BlockIdExt,
     init_mc_block_id: ton_block::BlockIdExt,
-    hard_forks: FxHashSet<ton_block::BlockIdExt>,
+    hard_forks: FastHashSet<ton_block::BlockIdExt>,
 
     archive_options: Option<ArchiveOptions>,
     sync_options: SyncOptions,

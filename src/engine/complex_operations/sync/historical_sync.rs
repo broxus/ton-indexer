@@ -2,7 +2,6 @@ use std::ops::ControlFlow;
 use std::sync::Arc;
 
 use anyhow::Result;
-use ton_types::FxDashSet;
 
 use super::archives_stream::*;
 use super::block_maps::*;
@@ -98,7 +97,7 @@ impl<'a> HistoricalSyncContext<'a> {
     ) -> Result<()> {
         let node_state = self.engine.storage.node_state();
 
-        let splits = Arc::new(FxDashSet::default());
+        let splits = Arc::new(FastDashSet::default());
 
         for mc_block_id in maps.mc_block_ids.values() {
             let mc_seq_no = mc_block_id.seq_no;

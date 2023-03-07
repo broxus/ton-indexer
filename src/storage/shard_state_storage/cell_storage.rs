@@ -6,21 +6,21 @@ use anyhow::Result;
 use futures_util::stream::FuturesUnordered;
 use futures_util::StreamExt;
 use parking_lot::RwLock;
-use rustc_hash::FxHashSet;
 use smallvec::SmallVec;
-use ton_types::{ByteOrderRead, CellImpl, FxDashMap, UInt256};
+use ton_types::{ByteOrderRead, CellImpl, UInt256};
 
 use super::marker::Marker;
 use crate::db::*;
+use crate::utils::{FastDashMap, FastHashSet};
 
 pub struct CellStorage {
     db: Arc<Db>,
-    cells_cache: Arc<FxDashMap<UInt256, Weak<StorageCell>>>,
+    cells_cache: Arc<FastDashMap<UInt256, Weak<StorageCell>>>,
 }
 
 impl CellStorage {
     pub fn new(db: Arc<Db>) -> Result<Arc<Self>> {
-        let cache = Arc::new(FxDashMap::default());
+        let cache = Arc::new(FastDashMap::default());
         Ok(Arc::new(Self {
             db,
             cells_cache: cache,
@@ -36,44 +36,67 @@ impl CellStorage {
         // Prepare handles
         let cells = &self.db.cells;
         let raw = cells.db();
-        let cf = cells.cf();
+        let cf = &cells.cf();
         let read_options = cells.read_config();
 
-        let mut transaction = FxHashSet::default();
+        let mut transaction = FastHashSet::default();
 
         let mut buffer = Vec::with_capacity(512);
 
+        fn update_cell(
+            batch: &mut rocksdb::WriteBatch,
+            cf: &BoundedCfHandle<'_>,
+            marker: Marker,
+            key: &[u8; 32],
+            value: rocksdb::DBPinnableSlice<'_>,
+            buffer: &mut Vec<u8>,
+        ) -> Result<bool, CellStorageError> {
+            // NOTE: dereference value only once to prevent multiple ffi calls
+            let value = value.as_ref();
+            if value.is_empty() {
+                // Empty cell is invalid
+                return Err(CellStorageError::InvalidCell);
+            }
+
+            let value_marker = Marker(value[0]);
+            Ok(if value_marker.is_temp() && value_marker != marker {
+                buffer.clear();
+                buffer.extend_from_slice(value);
+                // SAFETY: bounds are checked above. Definitely removes bounds check
+                unsafe { *buffer.get_unchecked_mut(0) = marker.0 };
+
+                batch.put_cf(cf, key, buffer);
+
+                // Cell updated
+                true
+            } else {
+                // Cell already exists
+                false
+            })
+        }
+
         // Check root cell
-        let cell_id = root.repr_hash();
-        match raw.get_pinned_cf_opt(&cf, cell_id.as_array(), read_options) {
-            Ok(Some(value)) => {
-                // NOTE: dereference value only once to prevent multiple ffi calls
-                let value = value.as_ref();
-                // Overwrite value if it has different marker
-                if value.is_empty() {
-                    // Empty cell is invalid
-                    return Err(CellStorageError::InvalidCell);
-                } else if value[0] > 0 && value[0] != marker {
-                    // Proceed if cell was updated
-                    buffer.clear();
-                    buffer.extend_from_slice(value);
-                    buffer[0] = marker.0;
-                    batch.put_cf(&cf, cell_id.as_slice(), &buffer);
-                    transaction.insert(cell_id);
-                } else {
-                    // Cell already exists. Do nothing
-                    return Ok(0);
+        {
+            let cell_id = root.repr_hash();
+            let key = cell_id.as_array();
+
+            match raw.get_pinned_cf_opt(cf, key, read_options) {
+                Ok(Some(value)) => {
+                    if !update_cell(batch, cf, marker, key, value, &mut buffer)? {
+                        return Ok(0);
+                    }
                 }
-            }
-            // Insert cell value if it doesn't exist
-            Ok(None) => {
-                if StorageCell::serialize_to(marker, &*root, &mut buffer).is_err() {
-                    return Err(CellStorageError::InvalidCell);
+                // Insert cell value if it doesn't exist
+                Ok(None) => {
+                    if StorageCell::serialize_to(marker, &*root, &mut buffer).is_err() {
+                        return Err(CellStorageError::InvalidCell);
+                    }
+                    batch.put_cf(cf, key, &buffer);
                 }
-                batch.put_cf(&cf, cell_id.as_slice(), &buffer);
-                transaction.insert(cell_id);
+                Err(e) => return Err(CellStorageError::Internal(e)),
             }
-            Err(e) => return Err(CellStorageError::Internal(e)),
+
+            transaction.insert(cell_id);
         }
 
         let mut stack = Vec::with_capacity(16);
@@ -86,34 +109,22 @@ impl CellStorage {
                     Err(_) => return Err(CellStorageError::InvalidCell),
                 };
                 let cell_id = cell.repr_hash();
+                if !transaction.insert(cell_id) {
+                    continue;
+                }
 
-                match raw.get_pinned_cf_opt(&cf, cell_id.as_array(), read_options) {
+                let key = cell_id.as_array();
+                match raw.get_pinned_cf_opt(cf, key, read_options) {
                     Ok(Some(value)) => {
-                        // NOTE: dereference value only once to prevent multiple ffi calls
-                        let value = value.as_ref();
-                        if value.is_empty() {
-                            // Empty cell is invalid
-                            return Err(CellStorageError::InvalidCell);
-                        } else if value[0] > 0 && value[0] != marker {
-                            buffer.clear();
-                            buffer.extend_from_slice(value);
-                            // SAFETY: bounds are checked above. Definitely removes bounds check
-                            unsafe { *buffer.get_unchecked_mut(0) = marker.0 };
-                            batch.put_cf(&cf, cell_id.as_slice(), &buffer);
-                            transaction.insert(cell_id);
-                        } else {
-                            // Cell already exists
+                        if !update_cell(batch, cf, marker, key, value, &mut buffer)? {
                             continue;
                         }
                     }
-                    // Already inserting this cell
-                    Ok(None) if transaction.contains(&cell_id) => continue,
                     Ok(None) => {
                         if StorageCell::serialize_to(marker, &*cell, &mut buffer).is_err() {
                             return Err(CellStorageError::InvalidCell);
                         }
-                        batch.put_cf(&cf, cell_id.as_slice(), &buffer);
-                        transaction.insert(cell_id);
+                        batch.put_cf(cf, cell_id.as_slice(), &buffer);
                     }
                     Err(e) => return Err(CellStorageError::Internal(e)),
                 }
@@ -229,18 +240,14 @@ impl CellStorage {
         Ok(total.load(Ordering::Relaxed))
     }
 
-    pub fn mark_cells_tree(
+    pub fn mark_cells_tree_for_gc(
         &self,
         root_cell: UInt256,
-        target_marker: MarkerStrategy,
+        target_marker: Marker,
+        force: bool,
     ) -> Result<usize, CellStorageError> {
-        let (target_marker, force, alter_persistent_edge) = match target_marker {
-            MarkerStrategy::WhileDifferent { marker, force } => (marker, force, false),
-            // Marker::PersistentStateTransition => (PS_TEMP_MARKER, true, true),
-        };
-
         // Prepare handles
-        let raw = self.db.raw();
+        let raw = self.db.raw().as_ref();
         let cells = &self.db.cells;
 
         let cf = cells.cf();
@@ -248,7 +255,7 @@ impl CellStorage {
         let write_config = cells.write_config();
 
         // Start from the root cell
-        let mut stack = SmallVec::<[_; 256]>::with_capacity(256);
+        let mut stack = Vec::with_capacity(256);
         stack.push(root_cell);
 
         let mut total = 0;
@@ -268,8 +275,7 @@ impl CellStorage {
                             };
 
                         let persistent_cell = marker.is_persistent();
-                        let marker_changed =
-                            (!persistent_cell || alter_persistent_edge) && marker != target_marker;
+                        let marker_changed = !persistent_cell && marker != target_marker;
 
                         // Update cell data if marker changed
                         if marker_changed {
@@ -302,12 +308,6 @@ impl CellStorage {
     pub fn drop_cell(&self, hash: &UInt256) {
         self.cells_cache.remove(hash);
     }
-}
-
-#[derive(Debug, Copy, Clone)]
-pub enum MarkerStrategy {
-    WhileDifferent { marker: Marker, force: bool },
-    // PersistentStateTransition,
 }
 
 #[derive(thiserror::Error, Debug)]

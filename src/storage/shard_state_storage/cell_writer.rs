@@ -5,10 +5,10 @@ use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use rustc_hash::FxHashMap;
 use smallvec::SmallVec;
 
 use crate::db::Db;
+use crate::utils::FastHashMap;
 
 pub struct CellWriter<'a> {
     db: &'a Db,
@@ -161,8 +161,8 @@ fn write_rev_cells<P: AsRef<Path>>(
 
     let mut references_buffer = SmallVec::<[[u8; 32]; 4]>::with_capacity(4);
 
-    let mut indices = FxHashMap::default();
-    let mut remap = FxHashMap::default();
+    let mut indices = FastHashMap::default();
+    let mut remap = FastHashMap::default();
     let mut cell_sizes = Vec::<u8>::with_capacity(FILE_BUFFER_LEN);
     let mut stack = Vec::with_capacity(32);
 

@@ -6,11 +6,12 @@ use std::time::Duration;
 
 use anyhow::Result;
 use tokio::sync::watch;
-use ton_types::FxDashMap;
+
+use crate::utils::FastDashMap;
 
 pub struct OperationsPool<K, R> {
     name: &'static str,
-    operations: FxDashMap<K, Arc<Operation<R>>>,
+    operations: FastDashMap<K, Arc<Operation<R>>>,
 }
 
 impl<K, R> OperationsPool<K, R>
@@ -21,7 +22,7 @@ where
     pub fn new(name: &'static str) -> Self {
         Self {
             name,
-            operations: FxDashMap::default(),
+            operations: FastDashMap::default(),
         }
     }
 

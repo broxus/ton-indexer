@@ -4,9 +4,9 @@ use std::time::Instant;
 use everscale_network::adnl;
 use parking_lot::{RwLock, RwLockWriteGuard};
 use rand::Rng;
-use rustc_hash::FxHashMap;
 
 use super::neighbour::{Neighbour, NeighbourOptions};
+use crate::utils::FastHashMap;
 
 pub struct NeighboursCache {
     state: RwLock<NeighboursCacheState>,
@@ -74,7 +74,7 @@ pub struct NeighboursCacheState {
     max_len: usize,
     neighbour_options: NeighbourOptions,
     next: usize,
-    values: FxHashMap<adnl::NodeIdShort, Arc<Neighbour>>,
+    values: FastHashMap<adnl::NodeIdShort, Arc<Neighbour>>,
     indices: Vec<adnl::NodeIdShort>,
 }
 

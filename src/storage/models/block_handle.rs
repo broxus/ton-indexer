@@ -8,23 +8,23 @@ use std::sync::{Arc, Weak};
 
 use anyhow::Result;
 use tokio::sync::RwLock;
-use ton_types::FxDashMap;
 
 use super::BlockMeta;
+use crate::utils::FastDashMap;
 
 pub struct BlockHandle {
     id: ton_block::BlockIdExt,
     meta: BlockMeta,
     block_data_lock: RwLock<()>,
     proof_data_block: RwLock<()>,
-    cache: Arc<FxDashMap<ton_block::BlockIdExt, Weak<BlockHandle>>>,
+    cache: Arc<FastDashMap<ton_block::BlockIdExt, Weak<BlockHandle>>>,
 }
 
 impl BlockHandle {
     pub fn with_values(
         id: ton_block::BlockIdExt,
         meta: BlockMeta,
-        cache: Arc<FxDashMap<ton_block::BlockIdExt, Weak<BlockHandle>>>,
+        cache: Arc<FastDashMap<ton_block::BlockIdExt, Weak<BlockHandle>>>,
     ) -> Self {
         Self {
             id,

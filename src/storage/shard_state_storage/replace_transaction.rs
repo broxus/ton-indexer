@@ -3,7 +3,6 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use num_traits::ToPrimitive;
-use rustc_hash::FxHashMap;
 use ton_types::UInt256;
 
 use super::cell_storage::*;
@@ -213,7 +212,7 @@ impl<'a> ShardStateReplaceTransaction<'a> {
         let shard_state_key = (block_id.shard_id, block_id.seq_no).to_vec();
 
         // Trigger cells column family compaction
-        self.db.cells.trigger_compaction();
+        // self.db.cells.trigger_compaction();
 
         // Current entry contains root cell
         let current_entry = ctx.entries_buffer.split_children(&[]).0;
@@ -423,7 +422,7 @@ impl<'a> ShardStateReplaceTransaction<'a> {
 }
 
 struct FinalizationContext<'a> {
-    pruned_branches: FxHashMap<u32, Vec<u8>>,
+    pruned_branches: FastHashMap<u32, Vec<u8>>,
     entries_buffer: EntriesBuffer,
     output_buffer: Vec<u8>,
     cells_cf: BoundedCfHandle<'a>,

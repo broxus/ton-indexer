@@ -1,14 +1,13 @@
 use anyhow::Result;
-use rustc_hash::FxHashMap;
 use ton_types::ByteOrderRead;
 
-use super::{BlockStuff, StoredValue, StoredValueBuffer};
+use super::{BlockStuff, FastHashMap, FastHasherState, StoredValue, StoredValueBuffer};
 
 /// Stores last blocks for each workchain and shard
 #[derive(Debug, Clone)]
 pub struct TopBlocks {
     pub mc_block: ton_block::BlockIdExt,
-    pub shard_heights: FxHashMap<ton_block::ShardIdent, u32>,
+    pub shard_heights: FastHashMap<ton_block::ShardIdent, u32>,
 }
 
 impl TopBlocks {
@@ -71,7 +70,7 @@ impl StoredValue for TopBlocks {
 
         let top_blocks_len = reader.read_le_u32()? as usize;
         let mut top_blocks =
-            FxHashMap::with_capacity_and_hasher(top_blocks_len, Default::default());
+            FastHashMap::with_capacity_and_hasher(top_blocks_len, FastHasherState::new());
 
         for _ in 0..top_blocks_len {
             let shard = ton_block::ShardIdent::deserialize(reader)?;
@@ -92,7 +91,7 @@ mod tests {
 
     #[test]
     fn test_split_shards() {
-        let mut shard_heights = FxHashMap::default();
+        let mut shard_heights = FastHashMap::default();
 
         let main_shard =
             ton_block::ShardIdent::with_tagged_prefix(0, ton_block::SHARD_FULL).unwrap();

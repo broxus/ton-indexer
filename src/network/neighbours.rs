@@ -8,7 +8,7 @@ use tokio::sync::Semaphore;
 
 use super::neighbour::*;
 use super::neighbours_cache::*;
-use crate::utils::FxDashSet;
+use crate::utils::FastDashSet;
 
 pub struct Neighbours {
     dht: Arc<dht::Node>,
@@ -16,7 +16,7 @@ pub struct Neighbours {
     options: NeighboursOptions,
 
     cache: Arc<NeighboursCache>,
-    overlay_peers: FxDashSet<adnl::NodeIdShort>,
+    overlay_peers: FastDashSet<adnl::NodeIdShort>,
 
     failed_attempts: AtomicU64,
     all_attempts: AtomicU64,

@@ -4,7 +4,6 @@
 /// - replaced old `failure` crate with `anyhow`
 ///
 use anyhow::{anyhow, Context, Result};
-use rustc_hash::FxHashMap;
 use ton_block::Deserializable;
 use ton_types::UInt256;
 
@@ -123,8 +122,10 @@ impl BlockStuff {
         }
     }
 
-    pub fn shard_blocks(&self) -> Result<FxHashMap<ton_block::ShardIdent, ton_block::BlockIdExt>> {
-        let mut shards = FxHashMap::default();
+    pub fn shard_blocks(
+        &self,
+    ) -> Result<FastHashMap<ton_block::ShardIdent, ton_block::BlockIdExt>> {
+        let mut shards = FastHashMap::default();
         self.block()
             .read_extra()?
             .read_custom()?
@@ -144,8 +145,8 @@ impl BlockStuff {
         Ok(shards)
     }
 
-    pub fn shard_blocks_seq_no(&self) -> Result<FxHashMap<ton_block::ShardIdent, u32>> {
-        let mut shards = FxHashMap::default();
+    pub fn shard_blocks_seq_no(&self) -> Result<FastHashMap<ton_block::ShardIdent, u32>> {
+        let mut shards = FastHashMap::default();
         self.block()
             .read_extra()?
             .read_custom()?

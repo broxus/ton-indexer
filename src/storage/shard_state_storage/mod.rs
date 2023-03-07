@@ -116,7 +116,7 @@ impl ShardStateStorage {
         };
 
         // Trigger compaction on load
-        res.trigger_compaction();
+        // res.trigger_compaction();
 
         // Done
         Ok(res)
@@ -352,7 +352,7 @@ impl ShardStateStorage {
         self.sweep_block_states(target_marker, &top_blocks).await?;
 
         // Trigger compaction for touched column families
-        self.trigger_compaction();
+        // self.trigger_compaction();
 
         // Done
         tracing::info!(
@@ -523,12 +523,10 @@ impl ShardStateStorage {
                             // using the snapshot, so we can reduce the number of cells
                             // which will be marked (some new states can already be inserted
                             // and have overwritten old markers)
-                            match cell_storage.mark_cells_tree(
+                            match cell_storage.mark_cells_tree_for_gc(
                                 UInt256::from_be_bytes(value),
-                                MarkerStrategy::WhileDifferent {
-                                    marker: target_marker,
-                                    force: force && edge_block,
-                                },
+                                target_marker,
+                                force && edge_block,
                             ) {
                                 Ok(count) => total.fetch_add(count, Ordering::Relaxed),
                                 Err(_) => return Err(MarkBlocksError::MarkCellsTreeFailed),

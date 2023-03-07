@@ -7,7 +7,6 @@
 use std::sync::{Arc, Weak};
 
 use anyhow::Result;
-use ton_types::FxDashMap;
 
 use super::models::*;
 use crate::db::*;
@@ -15,7 +14,7 @@ use crate::utils::*;
 
 pub struct BlockHandleStorage {
     db: Arc<Db>,
-    cache: Arc<FxDashMap<ton_block::BlockIdExt, Weak<BlockHandle>>>,
+    cache: Arc<FastDashMap<ton_block::BlockIdExt, Weak<BlockHandle>>>,
 }
 
 impl BlockHandleStorage {
