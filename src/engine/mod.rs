@@ -486,6 +486,34 @@ impl Engine {
                     }
                 };
 
+                // TEMP
+                async fn test(engine: &Engine) -> Result<()> {
+                    let last_block_id = engine.load_shards_client_mc_block_id()?;
+                    let handle = engine
+                        .storage
+                        .block_handle_storage()
+                        .load_handle(&last_block_id)?
+                        .context("Masterchain block not found")?;
+                    let last_block = engine
+                        .storage
+                        .block_storage()
+                        .load_block_data(handle.as_ref())
+                        .await?;
+
+                    let top_blocks = TopBlocks::from_mc_block(&last_block)?;
+                    engine
+                        .storage
+                        .shard_state_storage()
+                        .update_persistent_state(&top_blocks)
+                        .await?;
+
+                    Ok(())
+                }
+
+                if let Err(e) = test(engine.as_ref()).await {
+                    tracing::error!("TEMP FAILED: {e:?}");
+                }
+
                 let shard_state_storage = engine.storage.shard_state_storage();
                 match shard_state_storage
                     .remove_outdated_states(block_id.seq_no)

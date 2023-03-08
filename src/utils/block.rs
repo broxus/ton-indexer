@@ -19,20 +19,35 @@ pub trait BlockIdExtDisplay {
 
 impl BlockIdExtDisplay for ton_block::BlockIdExt {
     fn display(&self) -> DisplayShortBlockIdExt<'_> {
-        DisplayShortBlockIdExt(self)
+        DisplayShortBlockIdExt {
+            shard_ident: &self.shard_id,
+            seqno: self.seq_no,
+        }
+    }
+}
+
+impl BlockIdExtDisplay for BlockIdShort {
+    fn display(&self) -> DisplayShortBlockIdExt<'_> {
+        DisplayShortBlockIdExt {
+            shard_ident: &self.0,
+            seqno: self.1,
+        }
     }
 }
 
 #[derive(Clone, Copy)]
-pub struct DisplayShortBlockIdExt<'a>(&'a ton_block::BlockIdExt);
+pub struct DisplayShortBlockIdExt<'a> {
+    shard_ident: &'a ton_block::ShardIdent,
+    seqno: u32,
+}
 
 impl std::fmt::Display for DisplayShortBlockIdExt<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_fmt(format_args!(
             "{}:{:016x}:{}",
-            self.0.shard_id.workchain_id(),
-            self.0.shard_id.shard_prefix_with_tag(),
-            self.0.seq_no
+            self.shard_ident.workchain_id(),
+            self.shard_ident.shard_prefix_with_tag(),
+            self.seqno
         ))
     }
 }

@@ -40,6 +40,7 @@ pub struct ShardStateStorage {
 
     downloads_dir: Arc<PathBuf>,
 
+    persistent_state_guard: tokio::sync::Mutex<()>,
     current_marker: tokio::sync::RwLock<Marker>,
     min_ref_mc_state: Arc<MinRefMcState>,
     max_new_mc_cell_count: AtomicUsize,
@@ -70,6 +71,7 @@ impl ShardStateStorage {
             min_ref_mc_state: Arc::new(Default::default()),
             max_new_mc_cell_count: AtomicUsize::new(0),
             max_new_sc_cell_count: AtomicUsize::new(0),
+            persistent_state_guard: Default::default(),
         };
 
         let gc_state = res.gc_state_storage.load()?;
@@ -201,22 +203,15 @@ impl ShardStateStorage {
         &self,
         block_id: &ton_block::BlockIdExt,
     ) -> Result<Arc<ShardStateStuff>> {
-        let shard_states = &self.db.shard_states;
-        let shard_state = shard_states.get((block_id.shard_id, block_id.seq_no).to_vec())?;
-        match shard_state {
-            Some(root) => {
-                let cell_id = UInt256::from_be_bytes(&root);
-                let cell = self.cell_storage.load_cell(cell_id)?;
+        let cell_id = self.load_state_root(block_id.shard_id, block_id.seq_no)?;
+        let cell = self.cell_storage.load_cell(cell_id)?;
 
-                ShardStateStuff::new(
-                    block_id.clone(),
-                    ton_types::Cell::with_cell_impl_arc(cell),
-                    &self.min_ref_mc_state,
-                )
-                .map(Arc::new)
-            }
-            None => Err(ShardStateStorageError::NotFound.into()),
-        }
+        ShardStateStuff::new(
+            block_id.clone(),
+            ton_types::Cell::with_cell_impl_arc(cell),
+            &self.min_ref_mc_state,
+        )
+        .map(Arc::new)
     }
 
     pub async fn begin_replace(
@@ -234,6 +229,53 @@ impl ShardStateStorage {
             ),
             ctx,
         ))
+    }
+
+    pub async fn update_persistent_state(&self, block_ids: &TopBlocks) -> Result<()> {
+        let _guard = self.persistent_state_guard.lock().await;
+        let current_marker = self.current_marker.read().await;
+
+        let instant = Instant::now();
+
+        let mut total = 0;
+        for (shard_ident, seqno) in block_ids.short_ids() {
+            let instant = Instant::now();
+
+            let cell_storage = self.cell_storage.clone();
+            let cell_id = self.load_state_root(shard_ident, seqno)?;
+
+            tracing::info!(
+                block_id=%(shard_ident, seqno).display(),
+                "marking new persistent state"
+            );
+            let marked_cells = tokio::task::spawn_blocking(move || {
+                cell_storage.mark_cells_tree(cell_id, Marker::TO_PERSISTENT, false)
+            })
+            .await??;
+
+            tracing::info!(
+                marked_cells,
+                elapsed_sec = instant.elapsed().as_secs_f64(),
+                "marked new persistent state"
+            );
+
+            total += marked_cells;
+        }
+        tracing::info!(
+            marked_cells = total,
+            elapsed_sec = instant.elapsed().as_secs_f64(),
+            "marked new persistent states"
+        );
+
+        let instant = Instant::now();
+        tracing::info!("finishing transition");
+        self.cell_storage.finish_transition(*current_marker).await?;
+        tracing::info!(
+            elapsed_sec = instant.elapsed().as_secs_f64(),
+            "finished transition"
+        );
+
+        Ok(())
     }
 
     /// Searches for an edge with the least referenced masterchain block
@@ -300,6 +342,8 @@ impl ShardStateStorage {
     }
 
     pub async fn remove_outdated_states(&self, mc_seq_no: u32) -> Result<TopBlocks> {
+        let _guard = self.persistent_state_guard.lock().await;
+
         // Compute recent block ids for the specified masterchain seqno
         let top_blocks = self
             .compute_recent_blocks(mc_seq_no)
@@ -523,7 +567,7 @@ impl ShardStateStorage {
                             // using the snapshot, so we can reduce the number of cells
                             // which will be marked (some new states can already be inserted
                             // and have overwritten old markers)
-                            match cell_storage.mark_cells_tree_for_gc(
+                            match cell_storage.mark_cells_tree(
                                 UInt256::from_be_bytes(value),
                                 target_marker,
                                 force && edge_block,
@@ -691,6 +735,19 @@ impl ShardStateStorage {
                 step: None,
             })
             .context("Failed to update gc state to 'Wait'")
+    }
+
+    fn load_state_root(
+        &self,
+        shard_ident: ton_block::ShardIdent,
+        seqno: u32,
+    ) -> Result<ton_types::UInt256> {
+        let shard_states = &self.db.shard_states;
+        let shard_state = shard_states.get((shard_ident, seqno).to_vec())?;
+        match shard_state {
+            Some(root) => Ok(UInt256::from_be_bytes(&root)),
+            None => Err(ShardStateStorageError::NotFound.into()),
+        }
     }
 
     fn find_mc_block_id(&self, mc_seq_no: u32) -> Result<Option<ton_block::BlockIdExt>> {

@@ -163,25 +163,7 @@ impl CellStorage {
         let total = Arc::new(AtomicUsize::new(0));
         let mut tasks = FuturesUnordered::new();
 
-        for i in 0..8 {
-            // iii00000, 00000000, ...
-            let lower_bound = if i > 0 {
-                let mut lower_bound = [0; 32];
-                lower_bound[0] = i << 5;
-                Some(lower_bound)
-            } else {
-                None
-            };
-
-            // jjj00000, 00000000, ... (where jjj = i + 1)
-            let upper_bound = if i < 7 {
-                let mut upper_bound = [0; 32];
-                upper_bound[0] = (i + 1) << 5;
-                Some(upper_bound)
-            } else {
-                None
-            };
-
+        for (lower_bound, upper_bound) in HashBoundsIter::new() {
             // Prepare cells read options
             let raw = self.db.raw().clone();
             let cells = &self.db.cells;
@@ -215,9 +197,8 @@ impl CellStorage {
                     };
 
                     if !value.is_empty() {
-                        let marker = value[0];
-
-                        if marker > 0 && marker != target_marker {
+                        let marker = Marker(value[0]);
+                        if marker.is_temp() && marker != target_marker {
                             raw.delete_cf_opt(&cells_cf, key, &write_options)?;
                             subtotal += 1;
                         }
@@ -240,7 +221,78 @@ impl CellStorage {
         Ok(total.load(Ordering::Relaxed))
     }
 
-    pub fn mark_cells_tree_for_gc(
+    pub async fn finish_transition(&self, current_marker: Marker) -> Result<usize> {
+        let total = Arc::new(AtomicUsize::new(0));
+        let mut tasks = FuturesUnordered::new();
+
+        for (lower_bound, upper_bound) in HashBoundsIter::new() {
+            // Prepare cells read options
+            let raw = self.db.raw().clone();
+            let cells = &self.db.cells;
+            let cells_cf = cells.get_unbounded_cf();
+
+            let mut read_options = cells.new_read_config();
+            if let Some(upper_bound) = upper_bound {
+                read_options.set_iterate_upper_bound(upper_bound);
+            }
+
+            let write_options = cells.new_write_config();
+
+            let total = total.clone();
+            tasks.push(tokio::task::spawn_blocking(move || {
+                let cells_cf = cells_cf.bound();
+
+                // Prepare iterator
+                let mut iter = raw.raw_iterator_cf_opt(&cells_cf, read_options);
+                if let Some(lower_bound) = &lower_bound {
+                    iter.seek(lower_bound);
+                } else {
+                    iter.seek_to_first();
+                }
+
+                // Iterate all cells in range
+                let mut subtotal = 0;
+                loop {
+                    let (key, value) = match iter.item() {
+                        Some(item) => item,
+                        None => break iter.status()?,
+                    };
+
+                    if !value.is_empty() {
+                        let marker = Marker(value[0]);
+
+                        let value = if marker.is_transaction_to_persistent() {
+                            Some(Marker::PERSISTENT)
+                        } else if marker.is_persistent() {
+                            Some(current_marker)
+                        } else {
+                            None
+                        };
+
+                        if let Some(Marker(marker)) = value {
+                            raw.merge_cf_opt(&cells_cf, key, [marker], &write_options)?;
+                            subtotal += 1;
+                        }
+                    }
+
+                    iter.next();
+                }
+
+                total.fetch_add(subtotal, Ordering::Relaxed);
+                Ok::<_, rocksdb::Error>(())
+            }));
+        }
+
+        // Wait for all tasks to complete
+        while let Some(result) = tasks.next().await {
+            result??
+        }
+
+        // Load counter
+        Ok(total.load(Ordering::Relaxed))
+    }
+
+    pub fn mark_cells_tree(
         &self,
         root_cell: UInt256,
         target_marker: Marker,
@@ -254,19 +306,24 @@ impl CellStorage {
         let read_config = cells.read_config();
         let write_config = cells.write_config();
 
+        let is_transition = target_marker.is_transaction_to_persistent();
+
         // Start from the root cell
         let mut stack = Vec::with_capacity(256);
         stack.push(root_cell);
 
         let mut total = 0;
+        let mut transaction = FastHashSet::default();
 
         let mut batch = rocksdb::WriteBatch::default();
 
         // While some cells left
         while let Some(cell_id) = stack.pop() {
+            let key = cell_id.as_array();
+
             // Load cell marker and references from the top of the stack
-            let (persistent_cell, marker_changed, references) =
-                match raw.get_pinned_cf_opt(&cf, cell_id.as_slice(), read_config) {
+            let (is_temp, marker_changed, references) =
+                match raw.get_pinned_cf_opt(&cf, key, read_config) {
                     Ok(Some(value)) => {
                         let (marker, references) =
                             match StorageCell::deserialize_marker_and_references(value.as_ref()) {
@@ -274,15 +331,15 @@ impl CellStorage {
                                 Err(_) => return Err(CellStorageError::InvalidCell),
                             };
 
-                        let persistent_cell = marker.is_persistent();
-                        let marker_changed = !persistent_cell && marker != target_marker;
+                        let is_temp = marker.is_temp() || is_transition;
+                        let marker_changed = is_temp && marker != target_marker;
 
                         // Update cell data if marker changed
                         if marker_changed {
-                            batch.merge_cf(&cf, cell_id.as_slice(), [target_marker.0]);
+                            batch.merge_cf(&cf, key, [target_marker.0]);
                         }
 
-                        (persistent_cell, marker_changed, references)
+                        (is_temp, marker_changed, references)
                     }
                     Ok(None) => return Err(CellStorageError::CellNotFound),
                     Err(e) => return Err(CellStorageError::Internal(e)),
@@ -291,9 +348,12 @@ impl CellStorage {
             total += marker_changed as usize;
 
             // Add all children
-            if !persistent_cell && (marker_changed || force) {
-                for cell_id in references {
-                    stack.push(cell_id.hash());
+            if is_temp && (marker_changed || force) {
+                for child in references {
+                    let cell_id = child.hash();
+                    if transaction.insert(cell_id) {
+                        stack.push(cell_id);
+                    }
                 }
             }
         }
@@ -307,6 +367,56 @@ impl CellStorage {
 
     pub fn drop_cell(&self, hash: &UInt256) {
         self.cells_cache.remove(hash);
+    }
+}
+
+#[derive(Default, Copy, Clone)]
+struct HashBoundsIter(u8);
+
+impl HashBoundsIter {
+    #[inline]
+    fn new() -> Self {
+        Self(0)
+    }
+}
+
+impl Iterator for HashBoundsIter {
+    type Item = (Option<[u8; 32]>, Option<[u8; 32]>);
+
+    #[inline]
+    fn next(&mut self) -> Option<Self::Item> {
+        let i = self.0;
+        if i > 7 {
+            return None;
+        }
+        self.0 = i + 1;
+
+        // iii00000, 00000000, ...
+        let lower_bound = if i > 0 {
+            let mut lower_bound = [0; 32];
+            lower_bound[0] = i << 5;
+            Some(lower_bound)
+        } else {
+            None
+        };
+
+        // jjj00000, 00000000, ... (where jjj = i + 1)
+        let upper_bound = if i < 7 {
+            let mut upper_bound = [0; 32];
+            upper_bound[0] = (i + 1) << 5;
+            Some(upper_bound)
+        } else {
+            None
+        };
+
+        Some((lower_bound, upper_bound))
+    }
+}
+
+impl ExactSizeIterator for HashBoundsIter {
+    #[inline]
+    fn len(&self) -> usize {
+        (8 - self.0) as usize
     }
 }
 

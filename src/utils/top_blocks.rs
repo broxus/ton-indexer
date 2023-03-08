@@ -45,6 +45,39 @@ impl TopBlocks {
             }
         }
     }
+
+    /// Returns an iterator over the short ids of the latest blocks.
+    pub fn short_ids(&self) -> TopBlocksShortIdsIter<'_> {
+        TopBlocksShortIdsIter {
+            top_blocks: self,
+            shards_iter: None,
+        }
+    }
+}
+
+pub struct TopBlocksShortIdsIter<'a> {
+    top_blocks: &'a TopBlocks,
+    shards_iter: Option<std::collections::hash_map::Iter<'a, ton_block::ShardIdent, u32>>,
+}
+
+impl<'a> Iterator for TopBlocksShortIdsIter<'a> {
+    type Item = (ton_block::ShardIdent, u32);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match &mut self.shards_iter {
+            None => {
+                self.shards_iter = Some(self.top_blocks.shard_heights.iter());
+                Some((
+                    self.top_blocks.mc_block.shard_id,
+                    self.top_blocks.mc_block.seq_no,
+                ))
+            }
+            Some(iter) => {
+                let (shard_ident, seqno) = iter.next()?;
+                Some((*shard_ident, *seqno))
+            }
+        }
+    }
 }
 
 impl StoredValue for TopBlocks {
