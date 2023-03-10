@@ -480,6 +480,10 @@ impl Engine {
                     }
                 };
 
+                for subscriber in &engine.subscribers {
+                    subscriber.on_before_states_gc(&block_id).await;
+                }
+
                 let shard_state_storage = engine.db.shard_state_storage();
                 match shard_state_storage
                     .remove_outdated_states(block_id.seq_no)
@@ -1286,6 +1290,10 @@ impl Engine {
 pub trait Subscriber: Send + Sync {
     async fn engine_status_changed(&self, status: EngineStatus) {
         let _unused_by_default = status;
+    }
+
+    async fn on_before_states_gc(&self, shards_client_mc_block_id: &ton_block::BlockIdExt) {
+        let _unused_by_default = shards_client_mc_block_id;
     }
 
     async fn process_block(&self, ctx: ProcessBlockContext<'_>) -> Result<()> {
