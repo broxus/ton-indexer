@@ -485,12 +485,22 @@ impl Engine {
                 }
 
                 let shard_state_storage = engine.db.shard_state_storage();
-                match shard_state_storage
+                let top_blocks = match shard_state_storage
                     .remove_outdated_states(block_id.seq_no)
                     .await
                 {
-                    Ok(top_blocks) => engine.shard_states_cache.remove(&top_blocks),
-                    Err(e) => tracing::error!("failed to GC state: {e:?}"),
+                    Ok(top_blocks) => {
+                        engine.shard_states_cache.remove(&top_blocks);
+                        Some(top_blocks)
+                    }
+                    Err(e) => {
+                        tracing::error!("failed to GC state: {e:?}");
+                        None
+                    }
+                };
+
+                for subscriber in &engine.subscribers {
+                    subscriber.on_after_states_gc(&block_id, &top_blocks).await;
                 }
             }
         });
@@ -1294,6 +1304,15 @@ pub trait Subscriber: Send + Sync {
 
     async fn on_before_states_gc(&self, shards_client_mc_block_id: &ton_block::BlockIdExt) {
         let _unused_by_default = shards_client_mc_block_id;
+    }
+
+    async fn on_after_states_gc(
+        &self,
+        shards_client_mc_block_id: &ton_block::BlockIdExt,
+        top_blocks: &Option<TopBlocks>,
+    ) {
+        let _unused_by_default = shards_client_mc_block_id;
+        let _unused_by_default = top_blocks;
     }
 
     async fn process_block(&self, ctx: ProcessBlockContext<'_>) -> Result<()> {
