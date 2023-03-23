@@ -510,6 +510,7 @@ impl Engine {
                     Ok(())
                 }
 
+                tracing::info!(block_id = %block_id.display(), "RUNNING TEST");
                 if let Err(e) = test(engine.as_ref()).await {
                     tracing::error!("TEMP FAILED: {e:?}");
                 }

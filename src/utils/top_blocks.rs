@@ -1,21 +1,33 @@
 use anyhow::Result;
 use ton_types::ByteOrderRead;
 
-use super::{BlockStuff, FastHashMap, FastHasherState, StoredValue, StoredValueBuffer};
+use super::{
+    BlockIdShort, BlockStuff, FastHashMap, FastHasherState, StoredValue, StoredValueBuffer,
+};
 
 /// Stores last blocks for each workchain and shard
 #[derive(Debug, Clone)]
 pub struct TopBlocks {
-    pub mc_block: ton_block::BlockIdExt,
+    pub mc_block: (ton_block::ShardIdent, u32),
     pub shard_heights: FastHashMap<ton_block::ShardIdent, u32>,
 }
 
 impl TopBlocks {
+    /// Constructs this structure for the zerostate
+    pub fn zerostate() -> Self {
+        Self {
+            mc_block: (ton_block::ShardIdent::masterchain(), 0),
+            shard_heights: FastHashMap::from_iter([(ton_block::ShardIdent::full(0), 0u32)]),
+        }
+    }
+
     /// Extracts last blocks for each workchain and shard from the given masterchain block
     pub fn from_mc_block(mc_block_data: &BlockStuff) -> Result<Self> {
-        debug_assert!(mc_block_data.id().shard_id.is_masterchain());
+        let block_id = mc_block_data.id();
+        debug_assert!(block_id.shard_id.is_masterchain());
+
         Ok(Self {
-            mc_block: mc_block_data.id().clone(),
+            mc_block: (block_id.shard_id, block_id.seq_no),
             shard_heights: mc_block_data.shard_blocks_seq_no()?,
         })
     }
@@ -32,7 +44,7 @@ impl TopBlocks {
     /// NOTE: Specified shard could be split or merged
     pub fn contains_shard_seq_no(&self, shard_ident: &ton_block::ShardIdent, seq_no: u32) -> bool {
         if shard_ident.is_masterchain() {
-            seq_no >= self.mc_block.seq_no
+            seq_no >= self.mc_block.1
         } else {
             match self.shard_heights.get(shard_ident) {
                 Some(&top_seq_no) => seq_no >= top_seq_no,
@@ -53,6 +65,11 @@ impl TopBlocks {
             shards_iter: None,
         }
     }
+
+    /// Returns block count (including masterchain).
+    pub fn len(&self) -> usize {
+        1 + self.shard_heights.len()
+    }
 }
 
 pub struct TopBlocksShortIdsIter<'a> {
@@ -67,10 +84,7 @@ impl<'a> Iterator for TopBlocksShortIdsIter<'a> {
         match &mut self.shards_iter {
             None => {
                 self.shards_iter = Some(self.top_blocks.shard_heights.iter());
-                Some((
-                    self.top_blocks.mc_block.shard_id,
-                    self.top_blocks.mc_block.seq_no,
-                ))
+                Some(self.top_blocks.mc_block)
             }
             Some(iter) => {
                 let (shard_ident, seqno) = iter.next()?;
@@ -99,7 +113,7 @@ impl StoredValue for TopBlocks {
     where
         Self: Sized,
     {
-        let target_mc_block = ton_block::BlockIdExt::deserialize(reader)?;
+        let mc_block = BlockIdShort::deserialize(reader)?;
 
         let top_blocks_len = reader.read_le_u32()? as usize;
         let mut top_blocks =
@@ -112,7 +126,7 @@ impl StoredValue for TopBlocks {
         }
 
         Ok(Self {
-            mc_block: target_mc_block,
+            mc_block,
             shard_heights: top_blocks,
         })
     }
@@ -126,20 +140,14 @@ mod tests {
     fn test_split_shards() {
         let mut shard_heights = FastHashMap::default();
 
-        let main_shard =
-            ton_block::ShardIdent::with_tagged_prefix(0, ton_block::SHARD_FULL).unwrap();
+        let main_shard = ton_block::ShardIdent::full(0);
 
         let (left_shard, right_shard) = main_shard.split().unwrap();
         shard_heights.insert(left_shard, 1000);
         shard_heights.insert(right_shard, 1001);
 
         let top_blocks = TopBlocks {
-            mc_block: ton_block::BlockIdExt {
-                shard_id: ton_block::ShardIdent::masterchain(),
-                seq_no: 100,
-                root_hash: Default::default(),
-                file_hash: Default::default(),
-            },
+            mc_block: (ton_block::ShardIdent::masterchain(), 100),
             shard_heights,
         };
 

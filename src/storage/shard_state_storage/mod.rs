@@ -1,4 +1,3 @@
-use std::ops::Deref;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -40,8 +39,7 @@ pub struct ShardStateStorage {
 
     downloads_dir: Arc<PathBuf>,
 
-    persistent_state_guard: tokio::sync::Mutex<()>,
-    current_marker: tokio::sync::RwLock<Marker>,
+    current_marker_state: tokio::sync::RwLock<MarkerState>,
     min_ref_mc_state: Arc<MinRefMcState>,
     max_new_mc_cell_count: AtomicUsize,
     max_new_sc_cell_count: AtomicUsize,
@@ -67,18 +65,18 @@ impl ShardStateStorage {
             cell_storage,
             gc_state_storage,
             downloads_dir,
-            current_marker: Default::default(),
+            current_marker_state: Default::default(),
             min_ref_mc_state: Arc::new(Default::default()),
             max_new_mc_cell_count: AtomicUsize::new(0),
             max_new_sc_cell_count: AtomicUsize::new(0),
-            persistent_state_guard: Default::default(),
         };
 
         let gc_state = res.gc_state_storage.load()?;
         match &gc_state.step {
             None => {
                 tracing::info!("shard state GC is pending");
-                *res.current_marker.write().await = gc_state.current_marker;
+                let mut current_marker_state = res.current_marker_state.write().await;
+                current_marker_state.marker = gc_state.current_marker;
             }
             Some(step) => {
                 let target_marker = gc_state
@@ -86,27 +84,27 @@ impl ShardStateStorage {
                     .next()
                     .context("Invalid target marker")?;
 
-                let mut target_marker_lock = res.current_marker.write().await;
-                *target_marker_lock = target_marker;
+                let mut current_marker_state = res.current_marker_state.write().await;
+                current_marker_state.marker = target_marker;
 
                 match step {
                     Step::Mark(top_blocks) => {
                         res.mark(
                             gc_state.current_marker,
-                            target_marker_lock,
+                            current_marker_state,
                             top_blocks,
                             true,
                         )
                         .await?;
 
-                        let target_marker_lock = res.current_marker.write().await;
+                        let target_marker_lock = res.current_marker_state.write().await;
                         res.sweep_cells(gc_state.current_marker, target_marker_lock, top_blocks)
                             .await?;
 
                         res.sweep_block_states(target_marker, top_blocks).await?;
                     }
                     Step::SweepCells(top_blocks) => {
-                        res.sweep_cells(gc_state.current_marker, target_marker_lock, top_blocks)
+                        res.sweep_cells(gc_state.current_marker, current_marker_state, top_blocks)
                             .await?;
                         res.sweep_block_states(target_marker, top_blocks).await?;
                     }
@@ -160,17 +158,24 @@ impl ShardStateStorage {
 
         let mut batch = rocksdb::WriteBatch::default();
 
-        let current_marker = self.current_marker.read().await;
+        // NOTE: `temp_cells` must live to the end of this function
+        let temp_cells = self.db.temp_cells.read().await;
+
+        let current_marker_state = self.current_marker_state.read().await;
         let marker = match block_id.seq_no {
             // Mark zero state as persistent
             0 => Marker::PERSISTENT,
             // Mark all other states with current marker
-            _ => *current_marker,
+            _ => current_marker_state.marker,
         };
 
-        let len = self
-            .cell_storage
-            .store_cell(&mut batch, marker, state.root_cell().clone())?;
+        let len = self.cell_storage.store_cell(
+            &mut batch,
+            marker,
+            current_marker_state.in_transition,
+            state.root_cell().clone(),
+            &*temp_cells,
+        )?;
 
         if block_id.shard_id.is_masterchain() {
             self.max_new_mc_cell_count.fetch_max(len, Ordering::Release);
@@ -231,45 +236,163 @@ impl ShardStateStorage {
         ))
     }
 
-    pub async fn update_persistent_state(&self, block_ids: &TopBlocks) -> Result<()> {
-        let _guard = self.persistent_state_guard.lock().await;
-        let current_marker = self.current_marker.read().await;
+    pub async fn update_persistent_state(&self, top_blocks: &TopBlocks) -> Result<()> {
+        // Find state roots
+        let old_roots = self.load_persistent_state_roots()?;
+        let new_roots = self.load_state_roots(top_blocks)?;
 
+        // Clear temp cells before transition
         let instant = Instant::now();
-
-        let mut total = 0;
-        for (shard_ident, seqno) in block_ids.short_ids() {
-            let instant = Instant::now();
-
-            let cell_storage = self.cell_storage.clone();
-            let cell_id = self.load_state_root(shard_ident, seqno)?;
-
-            tracing::info!(
-                block_id=%(shard_ident, seqno).display(),
-                "marking new persistent state"
-            );
-            let marked_cells = tokio::task::spawn_blocking(move || {
-                cell_storage.mark_cells_tree(cell_id, Marker::TO_PERSISTENT, false)
-            })
-            .await??;
-
-            tracing::info!(
-                marked_cells,
-                elapsed_sec = instant.elapsed().as_secs_f64(),
-                "marked new persistent state"
-            );
-
-            total += marked_cells;
-        }
+        {
+            let mut temp_cells = self.db.temp_cells.write().await;
+            temp_cells
+                .clear(&self.db.caches)
+                .context("Failed to reset temp cells")?;
+        };
         tracing::info!(
-            marked_cells = total,
-            elapsed_sec = instant.elapsed().as_secs_f64(),
-            "marked new persistent states"
+            elapsed_ms = instant.elapsed().as_millis(),
+            "cleared temp cells"
         );
 
+        // Wait until all writes will be finished and take write lock of the current marker
+        let snapshot = {
+            let mut current_marker_state = self.current_marker_state.write().await;
+            current_marker_state.in_transition = true;
+
+            // Take the snapshot while no new states are processed
+            self.db.raw().snapshot()
+        };
+
         let instant = Instant::now();
-        tracing::info!("finishing transition");
-        self.cell_storage.finish_transition(*current_marker).await?;
+
+        #[derive(thiserror::Error, Debug)]
+        enum SaveTempCellsError {
+            #[error("Internal rocksdb error")]
+            Internal(#[source] rocksdb::Error),
+            #[error("Invalid cell")]
+            SaveTempCellsFailed,
+        }
+
+        let total = {
+            let raw = self.db.raw();
+
+            let total = Arc::new(AtomicUsize::new(0));
+            let mut tasks = FuturesUnordered::new();
+
+            let mut unique_shards = self
+                .find_unique_shards(Some(&snapshot))
+                .context("Failed to find unique shards")?;
+            unique_shards.push(ton_block::ShardIdent::masterchain());
+
+            tracing::info!(?unique_shards, "found unique shards");
+
+            let shard_count = unique_shards.len();
+            let shards_per_chunk = std::cmp::max(shard_count / num_cpus::get(), 1);
+
+            // Iterate all shards
+            for shard_idents in &unique_shards.into_iter().chunks(shards_per_chunk) {
+                // Prepare context
+                let raw = raw.clone();
+                let cell_storage = self.cell_storage.clone();
+                let total = total.clone();
+
+                struct ShardTask {
+                    lower_bound: [u8; 16],
+                    read_options: rocksdb::ReadOptions,
+                }
+
+                // Prepare tasks
+                let shard_tasks = shard_idents
+                    .map(|shard_ident| {
+                        // Compute iteration bounds
+                        let lower_bound = make_block_id_bound(&shard_ident, 0x00);
+                        let upper_bound = make_block_id_bound(&shard_ident, 0xff);
+
+                        // Prepare shard states read options
+                        let mut read_options = self.db.shard_states.new_read_config();
+                        read_options.set_snapshot(&snapshot);
+                        read_options.set_iterate_upper_bound(upper_bound);
+
+                        ShardTask {
+                            lower_bound,
+                            read_options,
+                        }
+                    })
+                    .collect::<Vec<_>>();
+
+                let shard_states_cf = self.db.shard_states.get_unbounded_cf();
+                let temp_cells = self.db.temp_cells.clone();
+
+                // Spawn task
+                tasks.push(tokio::task::spawn_blocking(move || {
+                    // Prepare cf handles
+                    let shard_states_cf = shard_states_cf.bound();
+                    let temp_cells = temp_cells.blocking_read();
+                    let temp_cells = &*temp_cells;
+
+                    for task in shard_tasks {
+                        // Prepare reverse iterator
+                        let mut iter = raw.raw_iterator_cf_opt(&shard_states_cf, task.read_options);
+                        iter.seek(task.lower_bound.as_slice());
+
+                        // Iterate all block states in shard
+                        loop {
+                            let value = match iter.item() {
+                                Some((_, value)) => value,
+                                None => match iter.status() {
+                                    Ok(()) => break,
+                                    Err(e) => return Err(SaveTempCellsError::Internal(e)),
+                                },
+                            };
+
+                            // Save all new cells of this state recursively to the temp table
+                            //
+                            // NOTE: `save_temp_cells_tree` works with the current db instead of
+                            // using the snapshot, so we can reduce the number of cells
+                            // which will be saved (some new states can already be inserted)
+                            match cell_storage
+                                .save_temp_cells_tree(UInt256::from_be_bytes(value), temp_cells)
+                            {
+                                Ok(count) => total.fetch_add(count, Ordering::Relaxed),
+                                Err(e) => {
+                                    tracing::error!("Failed to save temp cells: {e:?}");
+                                    return Err(SaveTempCellsError::SaveTempCellsFailed);
+                                }
+                            };
+
+                            iter.next();
+                        }
+                    }
+
+                    Ok::<_, SaveTempCellsError>(())
+                }));
+            }
+
+            // Wait for all tasks to complete
+            while let Some(result) = tasks.next().await {
+                result??
+            }
+
+            drop(snapshot); // make sure that snapshot outlives all tasks
+
+            // Load counter
+            total.load(Ordering::Relaxed)
+        };
+
+        tracing::info!(
+            total,
+            elapsed_sec = instant.elapsed().as_secs_f64(),
+            "saved temp cells"
+        );
+
+        // Wait until all writes will be finished and take the write lock of the current marker
+        {
+            let mut current_marker_state = self.current_marker_state.write().await;
+            current_marker_state.in_transition = false;
+
+            // TODO: finish transition
+        };
+
         tracing::info!(
             elapsed_sec = instant.elapsed().as_secs_f64(),
             "finished transition"
@@ -342,8 +465,6 @@ impl ShardStateStorage {
     }
 
     pub async fn remove_outdated_states(&self, mc_seq_no: u32) -> Result<TopBlocks> {
-        let _guard = self.persistent_state_guard.lock().await;
-
         // Compute recent block ids for the specified masterchain seqno
         let top_blocks = self
             .compute_recent_blocks(mc_seq_no)
@@ -378,19 +499,19 @@ impl ShardStateStorage {
         };
 
         // Wait until all writes will be finished and take write lock of the current marker
-        let mut target_marker_lock = self.current_marker.write().await;
+        let mut marker_state = self.current_marker_state.write().await;
         // Update current marker
-        *target_marker_lock = target_marker;
+        marker_state.marker = target_marker;
 
         // Mark all blocks, referenced by `top_blocks`, with target marker
-        self.mark(current_marker, target_marker_lock, &top_blocks, false)
+        self.mark(current_marker, marker_state, &top_blocks, false)
             .await?;
 
         // Wait until all states are written and prevent writing new states
-        let target_marker_lock = self.current_marker.write().await;
+        let marker_state = self.current_marker_state.write().await;
 
         // Remove all cells with different marker
-        self.sweep_cells(current_marker, target_marker_lock, &top_blocks)
+        self.sweep_cells(current_marker, marker_state, &top_blocks)
             .await?;
         // Remove all blocks which are not referenced by `top_blocks`
         self.sweep_block_states(target_marker, &top_blocks).await?;
@@ -407,14 +528,32 @@ impl ShardStateStorage {
         Ok(top_blocks)
     }
 
+    pub fn reset_persistent_state_roots(&self, top_blocks: &TopBlocks) -> Result<()> {
+        // Load state roots
+        let roots = self
+            .load_state_roots(top_blocks)
+            .context("Failed to find state roots")?;
+
+        let mut buffer = Vec::with_capacity(roots.len() * 32);
+        for root in roots {
+            buffer.extend_from_slice(root.as_array());
+        }
+
+        // Update node states entry
+        self.db
+            .node_states
+            .insert(PS_ROOTS, &buffer)
+            .context("Failed to reset persistent state roots")
+    }
+
     async fn mark<'a>(
         &self,
         current_marker: Marker,
-        target_marker_lock: RwLockWriteGuard<'a, Marker>,
+        marker_state: RwLockWriteGuard<'a, MarkerState>,
         top_blocks: &TopBlocks,
         force: bool,
     ) -> Result<()> {
-        let target_marker = *target_marker_lock;
+        let target_marker = marker_state.marker;
 
         let time = Instant::now();
 
@@ -441,17 +580,16 @@ impl ShardStateStorage {
             let mut tasks = FuturesUnordered::new();
 
             // Prepare one database snapshot for all shard states iterators
-            let snapshot = Arc::new(OwnedSnapshot::new(raw.clone()));
+            let snapshot = raw.snapshot();
+            // NOTE: `marker_state` must be released after the rocksdb snapshot is made,
+            // so that all new inserted cells will be marked with this marker and this method
+            // will work only with old shard states
+            drop(marker_state);
 
             let mut unique_shards = self
                 .find_unique_shards(Some(&snapshot))
                 .context("Failed to find unique shards")?;
             unique_shards.push(ton_block::ShardIdent::masterchain());
-
-            // NOTE: `target_marker_lock` must be released after the rocksdb snapshot is made,
-            // so that all new inserted cells will be marked with this marker and this method
-            // will work only with old shard states
-            drop(target_marker_lock);
 
             let shard_count = unique_shards.len();
             let shards_per_chunk = std::cmp::max(shard_count / num_cpus::get(), 1);
@@ -459,7 +597,7 @@ impl ShardStateStorage {
             // Iterate all shards
             for shard_idents in &unique_shards.into_iter().chunks(shards_per_chunk) {
                 // Prepare context
-                let snapshot = snapshot.clone();
+                let raw = raw.clone();
                 let top_blocks = top_blocks.clone();
                 let cell_storage = self.cell_storage.clone();
                 let total = total.clone();
@@ -483,6 +621,7 @@ impl ShardStateStorage {
 
                         // Prepare shard states read options
                         let mut read_options = self.db.shard_states.new_read_config();
+                        read_options.set_snapshot(&snapshot);
                         read_options.set_iterate_lower_bound(lower_bound);
 
                         // Compute intermediate state key
@@ -504,16 +643,13 @@ impl ShardStateStorage {
 
                 // Spawn task
                 tasks.push(tokio::task::spawn_blocking(move || {
-                    let db = snapshot.db.as_ref();
-
                     // Prepare cf handles
                     let shard_states_cf = shard_states_cf.bound();
                     let node_states_cf = node_states_cf.bound();
 
                     for mut task in shard_tasks {
                         // Prepare reverse iterator
-                        let mut iter =
-                            snapshot.raw_iterator_cf_opt(&shard_states_cf, task.read_options);
+                        let mut iter = raw.raw_iterator_cf_opt(&shard_states_cf, task.read_options);
                         iter.seek_for_prev(task.upper_bound.as_slice());
 
                         // Iterate all block states in shard starting from the latest
@@ -552,7 +688,7 @@ impl ShardStateStorage {
 
                             // Update intermediate state for this shard to continue
                             // from this block on accidental restart
-                            if let Err(e) = db.put_cf_opt(
+                            if let Err(e) = raw.put_cf_opt(
                                 &node_states_cf,
                                 &task.last_shard_block_key,
                                 seq_no.to_le_bytes(),
@@ -589,6 +725,8 @@ impl ShardStateStorage {
                 result??
             }
 
+            drop(snapshot); // make sure that snapshot outlives all tasks
+
             // Load counter
             total.load(Ordering::Relaxed)
         };
@@ -616,10 +754,10 @@ impl ShardStateStorage {
     async fn sweep_cells<'a>(
         &self,
         current_marker: Marker,
-        target_marker_lock: RwLockWriteGuard<'a, Marker>,
+        marker_state: RwLockWriteGuard<'a, MarkerState>,
         top_blocks: &TopBlocks,
     ) -> Result<()> {
-        let target_marker = *target_marker_lock;
+        let target_marker = marker_state.marker;
 
         tracing::info!(?target_marker, "sweeping cells");
         let time = Instant::now();
@@ -631,12 +769,12 @@ impl ShardStateStorage {
             .await
             .context("Failed to sweep cells")?;
 
-        // NOTE: target marker lock must be held during cells sweep.
+        // NOTE: marker state lock must be held during cells sweep.
         // Because there can be a situation when unmarked cell is
         // used by the newly inserted state, however it is being deleted
         // by this functions. So, unless better solution is found,
         // it will block the insertion of new states.
-        drop(target_marker_lock);
+        drop(marker_state);
 
         tracing::info!(
             swept_count = total,
@@ -737,6 +875,31 @@ impl ShardStateStorage {
             .context("Failed to update gc state to 'Wait'")
     }
 
+    fn load_persistent_state_roots(&self) -> Result<Vec<ton_types::UInt256>> {
+        let data = match self.db.node_states.get(PS_ROOTS)? {
+            Some(data) => data,
+            None => return Ok(Vec::default()),
+        };
+        let data = data.as_ref();
+        anyhow::ensure!(data.len() % 32 == 0, "Invalid hashes array");
+
+        let mut result = Vec::with_capacity(data.len() / 32);
+        for hash in data.chunks_exact(32) {
+            result.push(ton_types::UInt256::from_slice(hash));
+        }
+        Ok(result)
+    }
+
+    fn load_state_roots(&self, top_blocks: &TopBlocks) -> Result<Vec<ton_types::UInt256>> {
+        // Load state roots
+        let mut result = Vec::with_capacity(top_blocks.len());
+        for (shard_ident, seqno) in top_blocks.short_ids() {
+            let root = self.load_state_root(shard_ident, seqno)?;
+            result.push(root);
+        }
+        Ok(result)
+    }
+
     fn load_state_root(
         &self,
         shard_ident: ton_block::ShardIdent,
@@ -829,36 +992,10 @@ impl ShardStateStorage {
     }
 }
 
-struct OwnedSnapshot {
-    inner: rocksdb::Snapshot<'static>,
-    db: Arc<rocksdb::DB>,
-}
-
-impl OwnedSnapshot {
-    fn new(db: Arc<rocksdb::DB>) -> Self {
-        use rocksdb::Snapshot;
-
-        unsafe fn extend_lifetime<'a>(r: Snapshot<'a>) -> Snapshot<'static> {
-            std::mem::transmute::<Snapshot<'a>, Snapshot<'static>>(r)
-        }
-
-        // SAFETY: `Snapshot` requires the same lifetime as `rocksdb::DB` but
-        // `tokio::task::spawn_blocking` requires 'static. This object ensures
-        // that `rocksdb::DB` object lifetime will exceed the lifetime of the snapshot
-        //
-        // See https://github.com/rust-rocksdb/rust-rocksdb/issues/673
-        let inner = unsafe { extend_lifetime(db.as_ref().snapshot()) };
-        Self { inner, db }
-    }
-}
-
-impl Deref for OwnedSnapshot {
-    type Target = rocksdb::Snapshot<'static>;
-
-    #[inline(always)]
-    fn deref(&self) -> &Self::Target {
-        &self.inner
-    }
+#[derive(Default)]
+struct MarkerState {
+    marker: Marker,
+    in_transition: bool,
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -883,6 +1020,8 @@ async fn prepare_file_db_dir(file_db_path: PathBuf, folder: &str) -> Result<Arc<
     tokio::fs::create_dir_all(dir.as_ref()).await?;
     Ok(dir)
 }
+
+const PS_ROOTS: &[u8] = b"ps_roots";
 
 #[derive(thiserror::Error, Debug)]
 enum ShardStateStorageError {

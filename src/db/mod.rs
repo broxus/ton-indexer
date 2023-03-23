@@ -21,7 +21,9 @@ pub struct Db {
     pub next1: Table<tables::Next1>,
     pub next2: Table<tables::Next2>,
 
-    caches: Caches,
+    pub temp_cells: Arc<tokio::sync::RwLock<Table<tables::TempCells>>>,
+
+    pub caches: Caches,
 }
 
 impl Db {
@@ -72,6 +74,7 @@ impl Db {
             .column::<tables::KeyBlocks>()
             .column::<tables::ShardStates>()
             .column::<tables::Cells>()
+            .column::<tables::TempCells>()
             .column::<tables::NodeStates>()
             .column::<tables::Prev1>()
             .column::<tables::Prev2>()
@@ -82,6 +85,11 @@ impl Db {
             .context("Failed building db")?;
 
         migrations::apply(&raw).context("Failed to apply migrations")?;
+
+        let mut temp_cells = Table::new(&raw);
+        temp_cells
+            .clear(&caches)
+            .context("Failed to reset temp cells")?;
 
         Ok(Arc::new(Self {
             archives: Table::new(&raw),
@@ -95,6 +103,7 @@ impl Db {
             prev2: Table::new(&raw),
             next1: Table::new(&raw),
             next2: Table::new(&raw),
+            temp_cells: Arc::new(tokio::sync::RwLock::new(temp_cells)),
             caches,
         }))
     }
@@ -293,9 +302,24 @@ where
         write_config
     }
 
+    #[allow(unused)]
     pub fn trigger_compaction(&self) {
         let bound = Option::<[u8; 0]>::None;
         self.db.compact_range_cf(&self.cf, bound, bound);
+    }
+
+    pub fn clear(&mut self, caches: &Caches) -> Result<(), rocksdb::Error> {
+        use rocksdb::AsColumnFamilyRef;
+
+        self.db.drop_cf(T::NAME)?;
+        let mut opts = Default::default();
+        T::options(&mut opts, caches);
+        self.db.create_cf(T::NAME, &opts)?;
+
+        let cf = self.db.cf_handle(T::NAME).unwrap();
+        self.cf = CfHandle(cf.inner());
+
+        Ok(())
     }
 
     #[inline]

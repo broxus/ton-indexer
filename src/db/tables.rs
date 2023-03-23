@@ -113,6 +113,28 @@ impl ColumnFamily for Cells {
     }
 }
 
+/// Stores only new cells during persistent state transition
+/// - Key: `ton_types::UInt256` (cell repr hash)
+/// - Value: `1 byte`
+pub struct TempCells;
+impl ColumnFamily for TempCells {
+    const NAME: &'static str = "temp_cells";
+
+    fn options(opts: &mut rocksdb::Options, caches: &Caches) {
+        let mut block_factory = BlockBasedOptions::default();
+        block_factory.set_block_cache(&caches.block_cache);
+        block_factory.set_block_cache_compressed(&caches.compressed_block_cache);
+
+        block_factory.set_data_block_index_type(DataBlockIndexType::BinaryAndHash);
+
+        opts.set_block_based_table_factory(&block_factory);
+    }
+
+    fn read_options(opts: &mut rocksdb::ReadOptions) {
+        opts.set_verify_checksums(false);
+    }
+}
+
 /// Stores generic node parameters
 /// - Key: `...`
 /// - Value: `...`

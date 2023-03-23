@@ -31,67 +31,97 @@ impl CellStorage {
         &self,
         batch: &mut rocksdb::WriteBatch,
         marker: Marker,
+        in_transition: bool,
         root: ton_types::Cell,
+        temp_cells: &Table<tables::TempCells>,
     ) -> Result<usize, CellStorageError> {
-        // Prepare handles
+        struct Context<'a> {
+            batch: &'a mut rocksdb::WriteBatch,
+            cells_cf: &'a BoundedCfHandle<'a>,
+            temp_cells_cf: &'a BoundedCfHandle<'a>,
+            marker: Marker,
+            in_transition: bool,
+            buffer: Vec<u8>,
+        }
+
+        impl Context<'_> {
+            fn update_cell(
+                &mut self,
+                key: &[u8; 32],
+                value: rocksdb::DBPinnableSlice<'_>,
+            ) -> Result<bool, CellStorageError> {
+                // NOTE: dereference value only once to prevent multiple ffi calls
+                let value = value.as_ref();
+                if value.is_empty() {
+                    // Empty cell is invalid
+                    return Err(CellStorageError::InvalidCell);
+                }
+
+                let value_marker = Marker(value[0]);
+                if self.in_transition {
+                    let value: &[u8] = if value_marker.is_persistent() {
+                        &[0x1]
+                    } else {
+                        &[]
+                    };
+                    self.batch.put_cf(self.temp_cells_cf, key, value);
+                }
+
+                Ok(if value_marker.is_temp() && value_marker != self.marker {
+                    self.buffer.clear();
+                    self.buffer.extend_from_slice(value);
+                    // SAFETY: bounds are checked above. Definitely removes bounds check
+                    unsafe { *self.buffer.get_unchecked_mut(0) = self.marker.0 };
+
+                    self.batch.put_cf(self.cells_cf, key, &self.buffer);
+
+                    // Cell updated
+                    true
+                } else {
+                    // Cell already exists
+                    false
+                })
+            }
+        }
+
+        // Prepare context and handles
         let cells = &self.db.cells;
         let raw = cells.db();
-        let cf = &cells.cf();
+        let cells_cf = &cells.cf();
+        let temp_cells_cf = &temp_cells.cf();
         let read_options = cells.read_config();
 
+        let mut ctx = Context {
+            batch,
+            cells_cf,
+            temp_cells_cf,
+            marker,
+            in_transition,
+            buffer: Vec::with_capacity(512),
+        };
+
         let mut transaction = FastHashSet::default();
-
-        let mut buffer = Vec::with_capacity(512);
-
-        fn update_cell(
-            batch: &mut rocksdb::WriteBatch,
-            cf: &BoundedCfHandle<'_>,
-            marker: Marker,
-            key: &[u8; 32],
-            value: rocksdb::DBPinnableSlice<'_>,
-            buffer: &mut Vec<u8>,
-        ) -> Result<bool, CellStorageError> {
-            // NOTE: dereference value only once to prevent multiple ffi calls
-            let value = value.as_ref();
-            if value.is_empty() {
-                // Empty cell is invalid
-                return Err(CellStorageError::InvalidCell);
-            }
-
-            let value_marker = Marker(value[0]);
-            Ok(if value_marker.is_temp() && value_marker != marker {
-                buffer.clear();
-                buffer.extend_from_slice(value);
-                // SAFETY: bounds are checked above. Definitely removes bounds check
-                unsafe { *buffer.get_unchecked_mut(0) = marker.0 };
-
-                batch.put_cf(cf, key, buffer);
-
-                // Cell updated
-                true
-            } else {
-                // Cell already exists
-                false
-            })
-        }
 
         // Check root cell
         {
             let cell_id = root.repr_hash();
             let key = cell_id.as_array();
 
-            match raw.get_pinned_cf_opt(cf, key, read_options) {
+            match raw.get_pinned_cf_opt(cells_cf, key, read_options) {
                 Ok(Some(value)) => {
-                    if !update_cell(batch, cf, marker, key, value, &mut buffer)? {
+                    if !ctx.update_cell(key, value)? {
                         return Ok(0);
                     }
                 }
                 // Insert cell value if it doesn't exist
                 Ok(None) => {
-                    if StorageCell::serialize_to(marker, &*root, &mut buffer).is_err() {
+                    if StorageCell::serialize_to(marker, &*root, &mut ctx.buffer).is_err() {
                         return Err(CellStorageError::InvalidCell);
                     }
-                    batch.put_cf(cf, key, &buffer);
+                    ctx.batch.put_cf(cells_cf, key, &ctx.buffer);
+                    if in_transition {
+                        ctx.batch.put_cf(temp_cells_cf, key, &[]);
+                    }
                 }
                 Err(e) => return Err(CellStorageError::Internal(e)),
             }
@@ -114,17 +144,20 @@ impl CellStorage {
                 }
 
                 let key = cell_id.as_array();
-                match raw.get_pinned_cf_opt(cf, key, read_options) {
+                match raw.get_pinned_cf_opt(cells_cf, key, read_options) {
                     Ok(Some(value)) => {
-                        if !update_cell(batch, cf, marker, key, value, &mut buffer)? {
+                        if !ctx.update_cell(key, value)? {
                             continue;
                         }
                     }
                     Ok(None) => {
-                        if StorageCell::serialize_to(marker, &*cell, &mut buffer).is_err() {
+                        if StorageCell::serialize_to(marker, &*cell, &mut ctx.buffer).is_err() {
                             return Err(CellStorageError::InvalidCell);
                         }
-                        batch.put_cf(cf, cell_id.as_slice(), &buffer);
+                        ctx.batch.put_cf(cells_cf, key, &ctx.buffer);
+                        if in_transition {
+                            ctx.batch.put_cf(temp_cells_cf, key, &[]);
+                        }
                     }
                     Err(e) => return Err(CellStorageError::Internal(e)),
                 }
@@ -221,75 +254,94 @@ impl CellStorage {
         Ok(total.load(Ordering::Relaxed))
     }
 
-    pub async fn finish_transition(&self, current_marker: Marker) -> Result<usize> {
-        let total = Arc::new(AtomicUsize::new(0));
-        let mut tasks = FuturesUnordered::new();
+    pub fn save_temp_cells_tree(
+        &self,
+        root_cell: UInt256,
+        temp_cells: &Table<tables::TempCells>,
+    ) -> Result<usize, CellStorageError> {
+        // Prepare handles
+        let raw = self.db.raw().as_ref();
+        let cells = &self.db.cells;
 
-        for (lower_bound, upper_bound) in HashBoundsIter::new() {
-            // Prepare cells read options
-            let raw = self.db.raw().clone();
-            let cells = &self.db.cells;
-            let cells_cf = cells.get_unbounded_cf();
+        let cells_cf = cells.cf();
+        let temp_cells_cf = temp_cells.cf();
+        let cells_readopts = cells.read_config();
+        let temp_cells_readopts = temp_cells.read_config();
+        let temp_cells_writeopts = temp_cells.write_config();
 
-            let mut read_options = cells.new_read_config();
-            if let Some(upper_bound) = upper_bound {
-                read_options.set_iterate_upper_bound(upper_bound);
-            }
+        // Start from the root cell
+        let mut stack = Vec::with_capacity(256);
+        stack.push(root_cell);
 
-            let write_options = cells.new_write_config();
+        let mut total = 0;
+        let mut transaction = FastHashSet::default();
 
-            let total = total.clone();
-            tasks.push(tokio::task::spawn_blocking(move || {
-                let cells_cf = cells_cf.bound();
+        let mut batch = rocksdb::WriteBatch::default();
 
-                // Prepare iterator
-                let mut iter = raw.raw_iterator_cf_opt(&cells_cf, read_options);
-                if let Some(lower_bound) = &lower_bound {
-                    iter.seek(lower_bound);
-                } else {
-                    iter.seek_to_first();
-                }
+        // While some cells left
+        while let Some(cell_id) = stack.pop() {
+            let key = cell_id.as_array();
 
-                // Iterate all cells in range
-                let mut subtotal = 0;
-                loop {
-                    let (key, value) = match iter.item() {
-                        Some(item) => item,
-                        None => break iter.status()?,
-                    };
+            // Load cell marker and references from the top of the stack
+            let (is_persistent, references) =
+                match raw.get_pinned_cf_opt(&cells_cf, key, cells_readopts) {
+                    Ok(Some(value)) => {
+                        let (marker, references) =
+                            match StorageCell::deserialize_marker_and_references(value.as_ref()) {
+                                Ok(cell) => cell,
+                                Err(_) => return Err(CellStorageError::InvalidCell),
+                            };
 
-                    if !value.is_empty() {
-                        let marker = Marker(value[0]);
+                        let is_persistent = marker.is_persistent();
+                        let value: &[u8] = if is_persistent { &[0x1] } else { &[] };
+                        batch.put_cf(&temp_cells_cf, key, value);
 
-                        let value = if marker.is_transaction_to_persistent() {
-                            Some(Marker::PERSISTENT)
-                        } else if marker.is_persistent() {
-                            Some(current_marker)
-                        } else {
-                            None
-                        };
+                        (is_persistent, references)
+                    }
+                    Ok(None) => return Err(CellStorageError::CellNotFound),
+                    Err(e) => return Err(CellStorageError::Internal(e)),
+                };
 
-                        if let Some(Marker(marker)) = value {
-                            raw.merge_cf_opt(&cells_cf, key, [marker], &write_options)?;
-                            subtotal += 1;
-                        }
+            total += 1;
+
+            // Add all children
+            if !is_persistent {
+                for child in references {
+                    let cell_id = child.hash();
+                    if !transaction.insert(cell_id) {
+                        continue;
                     }
 
-                    iter.next();
+                    match raw.get_pinned_cf_opt(
+                        &temp_cells_cf,
+                        cell_id.as_array(),
+                        temp_cells_readopts,
+                    ) {
+                        Ok(value) => {
+                            if value.is_none() {
+                                stack.push(cell_id)
+                            }
+                        }
+                        Err(e) => return Err(CellStorageError::Internal(e)),
+                    }
                 }
-
-                total.fetch_add(subtotal, Ordering::Relaxed);
-                Ok::<_, rocksdb::Error>(())
-            }));
+            }
         }
 
-        // Wait for all tasks to complete
-        while let Some(result) = tasks.next().await {
-            result??
+        if let Err(e) = raw.write_opt(batch, temp_cells_writeopts) {
+            return Err(CellStorageError::Internal(e));
         }
 
-        // Load counter
-        Ok(total.load(Ordering::Relaxed))
+        Ok(total)
+    }
+
+    pub async fn update_persistent_state(
+        &self,
+        write_batch: &mut rocksdb::WriteBatch,
+        old_roots: &[ton_types::UInt256],
+        new_roots: &[ton_types::UInt256],
+    ) -> Result<usize, CellStorageError> {
+        // TODO
     }
 
     pub fn mark_cells_tree(
@@ -305,8 +357,6 @@ impl CellStorage {
         let cf = cells.cf();
         let read_config = cells.read_config();
         let write_config = cells.write_config();
-
-        let is_transition = target_marker.is_transaction_to_persistent();
 
         // Start from the root cell
         let mut stack = Vec::with_capacity(256);
@@ -331,7 +381,7 @@ impl CellStorage {
                                 Err(_) => return Err(CellStorageError::InvalidCell),
                             };
 
-                        let is_temp = marker.is_temp() || is_transition;
+                        let is_temp = marker.is_temp();
                         let marker_changed = is_temp && marker != target_marker;
 
                         // Update cell data if marker changed

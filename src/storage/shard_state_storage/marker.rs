@@ -7,7 +7,6 @@ impl Marker {
     const MAX: u8 = 127;
 
     pub const PERSISTENT: Self = Self(0);
-    pub const TO_PERSISTENT: Self = Self(255);
 
     pub fn from_temp(marker: u8) -> Option<Self> {
         let result = Self(marker);
@@ -16,7 +15,6 @@ impl Marker {
 
     /// Transition:
     /// * tempN -> Some(tempN+1),
-    /// * persistent -> None
     /// * to_persistent -> None
     pub fn next(self) -> Option<Self> {
         match self.0 {
@@ -34,18 +32,12 @@ impl Marker {
     pub fn is_persistent(&self) -> bool {
         self.0 == 0
     }
-
-    #[inline]
-    pub fn is_transaction_to_persistent(&self) -> bool {
-        *self == Self::TO_PERSISTENT
-    }
 }
 
 impl std::fmt::Debug for Marker {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match *self {
             Self::PERSISTENT => "Persistent",
-            Self::TO_PERSISTENT => "TransactionToPersistent",
             marker if marker.is_temp() => return f.write_fmt(format_args!("Marker({})", marker.0)),
             _ => "Unknown",
         })

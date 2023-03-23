@@ -187,9 +187,7 @@ mod tests {
 
     #[test]
     fn correct_last_shared_block_key_repr() {
-        let key = LastShardBlockKey(
-            ton_block::ShardIdent::with_tagged_prefix(-1, ton_block::SHARD_FULL).unwrap(),
-        );
+        let key = LastShardBlockKey(ton_block::ShardIdent::masterchain());
 
         let mut data = Vec::new();
         key.serialize(&mut data);
