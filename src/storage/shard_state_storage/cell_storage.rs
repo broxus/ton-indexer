@@ -120,7 +120,7 @@ impl CellStorage {
                     }
                     ctx.batch.put_cf(cells_cf, key, &ctx.buffer);
                     if in_transition {
-                        ctx.batch.put_cf(temp_cells_cf, key, &[]);
+                        ctx.batch.put_cf(temp_cells_cf, key, []);
                     }
                 }
                 Err(e) => return Err(CellStorageError::Internal(e)),
@@ -156,7 +156,7 @@ impl CellStorage {
                         }
                         ctx.batch.put_cf(cells_cf, key, &ctx.buffer);
                         if in_transition {
-                            ctx.batch.put_cf(temp_cells_cf, key, &[]);
+                            ctx.batch.put_cf(temp_cells_cf, key, []);
                         }
                     }
                     Err(e) => return Err(CellStorageError::Internal(e)),

@@ -1,9 +1,7 @@
-use std::sync::Arc;
-
 use anyhow::{Context, Result};
 use smallvec::SmallVec;
 
-use super::{tables, Migrations, Table};
+use super::{tables, Migrations, TableAccessor};
 use crate::utils::*;
 
 // 2.0.6 to 2.0.7
@@ -14,15 +12,16 @@ use crate::utils::*;
 // - Change value for `ShardStates`:
 //    * Add `ton_types::UInt256` (block root hash), `ton_types::UInt256` (block file hash)
 pub(super) fn register(migrations: &mut Migrations) -> Result<()> {
-    migrations.register([2, 0, 6], [2, 0, 7], |db| {
-        update_package_entries(&db)?;
-        update_shard_states(&db)?;
+    migrations.register([2, 0, 6], [2, 0, 7], |tables| {
+        update_package_entries(&tables)?;
+        update_shard_states(&tables)?;
         Ok(())
     })
 }
 
-fn update_package_entries(db: &Arc<rocksdb::DB>) -> Result<()> {
-    let package_entries = Table::<tables::PackageEntries>::new(db);
+fn update_package_entries(tables: &TableAccessor) -> Result<()> {
+    let raw = tables.raw.as_ref();
+    let package_entries = tables.get::<tables::PackageEntries>();
     let package_entries_cf = package_entries.cf();
     let write_options = package_entries.write_config();
 
@@ -55,7 +54,7 @@ fn update_package_entries(db: &Arc<rocksdb::DB>) -> Result<()> {
             total_entries += 1;
             entries_in_batch += 1;
             if entries_in_batch >= ENTRIES_PER_BATCH {
-                db.write_opt(std::mem::take(&mut batch), write_options)
+                raw.write_opt(std::mem::take(&mut batch), write_options)
                     .context("Failed to apply write batch")?;
                 entries_in_batch = 0;
             }
@@ -65,7 +64,7 @@ fn update_package_entries(db: &Arc<rocksdb::DB>) -> Result<()> {
     }
 
     if entries_in_batch > 0 {
-        db.write_opt(batch, write_options)
+        raw.write_opt(batch, write_options)
             .context("Failed to apply write batch")?;
     }
 
@@ -73,8 +72,9 @@ fn update_package_entries(db: &Arc<rocksdb::DB>) -> Result<()> {
     Ok(())
 }
 
-fn update_shard_states(db: &Arc<rocksdb::DB>) -> Result<()> {
-    let shard_states = Table::<tables::ShardStates>::new(db);
+fn update_shard_states(tables: &TableAccessor) -> Result<()> {
+    let raw = tables.raw.as_ref();
+    let shard_states = tables.get::<tables::ShardStates>();
     let shard_states_cf = shard_states.cf();
     let write_options = shard_states.write_config();
 
@@ -118,7 +118,7 @@ fn update_shard_states(db: &Arc<rocksdb::DB>) -> Result<()> {
             total_states += 1;
             entries_in_batch += 1;
             if entries_in_batch >= STATES_PER_BATCH {
-                db.write_opt(std::mem::take(&mut batch), write_options)
+                raw.write_opt(std::mem::take(&mut batch), write_options)
                     .context("Failed to apply write batch")?;
                 entries_in_batch = 0;
             }
@@ -128,7 +128,7 @@ fn update_shard_states(db: &Arc<rocksdb::DB>) -> Result<()> {
     }
 
     if entries_in_batch > 0 {
-        db.write_opt(batch, write_options)
+        raw.write_opt(batch, write_options)
             .context("Failed to apply write batch")?;
     }
 

@@ -11,7 +11,6 @@ use std::convert::TryInto;
 use std::hash::Hash;
 use std::ops::{Bound, RangeBounds};
 use std::sync::Arc;
-use std::time::Instant;
 
 use anyhow::{Context, Result};
 use parking_lot::RwLock;
@@ -35,8 +34,6 @@ impl BlockStorage {
             block_handle_storage,
             archive_ids: Default::default(),
         };
-        manager.trigger_blocks_compaction();
-        manager.trigger_archives_compaction();
 
         manager.preload()?;
 
@@ -461,6 +458,8 @@ impl BlockStorage {
         max_blocks_per_batch: Option<usize>,
         gc_type: BlocksGcKind,
     ) -> Result<()> {
+        let _compaction_guard = self.db.delay_compaction().await;
+
         // Find target block
         let target_block = match gc_type {
             BlocksGcKind::BeforePreviousKeyBlock => self
@@ -507,8 +506,6 @@ impl BlockStorage {
         })
         .await??;
 
-        self.trigger_blocks_compaction();
-
         tracing::info!(
             key_block_id = %key_block_id.display(),
             total_cached_handles_removed,
@@ -522,7 +519,9 @@ impl BlockStorage {
         Ok(())
     }
 
-    pub fn remove_outdated_archives(&self, until_id: u32) -> Result<()> {
+    pub async fn remove_outdated_archives(&self, until_id: u32) -> Result<()> {
+        let _compaction_guard = self.db.delay_compaction().await;
+
         let mut archive_ids = self.archive_ids.write();
 
         let retained_ids = match archive_ids.iter().rev().find(|&id| *id < until_id).cloned() {
@@ -570,7 +569,6 @@ impl BlockStorage {
             write_options,
         )?;
 
-        self.trigger_archives_compaction();
         tracing::info!("archives GC: done");
         Ok(())
     }
@@ -665,34 +663,6 @@ impl BlockStorage {
             Some(data) => Ok(make_archive_segment(&entry_id.filename(), &data)),
             None => Err(BlockStorageError::InvalidBlockData.into()),
         }
-    }
-
-    fn trigger_blocks_compaction(&self) {
-        tracing::info!("block handles compaction started");
-        let instant = Instant::now();
-        self.db.block_handles.trigger_compaction();
-        tracing::info!(
-            elapsed_ms = instant.elapsed().as_millis(),
-            "block handles compaction finished"
-        );
-
-        tracing::info!("package entries compaction started");
-        let instant = Instant::now();
-        self.db.package_entries.trigger_compaction();
-        tracing::info!(
-            elapsed_ms = instant.elapsed().as_millis(),
-            "package entries compaction finished"
-        );
-    }
-
-    fn trigger_archives_compaction(&self) {
-        tracing::info!("archives compaction started");
-        let instant = Instant::now();
-        self.db.archives.trigger_compaction();
-        tracing::info!(
-            elapsed_ms = instant.elapsed().as_millis(),
-            "archives compaction finished"
-        );
     }
 }
 

@@ -67,8 +67,14 @@ impl TopBlocks {
     }
 
     /// Returns block count (including masterchain).
+    #[allow(clippy::len_without_is_empty)]
     pub fn len(&self) -> usize {
         1 + self.shard_heights.len()
+    }
+
+    /// Masterchain block seqno
+    pub fn seqno(&self) -> u32 {
+        self.mc_block.1
     }
 }
 

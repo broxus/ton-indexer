@@ -1,23 +1,22 @@
 use std::collections::hash_map::{self, HashMap};
-use std::sync::Arc;
 
 use anyhow::{Context, Result};
 
-use super::{tables, ColumnFamily, Table};
+use super::{tables, ColumnFamily, TableAccessor};
 
 mod v2_0_7;
 mod v2_0_8;
 
 const CURRENT_VERSION: Semver = [2, 0, 8];
 
-pub fn apply(db: &Arc<rocksdb::DB>) -> Result<()> {
+pub fn apply(tables: &TableAccessor) -> Result<()> {
     const DB_VERSION_KEY: &str = "db_version";
 
     let mut migrations = Migrations::default();
     v2_0_7::register(&mut migrations).context("Failed to register v2.0.7")?;
     v2_0_8::register(&mut migrations).context("Failed to register v2.0.8")?;
 
-    let state = Table::<tables::NodeStates>::new(db);
+    let state = tables.get::<tables::NodeStates>();
     let is_empty = state
         .iterator(rocksdb::IteratorMode::Start)
         .next()
@@ -60,7 +59,7 @@ pub fn apply(db: &Arc<rocksdb::DB>) -> Result<()> {
         tracing::info!(?version, "applying migration");
 
         state
-            .insert(DB_VERSION_KEY, (*migration)(db.clone())?)
+            .insert(DB_VERSION_KEY, (*migration)(tables.clone())?)
             .context("Failed to save new DB version")?;
     }
 }
@@ -75,7 +74,7 @@ impl Migrations {
 
     pub fn register<F>(&mut self, from: Semver, to: Semver, migration: F) -> Result<()>
     where
-        F: Fn(Arc<rocksdb::DB>) -> Result<()> + 'static,
+        F: Fn(TableAccessor) -> Result<()> + 'static,
     {
         match self.0.entry(from) {
             hash_map::Entry::Vacant(entry) => {
@@ -93,7 +92,7 @@ impl Migrations {
 }
 
 type Semver = [u8; 3];
-type Migration = Box<dyn Fn(Arc<rocksdb::DB>) -> Result<Semver>>;
+type Migration = Box<dyn Fn(TableAccessor) -> Result<Semver>>;
 
 #[derive(thiserror::Error, Debug)]
 enum MigrationsError {

@@ -174,7 +174,7 @@ impl ShardStateStorage {
             marker,
             current_marker_state.in_transition,
             state.root_cell().clone(),
-            &*temp_cells,
+            &temp_cells,
         )?;
 
         if block_id.shard_id.is_masterchain() {
@@ -237,17 +237,21 @@ impl ShardStateStorage {
     }
 
     pub async fn update_persistent_state(&self, top_blocks: &TopBlocks) -> Result<()> {
+        let _compaction_guard = self.db.delay_compaction().await;
+
         // Find state roots
-        let old_roots = self.load_persistent_state_roots()?;
+        let (old_seqno, old_roots) = self.load_persistent_state_roots()?;
+        if old_seqno >= top_blocks.seqno() {
+            return Ok(());
+        }
+
         let new_roots = self.load_state_roots(top_blocks)?;
 
         // Clear temp cells before transition
         let instant = Instant::now();
         {
             let mut temp_cells = self.db.temp_cells.write().await;
-            temp_cells
-                .clear(&self.db.caches)
-                .context("Failed to reset temp cells")?;
+            temp_cells.clear().context("Failed to reset temp cells")?;
         };
         tracing::info!(
             elapsed_ms = instant.elapsed().as_millis(),
@@ -399,11 +403,11 @@ impl ShardStateStorage {
                     current_marker_state.marker,
                     &old_roots,
                     &new_roots,
-                    &*temp_cells,
+                    &temp_cells,
                 )
                 .await?;
 
-            let buffer = make_hashes_buffer(&new_roots);
+            let buffer = make_hashes_buffer(top_blocks.seqno(), &new_roots);
             batch.put_cf(&self.db.node_states.cf(), PS_ROOTS, buffer);
 
             self.db
@@ -487,6 +491,8 @@ impl ShardStateStorage {
     }
 
     pub async fn remove_outdated_states(&self, mc_seq_no: u32) -> Result<TopBlocks> {
+        let _compaction_guard = self.db.delay_compaction().await;
+
         // Compute recent block ids for the specified masterchain seqno
         let top_blocks = self
             .compute_recent_blocks(mc_seq_no)
@@ -556,12 +562,12 @@ impl ShardStateStorage {
             .load_state_roots(top_blocks)
             .context("Failed to find state roots")?;
 
-        let buffer = make_hashes_buffer(&roots);
+        let buffer = make_hashes_buffer(top_blocks.seqno(), &roots);
 
         // Update node states entry
         self.db
             .node_states
-            .insert(PS_ROOTS, &buffer)
+            .insert(PS_ROOTS, buffer)
             .context("Failed to reset persistent state roots")
     }
 
@@ -894,19 +900,24 @@ impl ShardStateStorage {
             .context("Failed to update gc state to 'Wait'")
     }
 
-    fn load_persistent_state_roots(&self) -> Result<Vec<ton_types::UInt256>> {
+    fn load_persistent_state_roots(&self) -> Result<(u32, Vec<ton_types::UInt256>)> {
         let data = match self.db.node_states.get(PS_ROOTS)? {
             Some(data) => data,
-            None => return Ok(Vec::default()),
+            None => return Ok((0, Vec::default())),
         };
         let data = data.as_ref();
+        anyhow::ensure!(data.len() > 4, "Invalid ps roots entry");
+
+        let seqno = u32::from_le_bytes(data[..4].try_into().unwrap());
+
+        let data = &data[4..];
         anyhow::ensure!(data.len() % 32 == 0, "Invalid hashes array");
 
-        let mut result = Vec::with_capacity(data.len() / 32);
+        let mut hashes = Vec::with_capacity(data.len() / 32);
         for hash in data.chunks_exact(32) {
-            result.push(ton_types::UInt256::from_slice(hash));
+            hashes.push(ton_types::UInt256::from_slice(hash));
         }
-        Ok(result)
+        Ok((seqno, hashes))
     }
 
     fn load_state_roots(&self, top_blocks: &TopBlocks) -> Result<Vec<ton_types::UInt256>> {
@@ -991,24 +1002,6 @@ impl ShardStateStorage {
 
         Ok(shard_idents)
     }
-
-    fn trigger_compaction(&self) {
-        tracing::info!("shard states compaction started");
-        let instant = Instant::now();
-        self.db.shard_states.trigger_compaction();
-        tracing::info!(
-            elapsed_ms = instant.elapsed().as_millis(),
-            "shard states compaction finished"
-        );
-
-        tracing::info!("cells compaction started");
-        let instant = Instant::now();
-        self.db.cells.trigger_compaction();
-        tracing::info!(
-            elapsed_ms = instant.elapsed().as_millis(),
-            "cells compaction finished"
-        );
-    }
 }
 
 #[derive(Default)]
@@ -1040,8 +1033,11 @@ async fn prepare_file_db_dir(file_db_path: PathBuf, folder: &str) -> Result<Arc<
     Ok(dir)
 }
 
-fn make_hashes_buffer(hashes: &[ton_types::UInt256]) -> Vec<u8> {
-    let mut buffer = Vec::with_capacity(hashes.len() * 32);
+fn make_hashes_buffer(seqno: u32, hashes: &[ton_types::UInt256]) -> Vec<u8> {
+    let mut buffer = Vec::with_capacity(4 + hashes.len() * 32);
+
+    buffer.extend_from_slice(&seqno.to_le_bytes());
+
     for hash in hashes {
         buffer.extend_from_slice(hash.as_array());
     }

@@ -23,7 +23,8 @@ pub struct Db {
 
     pub temp_cells: Arc<tokio::sync::RwLock<Table<tables::TempCells>>>,
 
-    pub caches: Caches,
+    compaction_lock: tokio::sync::RwLock<()>,
+    caches: Caches,
 }
 
 impl Db {
@@ -84,27 +85,28 @@ impl Db {
             .build()
             .context("Failed building db")?;
 
-        migrations::apply(&raw).context("Failed to apply migrations")?;
+        let tables = TableAccessor { raw, caches };
 
-        let mut temp_cells = Table::new(&raw);
-        temp_cells
-            .clear(&caches)
-            .context("Failed to reset temp cells")?;
+        migrations::apply(&tables).context("Failed to apply migrations")?;
+
+        let mut temp_cells = tables.get::<tables::TempCells>();
+        temp_cells.clear().context("Failed to reset temp cells")?;
 
         Ok(Arc::new(Self {
-            archives: Table::new(&raw),
-            block_handles: Table::new(&raw),
-            key_blocks: Table::new(&raw),
-            package_entries: Table::new(&raw),
-            shard_states: Table::new(&raw),
-            cells: Table::new(&raw),
-            node_states: Table::new(&raw),
-            prev1: Table::new(&raw),
-            prev2: Table::new(&raw),
-            next1: Table::new(&raw),
-            next2: Table::new(&raw),
+            archives: tables.get(),
+            block_handles: tables.get(),
+            key_blocks: tables.get(),
+            package_entries: tables.get(),
+            shard_states: tables.get(),
+            cells: tables.get(),
+            node_states: tables.get(),
+            prev1: tables.get(),
+            prev2: tables.get(),
+            next1: tables.get(),
+            next2: tables.get(),
             temp_cells: Arc::new(tokio::sync::RwLock::new(temp_cells)),
-            caches,
+            compaction_lock: tokio::sync::RwLock::default(),
+            caches: tables.caches,
         }))
     }
 
@@ -135,6 +137,38 @@ impl Db {
             compressed_block_cache_usage,
             compressed_block_cache_pined_usage,
         })
+    }
+
+    pub async fn delay_compaction(&self) -> tokio::sync::RwLockReadGuard<'_, ()> {
+        self.compaction_lock.read().await
+    }
+
+    pub async fn trigger_compaction(&self) {
+        use std::time::Instant;
+
+        let _compaction_guard = self.compaction_lock.write().await;
+
+        let tables = [
+            (self.block_handles.cf(), "block handles"),
+            (self.package_entries.cf(), "package entries"),
+            (self.archives.cf(), "archives"),
+            (self.shard_states.cf(), "shard states"),
+            (self.cells.cf(), "cells"),
+        ];
+
+        for (cf, title) in tables {
+            tracing::info!("{title} compaction started");
+
+            let instant = Instant::now();
+
+            let bound = Option::<[u8; 0]>::None;
+            self.raw().compact_range_cf(&cf, bound, bound);
+
+            tracing::info!(
+                elapsed_ms = instant.elapsed().as_millis(),
+                "{title} compaction finished"
+            );
+        }
     }
 }
 
@@ -191,6 +225,18 @@ impl<'a> Builder<'a> {
     }
 }
 
+#[derive(Clone)]
+pub struct TableAccessor {
+    raw: Arc<rocksdb::DB>,
+    caches: Caches,
+}
+
+impl TableAccessor {
+    fn get<T: ColumnFamily>(&self) -> Table<T> {
+        Table::new(self.raw.clone(), self.caches.clone())
+    }
+}
+
 pub trait ColumnFamily {
     const NAME: &'static str;
 
@@ -208,6 +254,7 @@ pub trait ColumnFamily {
     }
 }
 
+#[derive(Clone)]
 pub struct Caches {
     pub block_cache: rocksdb::Cache,
     pub compressed_block_cache: rocksdb::Cache,
@@ -231,6 +278,7 @@ impl Caches {
 pub struct Table<T> {
     cf: CfHandle,
     db: Arc<rocksdb::DB>,
+    caches: Caches,
     write_config: rocksdb::WriteOptions,
     read_config: rocksdb::ReadOptions,
     _ty: PhantomData<T>,
@@ -240,11 +288,11 @@ impl<T> Table<T>
 where
     T: ColumnFamily,
 {
-    pub fn new(db: &Arc<rocksdb::DB>) -> Self {
+    pub fn new(db: Arc<rocksdb::DB>, caches: Caches) -> Self {
         use rocksdb::AsColumnFamilyRef;
 
         // Check that tree exists
-        let cf = db.cf_handle(T::NAME).unwrap();
+        let cf = CfHandle(db.cf_handle(T::NAME).unwrap().inner());
 
         let mut write_config = Default::default();
         T::write_options(&mut write_config);
@@ -253,8 +301,9 @@ where
         T::read_options(&mut read_config);
 
         Self {
-            cf: CfHandle(cf.inner()),
-            db: db.clone(),
+            cf,
+            db,
+            caches,
             write_config,
             read_config,
             _ty: Default::default(),
@@ -302,18 +351,12 @@ where
         write_config
     }
 
-    #[allow(unused)]
-    pub fn trigger_compaction(&self) {
-        let bound = Option::<[u8; 0]>::None;
-        self.db.compact_range_cf(&self.cf, bound, bound);
-    }
-
-    pub fn clear(&mut self, caches: &Caches) -> Result<(), rocksdb::Error> {
+    pub fn clear(&mut self) -> Result<(), rocksdb::Error> {
         use rocksdb::AsColumnFamilyRef;
 
         self.db.drop_cf(T::NAME)?;
         let mut opts = Default::default();
-        T::options(&mut opts, caches);
+        T::options(&mut opts, &self.caches);
         self.db.create_cf(T::NAME, &opts)?;
 
         let cf = self.db.cf_handle(T::NAME).unwrap();
