@@ -2,19 +2,18 @@ use std::collections::hash_map::{self, HashMap};
 
 use anyhow::{Context, Result};
 
-use super::{tables, ColumnFamily, TableAccessor};
+use super::{tables, TableAccessor};
 
-mod v2_0_7;
-mod v2_0_8;
+// declare migrations here as `mod v2_1_x`
 
-const CURRENT_VERSION: Semver = [2, 0, 8];
+const CURRENT_VERSION: Semver = [2, 1, 0];
 
 pub fn apply(tables: &TableAccessor) -> Result<()> {
     const DB_VERSION_KEY: &str = "db_version";
 
-    let mut migrations = Migrations::default();
-    v2_0_7::register(&mut migrations).context("Failed to register v2.0.7")?;
-    v2_0_8::register(&mut migrations).context("Failed to register v2.0.8")?;
+    let migrations = Migrations::default();
+    // === register migrations here ===
+    // v2_1_1::register(&mut migrations).context("Failed to register migration")?;
 
     let state = tables.get::<tables::NodeStates>();
     let is_empty = state
@@ -72,6 +71,7 @@ impl Migrations {
         self.0.get(version)
     }
 
+    #[allow(unused)]
     pub fn register<F>(&mut self, from: Semver, to: Semver, migration: F) -> Result<()>
     where
         F: Fn(TableAccessor) -> Result<()> + 'static,

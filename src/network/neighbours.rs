@@ -172,7 +172,7 @@ impl Neighbours {
 
                     let new_peers = match neighbours
                         .overlay
-                        .exchange_random_peers(&adnl, &peer_id, &neighbours.overlay_peers, None)
+                        .exchange_random_peers_ext(&adnl, &peer_id, None, &neighbours.overlay_peers)
                         .await
                     {
                         Ok(Some(new_peers)) if !new_peers.is_empty() => new_peers,

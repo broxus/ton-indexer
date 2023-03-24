@@ -737,7 +737,7 @@ impl Engine {
         neighbour: Option<&Arc<Neighbour>>,
     ) -> Result<BlockProofStuffAug> {
         self.create_download_context(
-            "create_download_context",
+            "download_block_proof",
             Arc::new(BlockProofDownloader { is_key_block }),
             block_id,
             max_attempts,
