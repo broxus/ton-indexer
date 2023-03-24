@@ -385,15 +385,37 @@ impl ShardStateStorage {
             "saved temp cells"
         );
 
+        // Acquire read lock before blocking other insertions
+        let temp_cells = self.db.temp_cells.read().await;
+
         // Wait until all writes will be finished and take the write lock of the current marker
-        {
+        let changed_cells = {
             let mut current_marker_state = self.current_marker_state.write().await;
             current_marker_state.in_transition = false;
 
-            // TODO: finish transition
+            let (total, mut batch) = self
+                .cell_storage
+                .update_persistent_state(
+                    current_marker_state.marker,
+                    &old_roots,
+                    &new_roots,
+                    &*temp_cells,
+                )
+                .await?;
+
+            let buffer = make_hashes_buffer(&new_roots);
+            batch.put_cf(&self.db.node_states.cf(), PS_ROOTS, buffer);
+
+            self.db
+                .raw()
+                .write_opt(batch, self.db.cells.write_config())
+                .context("Failed to finalize persistent state")?;
+
+            total
         };
 
         tracing::info!(
+            changed_cells,
             elapsed_sec = instant.elapsed().as_secs_f64(),
             "finished transition"
         );
@@ -534,10 +556,7 @@ impl ShardStateStorage {
             .load_state_roots(top_blocks)
             .context("Failed to find state roots")?;
 
-        let mut buffer = Vec::with_capacity(roots.len() * 32);
-        for root in roots {
-            buffer.extend_from_slice(root.as_array());
-        }
+        let buffer = make_hashes_buffer(&roots);
 
         // Update node states entry
         self.db
@@ -1019,6 +1038,14 @@ async fn prepare_file_db_dir(file_db_path: PathBuf, folder: &str) -> Result<Arc<
     let dir = Arc::new(file_db_path.join(folder));
     tokio::fs::create_dir_all(dir.as_ref()).await?;
     Ok(dir)
+}
+
+fn make_hashes_buffer(hashes: &[ton_types::UInt256]) -> Vec<u8> {
+    let mut buffer = Vec::with_capacity(hashes.len() * 32);
+    for hash in hashes {
+        buffer.extend_from_slice(hash.as_array());
+    }
+    buffer
 }
 
 const PS_ROOTS: &[u8] = b"ps_roots";

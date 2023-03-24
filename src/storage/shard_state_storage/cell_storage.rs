@@ -337,11 +337,138 @@ impl CellStorage {
 
     pub async fn update_persistent_state(
         &self,
-        write_batch: &mut rocksdb::WriteBatch,
+        current_marker: Marker,
         old_roots: &[ton_types::UInt256],
         new_roots: &[ton_types::UInt256],
-    ) -> Result<usize, CellStorageError> {
-        // TODO
+        temp_cells: &Table<tables::TempCells>,
+    ) -> Result<(usize, rocksdb::WriteBatch)> {
+        // Prepare handlers
+        let raw = self.db.raw().clone();
+
+        let cells_cf = self.db.cells.get_unbounded_cf();
+        let cells_readopts = self.db.cells.new_read_config();
+
+        let temp_cells_cf = temp_cells.get_unbounded_cf();
+        let temp_cells_readopts = temp_cells.new_read_config();
+
+        let old_roots = old_roots.to_vec();
+        let new_roots = new_roots.to_vec();
+
+        // Spawn a new blocking thread for the task
+        tokio::task::spawn_blocking(move || {
+            struct Task<'a> {
+                raw: &'a rocksdb::DB,
+                cells_cf: &'a BoundedCfHandle<'a>,
+                temp_cells_cf: &'a BoundedCfHandle<'a>,
+                current_marker: Marker,
+                cells_readopts: rocksdb::ReadOptions,
+                temp_cells_readopts: rocksdb::ReadOptions,
+                batch: rocksdb::WriteBatch,
+                transaction: FastHashSet<ton_types::UInt256>,
+                stack: Vec<ton_types::UInt256>,
+            }
+
+            impl Task<'_> {
+                fn mark_cells_tree<const NEW: bool>(
+                    &mut self,
+                    root: ton_types::UInt256,
+                ) -> Result<usize, CellStorageError> {
+                    self.reset_stack(root);
+
+                    let mut total = 0;
+
+                    // While some cells left
+                    while let Some(cell_id) = self.stack.pop() {
+                        let key = cell_id.as_array();
+
+                        // Load cell marker and references from the top of the stack
+                        let (updated, references) = match self.raw.get_pinned_cf_opt(
+                            self.cells_cf,
+                            key,
+                            &self.cells_readopts,
+                        ) {
+                            Ok(Some(value)) => {
+                                let (marker, references) =
+                                    match StorageCell::deserialize_marker_and_references(
+                                        value.as_ref(),
+                                    ) {
+                                        Ok(cell) => cell,
+                                        Err(_) => return Err(CellStorageError::InvalidCell),
+                                    };
+
+                                let (updated, marker) = if NEW {
+                                    (marker.is_temp(), Marker::PERSISTENT)
+                                } else {
+                                    let unused = match self.raw.get_pinned_cf_opt(
+                                        self.temp_cells_cf,
+                                        key,
+                                        &self.temp_cells_readopts,
+                                    ) {
+                                        Ok(value) => value.is_none(),
+                                        Err(e) => return Err(CellStorageError::Internal(e)),
+                                    };
+                                    (unused, self.current_marker)
+                                };
+
+                                // Update cell marker if needed
+                                if updated {
+                                    self.batch.merge_cf(self.cells_cf, key, [marker.0]);
+                                }
+
+                                (updated, references)
+                            }
+                            Ok(None) => return Err(CellStorageError::CellNotFound),
+                            Err(e) => return Err(CellStorageError::Internal(e)),
+                        };
+
+                        total += updated as usize;
+
+                        // Add all children
+                        if updated {
+                            for child in references {
+                                let cell_id = child.hash();
+                                if self.transaction.insert(cell_id) {
+                                    self.stack.push(cell_id);
+                                }
+                            }
+                        }
+                    }
+
+                    Ok(total)
+                }
+
+                fn reset_stack(&mut self, root: ton_types::UInt256) {
+                    self.transaction.clear();
+                    self.stack.clear();
+                    self.stack.push(root);
+                }
+            }
+
+            let mut task = Task {
+                raw: raw.as_ref(),
+                cells_cf: &cells_cf.bound(),
+                temp_cells_cf: &temp_cells_cf.bound(),
+                current_marker,
+                cells_readopts,
+                temp_cells_readopts,
+                batch: rocksdb::WriteBatch::default(),
+                transaction: FastHashSet::default(),
+                stack: Vec::with_capacity(256),
+            };
+
+            // Start from the root cell
+            let mut total = 0;
+            for root in old_roots {
+                total += task.mark_cells_tree::<false>(root)?;
+            }
+            for root in new_roots {
+                total += task.mark_cells_tree::<true>(root)?;
+            }
+
+            Ok::<_, CellStorageError>((total, task.batch))
+        })
+        .await?
+        .map_err(From::from)
     }
 
     pub fn mark_cells_tree(

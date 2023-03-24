@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use parking_lot::Mutex;
 
 use crate::db::*;
@@ -91,58 +91,6 @@ impl NodeStateStorage {
         self.load_block_id(&self.shards_client_mc_block_id)
     }
 
-    pub fn load_prev_persistent_state_roots(&self) -> Result<Vec<ton_types::UInt256>> {
-        self.load_hashes(PS_ROOTS_CURR)
-    }
-
-    pub fn load_current_persistent_state_roots(&self) -> Result<Vec<ton_types::UInt256>> {
-        self.load_hashes(PS_ROOTS_CURR)
-    }
-
-    pub fn reset_persistent_state_roots(&self, roots: &[ton_types::UInt256]) -> Result<()> {
-        let cf = &self.db.node_states.cf();
-
-        let mut buffer = Vec::with_capacity(roots.len() * 32);
-        for hash in roots {
-            buffer.extend_from_slice(hash.as_array());
-        }
-
-        let mut write_batch = rocksdb::WriteBatch::default();
-        write_batch.put_cf(cf, PS_ROOTS_PREV, &buffer);
-        write_batch.put_cf(cf, PS_ROOTS_CURR, &buffer);
-
-        let raw = self.db.raw();
-        raw.write(write_batch)
-            .context("Failed to reset persistent state roots")
-    }
-
-    pub fn update_persistent_state_roots(
-        &self,
-        current_roots: &[ton_types::UInt256],
-    ) -> Result<()> {
-        let cf = &self.db.node_states.cf();
-
-        let current_roots = {
-            let mut buffer = Vec::with_capacity(current_roots.len() * 32);
-            for hash in current_roots {
-                buffer.extend_from_slice(hash.as_array());
-            }
-            buffer
-        };
-
-        let prev_roots = self.db.node_states.get(PS_ROOTS_CURR)?;
-
-        let mut write_batch = rocksdb::WriteBatch::default();
-        if let Some(prev_roots) = prev_roots {
-            write_batch.put_cf(cf, PS_ROOTS_PREV, prev_roots);
-        }
-        write_batch.put_cf(cf, PS_ROOTS_CURR, current_roots);
-
-        let raw = self.db.raw();
-        raw.write(write_batch)
-            .context("Failed to update persistent state roots")
-    }
-
     #[inline(always)]
     fn store_block_id(
         &self,
@@ -168,21 +116,6 @@ impl NodeStateStorage {
         *cache.lock() = Some(value.clone());
         Ok(value)
     }
-
-    fn load_hashes(&self, key: &[u8]) -> Result<Vec<ton_types::UInt256>> {
-        let data = match self.db.node_states.get(key)? {
-            Some(data) => data,
-            None => return Ok(Vec::default()),
-        };
-        let data = data.as_ref();
-        anyhow::ensure!(data.len() % 32 == 0, "Invalid hashes array");
-
-        let mut result = Vec::with_capacity(data.len() / 32);
-        for hash in data.chunks_exact(32) {
-            result.push(ton_types::UInt256::from_slice(hash));
-        }
-        Ok(result)
-    }
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -205,6 +138,3 @@ const LAST_UPLOADED_ARCHIVE: &[u8] = b"last_uploaded_archive";
 const LAST_MC_BLOCK_ID: &[u8] = b"LastMcBlockId";
 const INIT_MC_BLOCK_ID: &[u8] = b"InitMcBlockId";
 const SHARDS_CLIENT_MC_BLOCK_ID: &[u8] = b"ShardsClientMcBlockId";
-
-const PS_ROOTS_PREV: &[u8] = b"ps_roots_prev";
-const PS_ROOTS_CURR: &[u8] = b"ps_roots_curr";
