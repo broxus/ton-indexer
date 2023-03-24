@@ -12,9 +12,9 @@ use anyhow::Result;
 use everscale_network::{QueryConsumingResult, QuerySubscriber, SubscriberContext};
 use tl_proto::{TlRead, TlWrite};
 
-use crate::db::{BlockConnection, Db, KeyBlocksDirection};
 use crate::engine::Engine;
 use crate::proto;
+use crate::storage::{BlockConnection, KeyBlocksDirection, Storage};
 
 pub struct NodeRpcServer(Weak<Engine>);
 
@@ -109,11 +109,15 @@ impl QuerySubscriber for NodeRpcServer {
 struct QueryHandler(Arc<Engine>);
 
 impl QueryHandler {
+    fn storage(&self) -> &Storage {
+        self.0.storage.as_ref()
+    }
+
     async fn get_next_block_description(
         self,
         query: proto::RpcGetNextBlockDescription,
     ) -> Result<proto::BlockDescription> {
-        let db = self.0.db.block_connection_storage();
+        let db = self.storage().block_connection_storage();
 
         match db.load_connection(&query.prev_block, BlockConnection::Next1) {
             Ok(id) => Ok(proto::BlockDescription::Found { id }),
@@ -125,18 +129,18 @@ impl QueryHandler {
         self,
         query: proto::RpcPrepareBlockProof,
     ) -> Result<proto::PreparedProof> {
-        find_block_proof(&self.0.db, &query.block, query.allow_partial, false)
+        find_block_proof(self.storage(), &query.block, query.allow_partial, false)
     }
 
     async fn prepare_key_block_proof(
         self,
         query: proto::RpcPrepareKeyBlockProof,
     ) -> Result<proto::PreparedProof> {
-        find_block_proof(&self.0.db, &query.block, query.allow_partial, true)
+        find_block_proof(self.storage(), &query.block, query.allow_partial, true)
     }
 
     async fn prepare_block(self, query: proto::RpcPrepareBlock) -> Result<proto::Prepared> {
-        let block_handle_storage = self.0.db.block_handle_storage();
+        let block_handle_storage = self.storage().block_handle_storage();
 
         Ok(match block_handle_storage.load_handle(&query.block)? {
             Some(handle) if handle.meta().has_data() => proto::Prepared::Found,
@@ -166,7 +170,7 @@ impl QueryHandler {
     ) -> Result<proto::KeyBlocks> {
         const NEXT_KEY_BLOCKS_LIMIT: usize = 8;
 
-        let block_handle_storage = self.0.db.block_handle_storage();
+        let block_handle_storage = self.storage().block_handle_storage();
 
         let limit = std::cmp::min(query.max_size as usize, NEXT_KEY_BLOCKS_LIMIT);
 
@@ -220,9 +224,9 @@ impl QueryHandler {
         self,
         query: proto::RpcDownloadNextBlockFull,
     ) -> Result<proto::DataFull> {
-        let block_handle_storage = self.0.db.block_handle_storage();
-        let block_connection_storage = self.0.db.block_connection_storage();
-        let block_storage = self.0.db.block_storage();
+        let block_handle_storage = self.storage().block_handle_storage();
+        let block_connection_storage = self.storage().block_connection_storage();
+        let block_storage = self.storage().block_storage();
 
         let next_block_id = match block_handle_storage.load_handle(&query.prev_block)? {
             Some(handle) if handle.meta().has_next1() => block_connection_storage
@@ -251,8 +255,8 @@ impl QueryHandler {
         self,
         query: proto::RpcDownloadBlockFull,
     ) -> Result<proto::DataFull> {
-        let block_handle_storage = self.0.db.block_handle_storage();
-        let block_storage = self.0.db.block_storage();
+        let block_handle_storage = self.storage().block_handle_storage();
+        let block_storage = self.storage().block_storage();
 
         let mut is_link = false;
         Ok(match block_handle_storage.load_handle(&query.block)? {
@@ -272,37 +276,38 @@ impl QueryHandler {
     }
 
     async fn download_block(self, query: proto::RpcDownloadBlock) -> Result<Vec<u8>> {
-        match self.0.db.block_handle_storage().load_handle(&query.block)? {
+        let storage = self.storage();
+        match storage.block_handle_storage().load_handle(&query.block)? {
             Some(handle) if handle.meta().has_data() => {
-                self.0.db.block_storage().load_block_data_raw(&handle).await
+                storage.block_storage().load_block_data_raw(&handle).await
             }
             _ => Err(NodeRpcServerError::BlockNotFound.into()),
         }
     }
 
     async fn download_block_proof(self, query: proto::RpcDownloadBlockProof) -> Result<Vec<u8>> {
-        load_block_proof(&self.0.db, &query.block, false).await
+        load_block_proof(self.storage(), &query.block, false).await
     }
 
     async fn download_key_block_proof(
         self,
         query: proto::RpcDownloadKeyBlockProof,
     ) -> Result<Vec<u8>> {
-        load_block_proof(&self.0.db, &query.block, false).await
+        load_block_proof(self.storage(), &query.block, false).await
     }
 
     async fn download_block_proof_link(
         self,
         query: proto::RpcDownloadBlockProofLink,
     ) -> Result<Vec<u8>> {
-        load_block_proof(&self.0.db, &query.block, true).await
+        load_block_proof(self.storage(), &query.block, true).await
     }
 
     async fn download_key_block_proof_link(
         self,
         query: proto::RpcDownloadKeyBlockProofLink,
     ) -> Result<Vec<u8>> {
-        load_block_proof(&self.0.db, &query.block, true).await
+        load_block_proof(self.storage(), &query.block, true).await
     }
 
     async fn get_archive_info(self, query: proto::RpcGetArchiveInfo) -> Result<proto::ArchiveInfo> {
@@ -318,7 +323,8 @@ impl QueryHandler {
             return Ok(proto::ArchiveInfo::NotFound);
         }
 
-        Ok(match self.0.db.block_storage().get_archive_id(mc_seq_no) {
+        let block_storage = self.storage().block_storage();
+        Ok(match block_storage.get_archive_id(mc_seq_no) {
             Some(id) => proto::ArchiveInfo::Found { id: id as u64 },
             None => proto::ArchiveInfo::NotFound,
         })
@@ -326,7 +332,7 @@ impl QueryHandler {
 
     async fn get_archive_slice(self, query: proto::RpcGetArchiveSlice) -> Result<Vec<u8>> {
         Ok(
-            match self.0.db.block_storage().get_archive_slice(
+            match self.storage().block_storage().get_archive_slice(
                 query.archive_id as u32,
                 query.offset as usize,
                 query.max_size as usize,
@@ -339,12 +345,12 @@ impl QueryHandler {
 }
 
 fn find_block_proof(
-    db: &Db,
+    storage: &Storage,
     block_id: &ton_block::BlockIdExt,
     allow_partial: bool,
     key_block: bool,
 ) -> Result<proto::PreparedProof> {
-    let handle = match db.block_handle_storage().load_handle(block_id)? {
+    let handle = match storage.block_handle_storage().load_handle(block_id)? {
         Some(handle) => handle,
         None => return Ok(proto::PreparedProof::Empty),
     };
@@ -364,12 +370,12 @@ fn find_block_proof(
 }
 
 async fn load_block_proof(
-    db: &Db,
+    storage: &Storage,
     block_id: &ton_block::BlockIdExt,
     is_link: bool,
 ) -> Result<Vec<u8>> {
-    let block_handle_storage = db.block_handle_storage();
-    let block_storage = db.block_storage();
+    let block_handle_storage = storage.block_handle_storage();
+    let block_storage = storage.block_storage();
 
     match block_handle_storage.load_handle(block_id)? {
         Some(handle)

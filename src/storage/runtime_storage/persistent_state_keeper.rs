@@ -5,8 +5,8 @@ use anyhow::Result;
 use arc_swap::ArcSwapOption;
 use tokio::sync::Notify;
 
-use super::{BlockHandleStorage, BriefBlockMeta};
-use crate::db::BlockHandle;
+use crate::storage::models::{BlockHandle, BriefBlockMeta};
+use crate::storage::BlockHandleStorage;
 use crate::utils::*;
 
 pub struct PersistentStateKeeper {
@@ -18,9 +18,9 @@ pub struct PersistentStateKeeper {
 }
 
 impl PersistentStateKeeper {
-    pub fn new(block_handle_storage: &Arc<BlockHandleStorage>) -> Self {
+    pub fn new(block_handle_storage: Arc<BlockHandleStorage>) -> Self {
         Self {
-            block_handle_storage: block_handle_storage.clone(),
+            block_handle_storage,
             initialized: Default::default(),
             persistent_state_changed: Default::default(),
             current_persistent_state: Default::default(),

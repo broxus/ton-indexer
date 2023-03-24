@@ -9,9 +9,9 @@ use std::sync::Arc;
 use anyhow::{anyhow, Result};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
-use crate::db::BlockConnection;
 use crate::engine::Engine;
 use crate::proto;
+use crate::storage::BlockConnection;
 use crate::utils::*;
 
 pub async fn walk_masterchain_blocks(
@@ -43,7 +43,7 @@ pub async fn walk_shard_blocks(
 ) -> Result<()> {
     let semaphore = Arc::new(Semaphore::new(1));
 
-    let block_handle_storage = engine.db.block_handle_storage();
+    let block_handle_storage = engine.storage.block_handle_storage();
     let mut handle = block_handle_storage
         .load_handle(&mc_block_id)?
         .ok_or(ShardClientError::ShardchainBlockHandleNotFound)?;
@@ -71,9 +71,9 @@ async fn load_next_masterchain_block(
     engine: &Arc<Engine>,
     prev_block_id: &ton_block::BlockIdExt,
 ) -> Result<ton_block::BlockIdExt> {
-    let block_handle_storage = engine.db.block_handle_storage();
-    let block_connection_storage = engine.db.block_connection_storage();
-    let block_storage = engine.db.block_storage();
+    let block_handle_storage = engine.storage.block_handle_storage();
+    let block_connection_storage = engine.storage.block_connection_storage();
+    let block_storage = engine.storage.block_storage();
 
     if let Some(handle) = block_handle_storage.load_handle(prev_block_id)? {
         if handle.meta().has_next1() {
@@ -143,7 +143,7 @@ async fn load_shard_blocks(
     permit: OwnedSemaphorePermit,
     masterchain_block: BlockStuff,
 ) -> Result<()> {
-    let block_handle_storage = engine.db.block_handle_storage();
+    let block_handle_storage = engine.storage.block_handle_storage();
 
     let mc_seq_no = masterchain_block.id().seq_no;
     let mut tasks = Vec::new();
@@ -185,8 +185,8 @@ pub async fn process_block_broadcast(
     engine: &Arc<Engine>,
     mut broadcast: proto::BlockBroadcast,
 ) -> Result<()> {
-    let block_handle_storage = engine.db.block_handle_storage();
-    let block_storage = engine.db.block_storage();
+    let block_handle_storage = engine.storage.block_handle_storage();
+    let block_storage = engine.storage.block_storage();
 
     if matches!(
         block_handle_storage.load_handle(&broadcast.id)?,

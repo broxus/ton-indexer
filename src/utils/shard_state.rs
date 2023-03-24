@@ -9,9 +9,10 @@ use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
 use once_cell::sync::Lazy;
-use rustc_hash::FxHashMap;
 use ton_block::{Deserializable, Serializable};
 use ton_types::{Cell, UInt256};
+
+use super::FastHashMap;
 
 /// Full persistent state block id (relative to the masterchain)
 pub struct FullStateId {
@@ -134,7 +135,7 @@ impl Drop for RefMcStateHandle {
 
 #[derive(Default)]
 pub struct MinRefMcState {
-    counters: parking_lot::RwLock<(Option<u32>, FxHashMap<u32, AtomicU32>)>,
+    counters: parking_lot::RwLock<(Option<u32>, FastHashMap<u32, AtomicU32>)>,
 }
 
 impl MinRefMcState {

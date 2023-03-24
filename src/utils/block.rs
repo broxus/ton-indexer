@@ -4,7 +4,6 @@
 /// - replaced old `failure` crate with `anyhow`
 ///
 use anyhow::{anyhow, Context, Result};
-use rustc_hash::FxHashMap;
 use ton_block::Deserializable;
 use ton_types::UInt256;
 
@@ -20,20 +19,35 @@ pub trait BlockIdExtDisplay {
 
 impl BlockIdExtDisplay for ton_block::BlockIdExt {
     fn display(&self) -> DisplayShortBlockIdExt<'_> {
-        DisplayShortBlockIdExt(self)
+        DisplayShortBlockIdExt {
+            shard_ident: &self.shard_id,
+            seqno: self.seq_no,
+        }
+    }
+}
+
+impl BlockIdExtDisplay for BlockIdShort {
+    fn display(&self) -> DisplayShortBlockIdExt<'_> {
+        DisplayShortBlockIdExt {
+            shard_ident: &self.0,
+            seqno: self.1,
+        }
     }
 }
 
 #[derive(Clone, Copy)]
-pub struct DisplayShortBlockIdExt<'a>(&'a ton_block::BlockIdExt);
+pub struct DisplayShortBlockIdExt<'a> {
+    shard_ident: &'a ton_block::ShardIdent,
+    seqno: u32,
+}
 
 impl std::fmt::Display for DisplayShortBlockIdExt<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_fmt(format_args!(
             "{}:{:016x}:{}",
-            self.0.shard_id.workchain_id(),
-            self.0.shard_id.shard_prefix_with_tag(),
-            self.0.seq_no
+            self.shard_ident.workchain_id(),
+            self.shard_ident.shard_prefix_with_tag(),
+            self.seqno
         ))
     }
 }
@@ -123,8 +137,10 @@ impl BlockStuff {
         }
     }
 
-    pub fn shard_blocks(&self) -> Result<FxHashMap<ton_block::ShardIdent, ton_block::BlockIdExt>> {
-        let mut shards = FxHashMap::default();
+    pub fn shard_blocks(
+        &self,
+    ) -> Result<FastHashMap<ton_block::ShardIdent, ton_block::BlockIdExt>> {
+        let mut shards = FastHashMap::default();
         self.block()
             .read_extra()?
             .read_custom()?
@@ -144,8 +160,8 @@ impl BlockStuff {
         Ok(shards)
     }
 
-    pub fn shard_blocks_seq_no(&self) -> Result<FxHashMap<ton_block::ShardIdent, u32>> {
-        let mut shards = FxHashMap::default();
+    pub fn shard_blocks_seq_no(&self) -> Result<FastHashMap<ton_block::ShardIdent, u32>> {
+        let mut shards = FastHashMap::default();
         self.block()
             .read_extra()?
             .read_custom()?

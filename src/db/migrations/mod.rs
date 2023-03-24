@@ -1,27 +1,21 @@
 use std::collections::hash_map::{self, HashMap};
-use std::future::Future;
-use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use futures_util::future::BoxFuture;
-use futures_util::FutureExt;
 
-use super::columns;
-use super::tree::Tree;
+use super::{tables, TableAccessor};
 
-mod v2_0_7;
-mod v2_0_8;
+// declare migrations here as `mod v2_1_x`
 
-const CURRENT_VERSION: Semver = [2, 0, 8];
+const CURRENT_VERSION: Semver = [2, 1, 0];
 
-pub async fn apply(db: &Arc<rocksdb::DB>) -> Result<()> {
+pub fn apply(tables: &TableAccessor) -> Result<()> {
     const DB_VERSION_KEY: &str = "db_version";
 
-    let mut migrations = Migrations::default();
-    v2_0_7::register(&mut migrations).context("Failed to register v2.0.7")?;
-    v2_0_8::register(&mut migrations).context("Failed to register v2.0.8")?;
+    let migrations = Migrations::default();
+    // === register migrations here ===
+    // v2_1_1::register(&mut migrations).context("Failed to register migration")?;
 
-    let state = Tree::<columns::NodeStates>::new(db)?;
+    let state = tables.get::<tables::NodeStates>();
     let is_empty = state
         .iterator(rocksdb::IteratorMode::Start)
         .next()
@@ -64,7 +58,7 @@ pub async fn apply(db: &Arc<rocksdb::DB>) -> Result<()> {
         tracing::info!(?version, "applying migration");
 
         state
-            .insert(DB_VERSION_KEY, (*migration)(db.clone()).await?)
+            .insert(DB_VERSION_KEY, (*migration)(tables.clone())?)
             .context("Failed to save new DB version")?;
     }
 }
@@ -77,20 +71,16 @@ impl Migrations {
         self.0.get(version)
     }
 
-    pub fn register<F, FR>(&mut self, from: Semver, to: Semver, migration: F) -> Result<()>
+    #[allow(unused)]
+    pub fn register<F>(&mut self, from: Semver, to: Semver, migration: F) -> Result<()>
     where
-        F: Fn(Arc<rocksdb::DB>) -> FR + 'static,
-        FR: Future<Output = Result<()>> + Send + 'static,
+        F: Fn(TableAccessor) -> Result<()> + 'static,
     {
         match self.0.entry(from) {
             hash_map::Entry::Vacant(entry) => {
                 entry.insert(Box::new(move |db| {
-                    let fut = migration(db);
-                    async move {
-                        fut.await?;
-                        Ok(to)
-                    }
-                    .boxed()
+                    migration(db)?;
+                    Ok(to)
                 }));
                 Ok(())
             }
@@ -102,7 +92,7 @@ impl Migrations {
 }
 
 type Semver = [u8; 3];
-type Migration = Box<dyn Fn(Arc<rocksdb::DB>) -> BoxFuture<'static, Result<Semver>>>;
+type Migration = Box<dyn Fn(TableAccessor) -> Result<Semver>>;
 
 #[derive(thiserror::Error, Debug)]
 enum MigrationsError {

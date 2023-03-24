@@ -1,9 +1,10 @@
 pub use crate::config::*;
-pub use crate::db::{BriefBlockMeta, DbMetrics, RocksdbStats};
+pub use crate::db::RocksdbStats;
 pub use crate::engine::{
     Engine, EngineMetrics, EngineStatus, InternalEngineMetrics, ProcessBlockContext, Subscriber,
 };
 pub use crate::network::{NeighboursOptions, NetworkMetrics, NodeNetwork};
+pub use crate::storage::{BriefBlockMeta, DbMetrics};
 
 #[cfg(feature = "archive-uploader")]
 pub use archive_uploader;
@@ -14,6 +15,7 @@ mod db;
 mod engine;
 mod network;
 mod proto;
+mod storage;
 pub mod utils;
 
 pub mod alloc {

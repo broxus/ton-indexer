@@ -5,20 +5,20 @@ use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use rustc_hash::FxHashMap;
 use smallvec::SmallVec;
 
-use crate::db::{columns, Tree};
+use crate::db::Db;
+use crate::utils::FastHashMap;
 
 pub struct CellWriter<'a> {
-    cells: &'a Tree<columns::Cells>,
+    db: &'a Db,
     base_path: &'a Path,
 }
 
 impl<'a> CellWriter<'a> {
     #[allow(unused)]
-    pub fn new(cells: &'a Tree<columns::Cells>, base_path: &'a Path) -> Self {
-        Self { cells, base_path }
+    pub fn new(db: &'a Db, base_path: &'a Path) -> Self {
+        Self { db, base_path }
     }
 
     #[allow(unused)]
@@ -34,7 +34,7 @@ impl<'a> CellWriter<'a> {
 
         // Load cells from db in reverse order into the temp file
         tracing::info!("started loading cells");
-        let mut intermediate = write_rev_cells(self.cells, self.base_path, root_hash)
+        let mut intermediate = write_rev_cells(self.db, self.base_path, root_hash)
             .context("Failed to write reversed cells data")?;
         tracing::info!("finished loading cells");
         let cell_count = intermediate.cell_sizes.len() as u32;
@@ -124,7 +124,7 @@ struct IntermediateState {
 }
 
 fn write_rev_cells<P: AsRef<Path>>(
-    cells: &Tree<columns::Cells>,
+    db: &Db,
     base_path: P,
     root_hash: &[u8; 32],
 ) -> Result<IntermediateState> {
@@ -155,15 +155,14 @@ fn write_rev_cells<P: AsRef<Path>>(
         .context("Failed to create temp file")?;
     let remove_on_drop = RemoveOnDrop(file_path);
 
-    let db = cells.raw_db_handle();
-    let read_options = cells.read_config();
-
-    let cf = cells.get_cf();
+    let raw = db.raw().as_ref();
+    let read_options = db.cells.read_config();
+    let cf = db.cells.cf();
 
     let mut references_buffer = SmallVec::<[[u8; 32]; 4]>::with_capacity(4);
 
-    let mut indices = FxHashMap::default();
-    let mut remap = FxHashMap::default();
+    let mut indices = FastHashMap::default();
+    let mut remap = FastHashMap::default();
     let mut cell_sizes = Vec::<u8>::with_capacity(FILE_BUFFER_LEN);
     let mut stack = Vec::with_capacity(32);
 
@@ -179,7 +178,7 @@ fn write_rev_cells<P: AsRef<Path>>(
     while let Some((index, data)) = stack.pop() {
         match data {
             StackItem::New(hash) => {
-                let value = db
+                let value = raw
                     .get_pinned_cf_opt(&cf, hash, read_options)?
                     .ok_or(CellWriterError::CellNotFound)?;
 

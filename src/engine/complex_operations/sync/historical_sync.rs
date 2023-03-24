@@ -2,7 +2,6 @@ use std::ops::ControlFlow;
 use std::sync::Arc;
 
 use anyhow::Result;
-use ton_types::FxDashSet;
 
 use super::archives_stream::*;
 use super::block_maps::*;
@@ -96,9 +95,9 @@ impl<'a> HistoricalSyncContext<'a> {
         maps: &Arc<BlockMaps>,
         edge: &mut Option<BlockMapsEdge>,
     ) -> Result<()> {
-        let node_state = self.engine.db.node_state();
+        let node_state = self.engine.storage.node_state();
 
-        let splits = Arc::new(FxDashSet::default());
+        let splits = Arc::new(FastDashSet::default());
 
         for mc_block_id in maps.mc_block_ids.values() {
             let mc_seq_no = mc_block_id.seq_no;
@@ -239,8 +238,8 @@ impl Engine {
         proof: &BlockProofStuffAug,
         mc_seq_no: u32,
     ) -> Result<()> {
-        let block_handle_storage = self.db.block_handle_storage();
-        let block_storage = self.db.block_storage();
+        let block_handle_storage = self.storage.block_handle_storage();
+        let block_storage = self.storage.block_storage();
 
         let (handle, _) = block_handle_storage
             .create_or_load_handle(block.id(), info.with_mc_seq_no(mc_seq_no))?;
@@ -272,7 +271,7 @@ impl Engine {
     }
 
     fn historical_sync_range(&self, from_seqno: u32) -> Result<(u32, u32)> {
-        let state = self.db.node_state();
+        let state = self.storage.node_state();
 
         let low = match state.load_historical_sync_start()? {
             Some(low) => low.seq_no,

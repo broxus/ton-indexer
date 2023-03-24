@@ -8,9 +8,9 @@ use std::time::Duration;
 
 use anyhow::Result;
 
-use crate::db::*;
 use crate::engine::NodeRpcClient;
 use crate::network::Neighbour;
+use crate::storage::*;
 use crate::utils::*;
 
 impl<'a, T> DownloadContext<'a, T> {
@@ -18,16 +18,15 @@ impl<'a, T> DownloadContext<'a, T> {
         &self,
         block_id: &ton_block::BlockIdExt,
     ) -> Result<Option<(BlockStuffAug, BlockProofStuffAug)>> {
-        match self.db.block_handle_storage().load_handle(block_id)? {
+        let block_handle_storage = self.storage.block_handle_storage();
+        let block_storage = self.storage.block_storage();
+
+        match block_handle_storage.load_handle(block_id)? {
             Some(handle) => {
                 let mut is_link = false;
                 if handle.meta().has_data() && handle.has_proof_or_link(&mut is_link) {
-                    let block = self.db.block_storage().load_block_data(&handle).await?;
-                    let block_proof = self
-                        .db
-                        .block_storage()
-                        .load_block_proof(&handle, is_link)
-                        .await?;
+                    let block = block_storage.load_block_data(&handle).await?;
+                    let block_proof = block_storage.load_block_proof(&handle, is_link).await?;
                     Ok(Some((
                         BlockStuffAug::loaded(block),
                         BlockProofStuffAug::loaded(block_proof),
@@ -71,18 +70,13 @@ impl Downloader for BlockProofDownloader {
         &self,
         context: &DownloadContext<'_, Self::Item>,
     ) -> Result<Option<Self::Item>> {
-        if let Some(handle) = context
-            .db
-            .block_handle_storage()
-            .load_handle(context.block_id)?
-        {
+        let block_handle_storage = context.storage.block_handle_storage();
+        let block_storage = context.storage.block_storage();
+
+        if let Some(handle) = block_handle_storage.load_handle(context.block_id)? {
             let mut is_link = false;
             if handle.has_proof_or_link(&mut is_link) {
-                let proof = context
-                    .db
-                    .block_storage()
-                    .load_block_proof(&handle, is_link)
-                    .await?;
+                let proof = block_storage.load_block_proof(&handle, is_link).await?;
                 return Ok(Some(Self::Item::loaded(proof)));
             }
         }
@@ -108,15 +102,12 @@ impl Downloader for NextBlockDownloader {
         &self,
         context: &DownloadContext<'_, Self::Item>,
     ) -> Result<Option<Self::Item>> {
-        if let Some(prev_handle) = context
-            .db
-            .block_handle_storage()
-            .load_handle(context.block_id)?
-        {
+        let block_handle_storage = context.storage.block_handle_storage();
+        let block_connection_storage = context.storage.block_connection_storage();
+
+        if let Some(prev_handle) = block_handle_storage.load_handle(context.block_id)? {
             if prev_handle.meta().has_next1() {
-                let next_block_id = context
-                    .db
-                    .block_connection_storage()
+                let next_block_id = block_connection_storage
                     .load_connection(context.block_id, BlockConnection::Next1)?;
 
                 if let Some(full_block) = context.load_full_block(&next_block_id).await? {
@@ -163,7 +154,7 @@ pub struct DownloadContext<'a, T> {
     pub timeouts: Option<DownloaderTimeouts>,
 
     pub client: &'a NodeRpcClient,
-    pub db: &'a Db,
+    pub storage: &'a Storage,
 
     pub downloader: Arc<dyn Downloader<Item = T>>,
     pub explicit_neighbour: Option<&'a Arc<Neighbour>>,

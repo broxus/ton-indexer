@@ -13,12 +13,12 @@ use anyhow::Result;
 use everscale_network::*;
 use global_config::*;
 use tokio_util::sync::CancellationToken;
-use ton_types::FxDashMap;
 
+pub use self::neighbour::Neighbour;
+use self::neighbours::Neighbours;
+pub use self::neighbours::{NeighboursMetrics, NeighboursOptions};
 pub use self::overlay_client::OverlayClient;
-pub use neighbour::Neighbour;
-use neighbours::Neighbours;
-pub use neighbours::{NeighboursMetrics, NeighboursOptions};
+use crate::utils::FastDashMap;
 
 mod neighbour;
 mod neighbours;
@@ -32,7 +32,7 @@ pub struct NodeNetwork {
     rldp: Arc<rldp::Node>,
     neighbours_options: NeighboursOptions,
     overlay_shard_options: overlay::OverlayOptions,
-    overlays: Arc<FxDashMap<overlay::IdShort, Arc<OverlayClient>>>,
+    overlays: Arc<FastDashMap<overlay::IdShort, Arc<OverlayClient>>>,
     zero_state_file_hash: [u8; 32],
     working_state: Arc<WorkingState>,
 }

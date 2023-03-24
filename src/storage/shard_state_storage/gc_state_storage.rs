@@ -2,35 +2,30 @@ use std::io::Read;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use rustc_hash::FxHashMap;
 use ton_types::ByteOrderRead;
 
-use crate::db::{columns, StoredValue, Tree};
-use crate::utils::{StoredValueBuffer, TopBlocks};
+use super::Marker;
+use crate::db::*;
+use crate::utils::{FastHashMap, StoredValue, StoredValueBuffer, TopBlocks};
 
 pub struct GcStateStorage {
-    node_states: Tree<columns::NodeStates>,
+    db: Arc<Db>,
 }
 
 impl GcStateStorage {
-    pub fn new(db: &Arc<rocksdb::DB>) -> Result<Self> {
-        let storage = Self {
-            node_states: Tree::new(db)?,
-        };
+    pub fn new(db: Arc<Db>) -> Result<Arc<Self>> {
+        let storage = Arc::new(Self { db });
         let _ = storage.load()?;
         Ok(storage)
     }
 
     pub fn load(&self) -> Result<GcState> {
-        Ok(match self.node_states.get(STATES_GC_STATE_KEY)? {
+        Ok(match self.db.node_states.get(STATES_GC_STATE_KEY)? {
             Some(value) => {
                 GcState::from_slice(&value).context("Failed to decode states GC state")?
             }
             None => {
-                let state = GcState {
-                    current_marker: 1, // NOTE: zero marker is reserved for persistent state
-                    step: None,
-                };
+                let state = GcState::default();
                 self.update(&state)?;
                 state
             }
@@ -38,13 +33,14 @@ impl GcStateStorage {
     }
 
     pub fn update(&self, state: &GcState) -> Result<()> {
-        self.node_states
+        let node_states = &self.db.node_states;
+        node_states
             .insert(STATES_GC_STATE_KEY, state.to_vec())
             .context("Failed to update shards GC state")
     }
 
     pub fn clear_last_blocks(&self) -> Result<()> {
-        let mut iter = self.node_states.prefix_iterator(GC_LAST_BLOCK_KEY);
+        let mut iter = self.db.node_states.prefix_iterator(GC_LAST_BLOCK_KEY);
         loop {
             let key = match iter.key() {
                 Some(key) => key,
@@ -52,7 +48,7 @@ impl GcStateStorage {
             };
 
             if key.starts_with(GC_LAST_BLOCK_KEY) {
-                self.node_states.remove(key)?;
+                self.db.node_states.remove(key)?;
             }
 
             iter.next();
@@ -60,10 +56,10 @@ impl GcStateStorage {
         Ok(())
     }
 
-    pub fn load_last_blocks(&self) -> Result<FxHashMap<ton_block::ShardIdent, u32>> {
-        let mut result = FxHashMap::default();
+    pub fn load_last_blocks(&self) -> Result<FastHashMap<ton_block::ShardIdent, u32>> {
+        let mut result = FastHashMap::default();
 
-        let mut iter = self.node_states.prefix_iterator(GC_LAST_BLOCK_KEY);
+        let mut iter = self.db.node_states.prefix_iterator(GC_LAST_BLOCK_KEY);
         loop {
             let (key, mut value) = match iter.item() {
                 Some(item) => item,
@@ -87,23 +83,10 @@ impl GcStateStorage {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct GcState {
-    pub current_marker: u8,
+    pub current_marker: Marker,
     pub step: Option<Step>,
-}
-
-impl GcState {
-    /// 0x00 marker is used for persistent state
-    /// 0xff marker is used for persistent state transition
-    pub fn next_marker(&self) -> u8 {
-        match self.current_marker {
-            // Saturate marker
-            254 | 255 => 1,
-            // Increment marker otherwise
-            marker => marker + 1,
-        }
-    }
 }
 
 impl StoredValue for GcState {
@@ -118,7 +101,7 @@ impl StoredValue for GcState {
             Some(Step::SweepCells(blocks)) => (2, Some(blocks)),
             Some(Step::SweepBlocks(blocks)) => (3, Some(blocks)),
         };
-        buffer.write_raw_slice(&[self.current_marker, step]);
+        buffer.write_raw_slice(&[self.current_marker.0, step]);
 
         if let Some(blocks) = blocks {
             blocks.serialize(buffer);
@@ -131,6 +114,9 @@ impl StoredValue for GcState {
     {
         let mut data = [0u8; 2];
         reader.read_exact(&mut data)?;
+
+        let current_marker = Marker::from_temp(data[0]).context("Invalid current marker")?;
+
         let step = match data[1] {
             0 => None,
             1 => Some(Step::Mark(TopBlocks::deserialize(reader)?)),
@@ -140,7 +126,7 @@ impl StoredValue for GcState {
         };
 
         Ok(Self {
-            current_marker: data[0],
+            current_marker,
             step,
         })
     }
@@ -201,9 +187,7 @@ mod tests {
 
     #[test]
     fn correct_last_shared_block_key_repr() {
-        let key = LastShardBlockKey(
-            ton_block::ShardIdent::with_tagged_prefix(-1, ton_block::SHARD_FULL).unwrap(),
-        );
+        let key = LastShardBlockKey(ton_block::ShardIdent::masterchain());
 
         let mut data = Vec::new();
         key.serialize(&mut data);

@@ -3,8 +3,8 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 
-use crate::db::*;
 use crate::engine::Engine;
+use crate::storage::*;
 use crate::utils::*;
 
 use self::archives_stream::*;
@@ -93,7 +93,7 @@ async fn import_mc_blocks_with_apply(
     mut last_mc_block_id: &ton_block::BlockIdExt,
     last_gen_utime: &mut u32,
 ) -> Result<()> {
-    let db = &engine.db;
+    let db = &engine.storage;
 
     for id in maps.mc_block_ids.values() {
         // Skip already processed blocks
@@ -150,7 +150,7 @@ async fn import_mc_blocks_with_apply(
 }
 
 async fn import_shard_blocks_with_apply(engine: &Arc<Engine>, maps: &Arc<BlockMaps>) -> Result<()> {
-    let db = &engine.db;
+    let db = &engine.storage;
 
     // Save all shardchain blocks
     for (id, entry) in &maps.blocks {
@@ -185,7 +185,7 @@ async fn import_shard_blocks_with_apply(engine: &Arc<Engine>, maps: &Arc<BlockMa
             let engine = engine.clone();
             let maps = maps.clone();
             tasks.push(tokio::spawn(async move {
-                let db = &engine.db;
+                let db = &engine.storage;
 
                 let handle = db
                     .block_handle_storage()
@@ -272,7 +272,7 @@ impl Engine {
         block_proof: &BlockProofStuffAug,
         mc_seq_no: u32,
     ) -> Result<Arc<BlockHandle>> {
-        let block_storage = self.db.block_storage();
+        let block_storage = self.storage.block_storage();
 
         let info = self.check_block_proof(block_proof).await?;
 

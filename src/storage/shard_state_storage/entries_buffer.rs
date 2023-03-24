@@ -122,7 +122,7 @@ impl<'a> HashesEntry<'a> {
         u64::from_le_bytes(self.0[12..20].try_into().unwrap())
     }
 
-    pub fn hash(&self, n: u8) -> &[u8] {
+    pub fn hash(&self, n: u8) -> &'a [u8] {
         let offset = Self::HASHES_OFFSET + 32 * self.level_mask().calc_hash_index(n as usize);
         &self.0[offset..offset + 32]
     }

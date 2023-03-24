@@ -9,8 +9,8 @@ use std::sync::Arc;
 use anyhow::Result;
 use futures_util::future::{BoxFuture, FutureExt};
 
-use crate::db::{BlockConnection, BlockHandle};
 use crate::engine::Engine;
+use crate::storage::{BlockConnection, BlockHandle};
 use crate::utils::*;
 
 pub const MAX_BLOCK_APPLIER_DEPTH: u32 = 16;
@@ -106,8 +106,8 @@ fn update_block_connections(
     prev1_id: &ton_block::BlockIdExt,
     prev2_id: &Option<ton_block::BlockIdExt>,
 ) -> Result<()> {
-    let handles = engine.db.block_handle_storage();
-    let conn = engine.db.block_connection_storage();
+    let handles = engine.storage.block_handle_storage();
+    let conn = engine.storage.block_connection_storage();
 
     let prev1_handle = handles
         .load_handle(prev1_id)?
@@ -180,7 +180,11 @@ async fn compute_and_store_shard_state(
     };
 
     let merkle_update = block.block().read_state_update()?;
-    let min_ref_mc_state = engine.db.shard_state_storage().min_ref_mc_state().clone();
+    let min_ref_mc_state = engine
+        .storage
+        .shard_state_storage()
+        .min_ref_mc_state()
+        .clone();
 
     let shard_state = tokio::task::spawn_blocking({
         let block_id = block.id().clone();

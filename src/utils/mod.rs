@@ -1,6 +1,4 @@
-use std::hash::BuildHasherDefault;
-
-use rustc_hash::FxHasher;
+use std::collections::{HashMap, HashSet};
 
 pub use archive_package::*;
 pub use block::*;
@@ -28,4 +26,8 @@ mod stored_value;
 mod top_blocks;
 mod with_archive_data;
 
-pub(crate) type FxDashSet<K> = dashmap::DashSet<K, BuildHasherDefault<FxHasher>>;
+pub(crate) type FastHashSet<K> = HashSet<K, FastHasherState>;
+pub(crate) type FastHashMap<K, V> = HashMap<K, V, FastHasherState>;
+pub(crate) type FastDashSet<K> = dashmap::DashSet<K, FastHasherState>;
+pub(crate) type FastDashMap<K, V> = dashmap::DashMap<K, V, FastHasherState>;
+pub(crate) type FastHasherState = ahash::RandomState;

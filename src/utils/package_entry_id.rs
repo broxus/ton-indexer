@@ -194,7 +194,7 @@ mod tests {
         }
 
         let block_id = ton_block::BlockIdExt {
-            shard_id: ton_block::ShardIdent::with_tagged_prefix(-1, ton_block::SHARD_FULL).unwrap(),
+            shard_id: ton_block::ShardIdent::masterchain(),
             seq_no: rand::random(),
             root_hash: ton_types::UInt256::rand(),
             file_hash: ton_types::UInt256::rand(),

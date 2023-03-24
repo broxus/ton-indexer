@@ -110,7 +110,7 @@ async fn background_process(
     mut packets_rx: PacketsRx,
 ) -> Result<Arc<ShardStateStuff>> {
     let (mut transaction, mut ctx) = engine
-        .db
+        .storage
         .shard_state_storage()
         .begin_replace(&block_id)
         .await?;

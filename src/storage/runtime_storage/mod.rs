@@ -1,14 +1,16 @@
 use std::sync::Arc;
 
-use super::persistent_state_keeper::*;
+pub use self::persistent_state_keeper::PersistentStateKeeper;
 use super::BlockHandleStorage;
+
+mod persistent_state_keeper;
 
 pub struct RuntimeStorage {
     persistent_state_keeper: PersistentStateKeeper,
 }
 
 impl RuntimeStorage {
-    pub fn new(block_handle_storage: &Arc<BlockHandleStorage>) -> Self {
+    pub fn new(block_handle_storage: Arc<BlockHandleStorage>) -> Self {
         Self {
             persistent_state_keeper: PersistentStateKeeper::new(block_handle_storage),
         }
