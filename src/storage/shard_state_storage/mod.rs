@@ -237,6 +237,23 @@ impl ShardStateStorage {
     }
 
     pub async fn update_persistent_state(&self, top_blocks: &TopBlocks) -> Result<()> {
+        // in_transition guard
+        struct TransitionGuard<'a>(Option<&'a tokio::sync::RwLock<MarkerState>>);
+
+        impl TransitionGuard<'_> {
+            fn disarm(mut self) {
+                self.0 = None;
+            }
+        }
+
+        impl Drop for TransitionGuard<'_> {
+            fn drop(&mut self) {
+                if let Some(marker_state) = self.0.take() {
+                    marker_state.blocking_write().in_transition = false;
+                }
+            }
+        }
+
         let _compaction_guard = self.db.delay_compaction().await;
 
         // Find state roots
@@ -266,6 +283,7 @@ impl ShardStateStorage {
             // Take the snapshot while no new states are processed
             self.db.raw().snapshot()
         };
+        let transition_guard = TransitionGuard(Some(&self.current_marker_state));
 
         let instant = Instant::now();
 
@@ -382,6 +400,8 @@ impl ShardStateStorage {
             // Load counter
             total.load(Ordering::Relaxed)
         };
+
+        transition_guard.disarm();
 
         tracing::info!(
             total,
