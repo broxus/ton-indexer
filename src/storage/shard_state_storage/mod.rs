@@ -14,7 +14,6 @@ use ton_types::UInt256;
 use self::cell_storage::*;
 use self::files_context::FilesContext;
 use self::gc_state_storage::{GcState, GcStateStorage, LastShardBlockKey, Step};
-use self::marker::Marker;
 use self::replace_transaction::ShardStateReplaceTransaction;
 use super::{BlockHandle, BlockHandleStorage, BlockStorage};
 use crate::db::*;
@@ -25,7 +24,6 @@ mod cell_writer;
 mod entries_buffer;
 mod files_context;
 mod gc_state_storage;
-mod marker;
 mod replace_transaction;
 mod shard_state_reader;
 
@@ -169,13 +167,9 @@ impl ShardStateStorage {
             _ => current_marker_state.marker,
         };
 
-        let len = self.cell_storage.store_cell(
-            &mut batch,
-            marker,
-            current_marker_state.in_transition,
-            state.root_cell().clone(),
-            &temp_cells,
-        )?;
+        let len = self
+            .cell_storage
+            .store_cell(&mut batch, state.root_cell().clone())?;
 
         if block_id.shard_id.is_masterchain() {
             self.max_new_mc_cell_count.fetch_max(len, Ordering::Release);
@@ -226,12 +220,7 @@ impl ShardStateStorage {
         let ctx = FilesContext::new(self.downloads_dir.as_ref(), block_id).await?;
 
         Ok((
-            ShardStateReplaceTransaction::new(
-                &self.db,
-                &self.cell_storage,
-                &self.min_ref_mc_state,
-                Marker::PERSISTENT,
-            ),
+            ShardStateReplaceTransaction::new(&self.db, &self.cell_storage, &self.min_ref_mc_state),
             ctx,
         ))
     }

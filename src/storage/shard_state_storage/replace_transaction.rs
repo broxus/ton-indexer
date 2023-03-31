@@ -17,7 +17,6 @@ pub struct ShardStateReplaceTransaction<'a> {
     db: &'a Db,
     cell_storage: &'a Arc<CellStorage>,
     min_ref_mc_state: &'a Arc<MinRefMcState>,
-    marker: Marker,
     reader: ShardStatePacketReader,
     header: Option<BocHeader>,
     cells_read: u64,
@@ -28,13 +27,11 @@ impl<'a> ShardStateReplaceTransaction<'a> {
         db: &'a Db,
         cell_storage: &'a Arc<CellStorage>,
         min_ref_mc_state: &'a Arc<MinRefMcState>,
-        marker: Marker,
     ) -> Self {
         Self {
             db,
             cell_storage,
             min_ref_mc_state,
-            marker,
             reader: ShardStatePacketReader::new(),
             header: None,
             cells_read: 0,
@@ -379,26 +376,26 @@ impl<'a> ShardStateReplaceTransaction<'a> {
         let output_buffer = &mut ctx.output_buffer;
         output_buffer.clear();
 
-        output_buffer.write_all(&[self.marker.0, cell.cell_type.to_u8().unwrap()])?;
-        output_buffer.write_all(&(cell.bit_len as u16).to_le_bytes())?;
-        output_buffer.write_all(&cell.data[0..(cell.bit_len + 8) / 8])?;
-        output_buffer.write_all(&[cell.level_mask, 0, 1, hash_count])?; // level_mask, store_hashes, has_hashes, hash_count
+        output_buffer.extend_from_slice(&[1, 0, 0, 0, 0, 0, 0, 0, cell.cell_type.to_u8().unwrap()]);
+        output_buffer.extend_from_slice(&(cell.bit_len as u16).to_le_bytes());
+        output_buffer.extend_from_slice(&cell.data[0..(cell.bit_len + 8) / 8]);
+        output_buffer.extend_from_slice(&[cell.level_mask, 0, 1, hash_count]); // level_mask, store_hashes, has_hashes, hash_count
         for i in 0..hash_count {
-            output_buffer.write_all(current_entry.get_hash_slice(i))?;
+            output_buffer.extend_from_slice(current_entry.get_hash_slice(i));
         }
-        output_buffer.write_all(&[1, hash_count])?; // has_depths, depth_count(same as hash_count)
+        output_buffer.extend_from_slice(&[1, hash_count]); // has_depths, depth_count(same as hash_count)
         for i in 0..hash_count {
-            output_buffer.write_all(current_entry.get_depth_slice(i))?;
+            output_buffer.extend_from_slice(current_entry.get_depth_slice(i));
         }
 
         // Write cell references
-        output_buffer.write_all(&[cell.reference_indices.len() as u8])?;
+        output_buffer.extend_from_slice(&[cell.reference_indices.len() as u8]);
         for (_, child) in children.iter() {
-            output_buffer.write_all(child.hash(3))?; // repr hash
+            output_buffer.extend_from_slice(child.hash(3)); // repr hash
         }
 
         // Write counters
-        output_buffer.write_all(current_entry.get_tree_counters())?;
+        output_buffer.extend_from_slice(current_entry.get_tree_counters());
 
         // Save serialized data
         if is_pruned_cell {
@@ -407,9 +404,9 @@ impl<'a> ShardStateReplaceTransaction<'a> {
                 .pruned_branch_hash(3, &cell.data[..data_size]);
 
             ctx.write_batch
-                .put_cf(&ctx.cells_cf, repr_hash, output_buffer.as_slice());
+                .merge_cf(&ctx.cells_cf, repr_hash, output_buffer.as_slice());
         } else {
-            ctx.write_batch.put_cf(
+            ctx.write_batch.merge_cf(
                 &ctx.cells_cf,
                 current_entry.as_reader().hash(3),
                 output_buffer.as_slice(),

@@ -3,6 +3,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Weak};
 
 use anyhow::Result;
+use bumpalo::Bump;
 use futures_util::stream::FuturesUnordered;
 use futures_util::StreamExt;
 use parking_lot::RwLock;
@@ -30,17 +31,11 @@ impl CellStorage {
     pub fn store_cell(
         &self,
         batch: &mut rocksdb::WriteBatch,
-        marker: Marker,
-        in_transition: bool,
         root: ton_types::Cell,
-        temp_cells: &Table<tables::TempCells>,
     ) -> Result<usize, CellStorageError> {
         struct Context<'a> {
             batch: &'a mut rocksdb::WriteBatch,
             cells_cf: &'a BoundedCfHandle<'a>,
-            temp_cells_cf: &'a BoundedCfHandle<'a>,
-            marker: Marker,
-            in_transition: bool,
             buffer: Vec<u8>,
         }
 
@@ -55,16 +50,6 @@ impl CellStorage {
                 if value.is_empty() {
                     // Empty cell is invalid
                     return Err(CellStorageError::InvalidCell);
-                }
-
-                let value_marker = Marker(value[0]);
-                if self.in_transition {
-                    let value: &[u8] = if value_marker.is_persistent() {
-                        &[0x1]
-                    } else {
-                        &[]
-                    };
-                    self.batch.put_cf(self.temp_cells_cf, key, value);
                 }
 
                 Ok(if value_marker.is_temp() && value_marker != self.marker {
@@ -94,9 +79,6 @@ impl CellStorage {
         let mut ctx = Context {
             batch,
             cells_cf,
-            temp_cells_cf,
-            marker,
-            in_transition,
             buffer: Vec::with_capacity(512),
         };
 

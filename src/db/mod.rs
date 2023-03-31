@@ -7,6 +7,7 @@ use anyhow::{Context, Result};
 pub mod tables;
 
 mod migrations;
+mod refcount;
 
 pub struct Db {
     pub archives: Table<tables::Archives>,
@@ -20,8 +21,6 @@ pub struct Db {
     pub prev2: Table<tables::Prev2>,
     pub next1: Table<tables::Next1>,
     pub next2: Table<tables::Next2>,
-
-    pub temp_cells: Arc<tokio::sync::RwLock<Table<tables::TempCells>>>,
 
     compaction_lock: tokio::sync::RwLock<()>,
     caches: Caches,
@@ -75,7 +74,6 @@ impl Db {
             .column::<tables::KeyBlocks>()
             .column::<tables::ShardStates>()
             .column::<tables::Cells>()
-            .column::<tables::TempCells>()
             .column::<tables::NodeStates>()
             .column::<tables::Prev1>()
             .column::<tables::Prev2>()
@@ -89,9 +87,6 @@ impl Db {
 
         migrations::apply(&tables).context("Failed to apply migrations")?;
 
-        let mut temp_cells = tables.get::<tables::TempCells>();
-        temp_cells.clear().context("Failed to reset temp cells")?;
-
         Ok(Arc::new(Self {
             archives: tables.get(),
             block_handles: tables.get(),
@@ -104,7 +99,6 @@ impl Db {
             prev2: tables.get(),
             next1: tables.get(),
             next2: tables.get(),
-            temp_cells: Arc::new(tokio::sync::RwLock::new(temp_cells)),
             compaction_lock: tokio::sync::RwLock::default(),
             caches: tables.caches,
         }))
@@ -169,6 +163,12 @@ impl Db {
                 "{title} compaction finished"
             );
         }
+    }
+}
+
+impl Drop for Db {
+    fn drop(&mut self) {
+        self.raw().cancel_all_background_work(true);
     }
 }
 
