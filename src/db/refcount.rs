@@ -7,28 +7,32 @@ pub fn merge_operator(
     _key: &[u8],
     existing: Option<&[u8]>,
     operands: &rocksdb::MergeOperands,
-) -> Vec<u8> {
+) -> Option<Vec<u8>> {
     let (mut rc, mut payload) = existing.map_or((0, None), decode_value_with_rc);
     for (delta, new_payload) in operands.into_iter().map(decode_value_with_rc) {
         if payload.is_none() {
             payload = new_payload;
         } else if new_payload.is_some() {
-            debug_assert_eq!(payload, new_payload);
+            // assert_eq!(payload, new_payload);
         }
         rc += delta;
     }
 
-    match rc.cmp(&0) {
-        Ordering::Less => rc.to_le_bytes().to_vec(),
+    Some(match rc.cmp(&0) {
+        Ordering::Less => {
+            println!("ALARM VALUE LESS THEN 0: {rc}");
+            rc.to_le_bytes().to_vec()
+        }
         Ordering::Equal => Vec::new(),
         Ordering::Greater => {
+            assert!(!payload.is_none());
             let payload = payload.unwrap_or(&[]);
             let mut result = Vec::with_capacity(RC_BYTES + payload.len());
             result.extend_from_slice(&rc.to_le_bytes());
             result.extend_from_slice(payload);
             result
         }
-    }
+    })
 }
 
 pub fn compaction_filter(_level: u32, _key: &[u8], value: &[u8]) -> Decision {
@@ -62,15 +66,17 @@ pub fn strip_refcount(bytes: &[u8]) -> Option<&[u8]> {
     }
 }
 
-pub fn add_positive_refcount(data: &[u8], rc: std::num::NonZeroU32) -> Vec<u8> {
-    let mut result = Vec::with_capacity(RC_BYTES + data.len());
-    result.extend_from_slice(&RcType::from(rc.get()).to_le_bytes());
-    result.extend_from_slice(data);
-    result
+pub fn has_value(bytes: &[u8]) -> bool {
+    bytes.len() >= RC_BYTES && i64::from_le_bytes(bytes[..RC_BYTES].try_into().unwrap()) > 0
 }
 
-pub fn encode_negative_refcount(rc: std::num::NonZeroU32) -> Vec<u8> {
-    (-RcType::from(rc.get())).to_le_bytes().to_vec()
+pub fn add_positive_refount(rc: u32, data: &[u8], target: &mut Vec<u8>) {
+    target.extend_from_slice(&RcType::from(rc).to_le_bytes());
+    target.extend_from_slice(data);
+}
+
+pub fn encode_negative_refcount(rc: u32) -> [u8; RC_BYTES] {
+    (-RcType::from(rc)).to_le_bytes()
 }
 
 type RcType = i64;

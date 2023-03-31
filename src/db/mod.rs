@@ -4,10 +4,10 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 
+pub mod refcount;
 pub mod tables;
 
 mod migrations;
-mod refcount;
 
 pub struct Db {
     pub archives: Table<tables::Archives>,
@@ -233,7 +233,7 @@ pub struct TableAccessor {
 
 impl TableAccessor {
     fn get<T: ColumnFamily>(&self) -> Table<T> {
-        Table::new(self.raw.clone(), self.caches.clone())
+        Table::new(self.raw.clone())
     }
 }
 
@@ -278,7 +278,6 @@ impl Caches {
 pub struct Table<T> {
     cf: CfHandle,
     db: Arc<rocksdb::DB>,
-    caches: Caches,
     write_config: rocksdb::WriteOptions,
     read_config: rocksdb::ReadOptions,
     _ty: PhantomData<T>,
@@ -288,7 +287,7 @@ impl<T> Table<T>
 where
     T: ColumnFamily,
 {
-    pub fn new(db: Arc<rocksdb::DB>, caches: Caches) -> Self {
+    pub fn new(db: Arc<rocksdb::DB>) -> Self {
         use rocksdb::AsColumnFamilyRef;
 
         // Check that tree exists
@@ -303,7 +302,6 @@ where
         Self {
             cf,
             db,
-            caches,
             write_config,
             read_config,
             _ty: Default::default(),
@@ -351,20 +349,6 @@ where
         write_config
     }
 
-    pub fn clear(&mut self) -> Result<(), rocksdb::Error> {
-        use rocksdb::AsColumnFamilyRef;
-
-        self.db.drop_cf(T::NAME)?;
-        let mut opts = Default::default();
-        T::options(&mut opts, &self.caches);
-        self.db.create_cf(T::NAME, &opts)?;
-
-        let cf = self.db.cf_handle(T::NAME).unwrap();
-        self.cf = CfHandle(cf.inner());
-
-        Ok(())
-    }
-
     #[inline]
     pub fn get<K: AsRef<[u8]>>(
         &self,
@@ -405,6 +389,7 @@ where
         )
     }
 
+    #[allow(unused)]
     #[inline]
     pub fn remove<K: AsRef<[u8]>>(&self, key: K) -> Result<(), rocksdb::Error> {
         fn db_remove(
@@ -441,6 +426,7 @@ where
         self.db.iterator_cf_opt(&self.cf, read_config, mode)
     }
 
+    #[allow(unused)]
     pub fn prefix_iterator<P>(&'_ self, prefix: P) -> rocksdb::DBRawIterator<'_>
     where
         P: AsRef<[u8]>,

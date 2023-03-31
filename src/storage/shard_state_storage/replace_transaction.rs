@@ -1,4 +1,3 @@
-use std::io::Write;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
@@ -8,7 +7,6 @@ use ton_types::UInt256;
 use super::cell_storage::*;
 use super::entries_buffer::*;
 use super::files_context::*;
-use super::marker::*;
 use super::shard_state_reader::*;
 use crate::db::{BoundedCfHandle, Db};
 use crate::utils::*;
