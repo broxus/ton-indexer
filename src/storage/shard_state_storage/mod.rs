@@ -221,7 +221,7 @@ impl ShardStateStorage {
                 batch.delete_cf(&shard_states_cf.bound(), key);
                 raw.write_opt(batch, cells_write_options)?;
 
-                tracing::info!(
+                tracing::debug!(
                     cells_removed = total,
                     block_id = %(shard_ident, seq_no).display(),
                 );
