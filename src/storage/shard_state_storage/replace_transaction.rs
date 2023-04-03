@@ -8,7 +8,7 @@ use super::cell_storage::*;
 use super::entries_buffer::*;
 use super::files_context::*;
 use super::shard_state_reader::*;
-use crate::db::{BoundedCfHandle, Db};
+use crate::db::{refcount, BoundedCfHandle, Db};
 use crate::utils::*;
 
 pub struct ShardStateReplaceTransaction<'a> {
@@ -190,6 +190,7 @@ impl<'a> ShardStateReplaceTransaction<'a> {
             }
 
             if batch_len > CELLS_PER_BATCH {
+                ctx.finalize_cell_usages();
                 raw.write_opt(std::mem::take(&mut ctx.write_batch), &write_options)?;
                 batch_len = 0;
             }
@@ -199,21 +200,18 @@ impl<'a> ShardStateReplaceTransaction<'a> {
         }
 
         if batch_len > 0 {
+            ctx.finalize_cell_usages();
             raw.write_opt(std::mem::take(&mut ctx.write_batch), &write_options)?;
         }
 
-        progress_bar.complete();
+        // Current entry contains root cell
+        let root_hash = ctx.entries_buffer.repr_hash();
+        ctx.final_check(root_hash)?;
 
         let shard_state_key = (block_id.shard_id, block_id.seq_no).to_vec();
+        self.db.shard_states.insert(&shard_state_key, root_hash)?;
 
-        // Trigger cells column family compaction
-        // self.db.cells.trigger_compaction();
-
-        // Current entry contains root cell
-        let current_entry = ctx.entries_buffer.split_children(&[]).0;
-        self.db
-            .shard_states
-            .insert(&shard_state_key, current_entry.as_reader().hash(3))?;
+        progress_bar.complete();
 
         // Load stored shard state
         match self.db.shard_states.get(shard_state_key)? {
@@ -347,18 +345,19 @@ impl<'a> ShardStateReplaceTransaction<'a> {
             }
 
             for (index, child) in children.iter() {
-                if child.cell_type() == ton_types::CellType::PrunedBranch {
+                let child_hash = if child.cell_type() == ton_types::CellType::PrunedBranch {
                     let child_data = ctx
                         .pruned_branches
                         .get(index)
                         .ok_or(ReplaceTransactionError::InvalidCell)
                         .context("Pruned branch data not found")?;
-                    let child_hash = child.pruned_branch_hash(i, child_data);
-                    hasher.update(child_hash);
+                    child
+                        .pruned_branch_hash(i, child_data)
+                        .context("Invalid pruned branch")?
                 } else {
-                    let child_hash = child.hash(if is_merkle_cell { i + 1 } else { i });
-                    hasher.update(child_hash);
-                }
+                    child.hash(if is_merkle_cell { i + 1 } else { i })
+                };
+                hasher.update(child_hash);
             }
 
             current_entry.set_hash(i, hasher.finalize().as_slice());
@@ -388,28 +387,40 @@ impl<'a> ShardStateReplaceTransaction<'a> {
 
         // Write cell references
         output_buffer.extend_from_slice(&[cell.reference_indices.len() as u8]);
-        for (_, child) in children.iter() {
-            output_buffer.extend_from_slice(child.hash(3)); // repr hash
+        for (index, child) in children.iter() {
+            let child_hash = if child.cell_type() == ton_types::CellType::PrunedBranch {
+                let child_data = ctx
+                    .pruned_branches
+                    .get(index)
+                    .ok_or(ReplaceTransactionError::InvalidCell)
+                    .context("Pruned branch data not found")?;
+                child
+                    .pruned_branch_hash(MAX_LEVEL, child_data)
+                    .context("Invalid pruned branch")?
+            } else {
+                child.hash(MAX_LEVEL)
+            };
+
+            *ctx.cell_usages.entry(*child_hash).or_default() += 1;
+            output_buffer.extend_from_slice(child_hash);
         }
 
         // Write counters
         output_buffer.extend_from_slice(current_entry.get_tree_counters());
 
         // Save serialized data
-        if is_pruned_cell {
-            let repr_hash = current_entry
+        let repr_hash = if is_pruned_cell {
+            current_entry
                 .as_reader()
-                .pruned_branch_hash(3, &cell.data[..data_size]);
-
-            ctx.write_batch
-                .merge_cf(&ctx.cells_cf, repr_hash, output_buffer.as_slice());
+                .pruned_branch_hash(3, &cell.data[..data_size])
+                .context("Invalid pruned branch")?
         } else {
-            ctx.write_batch.merge_cf(
-                &ctx.cells_cf,
-                current_entry.as_reader().hash(3),
-                output_buffer.as_slice(),
-            );
+            current_entry.as_reader().hash(MAX_LEVEL)
         };
+
+        ctx.write_batch
+            .merge_cf(&ctx.cells_cf, repr_hash, output_buffer.as_slice());
+        ctx.cell_usages.insert(*repr_hash, -1);
 
         // Done
         Ok(())
@@ -418,6 +429,7 @@ impl<'a> ShardStateReplaceTransaction<'a> {
 
 struct FinalizationContext<'a> {
     pruned_branches: FastHashMap<u32, Vec<u8>>,
+    cell_usages: FastHashMap<[u8; 32], i32>,
     entries_buffer: EntriesBuffer,
     output_buffer: Vec<u8>,
     cells_cf: BoundedCfHandle<'a>,
@@ -428,11 +440,34 @@ impl<'a> FinalizationContext<'a> {
     fn new(db: &'a Db) -> Self {
         Self {
             pruned_branches: Default::default(),
+            cell_usages: FastHashMap::with_capacity_and_hasher(128, Default::default()),
             entries_buffer: EntriesBuffer::new(),
             output_buffer: Vec::with_capacity(1 << 10),
             cells_cf: db.cells.cf(),
             write_batch: rocksdb::WriteBatch::default(),
         }
+    }
+
+    fn finalize_cell_usages(&mut self) {
+        self.cell_usages.retain(|key, &mut rc| {
+            if rc > 0 {
+                self.write_batch.merge_cf(
+                    &self.cells_cf,
+                    key,
+                    refcount::encode_positive_refcount(rc as u32),
+                );
+            }
+
+            rc < 0
+        });
+    }
+
+    fn final_check(&self, root_hash: &[u8; 32]) -> Result<()> {
+        anyhow::ensure!(
+            self.cell_usages.len() == 1 && self.cell_usages.contains_key(root_hash),
+            "Invalid shard state cell"
+        );
+        Ok(())
     }
 }
 
@@ -445,3 +480,5 @@ enum ReplaceTransactionError {
     #[error("Invalid cell")]
     InvalidCell,
 }
+
+const MAX_LEVEL: u8 = 3;

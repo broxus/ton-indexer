@@ -28,6 +28,11 @@ impl EntriesBuffer {
             EntriesBufferChildren(references, tail),
         )
     }
+
+    pub fn repr_hash(&self) -> &[u8; 32] {
+        let [first, ..] = &*self.0;
+        HashesEntry(first).hash(3)
+    }
 }
 
 pub struct EntriesBufferChildren<'a>(&'a [u32], &'a [[u8; HashesEntry::LEN]]);
@@ -41,7 +46,7 @@ impl EntriesBufferChildren<'_> {
     }
 }
 
-pub struct HashesEntryWriter<'a>(&'a mut [u8]);
+pub struct HashesEntryWriter<'a>(&'a mut [u8; HashesEntry::LEN]);
 
 impl HashesEntryWriter<'_> {
     pub fn as_reader(&self) -> HashesEntry {
@@ -78,9 +83,9 @@ impl HashesEntryWriter<'_> {
         self.get_hash_slice(i).copy_from_slice(hash);
     }
 
-    pub fn get_hash_slice(&mut self, i: u8) -> &mut [u8] {
+    pub fn get_hash_slice(&mut self, i: u8) -> &mut [u8; 32] {
         let offset = HashesEntry::HASHES_OFFSET + 32 * i as usize;
-        &mut self.0[offset..offset + 32]
+        unsafe { &mut *(self.0.as_mut_ptr().add(offset) as *mut _) }
     }
 
     pub fn set_depth(&mut self, i: u8, depth: u16) {
@@ -88,13 +93,13 @@ impl HashesEntryWriter<'_> {
             .copy_from_slice(&depth.to_le_bytes());
     }
 
-    pub fn get_depth_slice(&mut self, i: u8) -> &mut [u8] {
+    pub fn get_depth_slice(&mut self, i: u8) -> &mut [u8; 2] {
         let offset = HashesEntry::DEPTHS_OFFSET + 2 * i as usize;
-        &mut self.0[offset..offset + 2]
+        unsafe { &mut *(self.0.as_mut_ptr().add(offset) as *mut _) }
     }
 }
 
-pub struct HashesEntry<'a>(&'a [u8]);
+pub struct HashesEntry<'a>(&'a [u8; HashesEntry::LEN]);
 
 impl<'a> HashesEntry<'a> {
     // 4 bytes - info (1 byte level mask, 1 byte cell type, 2 bytes padding)
@@ -122,9 +127,9 @@ impl<'a> HashesEntry<'a> {
         u64::from_le_bytes(self.0[12..20].try_into().unwrap())
     }
 
-    pub fn hash(&self, n: u8) -> &'a [u8] {
+    pub fn hash(&self, n: u8) -> &'a [u8; 32] {
         let offset = Self::HASHES_OFFSET + 32 * self.level_mask().calc_hash_index(n as usize);
-        &self.0[offset..offset + 32]
+        unsafe { &*(self.0.as_ptr().add(offset) as *const _) }
     }
 
     pub fn depth(&self, n: u8) -> u16 {
@@ -132,7 +137,7 @@ impl<'a> HashesEntry<'a> {
         u16::from_le_bytes([self.0[offset], self.0[offset + 1]])
     }
 
-    pub fn pruned_branch_hash<'b>(&self, n: u8, data: &'b [u8]) -> &'b [u8]
+    pub fn pruned_branch_hash<'b>(&self, n: u8, data: &'b [u8]) -> Option<&'b [u8; 32]>
     where
         'a: 'b,
     {
@@ -140,13 +145,16 @@ impl<'a> HashesEntry<'a> {
         let index = level_mask.calc_hash_index(n as usize);
         let level = level_mask.level() as usize;
 
-        if index == level {
+        Some(if index == level {
             let offset = Self::HASHES_OFFSET;
-            &self.0[offset..offset + 32]
+            unsafe { &*(self.0.as_ptr().add(offset) as *const _) }
         } else {
             let offset = 1 + 1 + index * 32;
-            &data[offset..offset + 32]
-        }
+            if data.len() < offset + 32 {
+                return None;
+            }
+            unsafe { &*(data.as_ptr().add(offset) as *const _) }
+        })
     }
 
     pub fn pruned_branch_depth(&self, n: u8, data: &[u8]) -> u16 {

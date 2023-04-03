@@ -34,10 +34,6 @@ impl CellStorage {
             data: &'a [u8],
         }
 
-        impl CellWithRefs<'_> {
-            const INITIAL: Self = Self { rc: 1, data: &[] };
-        }
-
         struct Context<'a> {
             cells_cf: &'a BoundedCfHandle<'a>,
             alloc: &'a Bump,
@@ -52,18 +48,6 @@ impl CellStorage {
                 cell: &ton_types::Cell,
                 value: Option<rocksdb::DBPinnableSlice<'_>>,
             ) -> Result<bool, CellStorageError> {
-                // if let Some(value) = value {
-                //     if refcount::has_value(value.as_ref()) {
-                //         match self.transaction.entry(*key) {
-                //             hash_map::Entry::Occupied(mut value) => value.get_mut().rc += 1,
-                //             hash_map::Entry::Vacant(value) => {
-                //                 value.insert(CellWithRefs::INITIAL);
-                //             }
-                //         }
-                //         return Ok(false);
-                //     }
-                // }
-
                 let has_value = matches!(value, Some(value) if refcount::has_value(value.as_ref()));
 
                 Ok(match self.transaction.entry(*key) {
@@ -199,17 +183,13 @@ impl CellStorage {
         }
 
         impl<'a> CellState<'a> {
-            // fn try_fast_remove(&mut self) -> bool {
-            //     let will_be_alive = self.rc > self.removes as i64 + 1;
-            //     if will_be_alive {
-            //         self.removes += 1;
-            //     }
-            //     will_be_alive
-            // }
-
-            fn remove(&mut self) -> Option<&'a [[u8; 32]]> {
+            fn remove(&mut self) -> Result<Option<&'a [[u8; 32]]>, CellStorageError> {
                 self.removes += 1;
-                self.next_refs()
+                if self.removes as i64 <= self.rc {
+                    Ok(self.next_refs())
+                } else {
+                    Err(CellStorageError::CounterMismatch)
+                }
             }
 
             fn next_refs(&self) -> Option<&'a [[u8; 32]]> {
@@ -235,7 +215,7 @@ impl CellStorage {
         // While some cells left
         while let Some(cell_id) = stack.pop() {
             let refs = match transaction.entry(cell_id) {
-                hash_map::Entry::Occupied(mut v) => v.get_mut().remove(),
+                hash_map::Entry::Occupied(mut v) => v.get_mut().remove()?,
                 hash_map::Entry::Vacant(v) => {
                     let rc = match raw.get_pinned_cf_opt(cells_cf, cell_id, read_options) {
                         Ok(value) => 'rc: {
@@ -266,12 +246,6 @@ impl CellStorage {
             if let Some(refs) = refs {
                 // Add all children
                 for cell_id in refs {
-                    // if let Some(value) = transaction.get_mut(&cell_id) {
-                    //     if value.try_fast_remove() {
-                    //         continue;
-                    //     }
-                    // }
-
                     // Unknown cell, push to the stack to process it
                     stack.push(cell_id);
                 }
@@ -304,6 +278,8 @@ pub enum CellStorageError {
     CellNotFound,
     #[error("Invalid cell")]
     InvalidCell,
+    #[error("Cell counter mismatch")]
+    CounterMismatch,
     #[error("Internal rocksdb error")]
     Internal(#[source] rocksdb::Error),
 }
@@ -323,11 +299,6 @@ impl StorageCell {
     }
 
     pub fn deserialize(boc_db: Arc<CellStorage>, mut data: &[u8]) -> Result<Self> {
-        // skip marker
-        if data.is_empty() {
-            return Err(StorageCellError::InvalidData.into());
-        }
-
         // deserialize cell
         let cell_data = ton_types::CellData::deserialize(&mut data)?;
         let references_count = data.read_byte()?;
@@ -472,8 +443,6 @@ pub enum StorageCellReference {
 
 #[derive(thiserror::Error, Debug)]
 enum StorageCellError {
-    #[error("Invalid data")]
-    InvalidData,
     #[error("Accessing invalid cell reference")]
     AccessingInvalidReference,
 }
