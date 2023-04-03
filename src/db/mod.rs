@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 
+pub mod refcount;
 pub mod tables;
 
 mod migrations;
@@ -20,8 +21,6 @@ pub struct Db {
     pub prev2: Table<tables::Prev2>,
     pub next1: Table<tables::Next1>,
     pub next2: Table<tables::Next2>,
-
-    pub temp_cells: Arc<tokio::sync::RwLock<Table<tables::TempCells>>>,
 
     compaction_lock: tokio::sync::RwLock<()>,
     caches: Caches,
@@ -75,7 +74,6 @@ impl Db {
             .column::<tables::KeyBlocks>()
             .column::<tables::ShardStates>()
             .column::<tables::Cells>()
-            .column::<tables::TempCells>()
             .column::<tables::NodeStates>()
             .column::<tables::Prev1>()
             .column::<tables::Prev2>()
@@ -89,9 +87,6 @@ impl Db {
 
         migrations::apply(&tables).context("Failed to apply migrations")?;
 
-        let mut temp_cells = tables.get::<tables::TempCells>();
-        temp_cells.clear().context("Failed to reset temp cells")?;
-
         Ok(Arc::new(Self {
             archives: tables.get(),
             block_handles: tables.get(),
@@ -104,7 +99,6 @@ impl Db {
             prev2: tables.get(),
             next1: tables.get(),
             next2: tables.get(),
-            temp_cells: Arc::new(tokio::sync::RwLock::new(temp_cells)),
             compaction_lock: tokio::sync::RwLock::default(),
             caches: tables.caches,
         }))
@@ -172,6 +166,12 @@ impl Db {
     }
 }
 
+impl Drop for Db {
+    fn drop(&mut self) {
+        self.raw().cancel_all_background_work(true);
+    }
+}
+
 pub struct RocksdbStats {
     pub whole_db_stats: rocksdb::perf::MemoryUsageStats,
     pub uncompressed_block_cache_usage: usize,
@@ -233,7 +233,7 @@ pub struct TableAccessor {
 
 impl TableAccessor {
     fn get<T: ColumnFamily>(&self) -> Table<T> {
-        Table::new(self.raw.clone(), self.caches.clone())
+        Table::new(self.raw.clone())
     }
 }
 
@@ -278,7 +278,6 @@ impl Caches {
 pub struct Table<T> {
     cf: CfHandle,
     db: Arc<rocksdb::DB>,
-    caches: Caches,
     write_config: rocksdb::WriteOptions,
     read_config: rocksdb::ReadOptions,
     _ty: PhantomData<T>,
@@ -288,7 +287,7 @@ impl<T> Table<T>
 where
     T: ColumnFamily,
 {
-    pub fn new(db: Arc<rocksdb::DB>, caches: Caches) -> Self {
+    pub fn new(db: Arc<rocksdb::DB>) -> Self {
         use rocksdb::AsColumnFamilyRef;
 
         // Check that tree exists
@@ -303,7 +302,6 @@ where
         Self {
             cf,
             db,
-            caches,
             write_config,
             read_config,
             _ty: Default::default(),
@@ -351,20 +349,6 @@ where
         write_config
     }
 
-    pub fn clear(&mut self) -> Result<(), rocksdb::Error> {
-        use rocksdb::AsColumnFamilyRef;
-
-        self.db.drop_cf(T::NAME)?;
-        let mut opts = Default::default();
-        T::options(&mut opts, &self.caches);
-        self.db.create_cf(T::NAME, &opts)?;
-
-        let cf = self.db.cf_handle(T::NAME).unwrap();
-        self.cf = CfHandle(cf.inner());
-
-        Ok(())
-    }
-
     #[inline]
     pub fn get<K: AsRef<[u8]>>(
         &self,
@@ -405,6 +389,7 @@ where
         )
     }
 
+    #[allow(unused)]
     #[inline]
     pub fn remove<K: AsRef<[u8]>>(&self, key: K) -> Result<(), rocksdb::Error> {
         fn db_remove(
@@ -441,6 +426,7 @@ where
         self.db.iterator_cf_opt(&self.cf, read_config, mode)
     }
 
+    #[allow(unused)]
     pub fn prefix_iterator<P>(&'_ self, prefix: P) -> rocksdb::DBRawIterator<'_>
     where
         P: AsRef<[u8]>,

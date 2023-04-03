@@ -3,7 +3,7 @@ use rocksdb::{
     ReadOptions, SliceTransform,
 };
 
-use super::{Caches, ColumnFamily};
+use super::{refcount, Caches, ColumnFamily};
 
 /// Stores prepared archives
 /// - Key: `u32 (BE)` (archive id)
@@ -93,7 +93,8 @@ impl ColumnFamily for Cells {
     const NAME: &'static str = "cells";
 
     fn options(opts: &mut Options, caches: &Caches) {
-        opts.set_merge_operator_associative("cell_merge", cell_merge);
+        opts.set_merge_operator_associative("cell_merge", refcount::merge_operator);
+        opts.set_compaction_filter("cell_compaction", refcount::compaction_filter);
 
         opts.set_write_buffer_size(128 * 1024 * 1024);
 
@@ -109,28 +110,6 @@ impl ColumnFamily for Cells {
     }
 
     fn read_options(opts: &mut ReadOptions) {
-        opts.set_verify_checksums(false);
-    }
-}
-
-/// Stores only new cells during persistent state transition
-/// - Key: `ton_types::UInt256` (cell repr hash)
-/// - Value: `1 byte`
-pub struct TempCells;
-impl ColumnFamily for TempCells {
-    const NAME: &'static str = "temp_cells";
-
-    fn options(opts: &mut rocksdb::Options, caches: &Caches) {
-        let mut block_factory = BlockBasedOptions::default();
-        block_factory.set_block_cache(&caches.block_cache);
-        block_factory.set_block_cache_compressed(&caches.compressed_block_cache);
-
-        block_factory.set_data_block_index_type(DataBlockIndexType::BinaryAndHash);
-
-        opts.set_block_based_table_factory(&block_factory);
-    }
-
-    fn read_options(opts: &mut rocksdb::ReadOptions) {
         opts.set_verify_checksums(false);
     }
 }
@@ -220,17 +199,6 @@ impl ColumnFamily for Next2 {
     fn read_options(opts: &mut ReadOptions) {
         opts.set_verify_checksums(false);
     }
-}
-
-fn cell_merge(_: &[u8], current_value: Option<&[u8]>, operands: &MergeOperands) -> Option<Vec<u8>> {
-    let mut current_value = current_value?.to_vec();
-    if let Some(new_marker) = operands.into_iter().last().and_then(<[_]>::first) {
-        if let Some(old_marker) = current_value.get_mut(0) {
-            *old_marker = *new_marker;
-        }
-    }
-
-    Some(current_value)
 }
 
 fn archive_data_merge(

@@ -31,22 +31,15 @@ pub async fn cold_boot(engine: &Arc<Engine>) -> Result<ton_block::BlockIdExt> {
     // Choose the latest key block with persistent state
     let last_key_block = choose_key_block(engine)?;
 
-    let top_blocks = if last_key_block.id().seq_no == 0 {
+    if last_key_block.id().seq_no == 0 {
         // If the last suitable key block is zerostate, we must download all other zerostates
         let zero_state = engine.load_mc_zero_state().await?;
         download_workchain_zero_state(engine, &zero_state, ton_block::BASE_WORKCHAIN_ID).await?;
-        TopBlocks::zerostate()
     } else {
         // If the last suitable key block is not zerostate, we must download all blocks
         // with their states from shards for that
-        download_start_blocks_and_states(engine, last_key_block.id()).await?
+        download_start_blocks_and_states(engine, last_key_block.id()).await?;
     };
-
-    // Ensure that persistent states are properly stored
-    engine
-        .storage
-        .shard_state_storage()
-        .reset_persistent_state_roots(&top_blocks)?;
 
     tracing::info!("finished cold boot");
     Ok(last_key_block.id().clone())

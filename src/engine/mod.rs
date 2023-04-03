@@ -445,32 +445,6 @@ impl Engine {
     }
 
     fn start_states_gc(self: &Arc<Self>) {
-        async fn try_update_persistent_state(
-            engine: &Engine,
-            latest_block_id: &ton_block::BlockIdExt,
-        ) -> Result<()> {
-            let storage = &engine.storage;
-            let persistent_state = match storage
-                .runtime_storage()
-                .persistent_state_keeper()
-                .current()
-            {
-                Some(handle) if handle.id().seq_no <= latest_block_id.seq_no => handle,
-                _ => return Ok(()),
-            };
-
-            let block = storage
-                .block_storage()
-                .load_block_data(persistent_state.as_ref())
-                .await?;
-
-            let top_blocks = TopBlocks::from_mc_block(&block)?;
-            storage
-                .shard_state_storage()
-                .update_persistent_state(&top_blocks)
-                .await
-        }
-
         let options = match self.states_gc_options {
             Some(options) => options,
             None => return,
@@ -519,10 +493,6 @@ impl Engine {
 
                 for subscriber in &engine.subscribers {
                     subscriber.on_before_states_gc(&block_id).await;
-                }
-
-                if let Err(e) = try_update_persistent_state(engine.as_ref(), &block_id).await {
-                    tracing::error!("Failed to update persistent state: {e:?}");
                 }
 
                 let shard_state_storage = engine.storage.shard_state_storage();
