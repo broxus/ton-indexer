@@ -54,8 +54,8 @@ rocksdb = { version = "0.20", features = [
     "jemalloc",
 ], default-features = false }
 
-ton_block = { git = "https://github.com/broxus/ton-labs-block.git" }
-ton_types = { git = "https://github.com/broxus/ton-labs-types.git" }
+ton_block = { git = "https://github.com/broxus/ton-labs-block.git", branch = "old" }
+ton_types = { git = "https://github.com/broxus/ton-labs-types.git", branch = "old" }
 
 archive-uploader = { path = "archive-uploader", optional = true }
 global-config = { path = "global-config" }
