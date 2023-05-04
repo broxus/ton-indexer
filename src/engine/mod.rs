@@ -910,7 +910,7 @@ impl Engine {
     pub fn is_synced(&self) -> Result<bool> {
         let shards_client_mc_block_id = self.load_shards_client_mc_block_id()?;
         let last_applied_mc_block_id = self.load_last_applied_mc_block_id()?;
-        if shards_client_mc_block_id.seq_no + MAX_BLOCK_APPLIER_DEPTH
+        if shards_client_mc_block_id.seq_no + self.sync_options.max_block_applier_depth
             < last_applied_mc_block_id.seq_no
         {
             return Ok(false);
@@ -1007,7 +1007,7 @@ impl Engine {
         pre_apply: bool,
         depth: u32,
     ) -> Result<()> {
-        if depth > MAX_BLOCK_APPLIER_DEPTH {
+        if depth > self.sync_options.max_block_applier_depth {
             return Err(EngineError::TooDeepRecursion.into());
         }
 

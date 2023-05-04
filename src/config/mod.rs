@@ -93,6 +93,8 @@ pub struct SyncOptions {
     pub parallel_archive_downloads: usize,
     /// Default: 1073741824 (1 GB)
     pub save_to_disk_threshold: usize,
+    /// Default: 32
+    pub max_block_applier_depth: u32,
 }
 
 impl Default for SyncOptions {
@@ -101,6 +103,7 @@ impl Default for SyncOptions {
             old_blocks_policy: Default::default(),
             parallel_archive_downloads: 16,
             save_to_disk_threshold: 1024 * 1024 * 1024,
+            max_block_applier_depth: 32,
         }
     }
 }

@@ -13,8 +13,6 @@ use crate::engine::Engine;
 use crate::storage::{BlockConnection, BlockHandle};
 use crate::utils::*;
 
-pub const MAX_BLOCK_APPLIER_DEPTH: u32 = 16;
-
 pub fn apply_block<'a>(
     engine: &'a Arc<Engine>,
     handle: &'a Arc<BlockHandle>,
