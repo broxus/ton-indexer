@@ -95,6 +95,8 @@ pub struct SyncOptions {
     pub save_to_disk_threshold: usize,
     /// Default: 32
     pub max_block_applier_depth: u32,
+    /// Ignore archives. Default: false.
+    pub force_use_get_next_block: bool,
 }
 
 impl Default for SyncOptions {
@@ -104,6 +106,7 @@ impl Default for SyncOptions {
             parallel_archive_downloads: 16,
             save_to_disk_threshold: 1024 * 1024 * 1024,
             max_block_applier_depth: 32,
+            force_use_get_next_block: false,
         }
     }
 }

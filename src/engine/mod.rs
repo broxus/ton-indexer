@@ -206,7 +206,7 @@ impl Engine {
                 historical_sync(self, from_seqno).await?;
             }
         }
-        if !self.is_synced()? {
+        if !self.sync_options.force_use_get_next_block && !self.is_synced()? {
             sync(self).await?;
         }
         tracing::info!("node synced");
