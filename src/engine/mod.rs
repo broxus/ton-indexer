@@ -1030,11 +1030,11 @@ impl Engine {
                         possibly_updated = true;
 
                         // Apply block
-                        let operation = async {
+                        let operation = Box::pin(async {
                             let block = block_storage.load_block_data(&handle).await?;
                             apply_block(self, &handle, &block, mc_seq_no, pre_apply, depth).await?;
                             Ok(())
-                        };
+                        });
                         match self
                             .block_applying_operations
                             .do_or_wait(handle.id(), None, operation)
