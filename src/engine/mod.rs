@@ -1000,6 +1000,12 @@ impl Engine {
         Ok(())
     }
 
+    fn store_shards_client_mc_block_utime(&self, block_utime: u32) {
+        self.metrics
+            .last_shard_client_mc_block_utime
+            .store(block_utime, Ordering::Release);
+    }
+
     async fn download_and_apply_block(
         self: &Arc<Self>,
         block_id: &ton_block::BlockIdExt,
@@ -1441,6 +1447,7 @@ impl ProcessBlockContext<'_> {
 pub struct EngineMetrics {
     pub last_mc_block_seqno: AtomicU32,
     pub last_shard_client_mc_block_seqno: AtomicU32,
+    pub last_shard_client_mc_block_utime: AtomicU32,
     pub last_mc_utime: AtomicU32,
     pub mc_time_diff: AtomicI64,
     pub shard_client_time_diff: AtomicI64,
