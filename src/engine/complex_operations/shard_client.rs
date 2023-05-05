@@ -174,8 +174,10 @@ async fn load_shard_blocks(
         .into_iter()
         .find(|item| item.is_err())
         .unwrap_or(Ok(()))?;
+    let block_utime = masterchain_block.block().info.read_struct()?.gen_utime().0;
 
     engine.store_shards_client_mc_block_id(masterchain_block.id())?;
+    engine.store_shards_client_mc_block_utime(block_utime);
 
     drop(permit);
     Ok(())
