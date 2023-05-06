@@ -30,7 +30,7 @@ indexer:
 2. Download network global config
 
 ```bash
-wget https://raw.githubusercontent.com/tonlabs/net.ton.dev/master/configs/net.ton.dev/ton-global.config.json
+wget https://raw.githubusercontent.com/tonlabs/net.ton.dev/master/configs/ton-global.config.json
 ```
 
 3. Run simple node
