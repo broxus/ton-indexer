@@ -32,7 +32,6 @@ impl ColumnFamily for BlockHandles {
 
         let mut block_factory = BlockBasedOptions::default();
         block_factory.set_block_cache(&caches.block_cache);
-        block_factory.set_block_cache_compressed(&caches.compressed_block_cache);
 
         block_factory.set_index_type(BlockBasedIndexType::HashSearch);
         block_factory.set_data_block_index_type(DataBlockIndexType::BinaryAndHash);
@@ -100,8 +99,6 @@ impl ColumnFamily for Cells {
 
         let mut block_factory = BlockBasedOptions::default();
         block_factory.set_block_cache(&caches.block_cache);
-        block_factory.set_block_cache_compressed(&caches.compressed_block_cache);
-
         block_factory.set_data_block_index_type(DataBlockIndexType::BinaryAndHash);
 
         opts.set_block_based_table_factory(&block_factory);
@@ -224,6 +221,5 @@ fn archive_data_merge(
 fn default_block_based_table_factory(opts: &mut Options, caches: &Caches) {
     let mut block_factory = BlockBasedOptions::default();
     block_factory.set_block_cache(&caches.block_cache);
-    block_factory.set_block_cache_compressed(&caches.compressed_block_cache);
     opts.set_block_based_table_factory(&block_factory);
 }

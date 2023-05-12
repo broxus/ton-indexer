@@ -1,6 +1,6 @@
 [package]
 name = "ton-indexer"
-version = "0.2.0"
+version = "0.2.1"
 authors = ["Ivan Kalinin <i.kalinin@dexpa.io>"]
 edition = "2021"
 rust-version = "1.60"
@@ -26,19 +26,18 @@ everscale-network = "0.5.0"
 fdlimit = "0.2.1"
 futures-util = "0.3"
 hex = "0.4"
-itertools = "0.10.3"
 libc = "0.2"
 num-traits = "0.2"
 num_cpus = "1.13.1"
 once_cell = "1.12.0"
 parking_lot = { version = "0.12.0", features = ["hardware-lock-elision"] }
 rand = "0.8"
-rlimit = "0.8.3"
+rlimit = "0.9.1"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sha2 = "0.10"
 smallvec = { version = "1.8.0", features = ["const_generics", "serde", "write", "union"] }
-sysinfo = { version = "0.28.0", default-features = false }
+sysinfo = { version = "0.29.0", default-features = false }
 thiserror = "1.0"
 tl-proto = { version = "0.4", features = ["derive"] }
 tokio = { version = "1", features = ["sync", "fs", "rt-multi-thread", "parking_lot"] }
@@ -46,8 +45,8 @@ tokio-util = "0.7.0"
 tracing = "0.1"
 broxus-util = { version = "0.2", default-features = false, features = ["alloc"] }
 
-librocksdb-sys = "0.10.0" # don't update, 6.x.y is a trap
-rocksdb = { version = "0.20", features = [
+librocksdb-sys = "0.11.0" # don't update, 6.x.y is a trap
+rocksdb = { version = "0.21.0", features = [
     "multi-threaded-cf",
     "zstd",
     "lz4",
