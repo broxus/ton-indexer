@@ -141,9 +141,14 @@ async fn import_mc_blocks_with_apply(
             .await?;
     }
 
+    let block_time_diff = (broxus_util::now() - *last_gen_utime) as u64;
+    let block_time_diff = std::time::Duration::from_secs(block_time_diff);
+    let block_time_diff = humantime::format_duration(block_time_diff);
+
     tracing::info!(
         target: "sync",
         last_mc_block_id = %last_mc_block_id.display(),
+        %block_time_diff,
         "imported masterchain blocks from archive"
     );
     Ok(())
