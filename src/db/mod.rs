@@ -252,7 +252,7 @@ impl Caches {
     pub fn with_capacity(capacity: usize) -> Result<Self, rocksdb::Error> {
         const MIN_CAPACITY: usize = 64 * 1024 * 1024; // 64 MB
 
-        let block_cache_capacity = std::cmp::max(capacity * 2 / 3, MIN_CAPACITY);
+        let block_cache_capacity = std::cmp::max(capacity, MIN_CAPACITY);
         tracing::info!(block_cache_capacity, "Rocksdb block cache capacity");
 
         Ok(Self {
