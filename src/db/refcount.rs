@@ -38,11 +38,14 @@ pub fn compaction_filter(_level: u32, _key: &[u8], value: &[u8]) -> Decision {
 }
 
 pub fn decode_value_with_rc(bytes: &[u8]) -> (RcType, Option<&[u8]>) {
-    if bytes.len() < RC_BYTES {
-        return (0, None);
-    }
+    let without_payload = match bytes.len().cmp(&RC_BYTES) {
+        std::cmp::Ordering::Greater => false,
+        std::cmp::Ordering::Equal => true,
+        std::cmp::Ordering::Less => return (0, None),
+    };
+
     let rc = RcType::from_le_bytes(bytes[..RC_BYTES].try_into().unwrap());
-    if rc <= 0 {
+    if rc <= 0 || without_payload {
         (rc, None)
     } else {
         (rc, Some(&bytes[RC_BYTES..]))
