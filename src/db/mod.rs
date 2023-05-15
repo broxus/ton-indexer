@@ -110,26 +110,17 @@ impl Db {
     }
 
     pub fn get_memory_usage_stats(&self) -> Result<RocksdbStats> {
-        let caches = &[
-            &self.caches.block_cache,
-            &self.caches.compressed_block_cache,
-        ];
+        let caches = &[&self.caches.block_cache];
         let whole_db_stats =
             rocksdb::perf::get_memory_usage_stats(Some(&[self.raw()]), Some(caches))?;
 
         let uncompressed_block_cache_usage = self.caches.block_cache.get_usage();
         let uncompressed_block_cache_pined_usage = self.caches.block_cache.get_pinned_usage();
 
-        let compressed_block_cache_usage = self.caches.compressed_block_cache.get_usage();
-        let compressed_block_cache_pined_usage =
-            self.caches.compressed_block_cache.get_pinned_usage();
-
         Ok(RocksdbStats {
             whole_db_stats,
             uncompressed_block_cache_usage,
             uncompressed_block_cache_pined_usage,
-            compressed_block_cache_usage,
-            compressed_block_cache_pined_usage,
         })
     }
 
@@ -176,8 +167,6 @@ pub struct RocksdbStats {
     pub whole_db_stats: rocksdb::perf::MemoryUsageStats,
     pub uncompressed_block_cache_usage: usize,
     pub uncompressed_block_cache_pined_usage: usize,
-    pub compressed_block_cache_usage: usize,
-    pub compressed_block_cache_pined_usage: usize,
 }
 
 struct Builder<'a> {
@@ -257,20 +246,17 @@ pub trait ColumnFamily {
 #[derive(Clone)]
 pub struct Caches {
     pub block_cache: rocksdb::Cache,
-    pub compressed_block_cache: rocksdb::Cache,
 }
 
 impl Caches {
     pub fn with_capacity(capacity: usize) -> Result<Self, rocksdb::Error> {
-        const MIN_CAPACITY: usize = 64 * 1024 * 1024;
+        const MIN_CAPACITY: usize = 64 * 1024 * 1024; // 64 MB
 
-        let block_cache_capacity = std::cmp::min(capacity * 2 / 3, MIN_CAPACITY);
-        let compressed_block_cache_capacity =
-            std::cmp::min(capacity.saturating_sub(block_cache_capacity), MIN_CAPACITY);
+        let block_cache_capacity = std::cmp::max(capacity, MIN_CAPACITY);
+        tracing::info!(block_cache_capacity, "Rocksdb block cache capacity");
 
         Ok(Self {
-            block_cache: rocksdb::Cache::new_lru_cache(block_cache_capacity)?,
-            compressed_block_cache: rocksdb::Cache::new_lru_cache(compressed_block_cache_capacity)?,
+            block_cache: rocksdb::Cache::new_lru_cache(block_cache_capacity),
         })
     }
 }
