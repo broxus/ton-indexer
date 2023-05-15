@@ -64,9 +64,11 @@ pub fn has_value(bytes: &[u8]) -> bool {
     bytes.len() >= RC_BYTES && RcType::from_le_bytes(bytes[..RC_BYTES].try_into().unwrap()) > 0
 }
 
-pub fn add_positive_refount(rc: u32, data: &[u8], target: &mut Vec<u8>) {
+pub fn add_positive_refount(rc: u32, data: Option<&[u8]>, target: &mut Vec<u8>) {
     target.extend_from_slice(&RcType::from(rc).to_le_bytes());
-    target.extend_from_slice(data);
+    if let Some(data) = data {
+        target.extend_from_slice(data);
+    }
 }
 
 pub fn encode_positive_refcount(rc: u32) -> [u8; RC_BYTES] {
