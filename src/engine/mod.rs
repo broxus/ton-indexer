@@ -13,7 +13,6 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use broxus_util::now;
 use everscale_network::overlay;
-pub use rocksdb::perf::MemoryUsageStats;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Notify;
 

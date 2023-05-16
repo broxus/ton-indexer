@@ -46,13 +46,7 @@ tokio-util = "0.7.0"
 tracing = "0.1"
 broxus-util = { version = "0.2", default-features = false, features = ["alloc"] }
 
-librocksdb-sys = "0.11.0" # don't update, 6.x.y is a trap
-rocksdb = { version = "0.21.0", features = [
-    "multi-threaded-cf",
-    "zstd",
-    "lz4",
-    "jemalloc",
-], default-features = false }
+weedb = { version = "0.1", features = ["zstd", "lz4", "jemalloc"] }
 
 ton_block = { git = "https://github.com/broxus/ton-labs-block.git", branch = "old" }
 ton_types = { git = "https://github.com/broxus/ton-labs-types.git", branch = "old" }
@@ -81,7 +75,6 @@ broxus-util = { version = "0.2", default-features = false, features = [
 [features]
 default = []
 count-cells = ["countme/enable", "ton_types/profile"]
-io-uring = ["rocksdb/io-uring"]
 archive-uploader = ["dep:archive-uploader"]
 alloc-profiling = ["broxus-util/alloc-profiling"]
 

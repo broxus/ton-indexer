@@ -1,9 +1,10 @@
-use rocksdb::{
+use weedb::rocksdb::{
     BlockBasedIndexType, BlockBasedOptions, DataBlockIndexType, MergeOperands, Options,
     ReadOptions, SliceTransform,
 };
+use weedb::{Caches, ColumnFamily};
 
-use super::{refcount, Caches, ColumnFamily};
+use super::refcount;
 
 /// Stores prepared archives
 /// - Key: `u32 (BE)` (archive id)
