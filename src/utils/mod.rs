@@ -1,4 +1,7 @@
+use schnellru::ByLength;
 use std::collections::{HashMap, HashSet};
+use std::hash::Hash;
+use std::sync::Mutex;
 
 pub use archive_package::*;
 pub use block::*;
@@ -31,3 +34,54 @@ pub(crate) type FastHashMap<K, V> = HashMap<K, V, FastHasherState>;
 pub(crate) type FastDashSet<K> = dashmap::DashSet<K, FastHasherState>;
 pub(crate) type FastDashMap<K, V> = dashmap::DashMap<K, V, FastHasherState>;
 pub(crate) type FastHasherState = ahash::RandomState;
+
+pub struct FastLruCache<K, V> {
+    inner: Mutex<(
+        schnellru::LruMap<K, V, ByLength, FastHasherState>,
+        LruCacheStats,
+    )>,
+}
+
+#[derive(Default, Debug, Clone, Copy)]
+pub struct LruCacheStats {
+    pub hits: u64,
+    pub requests: u64,
+}
+
+impl<K, V> FastLruCache<K, V>
+where
+    K: Hash + PartialEq,
+    V: Clone,
+{
+    pub fn new(capacity: u32) -> Self {
+        Self {
+            inner: Mutex::new((
+                schnellru::LruMap::with_hasher(ByLength::new(capacity), Default::default()),
+                LruCacheStats::default(),
+            )),
+        }
+    }
+
+    pub fn insert(&self, key: K, value: V) {
+        let mut lock = self.inner.lock().unwrap();
+
+        lock.0.insert(key, value);
+    }
+
+    pub fn get(&self, key: &K) -> Option<V> {
+        let mut lock = self.inner.lock().unwrap();
+
+        let res = lock.0.get(key).cloned();
+        lock.1.requests += 1;
+        if res.is_some() {
+            lock.1.hits += 1;
+        }
+
+        res
+    }
+
+    pub fn stats(&self) -> LruCacheStats {
+        let lock = self.inner.lock().unwrap();
+        lock.1
+    }
+}

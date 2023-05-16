@@ -1,5 +1,5 @@
 use std::collections::hash_map;
-use std::sync::{Arc, Weak};
+use std::sync::Arc;
 
 use anyhow::Result;
 use bumpalo::Bump;
@@ -8,16 +8,25 @@ use smallvec::SmallVec;
 use ton_types::{ByteOrderRead, CellImpl, UInt256};
 
 use crate::db::*;
-use crate::utils::{FastDashMap, FastHashMap};
+use crate::utils::{FastHashMap, FastLruCache};
 
 pub struct CellStorage {
     db: Arc<Db>,
-    cells_cache: Arc<FastDashMap<UInt256, Weak<StorageCell>>>,
+    cells_cache: Arc<FastLruCache<UInt256, Arc<StorageCell>>>,
 }
 
 impl CellStorage {
     pub fn new(db: Arc<Db>) -> Result<Arc<Self>> {
-        let cache = Arc::new(FastDashMap::default());
+        let cache = Arc::new(FastLruCache::new(100_000)); //todo: make it configurable / measure memory usage
+        {
+            let cache = cache.clone();
+            tokio::spawn(async move {
+                loop {
+                    tokio::time::sleep(tokio::time::Duration::from_secs(30)).await;
+                    tracing::warn!("CellStorage cache size: {:?}", cache.stats());
+                }
+            });
+        }
         Ok(Arc::new(Self {
             db,
             cells_cache: cache,
@@ -150,9 +159,7 @@ impl CellStorage {
         hash: UInt256,
     ) -> Result<Arc<StorageCell>, CellStorageError> {
         if let Some(cell) = self.cells_cache.get(&hash) {
-            if let Some(cell) = cell.upgrade() {
-                return Ok(cell);
-            }
+            return Ok(cell);
         }
 
         let cell = match self.db.cells.get(hash.as_slice()) {
@@ -169,7 +176,7 @@ impl CellStorage {
             }
             Err(e) => return Err(CellStorageError::Internal(e)),
         };
-        self.cells_cache.insert(hash, Arc::downgrade(&cell));
+        self.cells_cache.insert(hash, cell.clone());
 
         Ok(cell)
     }
@@ -272,8 +279,8 @@ impl CellStorage {
         Ok(total)
     }
 
-    pub fn drop_cell(&self, hash: &UInt256) {
-        self.cells_cache.remove(hash);
+    pub fn drop_cell(&self, _hash: &UInt256) {
+        // no op
     }
 }
 
