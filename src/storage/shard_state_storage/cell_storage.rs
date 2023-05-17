@@ -31,7 +31,7 @@ impl CellStorage {
     ) -> Result<usize, CellStorageError> {
         struct CellWithRefs<'a> {
             rc: u32,
-            data: &'a [u8],
+            data: Option<&'a [u8]>,
         }
 
         struct Context<'a> {
@@ -48,20 +48,25 @@ impl CellStorage {
                 cell: &ton_types::Cell,
                 value: Option<rocksdb::DBPinnableSlice<'_>>,
             ) -> Result<bool, CellStorageError> {
-                let has_value = matches!(value, Some(value) if refcount::has_value(value.as_ref()));
-
                 Ok(match self.transaction.entry(*key) {
                     hash_map::Entry::Occupied(mut value) => {
                         value.get_mut().rc += 1;
                         false
                     }
-                    hash_map::Entry::Vacant(value) => {
-                        self.buffer.clear();
-                        if StorageCell::serialize_to(&**cell, &mut self.buffer).is_err() {
-                            return Err(CellStorageError::InvalidCell);
-                        }
-                        let data = self.alloc.alloc_slice_copy(self.buffer.as_slice());
-                        value.insert(CellWithRefs { rc: 1, data });
+                    hash_map::Entry::Vacant(entry) => {
+                        let has_value =
+                            matches!(value, Some(value) if refcount::has_value(value.as_ref()));
+
+                        let data = if !has_value {
+                            self.buffer.clear();
+                            if StorageCell::serialize_to(&**cell, &mut self.buffer).is_err() {
+                                return Err(CellStorageError::InvalidCell);
+                            }
+                            Some(self.alloc.alloc_slice_copy(self.buffer.as_slice()) as &[u8])
+                        } else {
+                            None
+                        };
+                        entry.insert(CellWithRefs { rc: 1, data });
                         !has_value
                     }
                 })

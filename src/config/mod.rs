@@ -191,6 +191,6 @@ impl Default for ShardStateCacheOptions {
 /// Third of all memory as suggested in docs
 pub fn default_max_db_memory_usage() -> usize {
     let sys = sysinfo::System::new_all();
-    let total = sys.total_memory() * 1024;
+    let total = sys.total_memory();
     (total / 3) as usize
 }

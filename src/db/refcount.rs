@@ -1,7 +1,8 @@
 use std::cmp::Ordering;
 use std::convert::TryInto;
 
-use rocksdb::compaction_filter::Decision;
+use weedb::rocksdb;
+use weedb::rocksdb::compaction_filter::Decision;
 
 pub fn merge_operator(
     _key: &[u8],
@@ -38,11 +39,14 @@ pub fn compaction_filter(_level: u32, _key: &[u8], value: &[u8]) -> Decision {
 }
 
 pub fn decode_value_with_rc(bytes: &[u8]) -> (RcType, Option<&[u8]>) {
-    if bytes.len() < RC_BYTES {
-        return (0, None);
-    }
+    let without_payload = match bytes.len().cmp(&RC_BYTES) {
+        std::cmp::Ordering::Greater => false,
+        std::cmp::Ordering::Equal => true,
+        std::cmp::Ordering::Less => return (0, None),
+    };
+
     let rc = RcType::from_le_bytes(bytes[..RC_BYTES].try_into().unwrap());
-    if rc <= 0 {
+    if rc <= 0 || without_payload {
         (rc, None)
     } else {
         (rc, Some(&bytes[RC_BYTES..]))
@@ -64,9 +68,11 @@ pub fn has_value(bytes: &[u8]) -> bool {
     bytes.len() >= RC_BYTES && RcType::from_le_bytes(bytes[..RC_BYTES].try_into().unwrap()) > 0
 }
 
-pub fn add_positive_refount(rc: u32, data: &[u8], target: &mut Vec<u8>) {
+pub fn add_positive_refount(rc: u32, data: Option<&[u8]>, target: &mut Vec<u8>) {
     target.extend_from_slice(&RcType::from(rc).to_le_bytes());
-    target.extend_from_slice(data);
+    if let Some(data) = data {
+        target.extend_from_slice(data);
+    }
 }
 
 pub fn encode_positive_refcount(rc: u32) -> [u8; RC_BYTES] {
