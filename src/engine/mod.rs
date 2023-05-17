@@ -92,7 +92,7 @@ impl Engine {
         subscribers: Vec<Arc<dyn Subscriber>>,
     ) -> Result<Arc<Self>> {
         let old_blocks_policy = config.sync_options.old_blocks_policy;
-        let db = Db::open(config.rocks_db_path, config.max_db_memory_usage)?;
+        let db = Db::open(config.rocks_db_path, config.db_options)?;
         let storage = Storage::new(db.clone(), config.file_db_path)
             .await
             .context("Failed to create DB")?;

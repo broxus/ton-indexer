@@ -24,7 +24,7 @@ pub struct NodeConfig {
     pub blocks_gc_options: Option<BlocksGcOptions>,
     pub shard_state_cache_options: Option<ShardStateCacheOptions>,
 
-    pub max_db_memory_usage: usize,
+    pub db_options: DbOptions,
 
     pub archive_options: Option<ArchiveOptions>,
     pub sync_options: SyncOptions,
@@ -47,13 +47,34 @@ impl Default for NodeConfig {
             blocks_gc_options: None,
             shard_state_cache_options: Some(Default::default()),
             archive_options: Some(Default::default()),
-            max_db_memory_usage: default_max_db_memory_usage(),
+            db_options: Default::default(),
             sync_options: Default::default(),
             adnl_options: Default::default(),
             rldp_options: Default::default(),
             dht_options: Default::default(),
             overlay_shard_options: Default::default(),
             neighbours_options: Default::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct DbOptions {
+    pub max_memory_usage: usize,
+    pub min_caches_capacity: usize,
+    pub min_compaction_memory_budget: usize,
+}
+
+impl Default for DbOptions {
+    fn default() -> Self {
+        // Third of all memory as suggested in docs
+        let sys = sysinfo::System::new_all();
+        let total = sys.total_memory();
+        Self {
+            max_memory_usage: (total / 3) as usize,
+            min_caches_capacity: 64 << 20,         // 64 MB
+            min_compaction_memory_budget: 1 << 30, // 1 GB
         }
     }
 }
@@ -186,11 +207,4 @@ impl Default for ShardStateCacheOptions {
     fn default() -> Self {
         Self { ttl_sec: 120 }
     }
-}
-
-/// Third of all memory as suggested in docs
-pub fn default_max_db_memory_usage() -> usize {
-    let sys = sysinfo::System::new_all();
-    let total = sys.total_memory();
-    (total / 3) as usize
 }

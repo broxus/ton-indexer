@@ -7,6 +7,8 @@ use weedb::{Caches, WeeDb};
 pub use weedb::Stats as RocksdbStats;
 pub use weedb::{rocksdb, BoundedCfHandle, ColumnFamily, Table, UnboundedCfHandle};
 
+use crate::config::DbOptions;
+
 pub mod refcount;
 pub mod tables;
 
@@ -30,7 +32,7 @@ pub struct Db {
 }
 
 impl Db {
-    pub fn open(path: PathBuf, mem_limit: usize) -> Result<Arc<Self>> {
+    pub fn open(path: PathBuf, options: DbOptions) -> Result<Arc<Self>> {
         let limit = match fdlimit::raise_fd_limit() {
             // New fd limit
             Some(limit) => limit,
@@ -42,7 +44,14 @@ impl Db {
             }
         };
 
-        let caches = Caches::with_capacity(mem_limit);
+        let caches_capacity =
+            std::cmp::max(options.max_memory_usage / 3, options.min_caches_capacity);
+        let compaction_memory_budget = std::cmp::max(
+            options.max_memory_usage - options.max_memory_usage / 3,
+            options.min_compaction_memory_budget,
+        );
+
+        let caches = Caches::with_capacity(caches_capacity);
 
         let inner = WeeDb::builder(path, caches)
             .options(|opts, _| {
@@ -67,6 +76,8 @@ impl Db {
                 // cpu
                 opts.set_max_background_jobs(std::cmp::max((num_cpus::get() as i32) / 2, 2));
                 opts.increase_parallelism(num_cpus::get() as i32);
+
+                opts.optimize_level_style_compaction(compaction_memory_budget);
 
                 // debug
                 // opts.enable_statistics();
