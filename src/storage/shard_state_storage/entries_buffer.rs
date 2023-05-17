@@ -116,7 +116,7 @@ impl<'a> HashesEntry<'a> {
     }
 
     pub fn cell_type(&self) -> ton_types::CellType {
-        ton_types::CellType::from(self.0[1])
+        ton_types::CellType::try_from(self.0[1]).unwrap_or(ton_types::CellType::Unknown)
     }
 
     pub fn tree_bits_count(&self) -> u64 {

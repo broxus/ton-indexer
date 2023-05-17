@@ -26,7 +26,7 @@ impl BlockProofStuff {
         is_link: bool,
     ) -> Result<Self> {
         let root = ton_types::deserialize_tree_of_cells(&mut data)?;
-        let proof = ton_block::BlockProof::construct_from(&mut root.into())?;
+        let proof = ton_block::BlockProof::construct_from_cell(root)?;
 
         if proof.proof_for != block_id {
             return Err(anyhow!(
@@ -47,8 +47,7 @@ impl BlockProofStuff {
     }
 
     pub fn virtualize_block_root(&self) -> Result<Cell> {
-        let merkle_proof =
-            ton_block::MerkleProof::construct_from(&mut self.proof.root.clone().into())?;
+        let merkle_proof = ton_block::MerkleProof::construct_from_cell(self.proof.root.clone())?;
         let block_virt_root = merkle_proof.proof.virtualize(1);
 
         if self.proof.proof_for.root_hash() != block_virt_root.repr_hash() {
@@ -65,7 +64,7 @@ impl BlockProofStuff {
     pub fn virtualize_block(&self) -> Result<(ton_block::Block, ton_types::UInt256)> {
         let cell = self.virtualize_block_root()?;
         let hash = cell.repr_hash();
-        Ok((ton_block::Block::construct_from(&mut cell.into())?, hash))
+        Ok((ton_block::Block::construct_from_cell(cell)?, hash))
     }
 
     pub fn proof(&self) -> &ton_block::BlockProof {
@@ -364,7 +363,11 @@ impl BlockProofStuff {
         let (validator_set, catchain_config) =
             state.state().read_cur_validator_set_and_cc_conf()?;
 
-        self.calc_validators_subset(&validator_set, &catchain_config, block_info.gen_utime().0)
+        self.calc_validators_subset(
+            &validator_set,
+            &catchain_config,
+            block_info.gen_utime().as_u32(),
+        )
     }
 
     fn process_prev_key_block_proof(
@@ -409,7 +412,7 @@ impl BlockProofStuff {
                 .as_ref()
                 .map(|s| s.validator_info.catchain_seqno)
                 .unwrap_or_default(),
-            ton_block::UnixTime32(gen_utime),
+            ton_block::UnixTime32::new(gen_utime),
         )
     }
 }
@@ -452,8 +455,8 @@ pub fn check_with_prev_key_block_proof(
         ));
     }
 
-    let (validators, validators_hash_short) =
-        proof.process_prev_key_block_proof(prev_key_block_proof, virt_block_info.gen_utime().0)?;
+    let (validators, validators_hash_short) = proof
+        .process_prev_key_block_proof(prev_key_block_proof, virt_block_info.gen_utime().as_u32())?;
 
     if virt_block_info.key_block() {
         proof.pre_check_key_block_proof(virt_block)?;

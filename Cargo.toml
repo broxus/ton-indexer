@@ -48,8 +48,8 @@ broxus-util = { version = "0.2", default-features = false, features = ["alloc"] 
 
 weedb = { version = "0.1", features = ["zstd", "lz4", "jemalloc"] }
 
-ton_block = { git = "https://github.com/broxus/ton-labs-block.git", branch = "old" }
-ton_types = { git = "https://github.com/broxus/ton-labs-types.git", branch = "old" }
+ton_block = { git = "https://github.com/broxus/ton-labs-block.git" }
+ton_types = { git = "https://github.com/broxus/ton-labs-types.git" }
 
 archive-uploader = { path = "archive-uploader", optional = true }
 global-config = { path = "global-config" }

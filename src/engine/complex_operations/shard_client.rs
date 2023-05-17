@@ -174,7 +174,12 @@ async fn load_shard_blocks(
         .into_iter()
         .find(|item| item.is_err())
         .unwrap_or(Ok(()))?;
-    let block_utime = masterchain_block.block().info.read_struct()?.gen_utime().0;
+    let block_utime = masterchain_block
+        .block()
+        .info
+        .read_struct()?
+        .gen_utime()
+        .as_u32();
 
     engine.store_shards_client_mc_block_id(masterchain_block.id())?;
     engine.store_shards_client_mc_block_utime(block_utime);
@@ -307,7 +312,7 @@ fn validate_broadcast(
         block_id.shard_id.shard_prefix_with_tag(),
         block_id.shard_id.workchain_id(),
         broadcast.catchain_seqno,
-        ton_block::UnixTime32(0),
+        ton_block::UnixTime32::new(0),
     )?;
 
     if validators_hash_short != broadcast.validator_set_hash {

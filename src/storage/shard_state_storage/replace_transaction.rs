@@ -304,13 +304,13 @@ impl<'a> ShardStateReplaceTransaction<'a> {
                 ton_types::LevelMask::with_level(i)
             };
 
-            let (d1, d2) = ton_types::BagOfCells::calculate_descriptor_bytes(
-                cell.bit_len,
-                cell.reference_indices.len() as u8,
-                level_mask.mask(),
-                cell.cell_type != ton_types::CellType::Ordinary,
+            let d1 = ton_types::cell::calc_d1(
+                level_mask,
                 false,
+                cell.cell_type,
+                cell.reference_indices.len(),
             );
+            let d2 = ton_types::cell::calc_d2(cell.bit_len);
 
             hasher.update([d1, d2]);
 
