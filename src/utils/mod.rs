@@ -1,6 +1,8 @@
+use histogram::Histogram;
 use schnellru::ByLength;
 use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
+use std::io::Write;
 use std::sync::Mutex;
 
 pub use archive_package::*;
@@ -84,4 +86,36 @@ where
         let lock = self.inner.lock().unwrap();
         lock.1
     }
+}
+
+pub fn print_hist(histogram: &Histogram) -> Option<()> {
+    fn print_percentile(percentile: f64, hist: &Histogram, mut io: impl Write) -> Option<()> {
+        let bucket = hist.percentile(percentile).ok()?;
+
+        writeln!(
+            io,
+            "Percentile {}%  from {} to {}  => {} count",
+            percentile,
+            bucket.low(),
+            bucket.high(),
+            bucket.count()
+        )
+        .ok()?;
+
+        Some(())
+    }
+    let mut io = std::io::stdout().lock();
+
+    print_percentile(0.1, histogram, &mut io)?;
+    print_percentile(10.0, histogram, &mut io)?;
+    print_percentile(25.0, histogram, &mut io)?;
+    print_percentile(50.0, histogram, &mut io)?;
+    print_percentile(75.0, histogram, &mut io)?;
+    print_percentile(90.0, histogram, &mut io)?;
+    print_percentile(95.0, histogram, &mut io)?;
+    print_percentile(99.0, histogram, &mut io)?;
+    print_percentile(99.9, histogram, &mut io)?;
+    print_percentile(99.99, histogram, &mut io)?;
+    print_percentile(99.999, histogram, &mut io)?;
+    Some(())
 }

@@ -3,23 +3,119 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use bumpalo::Bump;
+use bytes::Bytes;
+use histogram::Histogram;
 use parking_lot::RwLock;
 use smallvec::SmallVec;
 use ton_types::{ByteOrderRead, CellImpl, UInt256};
 
 use crate::db::*;
-use crate::utils::{FastHashMap, FastLruCache};
+use crate::utils::{print_hist, FastHashMap, FastLruCache};
 
 pub struct CellStorage {
     db: Arc<Db>,
     cells_cache: Arc<FastLruCache<UInt256, Arc<StorageCell>>>,
+    raw_getter: CellStorageRawCached,
+}
+
+// Percentile 0.1%    from 96 to 127  => 1725119 count
+// Percentile 10%     from 128 to 191  => 82838849 count
+// Percentile 25%     from 128 to 191  => 82838849 count
+// Percentile 50%     from 128 to 191  => 82838849 count
+// Percentile 75%     from 128 to 191  => 82838849 count
+// Percentile 90%     from 192 to 255  => 22775080 count
+// Percentile 95%     from 192 to 255  => 22775080 count
+// Percentile 99%     from 192 to 255  => 22775080 count
+// Percentile 99.9%   from 256 to 383  => 484002 count
+// Percentile 99.99%  from 256 to 383  => 484002 count
+// Percentile 99.999% from 256 to 383  => 484002 count
+
+// from 64  to 95  - 15_267
+// from 96  to 127 - 1_725_119
+// from 128 to 191 - 82_838_849
+// from 192 to 255 - 22_775_080
+// from 256 to 383 - 484_002
+
+// we assume that 75% of cells are in range 128..191
+// so we can use use 192 as size for value in cache
+
+const MAX_CELL_SIZE: u64 = 192;
+const KEY_SIZE: u64 = 32;
+
+struct CellStorageRawCached {
+    db: Arc<Db>,
+    raw_cache: Arc<FastLruCache<[u8; 32], Bytes>>,
+    hist: Arc<Histogram>,
+}
+
+impl CellStorageRawCached {
+    fn new(db: Arc<Db>, size_in_bytes: u64) -> Self {
+        let num_cells_in_cache = (size_in_bytes / (KEY_SIZE + MAX_CELL_SIZE)) as u32;
+        tracing::info!("num_cells_in_cache: {}", num_cells_in_cache);
+        const NSEC_IN_SEC: u64 = 1_000_000_000;
+        let hist = Arc::new(
+            Histogram::builder()
+                .min_resolution(50) // 32 buckets
+                .maximum_value(NSEC_IN_SEC)
+                .build()
+                .unwrap(),
+        );
+
+        {
+            let hist = hist.clone();
+            tokio::spawn(async move {
+                loop {
+                    tokio::time::sleep(tokio::time::Duration::from_secs(30)).await;
+                    print_hist(&hist);
+                }
+            });
+        }
+
+        Self {
+            db,
+            raw_cache: Arc::new(FastLruCache::new(num_cells_in_cache)),
+            hist,
+        }
+    }
+
+    fn get_raw(&self, key: &[u8; 32]) -> Result<Option<Bytes>, rocksdb::Error> {
+        let start = std::time::Instant::now();
+        if let Some(value) = self.raw_cache.get(key) {
+            let end = start.elapsed().as_nanos();
+            self.hist.increment(end as u64, 1).unwrap();
+            return Ok(Some(value));
+        }
+
+        let value = self
+            .db
+            .cells
+            .get(key)?
+            .map(|v| Bytes::copy_from_slice(v.as_ref()));
+        if let Some(value) = &value {
+            self.raw_cache.insert(*key, value.clone());
+        }
+        let end = start.elapsed().as_nanos();
+        self.hist
+            .increment(
+                if end > 1_000_000_000 {
+                    1_000_000_000
+                } else {
+                    end
+                } as u64,
+                1,
+            )
+            .ok();
+
+        Ok(value)
+    }
 }
 
 impl CellStorage {
-    pub fn new(db: Arc<Db>) -> Result<Arc<Self>> {
-        let cache = Arc::new(FastLruCache::new(100_000)); //todo: make it configurable / measure memory usage
+    pub fn new(db: Arc<Db>, cache_size_bytes: u64) -> Result<Arc<Self>> {
+        let cache = Arc::new(FastLruCache::new(10_000)); //todo: make it configurable / measure memory usage
         {
             let cache = cache.clone();
+
             tokio::spawn(async move {
                 loop {
                     tokio::time::sleep(tokio::time::Duration::from_secs(30)).await;
@@ -27,7 +123,9 @@ impl CellStorage {
                 }
             });
         }
+
         Ok(Arc::new(Self {
+            raw_getter: CellStorageRawCached::new(db.clone(), cache_size_bytes),
             db,
             cells_cache: cache,
         }))
@@ -51,12 +149,15 @@ impl CellStorage {
         }
 
         impl Context<'_> {
-            fn insert_cell(
+            fn insert_cell<V>(
                 &mut self,
                 key: &[u8; 32],
                 cell: &ton_types::Cell,
-                value: Option<rocksdb::DBPinnableSlice<'_>>,
-            ) -> Result<bool, CellStorageError> {
+                value: Option<V>,
+            ) -> Result<bool, CellStorageError>
+            where
+                V: AsRef<[u8]>,
+            {
                 Ok(match self.transaction.entry(*key) {
                     hash_map::Entry::Occupied(mut value) => {
                         value.get_mut().rc += 1;
@@ -95,9 +196,7 @@ impl CellStorage {
         // Prepare context and handles
         let alloc = Bump::new();
         let cells = &self.db.cells;
-        let raw = cells.db();
         let cells_cf = &cells.cf();
-        let read_options = cells.read_config();
 
         let mut ctx = Context {
             cells_cf,
@@ -111,9 +210,9 @@ impl CellStorage {
             let key = root.repr_hash();
             let key = key.as_array();
 
-            match raw.get_pinned_cf_opt(cells_cf, key, read_options) {
+            match self.raw_getter.get_raw(key) {
                 Ok(value) => {
-                    if !ctx.insert_cell(key, &root, value)? {
+                    if !ctx.insert_cell(key, &root, value.as_deref())? {
                         return Ok(0);
                     }
                 }
@@ -134,9 +233,9 @@ impl CellStorage {
                 let key = cell.repr_hash();
                 let key = key.as_array();
 
-                match raw.get_pinned_cf_opt(cells_cf, key, read_options) {
+                match self.raw_getter.get_raw(key) {
                     Ok(value) => {
-                        if !ctx.insert_cell(key, &cell, value)? {
+                        if !ctx.insert_cell(key, &cell, value.as_deref())? {
                             continue;
                         }
                     }
@@ -162,7 +261,7 @@ impl CellStorage {
             return Ok(cell);
         }
 
-        let cell = match self.db.cells.get(hash.as_slice()) {
+        let cell = match self.raw_getter.get_raw(hash.as_slice()) {
             Ok(value) => 'cell: {
                 if let Some(value) = value {
                     if let Some(value) = refcount::strip_refcount(&value) {
@@ -214,9 +313,8 @@ impl CellStorage {
         }
 
         let cells = &self.db.cells;
-        let raw = cells.db();
         let cells_cf = &cells.cf();
-        let read_options = cells.read_config();
+
         let mut transaction: FastHashMap<&[u8; 32], CellState> =
             FastHashMap::with_capacity_and_hasher(128, Default::default());
         let mut buffer = Vec::with_capacity(4);
@@ -229,7 +327,7 @@ impl CellStorage {
             let refs = match transaction.entry(cell_id) {
                 hash_map::Entry::Occupied(mut v) => v.get_mut().remove()?,
                 hash_map::Entry::Vacant(v) => {
-                    let rc = match raw.get_pinned_cf_opt(cells_cf, cell_id, read_options) {
+                    let rc = match self.raw_getter.get_raw(cell_id) {
                         Ok(value) => 'rc: {
                             if let Some(value) = value {
                                 buffer.clear();

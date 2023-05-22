@@ -16,6 +16,7 @@ impl ColumnFamily for Archives {
         default_block_based_table_factory(opts, caches);
 
         opts.set_merge_operator_associative("archive_data_merge", archive_data_merge);
+        opts.set_compression_type(rocksdb::DBCompressionType::Zstd);
     }
 }
 
@@ -95,19 +96,26 @@ impl ColumnFamily for Cells {
         opts.set_merge_operator_associative("cell_merge", refcount::merge_operator);
         opts.set_compaction_filter("cell_compaction", refcount::compaction_filter);
 
-        opts.set_write_buffer_size(128 * 1024 * 1024);
+        // lowers cpu usage on compaction from 46% to 28%
+        opts.set_write_buffer_size(1024 * 1024 * 1024);
 
         let mut block_factory = BlockBasedOptions::default();
         block_factory.set_block_cache(&caches.block_cache);
         block_factory.set_data_block_index_type(DataBlockIndexType::BinaryAndHash);
+        block_factory.set_whole_key_filtering(true);
+        block_factory.set_checksum_type(rocksdb::ChecksumType::NoChecksum);
+
+        block_factory.set_bloom_filter(10.0, false);
+        block_factory.set_block_size(16 * 1024);
 
         opts.set_block_based_table_factory(&block_factory);
 
-        opts.set_optimize_filters_for_hits(true);
-    }
+        opts.set_prefix_extractor(SliceTransform::create_fixed_prefix(32));
+        opts.set_memtable_prefix_bloom_ratio(0.2);
 
-    fn read_options(opts: &mut ReadOptions) {
-        opts.set_verify_checksums(false);
+        opts.set_optimize_filters_for_hits(true);
+        // option is set for cf
+        opts.set_compression_type(rocksdb::DBCompressionType::Zstd);
     }
 }
 

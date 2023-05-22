@@ -39,21 +39,25 @@ impl Db {
             }
         };
 
-        let caches = Caches::with_capacity(mem_limit)?;
+        let caches = Caches::with_capacity(mem_limit / 3)?;
 
         let raw = Builder::new(path, &caches)
             .options(|opts, _| {
                 opts.set_level_compaction_dynamic_level_bytes(true);
+                opts.optimize_level_style_compaction(mem_limit - mem_limit / 3);
+                // bigger base level size - less compactions
+                opts.set_max_bytes_for_level_base(1024 * 1024 * 1024);
+                // parallel compactions finishes faster - less write stalls
+                opts.set_max_subcompactions(num_cpus::get() as u32 / 2);
 
                 // compression opts
-                opts.set_zstd_max_train_bytes(32 * 1024 * 1024);
                 opts.set_compression_type(rocksdb::DBCompressionType::Zstd);
 
                 // io
                 opts.set_max_open_files(limit as i32);
 
                 // logging
-                opts.set_log_level(rocksdb::LogLevel::Error);
+                opts.set_log_level(rocksdb::LogLevel::Info);
                 opts.set_keep_log_file_num(2);
                 opts.set_recycle_log_file_num(2);
 
@@ -65,9 +69,12 @@ impl Db {
                 opts.set_max_background_jobs(std::cmp::max((num_cpus::get() as i32) / 2, 2));
                 opts.increase_parallelism(num_cpus::get() as i32);
 
+                opts.set_allow_concurrent_memtable_write(false);
+                opts.set_enable_write_thread_adaptive_yield(true);
+
                 // debug
-                // opts.enable_statistics();
-                // opts.set_stats_dump_period_sec(30);
+                opts.enable_statistics();
+                opts.set_stats_dump_period_sec(30);
             })
             .column::<tables::Archives>()
             .column::<tables::BlockHandles>()

@@ -60,6 +60,7 @@ ton_types = { git = "https://github.com/broxus/ton-labs-types.git", branch = "ol
 
 archive-uploader = { path = "archive-uploader", optional = true }
 global-config = { path = "global-config" }
+histogram = "0.7.2"
 
 [dev-dependencies]
 argh = "0.1"
@@ -72,14 +73,14 @@ cargo-husky = { version = "1.5.0", features = [
 config = { version = "0.13", default-features = false, features = ["yaml"] }
 serde_yaml = "0.9"
 tokio = { version = "1", features = ["full"] }
-tracing-subscriber = "0.3"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 broxus-util = { version = "0.2", default-features = false, features = [
     "config",
     "alloc",
     "public-ip",
 ] }
-pyroscope = "*"
-pyroscope_pprofrs = "*"
+pyroscope = "0.5.5"
+pyroscope_pprofrs = "0.2.5"
 
 
 [features]
