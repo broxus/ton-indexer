@@ -1,7 +1,8 @@
 pub use crate::config::*;
 pub use crate::db::RocksdbStats;
 pub use crate::engine::{
-    Engine, EngineMetrics, EngineStatus, InternalEngineMetrics, ProcessBlockContext, Subscriber,
+    Engine, EngineMetrics, EngineStatus, InternalEngineMetrics, ProcessBlockContext,
+    ProcessBlocksEdgeContext, Subscriber,
 };
 pub use crate::network::{NeighboursOptions, NetworkMetrics, NodeNetwork};
 pub use crate::storage::{BriefBlockMeta, DbMetrics};
