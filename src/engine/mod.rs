@@ -13,7 +13,6 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use broxus_util::now;
 use everscale_network::overlay;
-pub use rocksdb::perf::MemoryUsageStats;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Notify;
 
@@ -93,9 +92,8 @@ impl Engine {
         subscribers: Vec<Arc<dyn Subscriber>>,
     ) -> Result<Arc<Self>> {
         let old_blocks_policy = config.sync_options.old_blocks_policy;
-        let db_caches_size = config.max_db_memory_usage / 3;
-        let db = Db::open(config.rocks_db_path, db_caches_size)?;
-        let cells_storage_size_bytes = ((config.max_db_memory_usage / 3) * 2) as u64;
+        let db = Db::open(config.rocks_db_path, config.db_options)?;
+        let cells_storage_size_bytes = config.db_options.caches_size;
         let storage = Storage::new(db.clone(), config.file_db_path, cells_storage_size_bytes)
             .await
             .context("Failed to create DB")?;
@@ -976,6 +974,26 @@ impl Engine {
             .update(handle)
     }
 
+    async fn on_blocks_edge(&self, handle: &Arc<BlockHandle>, block: &BlockStuff) -> Result<()> {
+        let meta = handle.meta().brief();
+
+        self.store_shards_client_mc_block_id(block.id())?;
+        self.store_shards_client_mc_block_utime(meta.gen_utime());
+
+        let ctx = ProcessBlocksEdgeContext {
+            engine: self,
+            meta,
+            handle,
+            block,
+        };
+
+        for subscriber in &self.subscribers {
+            subscriber.process_blocks_edge(ctx).await?;
+        }
+
+        Ok(())
+    }
+
     pub fn load_last_applied_mc_block_id(&self) -> Result<ton_block::BlockIdExt> {
         self.storage.node_state().load_last_mc_block_id()
     }
@@ -1348,6 +1366,46 @@ pub trait Subscriber: Send + Sync {
     async fn process_full_state(&self, state: &ShardStateStuff) -> Result<()> {
         let _unused_by_default = state;
         Ok(())
+    }
+
+    async fn process_blocks_edge(&self, ctx: ProcessBlocksEdgeContext<'_>) -> Result<()> {
+        let _unused_by_default = ctx;
+        Ok(())
+    }
+}
+
+#[derive(Copy, Clone)]
+pub struct ProcessBlocksEdgeContext<'a> {
+    engine: &'a Engine,
+    meta: BriefBlockMeta,
+    handle: &'a Arc<BlockHandle>,
+    block: &'a BlockStuff,
+}
+
+impl ProcessBlocksEdgeContext<'_> {
+    #[inline(always)]
+    pub fn engine(&self) -> &Engine {
+        self.engine
+    }
+
+    #[inline(always)]
+    pub fn id(&self) -> &ton_block::BlockIdExt {
+        self.handle.id()
+    }
+
+    #[inline(always)]
+    pub fn meta(&self) -> BriefBlockMeta {
+        self.meta
+    }
+
+    #[inline(always)]
+    pub fn block(&self) -> &ton_block::Block {
+        self.block.block()
+    }
+
+    #[inline(always)]
+    pub fn block_stuff(&self) -> &BlockStuff {
+        self.block
     }
 }
 

@@ -35,7 +35,7 @@ impl ShardStateStuff {
         root: Cell,
         min_ref_mc_state: &Arc<MinRefMcState>,
     ) -> Result<Self> {
-        let shard_state = ton_block::ShardStateUnsplit::construct_from(&mut root.clone().into())?;
+        let shard_state = ton_block::ShardStateUnsplit::construct_from_cell(root.clone())?;
 
         if shard_state.shard() != block_id.shard() {
             return Err(anyhow!("State's shard block_id is not equal to given one"));

@@ -74,7 +74,7 @@ impl BlockStuff {
             return Err(anyhow!("wrong root hash for {id}"));
         }
 
-        let block = ton_block::Block::construct_from(&mut root.into())?;
+        let block = ton_block::Block::construct_from_cell(root)?;
         Ok(Self { id, block })
     }
 
@@ -187,7 +187,7 @@ impl From<&ton_block::BlockInfo> for BriefBlockInfo {
     fn from(info: &ton_block::BlockInfo) -> Self {
         Self {
             is_key_block: info.key_block(),
-            gen_utime: info.gen_utime().0,
+            gen_utime: info.gen_utime().as_u32(),
             after_split: info.after_split(),
         }
     }

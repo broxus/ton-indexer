@@ -341,7 +341,7 @@ impl<'a> RawCell<'a> {
         let cell_type = if !s {
             ton_types::CellType::Ordinary
         } else {
-            ton_types::CellType::from(cell_data[0])
+            ton_types::CellType::try_from(cell_data[0])?
         };
 
         let mut reference_indices = SmallVec::with_capacity(r);

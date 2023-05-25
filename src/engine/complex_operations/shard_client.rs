@@ -11,7 +11,7 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use crate::engine::Engine;
 use crate::proto;
-use crate::storage::BlockConnection;
+use crate::storage::{BlockConnection, BlockHandle};
 use crate::utils::*;
 
 pub async fn walk_masterchain_blocks(
@@ -54,12 +54,12 @@ pub async fn walk_shard_blocks(
             "walking through shard blocks"
         );
         let (next_handle, next_block) = engine.wait_next_applied_mc_block(&handle, None).await?;
-        handle = next_handle;
+        handle = next_handle.clone();
 
         let engine = engine.clone();
         let permit = semaphore.clone().acquire_owned().await?;
         tokio::spawn(async move {
-            if let Err(e) = load_shard_blocks(&engine, permit, next_block).await {
+            if let Err(e) = load_shard_blocks(&engine, permit, next_handle, &next_block).await {
                 tracing::error!("failed to load shard blocks: {e:?}");
             }
         });
@@ -141,7 +141,8 @@ async fn load_next_masterchain_block(
 async fn load_shard_blocks(
     engine: &Arc<Engine>,
     permit: OwnedSemaphorePermit,
-    masterchain_block: BlockStuff,
+    masterchain_block_handle: Arc<BlockHandle>,
+    masterchain_block: &BlockStuff,
 ) -> Result<()> {
     let block_handle_storage = engine.storage.block_handle_storage();
 
@@ -174,10 +175,10 @@ async fn load_shard_blocks(
         .into_iter()
         .find(|item| item.is_err())
         .unwrap_or(Ok(()))?;
-    let block_utime = masterchain_block.block().info.read_struct()?.gen_utime().0;
 
-    engine.store_shards_client_mc_block_id(masterchain_block.id())?;
-    engine.store_shards_client_mc_block_utime(block_utime);
+    engine
+        .on_blocks_edge(&masterchain_block_handle, masterchain_block)
+        .await?;
 
     drop(permit);
     Ok(())
@@ -307,7 +308,7 @@ fn validate_broadcast(
         block_id.shard_id.shard_prefix_with_tag(),
         block_id.shard_id.workchain_id(),
         broadcast.catchain_seqno,
-        ton_block::UnixTime32(0),
+        ton_block::UnixTime32::new(0),
     )?;
 
     if validators_hash_short != broadcast.validator_set_hash {

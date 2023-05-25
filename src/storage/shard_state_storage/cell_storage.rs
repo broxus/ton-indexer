@@ -53,6 +53,7 @@ impl CellStorageRawCached {
         let num_cells_in_cache = (size_in_bytes / (KEY_SIZE + MAX_CELL_SIZE)) as u32;
         tracing::info!("num_cells_in_cache: {}", num_cells_in_cache);
         const NSEC_IN_SEC: u64 = 1_000_000_000;
+        let raw_cache = Arc::new(FastLruCache::new(num_cells_in_cache));
         let hist = Arc::new(
             Histogram::builder()
                 .min_resolution(50) // 32 buckets
@@ -63,17 +64,19 @@ impl CellStorageRawCached {
 
         {
             let hist = hist.clone();
+            let raw_cache = raw_cache.clone();
             tokio::spawn(async move {
                 loop {
                     tokio::time::sleep(tokio::time::Duration::from_secs(30)).await;
                     print_hist(&hist);
+                    tracing::warn!("CellStorageRawCached cache size: {:?}", raw_cache.stats());
                 }
             });
         }
 
         Self {
             db,
-            raw_cache: Arc::new(FastLruCache::new(num_cells_in_cache)),
+            raw_cache,
             hist,
         }
     }
@@ -411,8 +414,8 @@ impl StorageCell {
     pub fn deserialize(boc_db: Arc<CellStorage>, mut data: &[u8]) -> Result<Self> {
         // deserialize cell
         let cell_data = ton_types::CellData::deserialize(&mut data)?;
-        let references_count = data.read_byte()?;
-        let mut references = SmallVec::with_capacity(references_count as usize);
+        let references_count = cell_data.references_count();
+        let mut references = SmallVec::with_capacity(references_count);
 
         for _ in 0..references_count {
             let hash = UInt256::from(data.read_u256()?);
@@ -461,12 +464,11 @@ impl StorageCell {
         target.clear();
 
         // serialize cell
-        let references_count = cell.references_count() as u8;
+        let references_count = cell.references_count();
         cell.cell_data().serialize(target)?;
-        target.push(references_count);
 
         for i in 0..references_count {
-            target.extend_from_slice(cell.reference(i as usize)?.repr_hash().as_slice());
+            target.extend_from_slice(cell.reference(i)?.repr_hash().as_slice());
         }
 
         target.extend_from_slice(&cell.tree_bits_count().to_le_bytes());
@@ -494,12 +496,16 @@ impl CellImpl for StorageCell {
         self.cell_data.data()
     }
 
+    fn raw_data(&self) -> ton_types::Result<&[u8]> {
+        Ok(self.cell_data.raw_data())
+    }
+
     fn cell_data(&self) -> &ton_types::CellData {
         &self.cell_data
     }
 
     fn bit_length(&self) -> usize {
-        self.cell_data.bit_length() as usize
+        self.cell_data.bit_length()
     }
 
     fn references_count(&self) -> usize {

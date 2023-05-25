@@ -1,7 +1,8 @@
 use std::cmp::Ordering;
 use std::convert::TryInto;
 
-use rocksdb::compaction_filter::Decision;
+use weedb::rocksdb;
+use weedb::rocksdb::compaction_filter::Decision;
 
 pub fn merge_operator(
     _key: &[u8],

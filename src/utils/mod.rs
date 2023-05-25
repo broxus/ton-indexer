@@ -48,6 +48,7 @@ pub struct FastLruCache<K, V> {
 pub struct LruCacheStats {
     pub hits: u64,
     pub requests: u64,
+    pub occupied: usize,
 }
 
 impl<K, V> FastLruCache<K, V>
@@ -84,7 +85,10 @@ where
 
     pub fn stats(&self) -> LruCacheStats {
         let lock = self.inner.lock().unwrap();
-        lock.1
+        let mut stats = lock.1;
+        stats.occupied = lock.0.len();
+
+        stats
     }
 }
 
