@@ -208,7 +208,10 @@ async fn download_key_blocks(engine: &Arc<Engine>, mut prev_key_block: PrevKeyBl
     tasks_tx.send(prev_handle.id().clone()).ok();
 
     let node_state = engine.storage.node_state();
-    while let Some((ids, neighbour)) = ids_rx.recv().await {
+    while let Some((mut ids, neighbour)) = ids_rx.recv().await {
+        // Id for zerostate as a key block is a trap
+        ids.retain(|id| id.seq_no > 0);
+
         match ids.last() {
             // Start downloading next key blocks in background
             Some(block_id) => {
