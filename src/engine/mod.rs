@@ -93,10 +93,14 @@ impl Engine {
     ) -> Result<Arc<Self>> {
         let old_blocks_policy = config.sync_options.old_blocks_policy;
         let db = Db::open(config.rocks_db_path, config.db_options)?;
-        let cells_storage_size_bytes = config.db_options.caches_size;
-        let storage = Storage::new(db.clone(), config.file_db_path, cells_storage_size_bytes)
-            .await
-            .context("Failed to create DB")?;
+        let cells_storage_size_bytes = config.db_options.cells_cache_size;
+        let storage = Storage::new(
+            db.clone(),
+            config.file_db_path,
+            cells_storage_size_bytes.as_u64(),
+        )
+        .await
+        .context("Failed to create DB")?;
 
         let zero_state_id = global_config.zero_state.clone();
 

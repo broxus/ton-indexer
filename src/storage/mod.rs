@@ -39,6 +39,10 @@ impl Storage {
         file_db_path: PathBuf,
         max_cell_cache_size_bytes: u64,
     ) -> Result<Arc<Self>> {
+        tracing::warn!(
+            "Will use {} for cells cache",
+            bytesize::ByteSize(max_cell_cache_size_bytes)
+        );
         let block_handle_storage = Arc::new(BlockHandleStorage::new(db.clone())?);
         let runtime_storage = Arc::new(RuntimeStorage::new(block_handle_storage.clone()));
         let block_storage = Arc::new(BlockStorage::new(db.clone(), block_handle_storage.clone())?);

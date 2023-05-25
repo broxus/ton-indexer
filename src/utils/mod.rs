@@ -1,9 +1,10 @@
 use histogram::Histogram;
-use schnellru::ByLength;
+use std::borrow::Borrow;
 use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
 use std::io::Write;
-use std::sync::Mutex;
+use std::sync::atomic::AtomicU64;
+use std::sync::Arc;
 
 pub use archive_package::*;
 pub use block::*;
@@ -37,58 +38,81 @@ pub(crate) type FastDashSet<K> = dashmap::DashSet<K, FastHasherState>;
 pub(crate) type FastDashMap<K, V> = dashmap::DashMap<K, V, FastHasherState>;
 pub(crate) type FastHasherState = ahash::RandomState;
 
-pub struct FastLruCache<K, V> {
-    inner: Mutex<(
-        schnellru::LruMap<K, V, ByLength, FastHasherState>,
-        LruCacheStats,
-    )>,
-}
-
 #[derive(Default, Debug, Clone, Copy)]
-pub struct LruCacheStats {
+pub struct CacheStats {
     pub hits: u64,
     pub requests: u64,
     pub occupied: usize,
 }
 
-impl<K, V> FastLruCache<K, V>
+// we are using `mini moka` because it's faster than `moka` and has the ability to iterate over all keys
+// which is necessary for storing popularity stats for cache warm up.
+// `fast_cache` in 2 times faster than `mini moka` but has no iteration interface
+pub struct MokaCache<K, V> {
+    inner: mini_moka::sync::Cache<K, V, FastHasherState>,
+    requests: AtomicU64,
+    hits: AtomicU64,
+}
+
+impl<K, V> MokaCache<K, V>
 where
-    K: Hash + PartialEq,
-    V: Clone,
+    K: Hash + Eq + Send + Sync + 'static,
+    V: Clone + Send + Sync + 'static,
 {
-    pub fn new(capacity: u32) -> Self {
-        Self {
-            inner: Mutex::new((
-                schnellru::LruMap::with_hasher(ByLength::new(capacity), Default::default()),
-                LruCacheStats::default(),
-            )),
-        }
+    pub fn with_capacity(capacity: usize) -> Arc<Self> {
+        Arc::new(Self {
+            inner: mini_moka::sync::Cache::builder()
+                .max_capacity(capacity as u64)
+                .build_with_hasher(FastHasherState::default()),
+            requests: AtomicU64::new(0),
+            hits: AtomicU64::new(0),
+        })
     }
 
-    pub fn insert(&self, key: K, value: V) {
-        let mut lock = self.inner.lock().unwrap();
-
-        lock.0.insert(key, value);
+    pub fn with_cache(cache: mini_moka::sync::Cache<K, V, FastHasherState>) -> Arc<Self> {
+        Arc::new(Self {
+            inner: cache,
+            requests: AtomicU64::new(0),
+            hits: AtomicU64::new(0),
+        })
     }
 
-    pub fn get(&self, key: &K) -> Option<V> {
-        let mut lock = self.inner.lock().unwrap();
-
-        let res = lock.0.get(key).cloned();
-        lock.1.requests += 1;
+    pub fn get<Q>(&self, key: &Q) -> Option<V>
+    where
+        Arc<K>: Borrow<Q>,
+        Q: Hash + Eq + ?Sized,
+    {
+        let res = self.inner.get(key);
+        self.requests
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         if res.is_some() {
-            lock.1.hits += 1;
+            self.hits.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
 
         res
     }
 
-    pub fn stats(&self) -> LruCacheStats {
-        let lock = self.inner.lock().unwrap();
-        let mut stats = lock.1;
-        stats.occupied = lock.0.len();
+    pub fn insert(&self, key: K, value: V) {
+        self.inner.insert(key, value);
+    }
 
-        stats
+    pub fn stats(&self) {
+        let size_bytes = bytesize::ByteSize(self.inner.weighted_size());
+        let req = self.requests.load(std::sync::atomic::Ordering::Relaxed);
+        let hits = self.hits.load(std::sync::atomic::Ordering::Relaxed);
+        let hit_ratio = if req > 0 {
+            hits as f64 / req as f64
+        } else {
+            0.0
+        } * 100.0;
+        tracing::info!(
+            "Cache stats: {} occupied, {} requests, {} hits, {:.2}% hit ratio, {}",
+            self.inner.entry_count(),
+            req,
+            hits,
+            hit_ratio,
+            size_bytes
+        );
     }
 }
 

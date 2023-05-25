@@ -44,25 +44,25 @@ impl Db {
             }
         };
 
-        let caches_capacity = std::cmp::max(options.lru_capacity / 3, options.min_caches_capacity);
+        let caches_capacity = std::cmp::max(
+            options.rocks_lru_capacity.as_u64() / 3,
+            options.rocks_min_caches_capacity.as_u64(),
+        );
         let compaction_memory_budget = std::cmp::max(
-            options.lru_capacity - options.lru_capacity / 3,
-            options.min_compaction_memory_budget,
+            options.rocks_lru_capacity.as_u64() - options.rocks_lru_capacity.as_u64() / 3,
+            options.rocks_min_compaction_memory_budget.as_u64(),
         );
 
-        let caches = Caches::with_capacity(caches_capacity);
+        let caches = Caches::with_capacity(caches_capacity as usize);
 
         let inner = WeeDb::builder(path, caches)
             .options(|opts, _| {
                 opts.set_level_compaction_dynamic_level_bytes(true);
-                opts.optimize_level_style_compaction(compaction_memory_budget);
+                opts.optimize_level_style_compaction(compaction_memory_budget as usize);
                 // bigger base level size - less compactions
                 opts.set_max_bytes_for_level_base(1024 * 1024 * 1024);
                 // parallel compactions finishes faster - less write stalls
                 opts.set_max_subcompactions(num_cpus::get() as u32 / 2);
-
-                // compression opts
-                opts.set_compression_type(rocksdb::DBCompressionType::Zstd);
 
                 // io
                 opts.set_max_open_files(limit as i32);

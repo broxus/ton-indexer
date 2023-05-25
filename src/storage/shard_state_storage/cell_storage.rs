@@ -10,12 +10,12 @@ use smallvec::SmallVec;
 use ton_types::{ByteOrderRead, CellImpl, UInt256};
 
 use crate::db::*;
-use crate::utils::{print_hist, FastHashMap, FastLruCache};
+use crate::utils::{print_hist, FastHashMap, MokaCache};
 
 pub struct CellStorage {
     db: Arc<Db>,
-    cells_cache: Arc<FastLruCache<UInt256, Arc<StorageCell>>>,
-    raw_getter: CellStorageRawCached,
+    cells_cache: Arc<MokaCache<UInt256, Arc<StorageCell>>>,
+    db_cache: CellStorageRawCached,
 }
 
 // Percentile 0.1%    from 96 to 127  => 1725119 count
@@ -44,16 +44,28 @@ const KEY_SIZE: u64 = 32;
 
 struct CellStorageRawCached {
     db: Arc<Db>,
-    raw_cache: Arc<FastLruCache<[u8; 32], Bytes>>,
+    raw_cache: Arc<MokaCache<[u8; 32], Bytes>>,
     hist: Arc<Histogram>,
 }
 
 impl CellStorageRawCached {
     fn new(db: Arc<Db>, size_in_bytes: u64) -> Self {
-        let num_cells_in_cache = (size_in_bytes / (KEY_SIZE + MAX_CELL_SIZE)) as u32;
-        tracing::info!("num_cells_in_cache: {}", num_cells_in_cache);
+        let estimated_in_cache = size_in_bytes / (KEY_SIZE + MAX_CELL_SIZE);
+        tracing::info!(" We can potentially cache {} cells", estimated_in_cache);
         const NSEC_IN_SEC: u64 = 1_000_000_000;
-        let raw_cache = Arc::new(FastLruCache::new(num_cells_in_cache));
+
+        fn cell_weigher(_: &[u8; 32], value: &Bytes) -> u32 {
+            KEY_SIZE as u32 + value.len() as u32
+        }
+
+        let raw_cache = mini_moka::sync::CacheBuilder::new(size_in_bytes)
+            .weigher(cell_weigher)
+            // preallocate cache
+            .initial_capacity(estimated_in_cache as usize)
+            .build_with_hasher(crate::utils::FastHasherState::default());
+
+        let raw_cache = MokaCache::with_cache(raw_cache);
+
         let hist = Arc::new(
             Histogram::builder()
                 .min_resolution(50) // 32 buckets
@@ -69,7 +81,7 @@ impl CellStorageRawCached {
                 loop {
                     tokio::time::sleep(tokio::time::Duration::from_secs(30)).await;
                     print_hist(&hist);
-                    tracing::warn!("CellStorageRawCached cache size: {:?}", raw_cache.stats());
+                    raw_cache.stats();
                 }
             });
         }
@@ -111,11 +123,16 @@ impl CellStorageRawCached {
 
         Ok(value)
     }
+
+    pub fn insert(&self, key: [u8; 32], value: &[u8]) {
+        let value = Bytes::copy_from_slice(value);
+        self.raw_cache.insert(key, value);
+    }
 }
 
 impl CellStorage {
     pub fn new(db: Arc<Db>, cache_size_bytes: u64) -> Result<Arc<Self>> {
-        let cache = Arc::new(FastLruCache::new(10_000)); //todo: make it configurable / measure memory usage
+        let cache = MokaCache::with_capacity(10_000); //todo: make it configurable / measure memory usage
         {
             let cache = cache.clone();
 
@@ -128,10 +145,14 @@ impl CellStorage {
         }
 
         Ok(Arc::new(Self {
-            raw_getter: CellStorageRawCached::new(db.clone(), cache_size_bytes),
+            db_cache: CellStorageRawCached::new(db.clone(), cache_size_bytes),
             db,
             cells_cache: cache,
         }))
+    }
+
+    pub fn cache_cell(&self, hash: [u8; 32], data: &[u8]) {
+        self.db_cache.insert(hash, data);
     }
 
     pub fn store_cell(
@@ -185,11 +206,18 @@ impl CellStorage {
                 })
             }
 
-            fn finalize(mut self, batch: &mut rocksdb::WriteBatch) -> usize {
+            fn finalize(
+                mut self,
+                batch: &mut rocksdb::WriteBatch,
+                raw_cache: &CellStorageRawCached,
+            ) -> usize {
                 let total = self.transaction.len();
                 for (key, CellWithRefs { rc, data }) in self.transaction {
                     self.buffer.clear();
                     refcount::add_positive_refount(rc, data, &mut self.buffer);
+                    if data.is_some() {
+                        raw_cache.insert(key, &self.buffer);
+                    }
                     batch.merge_cf(self.cells_cf, key.as_slice(), &self.buffer);
                 }
                 total
@@ -213,7 +241,7 @@ impl CellStorage {
             let key = root.repr_hash();
             let key = key.as_array();
 
-            match self.raw_getter.get_raw(key) {
+            match self.db_cache.get_raw(key) {
                 Ok(value) => {
                     if !ctx.insert_cell(key, &root, value.as_deref())? {
                         return Ok(0);
@@ -236,7 +264,7 @@ impl CellStorage {
                 let key = cell.repr_hash();
                 let key = key.as_array();
 
-                match self.raw_getter.get_raw(key) {
+                match self.db_cache.get_raw(key) {
                     Ok(value) => {
                         if !ctx.insert_cell(key, &cell, value.as_deref())? {
                             continue;
@@ -253,7 +281,7 @@ impl CellStorage {
         drop(stack);
 
         // Write transaction to the `WriteBatch`
-        Ok(ctx.finalize(batch))
+        Ok(ctx.finalize(batch, &self.db_cache))
     }
 
     pub fn load_cell(
@@ -264,7 +292,7 @@ impl CellStorage {
             return Ok(cell);
         }
 
-        let cell = match self.raw_getter.get_raw(hash.as_slice()) {
+        let cell = match self.db_cache.get_raw(hash.as_slice()) {
             Ok(value) => 'cell: {
                 if let Some(value) = value {
                     if let Some(value) = refcount::strip_refcount(&value) {
@@ -330,7 +358,7 @@ impl CellStorage {
             let refs = match transaction.entry(cell_id) {
                 hash_map::Entry::Occupied(mut v) => v.get_mut().remove()?,
                 hash_map::Entry::Vacant(v) => {
-                    let rc = match self.raw_getter.get_raw(cell_id) {
+                    let rc = match self.db_cache.get_raw(cell_id) {
                         Ok(value) => 'rc: {
                             if let Some(value) = value {
                                 buffer.clear();

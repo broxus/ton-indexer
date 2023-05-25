@@ -129,7 +129,7 @@ impl<'a> ShardStateReplaceTransaction<'a> {
         let write_options = self.db.cells.new_write_config();
 
         let mut tail = [0; 4];
-        let mut ctx = FinalizationContext::new(self.db);
+        let mut ctx = FinalizationContext::new(self.db, self.cell_storage);
 
         // Allocate on heap to prevent big future size
         let mut chunk_buffer = Vec::with_capacity(1 << 20);
@@ -421,6 +421,8 @@ impl<'a> ShardStateReplaceTransaction<'a> {
         ctx.write_batch
             .merge_cf(&ctx.cells_cf, repr_hash, output_buffer.as_slice());
         ctx.cell_usages.insert(*repr_hash, -1);
+        ctx.cells_storage
+            .cache_cell(*repr_hash, output_buffer.as_slice());
 
         // Done
         Ok(())
@@ -434,10 +436,11 @@ struct FinalizationContext<'a> {
     output_buffer: Vec<u8>,
     cells_cf: BoundedCfHandle<'a>,
     write_batch: rocksdb::WriteBatch,
+    cells_storage: &'a CellStorage,
 }
 
 impl<'a> FinalizationContext<'a> {
-    fn new(db: &'a Db) -> Self {
+    fn new(db: &'a Db, cells_storage: &'a CellStorage) -> Self {
         Self {
             pruned_branches: Default::default(),
             cell_usages: FastHashMap::with_capacity_and_hasher(128, Default::default()),
@@ -445,6 +448,7 @@ impl<'a> FinalizationContext<'a> {
             output_buffer: Vec::with_capacity(1 << 10),
             cells_cf: db.cells.cf(),
             write_batch: rocksdb::WriteBatch::default(),
+            cells_storage,
         }
     }
 
