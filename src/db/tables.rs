@@ -1,6 +1,6 @@
+use crate::db::rocksdb::DBCompressionType;
 use weedb::rocksdb::{
-    BlockBasedIndexType, BlockBasedOptions, DataBlockIndexType, MergeOperands, Options,
-    ReadOptions, SliceTransform,
+    BlockBasedIndexType, BlockBasedOptions, DataBlockIndexType, MergeOperands, Options, ReadOptions,
 };
 use weedb::{rocksdb, Caches, ColumnFamily};
 
@@ -17,7 +17,7 @@ impl ColumnFamily for Archives {
         default_block_based_table_factory(opts, caches);
 
         opts.set_merge_operator_associative("archive_data_merge", archive_data_merge);
-        opts.set_compression_type(rocksdb::DBCompressionType::Zstd);
+        opts.set_compression_type(DBCompressionType::Zstd);
     }
 }
 
@@ -29,8 +29,7 @@ impl ColumnFamily for BlockHandles {
     const NAME: &'static str = "block_handles";
 
     fn options(opts: &mut Options, caches: &Caches) {
-        opts.set_write_buffer_size(128 * 1024 * 1024);
-        opts.set_prefix_extractor(SliceTransform::create_fixed_prefix(32));
+        opts.set_write_buffer_size(bytesize::mib(128u64) as usize);
 
         let mut block_factory = BlockBasedOptions::default();
         block_factory.set_block_cache(&caches.block_cache);
@@ -39,8 +38,7 @@ impl ColumnFamily for BlockHandles {
         block_factory.set_data_block_index_type(DataBlockIndexType::BinaryAndHash);
 
         opts.set_block_based_table_factory(&block_factory);
-
-        opts.optimize_for_point_lookup(10);
+        optimize_for_point_lookup(opts, caches);
     }
 
     fn read_options(opts: &mut ReadOptions) {
@@ -69,7 +67,21 @@ impl ColumnFamily for PackageEntries {
 
     fn options(opts: &mut Options, caches: &Caches) {
         default_block_based_table_factory(opts, caches);
+        opts.set_compression_type(DBCompressionType::Zstd);
 
+        // This flag specifies that the implementation should optimize the filters
+        // mainly for cases where keys are found rather than also optimize for keys
+        // missed. This would be used in cases where the application knows that
+        // there are very few misses or the performance in the case of misses is not
+        // important.
+        //
+        // For now, this flag allows us to not store filters for the last level i.e
+        // the largest level which contains data of the LSM store. For keys which
+        // are hits, the filters in this level are not useful because we will search
+        // for the data anyway. NOTE: the filters in other levels are still useful
+        // even for key hit because they tell us whether to look in that level or go
+        // to the higher level.
+        // https://github.com/facebook/rocksdb/blob/81aeb15988e43c49952c795e32e5c8b224793589/include/rocksdb/advanced_options.h#L846
         opts.set_optimize_filters_for_hits(true);
     }
 }
@@ -83,6 +95,7 @@ impl ColumnFamily for ShardStates {
 
     fn options(opts: &mut Options, caches: &Caches) {
         default_block_based_table_factory(opts, caches);
+        opts.set_compression_type(DBCompressionType::Zstd);
     }
 }
 
@@ -98,7 +111,7 @@ impl ColumnFamily for Cells {
         opts.set_compaction_filter("cell_compaction", refcount::compaction_filter);
 
         // lowers cpu usage on compaction from 46% to 28%
-        opts.set_write_buffer_size(1024 * 1024 * 1024);
+        opts.set_write_buffer_size(bytesize::gib(1u64) as usize);
 
         let mut block_factory = BlockBasedOptions::default();
         block_factory.set_block_cache(&caches.block_cache);
@@ -110,13 +123,9 @@ impl ColumnFamily for Cells {
         block_factory.set_block_size(16 * 1024);
 
         opts.set_block_based_table_factory(&block_factory);
-
-        opts.set_prefix_extractor(SliceTransform::create_fixed_prefix(32));
-        opts.set_memtable_prefix_bloom_ratio(0.2);
-
         opts.set_optimize_filters_for_hits(true);
         // option is set for cf
-        opts.set_compression_type(rocksdb::DBCompressionType::Zstd);
+        opts.set_compression_type(DBCompressionType::Lz4);
     }
 }
 
@@ -131,7 +140,7 @@ impl ColumnFamily for NodeStates {
         default_block_based_table_factory(opts, caches);
 
         opts.set_optimize_filters_for_hits(true);
-        opts.optimize_for_point_lookup(1);
+        optimize_for_point_lookup(opts, caches);
     }
 }
 
@@ -145,7 +154,7 @@ impl ColumnFamily for Prev1 {
     fn options(opts: &mut Options, caches: &Caches) {
         default_block_based_table_factory(opts, caches);
 
-        opts.optimize_for_point_lookup(10);
+        optimize_for_point_lookup(opts, caches);
     }
 
     fn read_options(opts: &mut ReadOptions) {
@@ -163,7 +172,7 @@ impl ColumnFamily for Prev2 {
     fn options(opts: &mut Options, caches: &Caches) {
         default_block_based_table_factory(opts, caches);
 
-        opts.optimize_for_point_lookup(10);
+        optimize_for_point_lookup(opts, caches);
     }
 
     fn read_options(opts: &mut ReadOptions) {
@@ -181,7 +190,7 @@ impl ColumnFamily for Next1 {
     fn options(opts: &mut Options, caches: &Caches) {
         default_block_based_table_factory(opts, caches);
 
-        opts.optimize_for_point_lookup(10);
+        optimize_for_point_lookup(opts, caches);
     }
 
     fn read_options(opts: &mut ReadOptions) {
@@ -199,7 +208,7 @@ impl ColumnFamily for Next2 {
     fn options(opts: &mut Options, caches: &Caches) {
         default_block_based_table_factory(opts, caches);
 
-        opts.optimize_for_point_lookup(10);
+        optimize_for_point_lookup(opts, caches);
     }
 
     fn read_options(opts: &mut ReadOptions) {
@@ -231,4 +240,29 @@ fn default_block_based_table_factory(opts: &mut Options, caches: &Caches) {
     let mut block_factory = BlockBasedOptions::default();
     block_factory.set_block_cache(&caches.block_cache);
     opts.set_block_based_table_factory(&block_factory);
+}
+
+// setting our shared cache instead of individual caches for each cf
+fn optimize_for_point_lookup(opts: &mut Options, caches: &Caches) {
+    //     https://github.com/facebook/rocksdb/blob/81aeb15988e43c49952c795e32e5c8b224793589/options/options.cc
+    //     BlockBasedTableOptions block_based_options;
+    //     block_based_options.data_block_index_type =
+    //         BlockBasedTableOptions::kDataBlockBinaryAndHash;
+    //     block_based_options.data_block_hash_table_util_ratio = 0.75;
+    //     block_based_options.filter_policy.reset(NewBloomFilterPolicy(10));
+    //     block_based_options.block_cache =
+    //         NewLRUCache(static_cast<size_t>(block_cache_size_mb * 1024 * 1024));
+    //     table_factory.reset(new BlockBasedTableFactory(block_based_options));
+    //     memtable_prefix_bloom_size_ratio = 0.02;
+    //     memtable_whole_key_filtering = true;
+    //
+    let mut block_factory = BlockBasedOptions::default();
+    block_factory.set_data_block_index_type(DataBlockIndexType::BinaryAndHash);
+    block_factory.set_data_block_hash_ratio(0.75);
+    block_factory.set_bloom_filter(10.0, false);
+    block_factory.set_block_cache(&caches.block_cache);
+    opts.set_block_based_table_factory(&block_factory);
+
+    opts.set_memtable_prefix_bloom_ratio(0.02);
+    opts.set_memtable_whole_key_filtering(true);
 }

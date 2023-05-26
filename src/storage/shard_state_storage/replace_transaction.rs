@@ -421,8 +421,12 @@ impl<'a> ShardStateReplaceTransaction<'a> {
         ctx.write_batch
             .merge_cf(&ctx.cells_cf, repr_hash, output_buffer.as_slice());
         ctx.cell_usages.insert(*repr_hash, -1);
-        ctx.cells_storage
-            .cache_cell(*repr_hash, output_buffer.as_slice());
+
+        // cache cells which has children
+        if children.len() > 2 {
+            ctx.cells_storage
+                .cache_cell(*repr_hash, output_buffer.as_slice());
+        }
 
         // Done
         Ok(())

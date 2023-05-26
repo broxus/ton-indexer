@@ -33,6 +33,14 @@ pub struct Db {
 
 impl Db {
     pub fn open(path: PathBuf, options: DbOptions) -> Result<Arc<Self>> {
+        tracing::warn!("ESTIMATED DB USAGE:");
+        tracing::warn!("rocksdb LRU cache: {}", options.rocks_lru_capacity);
+        tracing::warn!(
+            "rocksdb compaction memory budget: {}",
+            options.rocks_compaction_memory_budget
+        );
+        tracing::warn!("cells cache: {}", options.cells_cache_size);
+
         let limit = match fdlimit::raise_fd_limit() {
             // New fd limit
             Some(limit) => limit,
@@ -44,21 +52,25 @@ impl Db {
             }
         };
 
-        let caches_capacity = std::cmp::max(
-            options.rocks_lru_capacity.as_u64() / 3,
-            options.rocks_min_caches_capacity.as_u64(),
-        );
-        let compaction_memory_budget = std::cmp::max(
-            options.rocks_lru_capacity.as_u64() - options.rocks_lru_capacity.as_u64() / 3,
-            options.rocks_min_compaction_memory_budget.as_u64(),
-        );
+        let caches_capacity =
+            std::cmp::max(options.rocks_lru_capacity, bytesize::ByteSize::mib(256)).as_u64()
+                as usize;
 
-        let caches = Caches::with_capacity(caches_capacity as usize);
+        let compaction_memory_budget = std::cmp::max(
+            options.rocks_compaction_memory_budget,
+            bytesize::ByteSize::gib(1),
+        )
+        .as_u64() as usize;
+
+        let caches = Caches::with_capacity(caches_capacity);
 
         let inner = WeeDb::builder(path, caches)
             .options(|opts, _| {
+                opts.set_paranoid_checks(false);
+
                 opts.set_level_compaction_dynamic_level_bytes(true);
-                opts.optimize_level_style_compaction(compaction_memory_budget as usize);
+                // https://github.com/facebook/rocksdb/blob/81aeb15988e43c49952c795e32e5c8b224793589/options/options.cc#L630
+                opts.optimize_level_style_compaction(compaction_memory_budget);
                 // bigger base level size - less compactions
                 opts.set_max_bytes_for_level_base(1024 * 1024 * 1024);
                 // parallel compactions finishes faster - less write stalls
@@ -84,8 +96,8 @@ impl Db {
                 opts.set_enable_write_thread_adaptive_yield(true);
 
                 // debug
-                opts.enable_statistics();
-                opts.set_stats_dump_period_sec(30);
+                // opts.enable_statistics();
+                // opts.set_stats_dump_period_sec(30);
             })
             .with_table::<tables::Archives>()
             .with_table::<tables::BlockHandles>()

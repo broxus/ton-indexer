@@ -241,7 +241,7 @@ impl CellStorage {
             let key = root.repr_hash();
             let key = key.as_array();
 
-            match self.db_cache.get_raw(key) {
+            match cells.get(key) {
                 Ok(value) => {
                     if !ctx.insert_cell(key, &root, value.as_deref())? {
                         return Ok(0);
@@ -264,7 +264,7 @@ impl CellStorage {
                 let key = cell.repr_hash();
                 let key = key.as_array();
 
-                match self.db_cache.get_raw(key) {
+                match cells.get(key) {
                     Ok(value) => {
                         if !ctx.insert_cell(key, &cell, value.as_deref())? {
                             continue;
@@ -358,7 +358,7 @@ impl CellStorage {
             let refs = match transaction.entry(cell_id) {
                 hash_map::Entry::Occupied(mut v) => v.get_mut().remove()?,
                 hash_map::Entry::Vacant(v) => {
-                    let rc = match self.db_cache.get_raw(cell_id) {
+                    let rc = match self.db.cells.get(cell_id) {
                         Ok(value) => 'rc: {
                             if let Some(value) = value {
                                 buffer.clear();

@@ -63,8 +63,7 @@ impl Default for NodeConfig {
 #[serde(deny_unknown_fields, default)]
 pub struct DbOptions {
     pub rocks_lru_capacity: ByteSize,
-    pub rocks_min_caches_capacity: ByteSize,
-    pub rocks_min_compaction_memory_budget: ByteSize,
+    pub rocks_compaction_memory_budget: ByteSize,
 
     pub cells_cache_size: ByteSize,
 }
@@ -77,16 +76,18 @@ impl Default for DbOptions {
         let total = sys.available_memory();
 
         // estimated memory usage of components other than cache
-        let estimated_memory_usage = ByteSize::gib(4);
+        let estimated_memory_usage = ByteSize::gib(6);
         let total = total - estimated_memory_usage.as_u64();
 
-        tracing::warn!("Using: {} for all caches", bytesize::ByteSize::b(total));
+        let default_lru_capacity = ByteSize::mib(512);
+        let default_compaction_memory_budget = ByteSize(total / 4);
+        let cells_cache_size =
+            ByteSize(total - (default_lru_capacity + default_compaction_memory_budget).as_u64());
 
         Self {
-            rocks_lru_capacity: ByteSize::mib(512),
-            rocks_min_caches_capacity: ByteSize::mib(64), // 64 MB
-            rocks_min_compaction_memory_budget: ByteSize::gib(1), // 1 GB
-            cells_cache_size: ByteSize(total * 2 / 3),
+            rocks_lru_capacity: default_lru_capacity,
+            rocks_compaction_memory_budget: default_compaction_memory_budget,
+            cells_cache_size,
         }
     }
 }

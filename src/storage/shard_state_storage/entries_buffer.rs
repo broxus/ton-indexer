@@ -44,6 +44,10 @@ impl EntriesBufferChildren<'_> {
             .zip(self.1)
             .map(|(index, item)| (index, HashesEntry(item)))
     }
+
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
 }
 
 pub struct HashesEntryWriter<'a>(&'a mut [u8; HashesEntry::LEN]);
