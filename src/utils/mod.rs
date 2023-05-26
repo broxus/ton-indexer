@@ -105,7 +105,7 @@ where
         } else {
             0.0
         } * 100.0;
-        tracing::info!(
+        tracing::debug!(
             "Cache stats: {} occupied, {} requests, {} hits, {:.2}% hit ratio, {}",
             self.inner.entry_count(),
             req,

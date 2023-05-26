@@ -4,13 +4,12 @@ use std::sync::Arc;
 use anyhow::Result;
 use bumpalo::Bump;
 use bytes::Bytes;
-use histogram::Histogram;
 use parking_lot::RwLock;
 use smallvec::SmallVec;
 use ton_types::{ByteOrderRead, CellImpl, UInt256};
 
 use crate::db::*;
-use crate::utils::{print_hist, FastHashMap, MokaCache};
+use crate::utils::{FastHashMap, MokaCache};
 
 pub struct CellStorage {
     db: Arc<Db>,
@@ -45,14 +44,12 @@ const KEY_SIZE: u64 = 32;
 struct CellStorageRawCached {
     db: Arc<Db>,
     raw_cache: Arc<MokaCache<[u8; 32], Bytes>>,
-    hist: Arc<Histogram>,
 }
 
 impl CellStorageRawCached {
     fn new(db: Arc<Db>, size_in_bytes: u64) -> Self {
         let estimated_in_cache = size_in_bytes / (KEY_SIZE + MAX_CELL_SIZE);
         tracing::info!(" We can potentially cache {} cells", estimated_in_cache);
-        const NSEC_IN_SEC: u64 = 1_000_000_000;
 
         fn cell_weigher(_: &[u8; 32], value: &Bytes) -> u32 {
             KEY_SIZE as u32 + value.len() as u32
@@ -66,38 +63,21 @@ impl CellStorageRawCached {
 
         let raw_cache = MokaCache::with_cache(raw_cache);
 
-        let hist = Arc::new(
-            Histogram::builder()
-                .min_resolution(50) // 32 buckets
-                .maximum_value(NSEC_IN_SEC)
-                .build()
-                .unwrap(),
-        );
-
         {
-            let hist = hist.clone();
             let raw_cache = raw_cache.clone();
             tokio::spawn(async move {
                 loop {
                     tokio::time::sleep(tokio::time::Duration::from_secs(30)).await;
-                    print_hist(&hist);
                     raw_cache.stats();
                 }
             });
         }
 
-        Self {
-            db,
-            raw_cache,
-            hist,
-        }
+        Self { db, raw_cache }
     }
 
     fn get_raw(&self, key: &[u8; 32]) -> Result<Option<Bytes>, rocksdb::Error> {
-        let start = std::time::Instant::now();
         if let Some(value) = self.raw_cache.get(key) {
-            let end = start.elapsed().as_nanos();
-            self.hist.increment(end as u64, 1).unwrap();
             return Ok(Some(value));
         }
 
@@ -109,17 +89,6 @@ impl CellStorageRawCached {
         if let Some(value) = &value {
             self.raw_cache.insert(*key, value.clone());
         }
-        let end = start.elapsed().as_nanos();
-        self.hist
-            .increment(
-                if end > 1_000_000_000 {
-                    1_000_000_000
-                } else {
-                    end
-                } as u64,
-                1,
-            )
-            .ok();
 
         Ok(value)
     }
@@ -133,16 +102,6 @@ impl CellStorageRawCached {
 impl CellStorage {
     pub fn new(db: Arc<Db>, cache_size_bytes: u64) -> Result<Arc<Self>> {
         let cache = MokaCache::with_capacity(10_000); //todo: make it configurable / measure memory usage
-        {
-            let cache = cache.clone();
-
-            tokio::spawn(async move {
-                loop {
-                    tokio::time::sleep(tokio::time::Duration::from_secs(30)).await;
-                    tracing::warn!("CellStorage cache size: {:?}", cache.stats());
-                }
-            });
-        }
 
         Ok(Arc::new(Self {
             db_cache: CellStorageRawCached::new(db.clone(), cache_size_bytes),

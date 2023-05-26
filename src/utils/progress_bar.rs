@@ -4,6 +4,7 @@ pub struct ProgressBar {
     current: u64,
     total: Option<u64>,
     exact_unit: Option<&'static str>,
+    mapper: Box<dyn Fn(u64) -> String + Send + 'static>,
 }
 
 impl ProgressBar {
@@ -40,10 +41,12 @@ impl ProgressBar {
         };
 
         let percent = self.current * 100 / total;
+        let current = (self.mapper)(self.current);
+        let total = (self.mapper)(total);
+
         match self.exact_unit {
             Some(exact_unit) => self.message(format_args!(
-                "{percent}% ({} / {total} {exact_unit})",
-                self.current
+                "{percent}% ({current} / {total} {exact_unit})",
             )),
             None => self.message(format_args!("{percent}%")),
         }
@@ -67,6 +70,7 @@ pub struct ProgressBarBuilder {
     percentage_step: u64,
     total: Option<u64>,
     exact_unit: Option<&'static str>,
+    mapper: Option<Box<dyn Fn(u64) -> String + Send + 'static>>,
 }
 
 impl ProgressBarBuilder {
@@ -76,7 +80,16 @@ impl ProgressBarBuilder {
             percentage_step: PERCENTAGE_STEP,
             total: None,
             exact_unit: None,
+            mapper: None,
         }
+    }
+
+    pub fn with_mapper<F>(mut self, mapper: F) -> Self
+    where
+        F: Fn(u64) -> String + Send + 'static,
+    {
+        self.mapper = Some(Box::new(mapper));
+        self
     }
 
     pub fn percentage_step(mut self, step: u64) -> Self {
@@ -101,6 +114,7 @@ impl ProgressBarBuilder {
             current: 0,
             total: self.total,
             exact_unit: self.exact_unit,
+            mapper: self.mapper.unwrap_or_else(|| Box::new(|x| x.to_string())),
         };
 
         if self.total.is_some() {
