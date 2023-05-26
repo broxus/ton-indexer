@@ -77,6 +77,7 @@ default = []
 count-cells = ["countme/enable", "ton_types/profile"]
 archive-uploader = ["dep:archive-uploader"]
 alloc-profiling = ["broxus-util/alloc-profiling"]
+venom = ["ton_block/venom"]
 
 [profile.release]
 debug = true

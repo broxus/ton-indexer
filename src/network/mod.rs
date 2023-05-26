@@ -71,6 +71,8 @@ impl NodeNetwork {
             dht.add_dht_peer(peer)?;
         }
 
+        dht.find_more_dht_nodes().await?;
+
         let dht_key = adnl.key_by_tag(Self::TAG_DHT_KEY)?.clone();
         tracing::info!(local_id = %dht_key.id(), "created DHT node");
         start_broadcasting_our_ip(working_state.clone(), dht.clone(), dht_key);

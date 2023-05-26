@@ -226,11 +226,7 @@ impl BlockProofStuff {
         Ok((virt_block, info))
     }
 
-    fn check_signatures(
-        &self,
-        validators_list: Vec<ton_block::ValidatorDescr>,
-        list_hash_short: u32,
-    ) -> Result<()> {
+    fn check_signatures(&self, subset: &ValidatorSubsetInfo) -> Result<()> {
         // Prepare
         let signatures = match self.proof.signatures.as_ref() {
             Some(signatures) => signatures,
@@ -242,11 +238,11 @@ impl BlockProofStuff {
             }
         };
 
-        if signatures.validator_info.validator_list_hash_short != list_hash_short {
+        if signatures.validator_info.validator_list_hash_short != subset.short_hash {
             return Err(anyhow!(
                 "Bad validator set hash in proof for block {}, calculated: {}, found: {}",
                 self.id,
-                list_hash_short,
+                subset.short_hash,
                 signatures.validator_info.validator_list_hash_short
             ));
         }
@@ -268,10 +264,10 @@ impl BlockProofStuff {
         // Check signatures
         let checked_data =
             ton_block::Block::build_data_for_sign(&self.id.root_hash, &self.id.file_hash);
-        let total_weight: u64 = validators_list.iter().map(|v| v.weight).sum();
+        let total_weight: u64 = subset.validators.iter().map(|v| v.weight).sum();
         let weight = signatures
             .pure_signatures
-            .check_signatures(&validators_list, &checked_data)
+            .check_signatures(&subset.validators, &checked_data)
             .map_err(|e| anyhow!("Proof for {}: error while check signatures: {}", self.id, e))?;
 
         // Check weight
@@ -327,7 +323,7 @@ impl BlockProofStuff {
         &self,
         state: &ShardStateStuff,
         block_info: &ton_block::BlockInfo,
-    ) -> Result<(Vec<ton_block::ValidatorDescr>, u32)> {
+    ) -> Result<ValidatorSubsetInfo> {
         if !state.block_id().is_masterchain() {
             return Err(anyhow!(
                 "Can't check proof for {}: given state {} doesn't belong masterchain",
@@ -363,18 +359,14 @@ impl BlockProofStuff {
         let (validator_set, catchain_config) =
             state.state().read_cur_validator_set_and_cc_conf()?;
 
-        self.calc_validators_subset(
-            &validator_set,
-            &catchain_config,
-            block_info.gen_utime().as_u32(),
-        )
+        let shard_hashes = state.shards()?;
+        self.try_calc_subset_for_workchain(&validator_set, &catchain_config, shard_hashes)
     }
 
     fn process_prev_key_block_proof(
         &self,
         prev_key_block_proof: &BlockProofStuff,
-        gen_utime: u32,
-    ) -> Result<(Vec<ton_block::ValidatorDescr>, u32)> {
+    ) -> Result<ValidatorSubsetInfo> {
         let (virt_key_block, prev_key_block_info) = prev_key_block_proof.pre_check_block_proof()?;
 
         if !prev_key_block_info.key_block() {
@@ -394,16 +386,34 @@ impl BlockProofStuff {
                 )
             })?;
 
-        self.calc_validators_subset(&validator_set, &catchain_config, gen_utime)
+        self.calc_validators_subset_standard(&validator_set, &catchain_config)
     }
 
-    fn calc_validators_subset(
+    pub fn try_calc_subset_for_workchain(
+        &self,
+        vset: &ton_block::ValidatorSet,
+        catchain_config: &ton_block::CatchainConfig,
+        shard_hashes: &ton_block::ShardHashes,
+    ) -> Result<ValidatorSubsetInfo> {
+        #[cfg(not(feature = "venom"))]
+        {
+            _ = shard_hashes;
+        }
+
+        #[cfg(feature = "venom")]
+        if !self.id().shard().is_masterchain() {
+            return try_calc_subset_for_workchain_venom(vset, shard_hashes, self.id());
+        }
+
+        self.calc_validators_subset_standard(vset, catchain_config)
+    }
+
+    fn calc_validators_subset_standard(
         &self,
         validator_set: &ton_block::ValidatorSet,
         catchain_config: &ton_block::CatchainConfig,
-        gen_utime: u32,
-    ) -> Result<(Vec<ton_block::ValidatorDescr>, u32)> {
-        validator_set.calc_subset(
+    ) -> Result<ValidatorSubsetInfo> {
+        let (validators, short_hash) = validator_set.calc_subset(
             catchain_config,
             self.id.shard().shard_prefix_with_tag(),
             self.id.shard().workchain_id(),
@@ -412,8 +422,15 @@ impl BlockProofStuff {
                 .as_ref()
                 .map(|s| s.validator_info.catchain_seqno)
                 .unwrap_or_default(),
-            ton_block::UnixTime32::new(gen_utime),
-        )
+            Default::default(),
+        )?;
+
+        Ok(ValidatorSubsetInfo {
+            validators,
+            short_hash,
+            #[cfg(feature = "venom")]
+            collator_range: Default::default(),
+        })
     }
 }
 
@@ -455,14 +472,13 @@ pub fn check_with_prev_key_block_proof(
         ));
     }
 
-    let (validators, validators_hash_short) = proof
-        .process_prev_key_block_proof(prev_key_block_proof, virt_block_info.gen_utime().as_u32())?;
+    let subset = proof.process_prev_key_block_proof(prev_key_block_proof)?;
 
     if virt_block_info.key_block() {
         proof.pre_check_key_block_proof(virt_block)?;
     }
 
-    proof.check_signatures(validators, validators_hash_short)
+    proof.check_signatures(&subset)
 }
 
 pub fn check_with_master_state(
@@ -475,8 +491,157 @@ pub fn check_with_master_state(
         proof.pre_check_key_block_proof(virt_block)?;
     }
 
-    let (validators, validators_hash_short) =
-        proof.process_given_state(master_state, virt_block_info)?;
+    let subset = proof.process_given_state(master_state, virt_block_info)?;
+    proof.check_signatures(&subset)
+}
 
-    proof.check_signatures(validators, validators_hash_short)
+#[derive(Clone, Debug)]
+pub struct ValidatorSubsetInfo {
+    pub validators: Vec<ton_block::ValidatorDescr>,
+    pub short_hash: u32,
+    #[cfg(feature = "venom")]
+    pub collator_range: ton_block::CollatorRange,
+}
+
+impl ValidatorSubsetInfo {
+    pub fn compute_validator_set(&self, cc_seqno: u32) -> Result<ton_block::ValidatorSet> {
+        ton_block::ValidatorSet::with_cc_seqno(0, 0, 0, cc_seqno, self.validators.clone())
+    }
+}
+
+#[cfg(feature = "venom")]
+pub fn try_calc_subset_for_workchain_venom(
+    vset: &ton_block::ValidatorSet,
+    shard_hashes: &ton_block::ShardHashes,
+    block_id: &ton_block::BlockIdExt,
+) -> Result<ValidatorSubsetInfo> {
+    let possible_validators =
+        try_calc_range_for_workchain_venom(shard_hashes, &block_id.shard_id, block_id.seq_no)?;
+    get_validator_descrs_by_collator_range(vset, &possible_validators)
+}
+
+#[cfg(feature = "venom")]
+pub fn try_calc_range_for_workchain_venom(
+    shards: &ton_block::ShardHashes,
+    shard_id: &ton_block::ShardIdent,
+    block_seqno: u32,
+) -> Result<Vec<ton_block::CollatorRange>> {
+    use anyhow::Context;
+
+    let mut possible_validators: Vec<ton_block::CollatorRange> = Vec::new();
+
+    shards.iterate_shards_for_workchain(shard_id.workchain_id(), |ident, descr| {
+        let collators = descr
+            .collators
+            .with_context(|| format!("{} has no collator info", ident))?;
+        if let Some(rng) =
+            get_ranges_that_may_validate_given_block(&collators, &ident, shard_id, block_seqno)?
+        {
+            if !possible_validators.contains(&rng) {
+                possible_validators.push(rng);
+            }
+        }
+        Ok(false)
+    })?;
+    Ok(possible_validators)
+}
+
+#[cfg(feature = "venom")]
+fn get_validator_descrs_by_collator_range(
+    vset: &ton_block::ValidatorSet,
+    possible_validators: &[ton_block::CollatorRange],
+) -> Result<ValidatorSubsetInfo> {
+    use anyhow::Context;
+
+    let rng = possible_validators
+        .first()
+        .context("no validators present")?;
+
+    anyhow::ensure!(
+        possible_validators.len() == 1,
+        "too many validators for collated block"
+    );
+
+    let mut subset = Vec::new();
+    subset.push(
+        vset.list()
+            .get(rng.collator as usize)
+            .with_context(|| {
+                format!(
+                    "No validator no {} in validator set {:?}",
+                    rng.collator, vset
+                )
+            })?
+            .clone(),
+    );
+
+    let short_hash =
+        ton_block::ValidatorSet::calc_subset_hash_short(subset.as_slice(), vset.cc_seqno())?;
+
+    Ok(ValidatorSubsetInfo {
+        validators: subset,
+        short_hash,
+        collator_range: rng.clone(),
+    })
+}
+
+#[cfg(feature = "venom")]
+fn get_ranges_that_may_validate_given_block(
+    collators: &ton_block::ShardCollators,
+    current_shard: &ton_block::ShardIdent,
+    block_shard: &ton_block::ShardIdent,
+    block_seqno: u32,
+) -> Result<Option<ton_block::CollatorRange>> {
+    // Current shard
+    let mut shards_to_check = Vec::from([(*current_shard, collators.current.clone())]);
+    // The shard was same or will be same
+    if collators.prev2.is_none() {
+        shards_to_check.push((*current_shard, collators.prev.clone()));
+    }
+    if collators.next2.is_none() {
+        shards_to_check.push((*current_shard, collators.next.clone()));
+    }
+    // The shard was split or will be merged
+    if !current_shard.is_full() {
+        if collators.prev2.is_none() {
+            shards_to_check.push((current_shard.merge()?, collators.prev.clone()));
+        }
+        if collators.next2.is_none() {
+            shards_to_check.push((current_shard.merge()?, collators.next.clone()));
+        }
+    }
+    // The shard was merged or will be split
+    if current_shard.can_split() {
+        let (l, r) = current_shard.split()?;
+        if let Some(prev2) = &collators.prev2 {
+            shards_to_check.push((l, collators.prev.clone()));
+            shards_to_check.push((r, prev2.clone()));
+        }
+        if let Some(next2) = &collators.next2 {
+            shards_to_check.push((l, collators.next.clone()));
+            shards_to_check.push((r, next2.clone()));
+        }
+    }
+
+    shards_to_check.retain(|(id, range)| {
+        let finish = compute_actual_finish(range);
+        id == block_shard && range.start <= block_seqno && block_seqno <= finish
+    });
+
+    if let Some((id, rng)) = shards_to_check.get(0) {
+        anyhow::ensure!(
+            shards_to_check.len() == 1,
+            "Impossilbe state: shard {}, block {} corresponds to two different ranges: ({},{:?}) and {:?}",
+            current_shard, block_seqno, id, rng, shards_to_check.get(1)
+        );
+
+        Ok(Some((*rng).clone()))
+    } else {
+        Ok(None)
+    }
+}
+
+#[cfg(feature = "venom")]
+pub fn compute_actual_finish(range: &ton_block::CollatorRange) -> u32 {
+    range.unexpected_finish.unwrap_or(range.finish)
 }
