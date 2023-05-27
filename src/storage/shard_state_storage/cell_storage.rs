@@ -350,11 +350,9 @@ impl StorageCell {
     pub fn deserialize_references(mut data: &[u8], target: &mut Vec<[u8; 32]>) -> bool {
         let reader = &mut data;
 
-        if ton_types::CellData::deserialize(reader).is_err() {
-            return false;
-        }
-        let Ok(references_count) = reader.read_byte() else {
-            return false;
+        let references_count = match ton_types::CellData::deserialize(reader) {
+            Ok(data) => data.references_count(),
+            Err(_) => return false,
         };
 
         for _ in 0..references_count {
