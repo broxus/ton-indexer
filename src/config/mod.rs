@@ -1,3 +1,4 @@
+use bytesize::ByteSize;
 use std::net::SocketAddrV4;
 use std::path::PathBuf;
 
@@ -58,23 +59,35 @@ impl Default for NodeConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Copy, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct DbOptions {
-    pub max_memory_usage: usize,
-    pub min_caches_capacity: usize,
-    pub min_compaction_memory_budget: usize,
+    pub rocks_lru_capacity: ByteSize,
+    pub rocks_compaction_memory_budget: ByteSize,
+
+    pub cells_cache_size: ByteSize,
 }
 
 impl Default for DbOptions {
     fn default() -> Self {
-        // Third of all memory as suggested in docs
-        let sys = sysinfo::System::new_all();
-        let total = sys.total_memory();
+        // available memory because of indexers coexistence
+        let mut sys = sysinfo::System::new(); // write buffer
+        sys.refresh_memory();
+        let total = sys.available_memory();
+
+        // estimated memory usage of components other than cache
+        let estimated_memory_usage = ByteSize::gib(6);
+        let total = total - estimated_memory_usage.as_u64();
+
+        let default_lru_capacity = ByteSize::mib(512);
+        let default_compaction_memory_budget = ByteSize(total / 4);
+        let cells_cache_size =
+            ByteSize(total - (default_lru_capacity + default_compaction_memory_budget).as_u64());
+
         Self {
-            max_memory_usage: (total / 3) as usize,
-            min_caches_capacity: 64 << 20,         // 64 MB
-            min_compaction_memory_budget: 1 << 30, // 1 GB
+            rocks_lru_capacity: default_lru_capacity,
+            rocks_compaction_memory_budget: default_compaction_memory_budget,
+            cells_cache_size,
         }
     }
 }

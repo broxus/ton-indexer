@@ -34,7 +34,11 @@ pub struct Storage {
 }
 
 impl Storage {
-    pub async fn new(db: Arc<Db>, file_db_path: PathBuf) -> Result<Arc<Self>> {
+    pub async fn new(
+        db: Arc<Db>,
+        file_db_path: PathBuf,
+        max_cell_cache_size_bytes: u64,
+    ) -> Result<Arc<Self>> {
         let block_handle_storage = Arc::new(BlockHandleStorage::new(db.clone())?);
         let runtime_storage = Arc::new(RuntimeStorage::new(block_handle_storage.clone()));
         let block_storage = Arc::new(BlockStorage::new(db.clone(), block_handle_storage.clone())?);
@@ -43,6 +47,7 @@ impl Storage {
             block_handle_storage.clone(),
             block_storage.clone(),
             file_db_path.clone(),
+            max_cell_cache_size_bytes,
         )
         .await?;
         let node_state_storage = NodeStateStorage::new(db.clone())?;
