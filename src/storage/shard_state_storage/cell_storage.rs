@@ -1,5 +1,5 @@
 use std::collections::hash_map;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 
 use anyhow::Result;
 use bumpalo::Bump;
@@ -9,11 +9,11 @@ use smallvec::SmallVec;
 use ton_types::{ByteOrderRead, CellImpl, UInt256};
 
 use crate::db::*;
-use crate::utils::{FastHashMap, MokaCache};
+use crate::utils::{FastDashMap, FastHashMap, MokaCache};
 
 pub struct CellStorage {
     db: Arc<Db>,
-    cells_cache: Arc<MokaCache<UInt256, Arc<StorageCell>>>,
+    cells_cache: Arc<FastDashMap<UInt256, Weak<StorageCell>>>,
     db_cache: CellStorageRawCached,
 }
 
@@ -67,7 +67,7 @@ impl CellStorageRawCached {
             let raw_cache = raw_cache.clone();
             tokio::spawn(async move {
                 loop {
-                    tokio::time::sleep(tokio::time::Duration::from_secs(30)).await;
+                    tokio::time::sleep(tokio::time::Duration::from_secs(180)).await;
                     raw_cache.stats();
                 }
             });
@@ -101,7 +101,7 @@ impl CellStorageRawCached {
 
 impl CellStorage {
     pub fn new(db: Arc<Db>, cache_size_bytes: u64) -> Result<Arc<Self>> {
-        let cache = MokaCache::with_capacity(10_000); //todo: make it configurable / measure memory usage
+        let cache = Default::default();
 
         Ok(Arc::new(Self {
             db_cache: CellStorageRawCached::new(db.clone(), cache_size_bytes),
@@ -248,7 +248,9 @@ impl CellStorage {
         hash: UInt256,
     ) -> Result<Arc<StorageCell>, CellStorageError> {
         if let Some(cell) = self.cells_cache.get(&hash) {
-            return Ok(cell);
+            if let Some(cell) = cell.upgrade() {
+                return Ok(cell);
+            }
         }
 
         let cell = match self.db_cache.get_raw(hash.as_slice()) {
@@ -265,7 +267,7 @@ impl CellStorage {
             }
             Err(e) => return Err(CellStorageError::Internal(e)),
         };
-        self.cells_cache.insert(hash, cell.clone());
+        self.cells_cache.insert(hash, Arc::downgrade(&cell));
 
         Ok(cell)
     }
@@ -367,8 +369,8 @@ impl CellStorage {
         Ok(total)
     }
 
-    pub fn drop_cell(&self, _hash: &UInt256) {
-        // no op
+    pub fn drop_cell(&self, hash: &UInt256) {
+        self.cells_cache.remove(hash);
     }
 }
 

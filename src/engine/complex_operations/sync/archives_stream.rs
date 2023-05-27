@@ -413,6 +413,7 @@ async fn download_archive(
                     target: "sync",
                     mc_seq_no,
                     bytes_len = len,
+                    human_len = bytesize::to_string(len as u64, true),
                     elapsed_ms = start.elapsed().as_millis(),
                     "downloaded archive",
                 );

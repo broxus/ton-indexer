@@ -105,13 +105,14 @@ where
         } else {
             0.0
         } * 100.0;
-        tracing::debug!(
-            "Cache stats: {} occupied, {} requests, {} hits, {:.2}% hit ratio, {}",
-            self.inner.entry_count(),
-            req,
-            hits,
-            hit_ratio,
-            size_bytes
+
+        tracing::info!(
+            occupied = self.inner.entry_count(),
+            requests = req,
+            hits = hits,
+            hit_ratio = hit_ratio,
+            size = ?size_bytes,
+            "Cache stats",
         );
     }
 }
