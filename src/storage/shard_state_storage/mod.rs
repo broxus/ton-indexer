@@ -40,10 +40,11 @@ impl ShardStateStorage {
         block_handle_storage: Arc<BlockHandleStorage>,
         block_storage: Arc<BlockStorage>,
         file_db_path: PathBuf,
+        cache_size_bytes: u64,
     ) -> Result<Self> {
         let downloads_dir = prepare_file_db_dir(file_db_path, "downloads").await?;
 
-        let cell_storage = CellStorage::new(db.clone())?;
+        let cell_storage = CellStorage::new(db.clone(), cache_size_bytes)?;
 
         let res = Self {
             db,

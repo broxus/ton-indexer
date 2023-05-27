@@ -63,7 +63,7 @@ impl BlockMaps {
     }
 
     pub fn highest_mc_id(&self) -> Option<&ton_block::BlockIdExt> {
-        self.mc_block_ids.values().rev().next()
+        self.mc_block_ids.values().next_back()
     }
 
     pub fn check(&self, index: u32, edge: &Option<BlockMapsEdge>) -> Result<(), BlockMapsError> {

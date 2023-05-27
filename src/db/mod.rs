@@ -33,6 +33,13 @@ pub struct Db {
 
 impl Db {
     pub fn open(path: PathBuf, options: DbOptions) -> Result<Arc<Self>> {
+        tracing::info!(
+            rocksdb_lru_capacity = %options.rocksdb_lru_capacity,
+            rocksdb_compaction_memory_budget = %options.rocksdb_compaction_memory_budget,
+            cells_cache_size = %options.cells_cache_size,
+            "opening DB"
+        );
+
         let limit = match fdlimit::raise_fd_limit() {
             // New fd limit
             Some(limit) => limit,
@@ -45,27 +52,34 @@ impl Db {
         };
 
         let caches_capacity =
-            std::cmp::max(options.max_memory_usage / 3, options.min_caches_capacity);
+            std::cmp::max(options.rocksdb_lru_capacity, bytesize::ByteSize::mib(256)).as_u64()
+                as usize;
+
         let compaction_memory_budget = std::cmp::max(
-            options.max_memory_usage - options.max_memory_usage / 3,
-            options.min_compaction_memory_budget,
-        );
+            options.rocksdb_compaction_memory_budget,
+            bytesize::ByteSize::gib(1),
+        )
+        .as_u64() as usize;
 
         let caches = Caches::with_capacity(caches_capacity);
 
         let inner = WeeDb::builder(path, caches)
             .options(|opts, _| {
-                opts.set_level_compaction_dynamic_level_bytes(true);
+                opts.set_paranoid_checks(false);
 
-                // compression opts
-                opts.set_zstd_max_train_bytes(32 * 1024 * 1024);
-                opts.set_compression_type(rocksdb::DBCompressionType::Zstd);
+                opts.set_level_compaction_dynamic_level_bytes(true);
+                // https://github.com/facebook/rocksdb/blob/81aeb15988e43c49952c795e32e5c8b224793589/options/options.cc#L630
+                opts.optimize_level_style_compaction(compaction_memory_budget);
+                // bigger base level size - less compactions
+                opts.set_max_bytes_for_level_base(1024 * 1024 * 1024);
+                // parallel compactions finishes faster - less write stalls
+                opts.set_max_subcompactions(num_cpus::get() as u32 / 2);
 
                 // io
                 opts.set_max_open_files(limit as i32);
 
                 // logging
-                opts.set_log_level(rocksdb::LogLevel::Error);
+                opts.set_log_level(rocksdb::LogLevel::Info);
                 opts.set_keep_log_file_num(2);
                 opts.set_recycle_log_file_num(2);
 
@@ -77,7 +91,8 @@ impl Db {
                 opts.set_max_background_jobs(std::cmp::max((num_cpus::get() as i32) / 2, 2));
                 opts.increase_parallelism(num_cpus::get() as i32);
 
-                opts.optimize_level_style_compaction(compaction_memory_budget);
+                opts.set_allow_concurrent_memtable_write(false);
+                opts.set_enable_write_thread_adaptive_yield(true);
 
                 // debug
                 // opts.enable_statistics();

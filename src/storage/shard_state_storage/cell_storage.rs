@@ -3,24 +3,29 @@ use std::sync::{Arc, Weak};
 
 use anyhow::Result;
 use bumpalo::Bump;
+use bytes::Bytes;
 use parking_lot::RwLock;
 use smallvec::SmallVec;
 use ton_types::{ByteOrderRead, CellImpl, UInt256};
 
 use crate::db::*;
-use crate::utils::{FastDashMap, FastHashMap};
+use crate::utils::{FastDashMap, FastHashMap, MokaCache};
 
 pub struct CellStorage {
     db: Arc<Db>,
     cells_cache: Arc<FastDashMap<UInt256, Weak<StorageCell>>>,
+    raw_cells_cache: RawCellsCache,
 }
 
 impl CellStorage {
-    pub fn new(db: Arc<Db>) -> Result<Arc<Self>> {
-        let cache = Arc::new(FastDashMap::default());
+    pub fn new(db: Arc<Db>, cache_size_bytes: u64) -> Result<Arc<Self>> {
+        let cells_cache = Default::default();
+        let raw_cells_cache = RawCellsCache::new(cache_size_bytes);
+
         Ok(Arc::new(Self {
             db,
-            cells_cache: cache,
+            cells_cache,
+            raw_cells_cache,
         }))
     }
 
@@ -42,12 +47,15 @@ impl CellStorage {
         }
 
         impl Context<'_> {
-            fn insert_cell(
+            fn insert_cell<V>(
                 &mut self,
                 key: &[u8; 32],
                 cell: &ton_types::Cell,
-                value: Option<rocksdb::DBPinnableSlice<'_>>,
-            ) -> Result<bool, CellStorageError> {
+                value: Option<V>,
+            ) -> Result<bool, CellStorageError>
+            where
+                V: AsRef<[u8]>,
+            {
                 Ok(match self.transaction.entry(*key) {
                     hash_map::Entry::Occupied(mut value) => {
                         value.get_mut().rc += 1;
@@ -72,11 +80,18 @@ impl CellStorage {
                 })
             }
 
-            fn finalize(mut self, batch: &mut rocksdb::WriteBatch) -> usize {
+            fn finalize(
+                mut self,
+                batch: &mut rocksdb::WriteBatch,
+                raw_cache: &RawCellsCache,
+            ) -> usize {
                 let total = self.transaction.len();
                 for (key, CellWithRefs { rc, data }) in self.transaction {
                     self.buffer.clear();
                     refcount::add_positive_refount(rc, data, &mut self.buffer);
+                    if data.is_some() {
+                        raw_cache.insert(key, &self.buffer);
+                    }
                     batch.merge_cf(self.cells_cf, key.as_slice(), &self.buffer);
                 }
                 total
@@ -86,9 +101,7 @@ impl CellStorage {
         // Prepare context and handles
         let alloc = Bump::new();
         let cells = &self.db.cells;
-        let raw = cells.db();
         let cells_cf = &cells.cf();
-        let read_options = cells.read_config();
 
         let mut ctx = Context {
             cells_cf,
@@ -102,9 +115,9 @@ impl CellStorage {
             let key = root.repr_hash();
             let key = key.as_array();
 
-            match raw.get_pinned_cf_opt(cells_cf, key, read_options) {
+            match cells.get(key) {
                 Ok(value) => {
-                    if !ctx.insert_cell(key, &root, value)? {
+                    if !ctx.insert_cell(key, &root, value.as_deref())? {
                         return Ok(0);
                     }
                 }
@@ -125,9 +138,9 @@ impl CellStorage {
                 let key = cell.repr_hash();
                 let key = key.as_array();
 
-                match raw.get_pinned_cf_opt(cells_cf, key, read_options) {
+                match cells.get(key) {
                     Ok(value) => {
-                        if !ctx.insert_cell(key, &cell, value)? {
+                        if !ctx.insert_cell(key, &cell, value.as_deref())? {
                             continue;
                         }
                     }
@@ -142,7 +155,7 @@ impl CellStorage {
         drop(stack);
 
         // Write transaction to the `WriteBatch`
-        Ok(ctx.finalize(batch))
+        Ok(ctx.finalize(batch, &self.raw_cells_cache))
     }
 
     pub fn load_cell(
@@ -155,7 +168,10 @@ impl CellStorage {
             }
         }
 
-        let cell = match self.db.cells.get(hash.as_slice()) {
+        let cell = match self
+            .raw_cells_cache
+            .get_raw(self.db.as_ref(), hash.as_slice())
+        {
             Ok(value) => 'cell: {
                 if let Some(value) = value {
                     if let Some(value) = refcount::strip_refcount(&value) {
@@ -207,9 +223,8 @@ impl CellStorage {
         }
 
         let cells = &self.db.cells;
-        let raw = cells.db();
         let cells_cf = &cells.cf();
-        let read_options = cells.read_config();
+
         let mut transaction: FastHashMap<&[u8; 32], CellState> =
             FastHashMap::with_capacity_and_hasher(128, Default::default());
         let mut buffer = Vec::with_capacity(4);
@@ -222,7 +237,7 @@ impl CellStorage {
             let refs = match transaction.entry(cell_id) {
                 hash_map::Entry::Occupied(mut v) => v.get_mut().remove()?,
                 hash_map::Entry::Vacant(v) => {
-                    let rc = match raw.get_pinned_cf_opt(cells_cf, cell_id, read_options) {
+                    let rc = match self.db.cells.get(cell_id) {
                         Ok(value) => 'rc: {
                             if let Some(value) = value {
                                 buffer.clear();
@@ -335,11 +350,9 @@ impl StorageCell {
     pub fn deserialize_references(mut data: &[u8], target: &mut Vec<[u8; 32]>) -> bool {
         let reader = &mut data;
 
-        if ton_types::CellData::deserialize(reader).is_err() {
-            return false;
-        }
-        let Ok(references_count) = reader.read_byte() else {
-            return false;
+        let references_count = match ton_types::CellData::deserialize(reader) {
+            Ok(data) => data.references_count(),
+            Err(_) => return false,
         };
 
         for _ in 0..references_count {
@@ -453,4 +466,75 @@ pub enum StorageCellReference {
 enum StorageCellError {
     #[error("Accessing invalid cell reference")]
     AccessingInvalidReference,
+}
+
+struct RawCellsCache(MokaCache<[u8; 32], Bytes>);
+
+impl RawCellsCache {
+    fn new(size_in_bytes: u64) -> Self {
+        // Percentile 0.1%    from 96 to 127  => 1725119 count
+        // Percentile 10%     from 128 to 191  => 82838849 count
+        // Percentile 25%     from 128 to 191  => 82838849 count
+        // Percentile 50%     from 128 to 191  => 82838849 count
+        // Percentile 75%     from 128 to 191  => 82838849 count
+        // Percentile 90%     from 192 to 255  => 22775080 count
+        // Percentile 95%     from 192 to 255  => 22775080 count
+        // Percentile 99%     from 192 to 255  => 22775080 count
+        // Percentile 99.9%   from 256 to 383  => 484002 count
+        // Percentile 99.99%  from 256 to 383  => 484002 count
+        // Percentile 99.999% from 256 to 383  => 484002 count
+
+        // from 64  to 95  - 15_267
+        // from 96  to 127 - 1_725_119
+        // from 128 to 191 - 82_838_849
+        // from 192 to 255 - 22_775_080
+        // from 256 to 383 - 484_002
+
+        // we assume that 75% of cells are in range 128..191
+        // so we can use use 192 as size for value in cache
+
+        const MAX_CELL_SIZE: u64 = 192;
+        const KEY_SIZE: u64 = 32;
+
+        let esimated_cell_cache_capacity = size_in_bytes / (KEY_SIZE + MAX_CELL_SIZE);
+        tracing::debug!(
+            esimated_cell_cache_capacity,
+            max_cell_cache_size = %bytesize::ByteSize(size_in_bytes),
+        );
+
+        fn cell_weigher(_: &[u8; 32], value: &Bytes) -> u32 {
+            KEY_SIZE as u32 + value.len() as u32
+        }
+
+        let raw_cache = MokaCache::with_cache(
+            mini_moka::sync::CacheBuilder::new(size_in_bytes)
+                .weigher(cell_weigher)
+                // preallocate cache
+                .initial_capacity(esimated_cell_cache_capacity as usize)
+                .build_with_hasher(crate::utils::FastHasherState::default()),
+        );
+
+        Self(raw_cache)
+    }
+
+    fn get_raw(&self, db: &Db, key: &[u8; 32]) -> Result<Option<Bytes>, rocksdb::Error> {
+        if let Some(value) = self.0.get(key) {
+            return Ok(Some(value));
+        }
+
+        let value = db
+            .cells
+            .get(key)?
+            .map(|v| Bytes::copy_from_slice(v.as_ref()));
+        if let Some(value) = &value {
+            self.0.insert(*key, value.clone());
+        }
+
+        Ok(value)
+    }
+
+    pub fn insert(&self, key: [u8; 32], value: &[u8]) {
+        let value = Bytes::copy_from_slice(value);
+        self.0.insert(key, value);
+    }
 }

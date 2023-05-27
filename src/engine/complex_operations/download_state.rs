@@ -152,7 +152,7 @@ async fn background_process(
     }
 
     let mut pg = ProgressBar::builder("processing state")
-        .exact_unit("bytes")
+        .with_mapper(|x| bytesize::to_string(x, false))
         .build();
     let result = transaction.finalize(&mut ctx, block_id, &mut pg).await;
 
