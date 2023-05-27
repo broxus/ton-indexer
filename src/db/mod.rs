@@ -33,13 +33,12 @@ pub struct Db {
 
 impl Db {
     pub fn open(path: PathBuf, options: DbOptions) -> Result<Arc<Self>> {
-        tracing::warn!("ESTIMATED DB USAGE:");
-        tracing::warn!("rocksdb LRU cache: {}", options.rocks_lru_capacity);
-        tracing::warn!(
-            "rocksdb compaction memory budget: {}",
-            options.rocks_compaction_memory_budget
+        tracing::info!(
+            rocksdb_lru_capacity = %options.rocksdb_lru_capacity,
+            rocksdb_compaction_memory_budget = %options.rocksdb_compaction_memory_budget,
+            cells_cache_size = %options.cells_cache_size,
+            "opening DB"
         );
-        tracing::warn!("cells cache: {}", options.cells_cache_size);
 
         let limit = match fdlimit::raise_fd_limit() {
             // New fd limit
@@ -53,11 +52,11 @@ impl Db {
         };
 
         let caches_capacity =
-            std::cmp::max(options.rocks_lru_capacity, bytesize::ByteSize::mib(256)).as_u64()
+            std::cmp::max(options.rocksdb_lru_capacity, bytesize::ByteSize::mib(256)).as_u64()
                 as usize;
 
         let compaction_memory_budget = std::cmp::max(
-            options.rocks_compaction_memory_budget,
+            options.rocksdb_compaction_memory_budget,
             bytesize::ByteSize::gib(1),
         )
         .as_u64() as usize;

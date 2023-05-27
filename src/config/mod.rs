@@ -62,8 +62,8 @@ impl Default for NodeConfig {
 #[derive(Debug, Copy, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct DbOptions {
-    pub rocks_lru_capacity: ByteSize,
-    pub rocks_compaction_memory_budget: ByteSize,
+    pub rocksdb_lru_capacity: ByteSize,
+    pub rocksdb_compaction_memory_budget: ByteSize,
 
     pub cells_cache_size: ByteSize,
 }
@@ -85,8 +85,8 @@ impl Default for DbOptions {
             ByteSize(total - (default_lru_capacity + default_compaction_memory_budget).as_u64());
 
         Self {
-            rocks_lru_capacity: default_lru_capacity,
-            rocks_compaction_memory_budget: default_compaction_memory_budget,
+            rocksdb_lru_capacity: default_lru_capacity,
+            rocksdb_compaction_memory_budget: default_compaction_memory_budget,
             cells_cache_size,
         }
     }
