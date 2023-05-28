@@ -2,6 +2,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
+use bytesize::ByteSize;
 use weedb::{Caches, WeeDb};
 
 pub use weedb::Stats as RocksdbStats;
@@ -171,6 +172,80 @@ impl Db {
             );
         }
     }
+
+    pub fn get_disk_usage(&self) -> Result<Vec<DiskUsageInfo>> {
+        use std::thread;
+
+        fn get_table_stats<T: ColumnFamily>(db: &WeeDb) -> (ByteSize, ByteSize) {
+            let cf = db.instantiate_table::<T>();
+            let res: (usize, usize) = cf
+                .iterator(rocksdb::IteratorMode::Start)
+                .flat_map(|x| {
+                    let x = match x {
+                        Ok(x) => x,
+                        Err(e) => {
+                            tracing::error!("Error while iterating: {}", e);
+                            return None;
+                        }
+                    };
+                    Some((x.0.len(), x.1.len()))
+                })
+                .fold((0, 0), |acc, x| (acc.0 + x.0, acc.1 + x.1));
+
+            (ByteSize(res.0 as u64), ByteSize(res.1 as u64))
+        }
+
+        macro_rules! stats {
+             ($spawner:expr, $( $x:ident => $table:ty ),* ) => {{
+                    $(
+                   let $x = $spawner.spawn(|| get_table_stats::<$table>(&self.inner));
+                    )*
+                 stats!($($x),*)
+             }
+             };
+            ( $( $x:ident),* ) => {
+                {
+                    let mut temp_vec = Vec::new();
+                    $(
+                        temp_vec.push({
+                            let $x = $x.join().map_err(|_|anyhow::anyhow!("Join error"))?;
+                            DiskUsageInfo {
+                                cf_name: stringify!($x).to_string(),
+                                keys_total: $x.0,
+                                values_total: $x.1,
+                            }
+                        });
+                    )*
+                    return Ok(temp_vec)
+                }
+            };
+        }
+
+        let stats = thread::scope(|s| -> Result<Vec<DiskUsageInfo>> {
+            stats!(s,
+                archives => tables::Archives,
+                block_handles => tables::BlockHandles,
+                key_blocks => tables::KeyBlocks,
+                package_entries => tables::PackageEntries,
+                shard_states => tables::ShardStates,
+                cells => tables::Cells,
+                node_states => tables::NodeStates,
+                prev1 => tables::Prev1,
+                prev2 => tables::Prev2,
+                next1 => tables::Next1,
+                next2 => tables::Next2
+            )
+        })?;
+
+        Ok(stats)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct DiskUsageInfo {
+    pub cf_name: String,
+    pub keys_total: ByteSize,
+    pub values_total: ByteSize,
 }
 
 impl Drop for Db {

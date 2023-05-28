@@ -497,7 +497,7 @@ impl RawCellsCache {
         const KEY_SIZE: u64 = 32;
 
         let esimated_cell_cache_capacity = size_in_bytes / (KEY_SIZE + MAX_CELL_SIZE);
-        tracing::debug!(
+        tracing::info!(
             esimated_cell_cache_capacity,
             max_cell_cache_size = %bytesize::ByteSize(size_in_bytes),
         );

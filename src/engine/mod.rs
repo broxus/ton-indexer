@@ -575,6 +575,10 @@ impl Engine {
         Ok(())
     }
 
+    pub fn db_usage_stats(&self) -> Result<Vec<DiskUsageInfo>> {
+        self.db.get_disk_usage()
+    }
+
     fn is_hard_fork(&self, block_id: &ton_block::BlockIdExt) -> bool {
         self.hard_forks.contains(block_id)
     }
