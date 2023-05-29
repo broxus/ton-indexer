@@ -12,6 +12,7 @@ use self::block_storage::*;
 use self::node_state_storage::*;
 use self::shard_state_storage::*;
 use crate::db::Db;
+use crate::utils::CacheStats;
 
 mod models;
 
@@ -104,6 +105,10 @@ impl Storage {
         DbMetrics {
             shard_state_storage: self.shard_state_storage.metrics(),
         }
+    }
+
+    pub fn cells_cache_stats(&self) -> CacheStats {
+        self.shard_state_storage.cache_metrics()
     }
 }
 

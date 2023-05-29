@@ -550,6 +550,7 @@ impl Engine {
             block_applying_operations_len: self.block_applying_operations.len(),
             next_block_applying_operations_len: self.next_block_applying_operations.len(),
             download_block_operations_len: self.download_block_operations.len(),
+            cells_cache_stats: self.storage.cells_cache_stats(),
         }
     }
 
@@ -1528,6 +1529,7 @@ pub struct InternalEngineMetrics {
     pub block_applying_operations_len: usize,
     pub next_block_applying_operations_len: usize,
     pub download_block_operations_len: usize,
+    pub cells_cache_stats: CacheStats,
 }
 
 #[derive(thiserror::Error, Debug)]

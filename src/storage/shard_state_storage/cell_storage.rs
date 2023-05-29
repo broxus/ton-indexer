@@ -9,7 +9,7 @@ use smallvec::SmallVec;
 use ton_types::{ByteOrderRead, CellImpl, UInt256};
 
 use crate::db::*;
-use crate::utils::{FastDashMap, FastHashMap, MokaCache};
+use crate::utils::{CacheStats, FastDashMap, FastHashMap, MokaCache};
 
 pub struct CellStorage {
     db: Arc<Db>,
@@ -289,6 +289,10 @@ impl CellStorage {
 
     pub fn drop_cell(&self, hash: &UInt256) {
         self.cells_cache.remove(hash);
+    }
+
+    pub fn cache_stats(&self) -> CacheStats {
+        self.raw_cells_cache.0.stats()
     }
 }
 

@@ -1,3 +1,4 @@
+use serde::{Deserialize, Serialize};
 use std::borrow::Borrow;
 use std::hash::Hash;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -5,11 +6,13 @@ use std::sync::Arc;
 
 use super::FastHasherState;
 
-#[derive(Default, Debug, Clone, Copy)]
+#[derive(Default, Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct CacheStats {
     pub hits: u64,
     pub requests: u64,
-    pub occupied: usize,
+    pub occupied: u64,
+    pub hits_ratio: f64,
+    pub size_bytes: u64,
 }
 
 // we are using `mini moka` because it's faster than `moka` and has the ability to iterate over all keys
@@ -60,5 +63,24 @@ where
 
     pub fn insert(&self, key: K, value: V) {
         self.inner.insert(key, value);
+    }
+
+    pub fn stats(&self) -> CacheStats {
+        let size = self.inner.weighted_size();
+        let req = self.requests.load(Ordering::Relaxed);
+        let hits = self.hits.load(Ordering::Relaxed);
+        let hit_ratio = if req > 0 {
+            hits as f64 / req as f64
+        } else {
+            0.0
+        } * 100.0;
+
+        CacheStats {
+            hits,
+            requests: req,
+            occupied: self.inner.entry_count(),
+            hits_ratio: hit_ratio,
+            size_bytes: size,
+        }
     }
 }

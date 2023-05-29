@@ -76,6 +76,10 @@ impl ShardStateStorage {
         }
     }
 
+    pub fn cache_metrics(&self) -> CacheStats {
+        self.cell_storage.cache_stats()
+    }
+
     pub fn min_ref_mc_state(&self) -> &Arc<MinRefMcState> {
         &self.min_ref_mc_state
     }
