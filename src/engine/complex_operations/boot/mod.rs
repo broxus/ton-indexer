@@ -3,7 +3,6 @@ use std::sync::Arc;
 use anyhow::Result;
 
 use crate::engine::Engine;
-use crate::utils::*;
 
 use self::cold_boot::*;
 use self::warm_boot::*;

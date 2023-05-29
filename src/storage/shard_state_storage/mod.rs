@@ -4,7 +4,6 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::{Context, Result};
-use ton_types::UInt256;
 
 use self::cell_storage::*;
 use self::files_context::FilesContext;

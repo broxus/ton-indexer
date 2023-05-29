@@ -2,8 +2,8 @@ use std::io::Read;
 
 use anyhow::{Context, Result};
 use crc::{Crc, CRC_32_ISCSI};
+use everscale_types::cell::{CellType, LevelMask};
 use smallvec::SmallVec;
-use ton_types::ByteOrderRead;
 
 macro_rules! try_read {
     ($expr:expr) => {
@@ -160,7 +160,7 @@ impl ShardStatePacketReader {
         buffer[0] = d1;
 
         let size = if absent {
-            let data_size = 32 * ((ton_types::LevelMask::with_mask(l).level() + 1) as usize);
+            let data_size = 32 * ((LevelMask::new(l).level() + 1) as usize);
             try_read!(src.read_exact(&mut buffer[1..1 + data_size]));
 
             tracing::info!("ABSENT");
@@ -287,10 +287,10 @@ pub struct BocHeader {
 }
 
 pub struct RawCell<'a> {
-    pub cell_type: ton_types::CellType,
+    pub cell_type: CellType,
     pub level_mask: u8,
     pub data: &'a [u8],
-    pub bit_len: usize,
+    pub bit_len: u16,
     pub reference_indices: SmallVec<[u32; 4]>,
 }
 
@@ -312,20 +312,7 @@ impl<'a> RawCell<'a> {
         let r = (d1 & 0b0000_0111) as usize;
         let absent = r == 0b111 && h;
 
-        if absent {
-            let data_size = 32 * ((ton_types::LevelMask::with_mask(l).level() + 1) as usize);
-            let cell_data = &mut data_buffer[0..data_size + 1];
-            src.read_exact(&mut cell_data[..data_size])?;
-            cell_data[data_size] = 0x80;
-
-            return Ok(RawCell {
-                cell_type: ton_types::CellType::Ordinary,
-                level_mask: l,
-                data: cell_data,
-                bit_len: ton_types::find_tag(cell_data), // ?!
-                reference_indices: SmallVec::new(),
-            });
-        }
+        anyhow::ensure!(!absent, "Absent cells are not supported");
 
         let d2 = src.read_byte()?;
         let data_size = ((d2 >> 1) + u8::from(d2 & 1 != 0)) as usize;
@@ -339,9 +326,9 @@ impl<'a> RawCell<'a> {
         }
 
         let cell_type = if !s {
-            ton_types::CellType::Ordinary
+            CellType::Ordinary
         } else {
-            ton_types::CellType::try_from(cell_data[0])?
+            CellType::from_byte_exotic(cell_data[0]).context("Invalid cell")?
         };
 
         let mut reference_indices = SmallVec::with_capacity(r);
@@ -355,11 +342,19 @@ impl<'a> RawCell<'a> {
             }
         }
 
+        let bit_len = if no_completion_tag {
+            (data_size * 8) as u16
+        } else if let Some(data) = cell_data.last() {
+            data_size as u16 * 8 - data.trailing_zeros() as u16 - 1
+        } else {
+            0
+        };
+
         Ok(RawCell {
             cell_type,
             level_mask: l,
             data: cell_data,
-            bit_len: ton_types::find_tag(cell_data),
+            bit_len,
             reference_indices,
         })
     }

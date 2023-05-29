@@ -1,57 +1,56 @@
 use anyhow::Result;
-use ton_types::ByteOrderRead;
+use bytes::Buf;
+use everscale_types::models::*;
 
-use super::{
-    BlockIdShort, BlockStuff, FastHashMap, FastHasherState, StoredValue, StoredValueBuffer,
-};
+use super::{BlockStuff, FastHashMap, FastHasherState, StoredValue, StoredValueBuffer};
 
 /// Stores last blocks for each workchain and shard
 #[derive(Debug, Clone)]
 pub struct TopBlocks {
-    pub mc_block: (ton_block::ShardIdent, u32),
-    pub shard_heights: FastHashMap<ton_block::ShardIdent, u32>,
+    pub mc_block: BlockIdShort,
+    pub shard_heights: FastHashMap<ShardIdent, u32>,
 }
 
 impl TopBlocks {
     /// Constructs this structure for the zerostate
     pub fn zerostate() -> Self {
         Self {
-            mc_block: (ton_block::ShardIdent::masterchain(), 0),
-            shard_heights: FastHashMap::from_iter([(ton_block::ShardIdent::full(0), 0u32)]),
+            mc_block: BlockIdShort::from((ShardIdent::MASTERCHAIN, 0)),
+            shard_heights: FastHashMap::from_iter([(ShardIdent::BASECHAIN, 0u32)]),
         }
     }
 
     /// Extracts last blocks for each workchain and shard from the given masterchain block
     pub fn from_mc_block(mc_block_data: &BlockStuff) -> Result<Self> {
         let block_id = mc_block_data.id();
-        debug_assert!(block_id.shard_id.is_masterchain());
+        debug_assert!(block_id.shard.is_masterchain());
 
         Ok(Self {
-            mc_block: (block_id.shard_id, block_id.seq_no),
+            mc_block: block_id.as_short_id(),
             shard_heights: mc_block_data.shard_blocks_seq_no()?,
         })
     }
 
     /// Checks whether the given block is equal to or greater than
     /// the last block for the given shard
-    pub fn contains(&self, block_id: &ton_block::BlockIdExt) -> bool {
-        self.contains_shard_seq_no(&block_id.shard_id, block_id.seq_no)
+    pub fn contains(&self, block_id: &BlockId) -> bool {
+        self.contains_shard_seq_no(&block_id.shard, block_id.seqno)
     }
 
     /// Checks whether the given pair of [`ton_block::ShardIdent`] and seqno
     /// is equal to or greater than the last block for the given shard.
     ///
     /// NOTE: Specified shard could be split or merged
-    pub fn contains_shard_seq_no(&self, shard_ident: &ton_block::ShardIdent, seq_no: u32) -> bool {
+    pub fn contains_shard_seq_no(&self, shard_ident: &ShardIdent, seq_no: u32) -> bool {
         if shard_ident.is_masterchain() {
-            seq_no >= self.mc_block.1
+            seq_no >= self.mc_block.seqno
         } else {
             match self.shard_heights.get(shard_ident) {
                 Some(&top_seq_no) => seq_no >= top_seq_no,
                 None => self
                     .shard_heights
                     .iter()
-                    .find(|&(shard, _)| shard_ident.intersect_with(shard))
+                    .find(|&(shard, _)| shard_ident.intersects(shard))
                     .map(|(_, &top_seq_no)| seq_no >= top_seq_no)
                     .unwrap_or_default(),
             }
@@ -74,17 +73,17 @@ impl TopBlocks {
 
     /// Masterchain block seqno
     pub fn seqno(&self) -> u32 {
-        self.mc_block.1
+        self.mc_block.seqno
     }
 }
 
 pub struct TopBlocksShortIdsIter<'a> {
     top_blocks: &'a TopBlocks,
-    shards_iter: Option<std::collections::hash_map::Iter<'a, ton_block::ShardIdent, u32>>,
+    shards_iter: Option<std::collections::hash_map::Iter<'a, ShardIdent, u32>>,
 }
 
 impl<'a> Iterator for TopBlocksShortIdsIter<'a> {
-    type Item = (ton_block::ShardIdent, u32);
+    type Item = BlockIdShort;
 
     fn next(&mut self) -> Option<Self::Item> {
         match &mut self.shards_iter {
@@ -94,7 +93,7 @@ impl<'a> Iterator for TopBlocksShortIdsIter<'a> {
             }
             Some(iter) => {
                 let (shard_ident, seqno) = iter.next()?;
-                Some((*shard_ident, *seqno))
+                Some(BlockIdShort::from((*shard_ident, *seqno)))
             }
         }
     }
@@ -121,13 +120,13 @@ impl StoredValue for TopBlocks {
     {
         let mc_block = BlockIdShort::deserialize(reader)?;
 
-        let top_blocks_len = reader.read_le_u32()? as usize;
+        let top_blocks_len = reader.get_u32_le() as usize;
         let mut top_blocks =
             FastHashMap::with_capacity_and_hasher(top_blocks_len, FastHasherState::new());
 
         for _ in 0..top_blocks_len {
-            let shard = ton_block::ShardIdent::deserialize(reader)?;
-            let top_block = reader.read_le_u32()?;
+            let shard = ShardIdent::deserialize(reader)?;
+            let top_block = reader.get_u32_le();
             top_blocks.insert(shard, top_block);
         }
 
@@ -146,45 +145,45 @@ mod tests {
     fn test_split_shards() {
         let mut shard_heights = FastHashMap::default();
 
-        let main_shard = ton_block::ShardIdent::full(0);
+        let main_shard = ShardIdent::new_full(0);
 
         let (left_shard, right_shard) = main_shard.split().unwrap();
         shard_heights.insert(left_shard, 1000);
         shard_heights.insert(right_shard, 1001);
 
         let top_blocks = TopBlocks {
-            mc_block: (ton_block::ShardIdent::masterchain(), 100),
+            mc_block: (ShardIdent::MASTERCHAIN, 100).into(),
             shard_heights,
         };
 
-        assert!(!top_blocks.contains(&ton_block::BlockIdExt {
-            shard_id: right_shard,
-            seq_no: 100,
+        assert!(!top_blocks.contains(&BlockId {
+            shard: right_shard,
+            seqno: 100,
             ..Default::default()
         }));
 
         // Merged shard test
-        assert!(!top_blocks.contains(&ton_block::BlockIdExt {
-            shard_id: main_shard,
-            seq_no: 100,
+        assert!(!top_blocks.contains(&BlockId {
+            shard: main_shard,
+            seqno: 100,
             ..Default::default()
         }));
-        assert!(top_blocks.contains(&ton_block::BlockIdExt {
-            shard_id: main_shard,
-            seq_no: 10000,
+        assert!(top_blocks.contains(&BlockId {
+            shard: main_shard,
+            seqno: 10000,
             ..Default::default()
         }));
 
         // Split shard test
         let (right_left_shard, _) = right_shard.split().unwrap();
-        assert!(!top_blocks.contains(&ton_block::BlockIdExt {
-            shard_id: right_left_shard,
-            seq_no: 100,
+        assert!(!top_blocks.contains(&BlockId {
+            shard: right_left_shard,
+            seqno: 100,
             ..Default::default()
         }));
-        assert!(top_blocks.contains(&ton_block::BlockIdExt {
-            shard_id: right_left_shard,
-            seq_no: 10000,
+        assert!(top_blocks.contains(&BlockId {
+            shard: right_left_shard,
+            seqno: 10000,
             ..Default::default()
         }));
     }

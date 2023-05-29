@@ -7,24 +7,25 @@
 use std::sync::{Arc, Weak};
 
 use anyhow::Result;
+use everscale_types::models::*;
 use tokio::sync::RwLock;
 
 use super::BlockMeta;
 use crate::utils::FastDashMap;
 
 pub struct BlockHandle {
-    id: ton_block::BlockIdExt,
+    id: BlockId,
     meta: BlockMeta,
     block_data_lock: RwLock<()>,
     proof_data_block: RwLock<()>,
-    cache: Arc<FastDashMap<ton_block::BlockIdExt, Weak<BlockHandle>>>,
+    cache: Arc<FastDashMap<BlockId, Weak<BlockHandle>>>,
 }
 
 impl BlockHandle {
     pub fn with_values(
-        id: ton_block::BlockIdExt,
+        id: BlockId,
         meta: BlockMeta,
-        cache: Arc<FastDashMap<ton_block::BlockIdExt, Weak<BlockHandle>>>,
+        cache: Arc<FastDashMap<BlockId, Weak<BlockHandle>>>,
     ) -> Self {
         Self {
             id,
@@ -36,7 +37,7 @@ impl BlockHandle {
     }
 
     #[inline]
-    pub fn id(&self) -> &ton_block::BlockIdExt {
+    pub fn id(&self) -> &BlockId {
         &self.id
     }
 
@@ -47,7 +48,7 @@ impl BlockHandle {
 
     #[inline]
     pub fn is_key_block(&self) -> bool {
-        self.meta.is_key_block() || self.id.seq_no == 0
+        self.meta.is_key_block() || self.id.seqno == 0
     }
 
     #[inline]

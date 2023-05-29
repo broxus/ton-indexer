@@ -8,6 +8,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+use everscale_types::models::*;
 
 use crate::network::{Neighbour, OverlayClient};
 use crate::proto;
@@ -73,10 +74,7 @@ impl NodeRpcClient {
             .await
     }
 
-    pub async fn download_zero_state(
-        &self,
-        id: &ton_block::BlockIdExt,
-    ) -> Result<Option<Arc<ShardStateStuff>>> {
+    pub async fn download_zero_state(&self, id: &BlockId) -> Result<Option<Arc<ShardStateStuff>>> {
         let this = &self.0;
 
         // Prepare
@@ -111,7 +109,7 @@ impl NodeRpcClient {
 
     pub async fn download_block_proof(
         &self,
-        block_id: &ton_block::BlockIdExt,
+        block_id: &BlockId,
         is_key_block: bool,
         explicit_neighbour: Option<&Arc<Neighbour>>,
     ) -> Result<Option<BlockProofStuffAug>> {
@@ -202,7 +200,7 @@ impl NodeRpcClient {
 
     pub async fn download_block_full(
         &self,
-        block_id: &ton_block::BlockIdExt,
+        block_id: &BlockId,
     ) -> Result<Option<(BlockStuffAug, BlockProofStuffAug)>> {
         let this = &self.0;
 
@@ -264,7 +262,7 @@ impl NodeRpcClient {
 
     pub async fn download_next_block_full(
         &self,
-        prev_id: &ton_block::BlockIdExt,
+        prev_id: &BlockId,
     ) -> Result<Option<(BlockStuffAug, BlockProofStuffAug)>> {
         const NO_NEIGHBOURS_DELAY: u64 = 1000; // Milliseconds
 
@@ -306,10 +304,10 @@ impl NodeRpcClient {
 
     pub async fn download_next_key_blocks_ids(
         &self,
-        block_id: &ton_block::BlockIdExt,
+        block_id: &BlockId,
         max_size: u16,
         neighbour: Option<&Arc<Neighbour>>,
-    ) -> Result<(Vec<ton_block::BlockIdExt>, Arc<Neighbour>)> {
+    ) -> Result<(Vec<BlockId>, Arc<Neighbour>)> {
         let this = &self.0;
 
         let query = proto::RpcGetNextKeyBlockIds {

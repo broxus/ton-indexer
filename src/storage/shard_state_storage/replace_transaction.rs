@@ -388,7 +388,7 @@ impl<'a> ShardStateReplaceTransaction<'a> {
         // Write cell references
         output_buffer.extend_from_slice(&[cell.reference_indices.len() as u8]);
         for (index, child) in children.iter() {
-            let child_hash = if child.cell_type() == ton_types::CellType::PrunedBranch {
+            let child_hash = if child.cell_type() == CellType::PrunedBranch {
                 let child_data = ctx
                     .pruned_branches
                     .get(index)

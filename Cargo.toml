@@ -23,6 +23,7 @@ countme = { version = "3.0.0" }
 crc = "3.0"
 dashmap = "5.3"
 everscale-network = "0.5.0"
+everscale-types = { path = "../everscale-types", features = [] }
 fdlimit = "0.2.1"
 futures-util = "0.3"
 hex = "0.4"
@@ -47,9 +48,6 @@ tracing = "0.1"
 broxus-util = { version = "0.2", default-features = false, features = ["alloc"] }
 
 weedb = { version = "0.1", features = ["zstd", "lz4", "jemalloc"] }
-
-ton_block = { git = "https://github.com/broxus/ton-labs-block.git" }
-ton_types = { git = "https://github.com/broxus/ton-labs-types.git" }
 
 archive-uploader = { path = "archive-uploader", optional = true }
 global-config = { path = "global-config" }
@@ -76,10 +74,8 @@ broxus-util = { version = "0.2", default-features = false, features = [
 
 [features]
 default = []
-count-cells = ["countme/enable", "ton_types/profile"]
 archive-uploader = ["dep:archive-uploader"]
 alloc-profiling = ["broxus-util/alloc-profiling"]
-venom = ["ton_block/venom"]
 
 [profile.release]
 debug = true

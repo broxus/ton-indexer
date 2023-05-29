@@ -9,6 +9,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+use everscale_types::models::*;
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
@@ -105,7 +106,7 @@ pub async fn download_state(
 
 async fn background_process(
     engine: &Arc<Engine>,
-    block_id: ton_block::BlockIdExt,
+    block_id: BlockId,
     total_size: Arc<AtomicU64>,
     mut packets_rx: PacketsRx,
 ) -> Result<Arc<ShardStateStuff>> {

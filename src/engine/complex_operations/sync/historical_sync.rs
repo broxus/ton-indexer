@@ -2,6 +2,7 @@ use std::ops::ControlFlow;
 use std::sync::Arc;
 
 use anyhow::Result;
+use everscale_types::models::*;
 
 use super::archives_stream::*;
 use super::block_maps::*;
@@ -100,9 +101,9 @@ impl<'a> HistoricalSyncContext<'a> {
         let splits = Arc::new(FastDashSet::default());
 
         for mc_block_id in maps.mc_block_ids.values() {
-            let mc_seq_no = mc_block_id.seq_no;
+            let mc_seqno = mc_block_id.seqno;
             // Skip blocks after specified range
-            if mc_seq_no > self.to {
+            if mc_seqno > self.to {
                 break;
             }
 
@@ -111,21 +112,21 @@ impl<'a> HistoricalSyncContext<'a> {
 
             let shard_blocks = block.shard_blocks()?;
             let new_edge = BlockMapsEdge {
-                mc_block_seq_no: mc_seq_no,
+                mc_block_seq_no: mc_seqno,
                 top_shard_blocks: shard_blocks
                     .iter()
-                    .map(|(key, id)| (*key, id.seq_no))
+                    .map(|(key, id)| (*key, id.seqno))
                     .collect(),
             };
 
             // Skip already saved blocks
-            if mc_seq_no <= self.from {
+            if mc_seqno <= self.from {
                 *edge = Some(new_edge);
                 continue;
             }
 
             self.engine
-                .save_archive_block(info, block, proof, mc_seq_no)
+                .save_archive_block(info, block, proof, mc_seqno)
                 .await?;
 
             splits.clear();
@@ -134,7 +135,7 @@ impl<'a> HistoricalSyncContext<'a> {
                 fn should_process(
                     maps: &BlockMaps,
                     edge: &Option<BlockMapsEdge>,
-                    id: &ton_block::BlockIdExt,
+                    id: &BlockId,
                 ) -> bool {
                     match edge {
                         // Process blocks only if they are after the current edge
@@ -194,7 +195,7 @@ impl<'a> HistoricalSyncContext<'a> {
                     // Apply blocks
                     for (info, block, block_proof) in blocks_to_add {
                         engine
-                            .save_archive_block(info, block, block_proof, mc_seq_no)
+                            .save_archive_block(info, block, block_proof, mc_seqno)
                             .await?;
                     }
 
@@ -221,7 +222,7 @@ impl Engine {
     async fn prepare_archive_block<'a>(
         &self,
         maps: &'a BlockMaps,
-        block_id: &ton_block::BlockIdExt,
+        block_id: &BlockId,
     ) -> Result<(BriefBlockInfo, &'a BlockStuffAug, &'a BlockProofStuffAug)> {
         let entry = maps.blocks.get(block_id);
         let (block, proof) = entry
@@ -242,7 +243,7 @@ impl Engine {
         let block_storage = self.storage.block_storage();
 
         let (handle, _) = block_handle_storage
-            .create_or_load_handle(block.id(), info.with_mc_seq_no(mc_seq_no))?;
+            .create_or_load_handle(block.id(), info.with_mc_seqno(mc_seq_no))?;
 
         // Archive block
         if self.archive_options.is_some() {
@@ -263,7 +264,7 @@ impl Engine {
         )
         .await?;
 
-        if handle.id().shard_id.is_masterchain() {
+        if handle.id().shard.is_masterchain() {
             self.on_masterchain_block(&handle).await?;
         }
 
@@ -274,11 +275,11 @@ impl Engine {
         let state = self.storage.node_state();
 
         let low = match state.load_historical_sync_start()? {
-            Some(low) => low.seq_no,
+            Some(low) => low.seqno,
             None => from_seqno.saturating_sub(1),
         };
 
-        let high = state.load_historical_sync_end()?.seq_no;
+        let high = state.load_historical_sync_end()?.seqno;
 
         Ok((low, high))
     }

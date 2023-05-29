@@ -24,7 +24,7 @@ impl ColumnFamily for Archives {
 }
 
 /// Maps block root hash to block meta
-/// - Key: `ton_types::UInt256`
+/// - Key: `[u8; 32]`
 /// - Value: `BlockMeta`
 pub struct BlockHandles;
 impl ColumnFamily for BlockHandles {
@@ -62,7 +62,7 @@ impl ColumnFamily for KeyBlocks {
 }
 
 /// Maps package entry id to entry data
-/// - Key: `BlockIdShort (16 bytes), ton_types::Uint256, package type (1 byte)`
+/// - Key: `BlockIdShort (16 bytes), [u8; 32], package type (1 byte)`
 /// - Value: `Vec<u8>`
 pub struct PackageEntries;
 impl ColumnFamily for PackageEntries {
@@ -90,8 +90,8 @@ impl ColumnFamily for PackageEntries {
 }
 
 /// Maps BlockId to root cell hash
-/// - Key: `ton_block::BlockIdExt`
-/// - Value: `ton_types::UInt256`
+/// - Key: `BlockId`
+/// - Value: `[u8; 32]`
 pub struct ShardStates;
 impl ColumnFamily for ShardStates {
     const NAME: &'static str = "shard_states";
@@ -103,7 +103,7 @@ impl ColumnFamily for ShardStates {
 }
 
 /// Stores cells data
-/// - Key: `ton_types::UInt256` (cell repr hash)
+/// - Key: `[u8; 32]` (cell repr hash)
 /// - Value: `StorageCell`
 pub struct Cells;
 impl ColumnFamily for Cells {
@@ -150,8 +150,8 @@ impl ColumnFamily for NodeStates {
 }
 
 /// Stores connections data
-/// - Key: `ton_types::UInt256` (block root hash)
-/// - Value: `ton_block::BlockIdExt (LE)`
+/// - Key: `[u8; 32]` (block root hash)
+/// - Value: `BlockId (LE)`
 pub struct Prev1;
 impl ColumnFamily for Prev1 {
     const NAME: &'static str = "prev1";
@@ -168,8 +168,8 @@ impl ColumnFamily for Prev1 {
 }
 
 /// Stores connections data
-/// - Key: `ton_types::UInt256` (block root hash)
-/// - Value: `ton_block::BlockIdExt (LE)`
+/// - Key: `[u8; 32]` (block root hash)
+/// - Value: `BlockId (LE)`
 pub struct Prev2;
 impl ColumnFamily for Prev2 {
     const NAME: &'static str = "prev2";
@@ -186,8 +186,8 @@ impl ColumnFamily for Prev2 {
 }
 
 /// Stores connections data
-/// - Key: `ton_types::UInt256` (block root hash)
-/// - Value: `ton_block::BlockIdExt (LE)`
+/// - Key: `[u8; 32]` (block root hash)
+/// - Value: `BlockId (LE)`
 pub struct Next1;
 impl ColumnFamily for Next1 {
     const NAME: &'static str = "next1";
@@ -204,8 +204,8 @@ impl ColumnFamily for Next1 {
 }
 
 /// Stores connections data
-/// - Key: `ton_types::UInt256` (block root hash)
-/// - Value: `ton_block::BlockIdExt (LE)`
+/// - Key: `[u8; 32]` (block root hash)
+/// - Value: `BlockId (LE)`
 pub struct Next2;
 impl ColumnFamily for Next2 {
     const NAME: &'static str = "next2";

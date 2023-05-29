@@ -1,4 +1,5 @@
 use bytes::Bytes;
+use everscale_types::models::*;
 use tl_proto::{TlError, TlPacket, TlRead, TlResult, TlWrite};
 
 #[derive(Copy, Clone, TlWrite, TlRead)]
@@ -11,11 +12,11 @@ pub struct ExternalMessageBroadcast<'tl> {
 #[tl(boxed, id = "tonNode.blockBroadcast", scheme = "scheme.tl")]
 pub struct BlockBroadcast {
     #[tl(with = "tl_block_id")]
-    pub id: ton_block::BlockIdExt,
+    pub id: BlockId,
     pub catchain_seqno: u32,
     pub validator_set_hash: u32,
-    #[tl(with = "tl_signature_pair_vec")]
-    pub signatures: Vec<ton_block::CryptoSignaturePair>,
+    #[tl(with = "tl_block_signature_vec")]
+    pub signatures: Vec<BlockSignature>,
     pub proof: Bytes,
     pub data: Bytes,
 }
@@ -24,7 +25,7 @@ pub struct BlockBroadcast {
 #[tl(boxed, id = "tonNode.getNextBlockDescription", scheme = "scheme.tl")]
 pub struct RpcGetNextBlockDescription {
     #[tl(with = "tl_block_id")]
-    pub prev_block: ton_block::BlockIdExt,
+    pub prev_block: BlockId,
 }
 
 #[derive(Clone, TlRead, TlWrite)]
@@ -33,7 +34,7 @@ pub enum BlockDescription {
     #[tl(id = "tonNode.blockDescription")]
     Found {
         #[tl(with = "tl_block_id")]
-        id: ton_block::BlockIdExt,
+        id: BlockId,
     },
     #[tl(id = "tonNode.blockDescriptionEmpty")]
     Empty,
@@ -43,7 +44,7 @@ pub enum BlockDescription {
 #[tl(boxed, id = "tonNode.prepareBlockProof", scheme = "scheme.tl")]
 pub struct RpcPrepareBlockProof {
     #[tl(with = "tl_block_id")]
-    pub block: ton_block::BlockIdExt,
+    pub block: BlockId,
     pub allow_partial: bool,
 }
 
@@ -51,7 +52,7 @@ pub struct RpcPrepareBlockProof {
 #[tl(boxed, id = "tonNode.prepareKeyBlockProof", scheme = "scheme.tl")]
 pub struct RpcPrepareKeyBlockProof {
     #[tl(with = "tl_block_id")]
-    pub block: ton_block::BlockIdExt,
+    pub block: BlockId,
     pub allow_partial: bool,
 }
 
@@ -59,16 +60,16 @@ pub struct RpcPrepareKeyBlockProof {
 #[tl(boxed, id = "tonNode.prepareBlock", scheme = "scheme.tl")]
 pub struct RpcPrepareBlock {
     #[tl(with = "tl_block_id")]
-    pub block: ton_block::BlockIdExt,
+    pub block: BlockId,
 }
 
 #[derive(Clone, TlRead, TlWrite)]
 #[tl(boxed, id = "tonNode.preparePersistentState", scheme = "scheme.tl")]
 pub struct RpcPreparePersistentState {
     #[tl(with = "tl_block_id")]
-    pub block: ton_block::BlockIdExt,
+    pub block: BlockId,
     #[tl(with = "tl_block_id")]
-    pub masterchain_block: ton_block::BlockIdExt,
+    pub masterchain_block: BlockId,
 }
 
 #[derive(Clone, TlRead, TlWrite)]
@@ -79,9 +80,9 @@ pub struct RpcPreparePersistentState {
 )]
 pub struct RpcDownloadPersistentStateSlice {
     #[tl(with = "tl_block_id")]
-    pub block: ton_block::BlockIdExt,
+    pub block: BlockId,
     #[tl(with = "tl_block_id")]
-    pub masterchain_block: ton_block::BlockIdExt,
+    pub masterchain_block: BlockId,
     pub offset: u64,
     pub max_size: u64,
 }
@@ -90,21 +91,21 @@ pub struct RpcDownloadPersistentStateSlice {
 #[tl(boxed, id = "tonNode.prepareZeroState", scheme = "scheme.tl")]
 pub struct RpcPrepareZeroState {
     #[tl(with = "tl_block_id")]
-    pub block: ton_block::BlockIdExt,
+    pub block: BlockId,
 }
 
 #[derive(Clone, TlRead, TlWrite)]
 #[tl(boxed, id = "tonNode.downloadZeroState", scheme = "scheme.tl")]
 pub struct RpcDownloadZeroState {
     #[tl(with = "tl_block_id")]
-    pub block: ton_block::BlockIdExt,
+    pub block: BlockId,
 }
 
 #[derive(Clone, TlRead, TlWrite)]
 #[tl(boxed, id = "tonNode.getNextKeyBlockIds", scheme = "scheme.tl")]
 pub struct RpcGetNextKeyBlockIds {
     #[tl(with = "tl_block_id")]
-    pub block: ton_block::BlockIdExt,
+    pub block: BlockId,
     pub max_size: u32,
 }
 
@@ -112,49 +113,49 @@ pub struct RpcGetNextKeyBlockIds {
 #[tl(boxed, id = "tonNode.downloadNextBlockFull", scheme = "scheme.tl")]
 pub struct RpcDownloadNextBlockFull {
     #[tl(with = "tl_block_id")]
-    pub prev_block: ton_block::BlockIdExt,
+    pub prev_block: BlockId,
 }
 
 #[derive(Clone, TlRead, TlWrite)]
 #[tl(boxed, id = "tonNode.downloadBlockFull", scheme = "scheme.tl")]
 pub struct RpcDownloadBlockFull {
     #[tl(with = "tl_block_id")]
-    pub block: ton_block::BlockIdExt,
+    pub block: BlockId,
 }
 
 #[derive(Clone, TlRead, TlWrite)]
 #[tl(boxed, id = "tonNode.downloadBlock", scheme = "scheme.tl")]
 pub struct RpcDownloadBlock {
     #[tl(with = "tl_block_id")]
-    pub block: ton_block::BlockIdExt,
+    pub block: BlockId,
 }
 
 #[derive(Clone, TlRead, TlWrite)]
 #[tl(boxed, id = "tonNode.downloadBlockProof", scheme = "scheme.tl")]
 pub struct RpcDownloadBlockProof {
     #[tl(with = "tl_block_id")]
-    pub block: ton_block::BlockIdExt,
+    pub block: BlockId,
 }
 
 #[derive(Clone, TlRead, TlWrite)]
 #[tl(boxed, id = "tonNode.downloadKeyBlockProof", scheme = "scheme.tl")]
 pub struct RpcDownloadKeyBlockProof {
     #[tl(with = "tl_block_id")]
-    pub block: ton_block::BlockIdExt,
+    pub block: BlockId,
 }
 
 #[derive(Clone, TlRead, TlWrite)]
 #[tl(boxed, id = "tonNode.downloadBlockProofLink", scheme = "scheme.tl")]
 pub struct RpcDownloadBlockProofLink {
     #[tl(with = "tl_block_id")]
-    pub block: ton_block::BlockIdExt,
+    pub block: BlockId,
 }
 
 #[derive(Clone, TlRead, TlWrite)]
 #[tl(boxed, id = "tonNode.downloadKeyBlockProofLink", scheme = "scheme.tl")]
 pub struct RpcDownloadKeyBlockProofLink {
     #[tl(with = "tl_block_id")]
-    pub block: ton_block::BlockIdExt,
+    pub block: BlockId,
 }
 
 #[derive(Clone, TlRead, TlWrite)]
@@ -220,7 +221,7 @@ pub enum DataFull {
     #[tl(id = "tonNode.dataFull")]
     Found {
         #[tl(with = "tl_block_id")]
-        block_id: ton_block::BlockIdExt,
+        block_id: BlockId,
         proof: Bytes,
         block: Bytes,
         is_link: bool,
@@ -233,7 +234,7 @@ pub enum DataFull {
 #[tl(boxed, id = "tonNode.keyBlocks", scheme = "scheme.tl")]
 pub struct KeyBlocks {
     #[tl(with = "tl_block_id_vec")]
-    pub blocks: Vec<ton_block::BlockIdExt>,
+    pub blocks: Vec<BlockId>,
     pub incomplete: bool,
     pub error: bool,
 }
@@ -259,38 +260,36 @@ pub struct Capabilities {
     pub capabilities: u64,
 }
 
-mod tl_signature_pair_vec {
+mod tl_block_signature_vec {
     use super::*;
 
-    pub fn read(
-        packet: &[u8],
-        offset: &mut usize,
-    ) -> TlResult<Vec<ton_block::CryptoSignaturePair>> {
+    pub fn read(packet: &[u8], offset: &mut usize) -> TlResult<Vec<BlockSignature>> {
         let len = u32::read_from(packet, offset)?;
-        if *offset + len as usize * tl_signature_pair::SIZE_HINT > packet.len() {
+        if *offset + len as usize * tl_block_signature::SIZE_HINT > packet.len() {
             return Err(TlError::UnexpectedEof);
         }
         let mut pairs = Vec::with_capacity(len as usize);
         for _ in 0..len {
-            pairs.push(tl_signature_pair::read(packet, offset)?);
+            pairs.push(tl_block_signature::read(packet, offset)?);
         }
         Ok(pairs)
     }
 }
 
-mod tl_signature_pair {
+mod tl_block_signature {
     use super::*;
 
     pub const SIZE_HINT: usize = 32 + 68;
 
-    pub fn read(packet: &[u8], offset: &mut usize) -> TlResult<ton_block::CryptoSignaturePair> {
+    pub fn read(packet: &[u8], offset: &mut usize) -> TlResult<BlockSignature> {
         let node_id_short = <[u8; 32]>::read_from(packet, offset)?;
-        let sign = ton_block::CryptoSignature::from_bytes(<&[u8]>::read_from(packet, offset)?)
+        let signature = <&[u8]>::read_from(packet, offset)?
+            .try_into()
             .map_err(|_| TlError::InvalidData)?;
 
-        Ok(ton_block::CryptoSignaturePair {
-            node_id_short: node_id_short.into(),
-            sign,
+        Ok(BlockSignature {
+            node_id_short,
+            signature,
         })
     }
 }
@@ -298,18 +297,18 @@ mod tl_signature_pair {
 mod tl_block_id_vec {
     use super::*;
 
-    pub fn size_hint(ids: &[ton_block::BlockIdExt]) -> usize {
+    pub fn size_hint(ids: &[BlockId]) -> usize {
         4 + ids.len() * tl_block_id::SIZE_HINT
     }
 
-    pub fn write<P: TlPacket>(blocks: &[ton_block::BlockIdExt], packet: &mut P) {
+    pub fn write<P: TlPacket>(blocks: &[BlockId], packet: &mut P) {
         packet.write_u32(blocks.len() as u32);
         for block in blocks {
             tl_block_id::write(block, packet);
         }
     }
 
-    pub fn read(packet: &[u8], offset: &mut usize) -> TlResult<Vec<ton_block::BlockIdExt>> {
+    pub fn read(packet: &[u8], offset: &mut usize) -> TlResult<Vec<BlockId>> {
         let len = u32::read_from(packet, offset)?;
         if *offset + len as usize * tl_block_id::SIZE_HINT > packet.len() {
             return Err(TlError::UnexpectedEof);
@@ -328,31 +327,31 @@ mod tl_block_id {
 
     pub const SIZE_HINT: usize = 80;
 
-    pub const fn size_hint(_: &ton_block::BlockIdExt) -> usize {
+    pub const fn size_hint(_: &BlockId) -> usize {
         SIZE_HINT
     }
 
-    pub fn write<P: TlPacket>(block: &ton_block::BlockIdExt, packet: &mut P) {
-        packet.write_i32(block.shard_id.workchain_id());
-        packet.write_u64(block.shard_id.shard_prefix_with_tag());
-        packet.write_u32(block.seq_no);
+    pub fn write<P: TlPacket>(block: &BlockId, packet: &mut P) {
+        packet.write_i32(block.shard.workchain_id());
+        packet.write_u64(block.shard.shard_prefix_with_tag());
+        packet.write_u32(block.seqno);
         packet.write_raw_slice(block.root_hash.as_slice());
         packet.write_raw_slice(block.file_hash.as_slice());
     }
 
-    pub fn read(packet: &[u8], offset: &mut usize) -> TlResult<ton_block::BlockIdExt> {
-        let shard_id = ton_block::ShardIdent::with_tagged_prefix(
+    pub fn read(packet: &[u8], offset: &mut usize) -> TlResult<BlockId> {
+        let shard = ShardIdent::new(
             i32::read_from(packet, offset)?,
             u64::read_from(packet, offset)?,
         )
-        .map_err(|_| TlError::InvalidData)?;
-        let seq_no = u32::read_from(packet, offset)?;
+        .ok_or(TlError::InvalidData)?;
+        let seqno = u32::read_from(packet, offset)?;
         let root_hash = <[u8; 32]>::read_from(packet, offset)?;
         let file_hash = <[u8; 32]>::read_from(packet, offset)?;
 
-        Ok(ton_block::BlockIdExt {
-            shard_id,
-            seq_no,
+        Ok(BlockId {
+            shard,
+            seqno,
             root_hash: root_hash.into(),
             file_hash: file_hash.into(),
         })

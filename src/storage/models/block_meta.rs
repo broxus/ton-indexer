@@ -8,7 +8,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::Result;
-use ton_types::ByteOrderRead;
+use bytes::Buf;
 
 use crate::utils::{BriefBlockInfo, StoredValue, StoredValueBuffer};
 
@@ -30,11 +30,11 @@ impl BlockMetaData {
 }
 
 impl BriefBlockInfo {
-    pub fn with_mc_seq_no(self, mc_seq_no: u32) -> BlockMetaData {
+    pub fn with_mc_seqno(self, mc_seqno: u32) -> BlockMetaData {
         BlockMetaData {
             is_key_block: self.is_key_block,
             gen_utime: self.gen_utime,
-            mc_ref_seqno: Some(mc_seq_no),
+            mc_ref_seqno: Some(mc_seqno),
         }
     }
 }
@@ -209,8 +209,8 @@ impl StoredValue for BlockMeta {
     where
         Self: Sized,
     {
-        let flags = reader.read_le_u64()?;
-        let gen_utime = reader.read_le_u32()?;
+        let flags = reader.get_u64_le();
+        let gen_utime = reader.get_u32_le();
 
         Ok(Self {
             flags: AtomicU64::new(flags),

@@ -8,50 +8,50 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
-use once_cell::sync::Lazy;
-use ton_block::{Deserializable, Serializable};
-use ton_types::{Cell, UInt256};
+use everscale_types::models::*;
+use everscale_types::prelude::*;
+use sha2::Digest;
 
 use super::FastHashMap;
 
 /// Full persistent state block id (relative to the masterchain)
 pub struct FullStateId {
-    pub mc_block_id: ton_block::BlockIdExt,
-    pub block_id: ton_block::BlockIdExt,
+    pub mc_block_id: BlockId,
+    pub block_id: BlockId,
 }
 
 #[derive(Clone)]
 pub struct ShardStateStuff {
-    block_id: ton_block::BlockIdExt,
-    shard_state: ton_block::ShardStateUnsplit,
-    shard_state_extra: Option<ton_block::McStateExtra>,
+    block_id: BlockId,
+    shard_state: ShardStateUnsplit,
+    shard_state_extra: Option<McStateExtra>,
     handle: Arc<RefMcStateHandle>,
     root: Cell,
 }
 
 impl ShardStateStuff {
     pub fn new(
-        block_id: ton_block::BlockIdExt,
+        block_id: BlockId,
         root: Cell,
         min_ref_mc_state: &Arc<MinRefMcState>,
     ) -> Result<Self> {
-        let shard_state = ton_block::ShardStateUnsplit::construct_from_cell(root.clone())?;
+        let shard_state = root.parse::<ShardStateUnsplit>()?;
 
-        if shard_state.shard() != block_id.shard() {
+        if shard_state.shard_ident != block_id.shard {
             return Err(anyhow!("State's shard block_id is not equal to given one"));
         }
 
-        if shard_state.shard().shard_prefix_with_tag() != block_id.shard().shard_prefix_with_tag() {
+        if shard_state.shard_ident.prefix() != block_id.shard.prefix() {
             return Err(anyhow!("State's shard id is not equal to given one"));
-        } else if shard_state.seq_no() != block_id.seq_no {
+        } else if shard_state.seqno != block_id.seqno {
             return Err(anyhow!("State's seqno is not equal to given one"));
         }
 
-        let handle = min_ref_mc_state.insert(shard_state.min_ref_mc_seqno());
+        let handle = min_ref_mc_state.insert(shard_state.min_ref_mc_seqno);
 
         Ok(Self {
             block_id,
-            shard_state_extra: shard_state.read_custom()?,
+            shard_state_extra: shard_state.load_custom()?,
             shard_state,
             root,
             handle,
@@ -59,32 +59,36 @@ impl ShardStateStuff {
     }
 
     pub fn construct_split_root(left: Cell, right: Cell) -> Result<Cell> {
-        ton_block::ShardStateSplit { left, right }.serialize()
+        CellBuilder::build_from(ShardStateSplit {
+            left: Lazy::from_raw(left),
+            right: Lazy::from_raw(right),
+        })
+        .map_err(From::from)
     }
 
-    pub fn deserialize_zerostate(id: ton_block::BlockIdExt, mut bytes: &[u8]) -> Result<Self> {
-        if id.seq_no() != 0 {
+    pub fn deserialize_zerostate(id: BlockId, bytes: &[u8]) -> Result<Self> {
+        if id.seqno != 0 {
             return Err(anyhow!("Given id has non-zero seq number"));
         }
 
-        let file_hash = UInt256::calc_file_hash(bytes);
+        let file_hash: [u8; 32] = sha2::Sha256::digest(bytes).into();
         if file_hash != id.file_hash {
             return Err(anyhow!("Wrong zero state's {id} file hash"));
         }
 
-        let root = ton_types::deserialize_tree_of_cells(&mut bytes)?;
-        if root.repr_hash() != id.root_hash() {
+        let root = Boc::decode(bytes)?;
+        if root.repr_hash() != &id.root_hash {
             return Err(anyhow!("Wrong zero state's {id} root hash"));
         }
 
         Self::new(id, root, &ZEROSTATE_REFS)
     }
 
-    pub fn state(&self) -> &ton_block::ShardStateUnsplit {
+    pub fn state(&self) -> &ShardStateUnsplit {
         &self.shard_state
     }
 
-    pub fn shard_state_extra(&self) -> Result<&ton_block::McStateExtra> {
+    pub fn shard_state_extra(&self) -> Result<&McStateExtra> {
         self.shard_state_extra.as_ref().ok_or_else(|| {
             anyhow!(
                 "Masterchain state of {} must contain McStateExtra",
@@ -94,8 +98,8 @@ impl ShardStateStuff {
     }
 
     #[allow(unused)]
-    pub fn shards(&self) -> Result<&ton_block::ShardHashes> {
-        Ok(self.shard_state_extra()?.shards())
+    pub fn shards(&self) -> Result<&ShardHashes> {
+        Ok(&self.shard_state_extra()?.shards)
     }
 
     #[inline(always)]
@@ -108,16 +112,11 @@ impl ShardStateStuff {
         &self.handle
     }
 
-    #[allow(unused)]
-    pub fn shard(&self) -> &ton_block::ShardIdent {
-        self.block_id.shard()
-    }
-
-    pub fn block_id(&self) -> &ton_block::BlockIdExt {
+    pub fn block_id(&self) -> &BlockId {
         &self.block_id
     }
 
-    pub fn config_params(&self) -> Result<&ton_block::ConfigParams> {
+    pub fn config_params(&self) -> Result<&BlockchainConfig> {
         Ok(&self.shard_state_extra()?.config)
     }
 }
@@ -216,7 +215,8 @@ pub fn is_persistent_state(block_utime: u32, prev_utime: u32) -> bool {
     block_utime >> 17 != prev_utime >> 17
 }
 
-static ZEROSTATE_REFS: Lazy<Arc<MinRefMcState>> = Lazy::new(MinRefMcState::new);
+static ZEROSTATE_REFS: once_cell::sync::Lazy<Arc<MinRefMcState>> =
+    once_cell::sync::Lazy::new(MinRefMcState::new);
 
 #[cfg(test)]
 mod tests {

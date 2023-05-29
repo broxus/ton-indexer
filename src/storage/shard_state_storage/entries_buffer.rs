@@ -1,3 +1,5 @@
+use everscale_types::cell::{CellType, LevelMask};
+
 pub struct EntriesBuffer(Box<[[u8; HashesEntry::LEN]; 5]>);
 
 impl EntriesBuffer {
@@ -59,11 +61,11 @@ impl HashesEntryWriter<'_> {
         }
     }
 
-    pub fn set_level_mask(&mut self, level_mask: ton_types::LevelMask) {
-        self.0[0] = level_mask.mask();
+    pub fn set_level_mask(&mut self, level_mask: LevelMask) {
+        self.0[0] = level_mask.into();
     }
 
-    pub fn set_cell_type(&mut self, cell_type: ton_types::CellType) {
+    pub fn set_cell_type(&mut self, cell_type: CellType) {
         self.0[1] = cell_type.into();
     }
 
@@ -111,12 +113,19 @@ impl<'a> HashesEntry<'a> {
     pub const HASHES_OFFSET: usize = 4 + 8 + 8;
     pub const DEPTHS_OFFSET: usize = 4 + 8 + 8 + 32 * 4;
 
-    pub fn level_mask(&self) -> ton_types::LevelMask {
-        ton_types::LevelMask::with_mask(self.0[0])
+    pub fn level_mask(&self) -> LevelMask {
+        // SAFETY: loaded from `set_level_mask`
+        unsafe { LevelMask::new_unchecked(self.0[0]) }
     }
 
-    pub fn cell_type(&self) -> ton_types::CellType {
-        ton_types::CellType::try_from(self.0[1]).unwrap_or(ton_types::CellType::Unknown)
+    pub fn cell_type(&self) -> CellType {
+        match self.0[1] {
+            1 => CellType::PrunedBranch,
+            2 => CellType::LibraryReference,
+            3 => CellType::MerkleProof,
+            4 => CellType::MerkleUpdate,
+            _ => CellType::Ordinary,
+        }
     }
 
     pub fn tree_bits_count(&self) -> u64 {

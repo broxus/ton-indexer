@@ -1,17 +1,14 @@
 use std::sync::Arc;
 
 use anyhow::Result;
+use everscale_types::models::*;
 
 use crate::engine::Engine;
-use crate::utils::*;
 
 /// Boot type when already synced or started syncing (there are states for each workchain).
 ///
 /// Returns last masterchain key block id
-pub async fn warm_boot(
-    engine: &Arc<Engine>,
-    mut last_mc_block_id: ton_block::BlockIdExt,
-) -> Result<ton_block::BlockIdExt> {
+pub async fn warm_boot(engine: &Arc<Engine>, mut last_mc_block_id: BlockId) -> Result<BlockId> {
     tracing::info!("starting warm boot");
     let block_handle_storage = engine.storage.block_handle_storage();
     let handle = block_handle_storage

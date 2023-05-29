@@ -5,10 +5,10 @@ use std::sync::{Arc, Weak};
 use anyhow::Result;
 use bumpalo::Bump;
 use bytes::Bytes;
+use everscale_types::cell::*;
 use parking_lot::RwLock;
 use quick_cache::sync::Cache;
 use smallvec::SmallVec;
-use ton_types::{ByteOrderRead, CellImpl, UInt256};
 
 use crate::db::*;
 use crate::utils::{CacheStats, FastDashMap, FastHashMap, FastHasherState};

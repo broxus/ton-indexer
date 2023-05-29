@@ -7,6 +7,7 @@
 use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
+use everscale_types::models::*;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use crate::engine::Engine;
@@ -14,10 +15,7 @@ use crate::proto;
 use crate::storage::{BlockConnection, BlockHandle};
 use crate::utils::*;
 
-pub async fn walk_masterchain_blocks(
-    engine: &Arc<Engine>,
-    mut block_id: ton_block::BlockIdExt,
-) -> Result<()> {
+pub async fn walk_masterchain_blocks(engine: &Arc<Engine>, mut block_id: BlockId) -> Result<()> {
     while engine.is_working() {
         tracing::info!(
             block_id = %block_id.display(),
@@ -37,10 +35,7 @@ pub async fn walk_masterchain_blocks(
     Ok(())
 }
 
-pub async fn walk_shard_blocks(
-    engine: &Arc<Engine>,
-    mc_block_id: ton_block::BlockIdExt,
-) -> Result<()> {
+pub async fn walk_shard_blocks(engine: &Arc<Engine>, mc_block_id: BlockId) -> Result<()> {
     let semaphore = Arc::new(Semaphore::new(1));
 
     let block_handle_storage = engine.storage.block_handle_storage();
@@ -69,8 +64,8 @@ pub async fn walk_shard_blocks(
 
 async fn load_next_masterchain_block(
     engine: &Arc<Engine>,
-    prev_block_id: &ton_block::BlockIdExt,
-) -> Result<ton_block::BlockIdExt> {
+    prev_block_id: &BlockId,
+) -> Result<BlockId> {
     let block_handle_storage = engine.storage.block_handle_storage();
     let block_connection_storage = engine.storage.block_connection_storage();
     let block_storage = engine.storage.block_storage();
@@ -118,7 +113,7 @@ async fn load_next_masterchain_block(
                 );
             }
             block_storage
-                .store_block_data(&block, brief_info.with_mc_seq_no(block_id.seq_no))
+                .store_block_data(&block, brief_info.with_mc_seqno(block_id.seq_no))
                 .await?
                 .handle
         }
@@ -224,7 +219,7 @@ pub async fn process_block_broadcast(
     let block = BlockStuff::deserialize_checked(block_id.clone(), &broadcast.data)?;
     let block = BlockStuffAug::new(block, broadcast.data);
     let mut handle = match block_storage
-        .store_block_data(&block, meta_data.with_mc_seq_no(0))
+        .store_block_data(&block, meta_data.with_mc_seqno(0))
         .await?
     {
         result if result.updated => result.handle,
@@ -312,22 +307,24 @@ fn validate_broadcast(
     }
 
     // Extract signatures
-    let mut block_pure_signatures = ton_block::BlockSignaturesPure::default();
-    for signature in std::mem::take(&mut broadcast.signatures) {
-        block_pure_signatures.add_sigpair(signature);
-    }
+    // TODO: update models
 
     // Check signatures
-    let data_to_sign =
-        ton_block::Block::build_data_for_sign(&block_id.root_hash, &block_id.file_hash);
-    let total_weight: u64 = subset.validators.iter().map(|v| v.weight).sum();
-    let weight = block_pure_signatures.check_signatures(&subset.validators, &data_to_sign)?;
+    // let data_to_sign =
+    //     ton_block::Block::build_data_for_sign(&block_id.root_hash, &block_id.file_hash);
+    // let total_weight: u64 = subset.validators.iter().map(|v| v.weight).sum();
+    // let weight = block_pure_signatures.check_signatures(&subset.validators, &data_to_sign)?;
 
-    if weight * 3 <= total_weight * 2 {
-        return Err(anyhow!(
-            "Too small signatures weight in broadcast with block {block_id}"
-        ));
-    }
+    // // Check signatures
+    // let data_to_sign = Block::build_data_for_sign(&block_id);
+    // let total_weight: u64 = validators.iter().map(|v| v.weight).sum();
+    // let weight = block_pure_signatures.check_signatures(&validators, &data_to_sign)?;
+
+    // if weight * 3 <= total_weight * 2 {
+    //     return Err(anyhow!(
+    //         "Too small signatures weight in broadcast with block {block_id}"
+    //     ));
+    // }
 
     Ok(())
 }

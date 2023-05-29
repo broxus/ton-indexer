@@ -2,6 +2,7 @@ use std::borrow::Cow;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
+use everscale_types::models::*;
 
 use crate::engine::Engine;
 use crate::storage::*;
@@ -26,7 +27,7 @@ pub async fn sync(engine: &Arc<Engine>) -> Result<()> {
         "creating archives stream"
     );
 
-    let mut archives = ArchivesStream::new(engine, last_mc_block_id.seq_no + 1.., None);
+    let mut archives = ArchivesStream::new(engine, last_mc_block_id.seqno + 1.., None);
 
     let mut last_gen_utime = 0;
     loop {
@@ -65,7 +66,7 @@ pub async fn sync(engine: &Arc<Engine>) -> Result<()> {
 async fn import_package_with_apply(
     engine: &Arc<Engine>,
     maps: Arc<BlockMaps>,
-    last_mc_block_id: &ton_block::BlockIdExt,
+    last_mc_block_id: &BlockId,
     last_gen_utime: &mut u32,
 ) -> Result<()> {
     if maps.mc_block_ids.is_empty() {
@@ -90,26 +91,26 @@ async fn import_package_with_apply(
 async fn import_mc_blocks_with_apply(
     engine: &Arc<Engine>,
     maps: &BlockMaps,
-    mut last_mc_block_id: &ton_block::BlockIdExt,
+    mut last_mc_block_id: &BlockId,
     last_gen_utime: &mut u32,
 ) -> Result<()> {
     let db = &engine.storage;
 
     for id in maps.mc_block_ids.values() {
         // Skip already processed blocks
-        if id.seq_no <= last_mc_block_id.seq_no {
-            if id.seq_no == last_mc_block_id.seq_no && last_mc_block_id != id {
+        if id.seqno <= last_mc_block_id.seqno {
+            if id.seqno == last_mc_block_id.seqno && last_mc_block_id != id {
                 return Err(SyncError::MasterchainBlockIdMismatch.into());
             }
             continue;
         }
 
         // Ensure that we have all previous blocks
-        if id.seq_no != last_mc_block_id.seq_no + 1 {
+        if id.seqno != last_mc_block_id.seqno + 1 {
             tracing::error!(
                 target: "sync",
-                seq_no = id.seq_no,
-                expected = last_mc_block_id.seq_no + 1,
+                seqno = id.seqno,
+                expected = last_mc_block_id.seqno + 1,
                 "masterchain block seqno mismatch",
             );
             return Err(SyncError::BlocksSkippedInArchive.into());
@@ -132,12 +133,12 @@ async fn import_mc_blocks_with_apply(
             .context("Failed to get masterchain block entry")?;
 
         let (block, block_proof) = entry.get_data()?;
-        let handle = engine.save_block(block, block_proof, id.seq_no).await?;
+        let handle = engine.save_block(block, block_proof, id.seqno).await?;
         *last_gen_utime = handle.meta().gen_utime();
 
         // Apply block
         engine
-            .apply_block_ext(&handle, block, id.seq_no, false, 0)
+            .apply_block_ext(&handle, block, id.seqno, false, 0)
             .await?;
     }
 
@@ -169,8 +170,8 @@ async fn import_shard_blocks_with_apply(engine: &Arc<Engine>, maps: &Arc<BlockMa
     // Iterate through all masterchain blocks in archive
     let mut last_applied_mc_block_id = engine.load_shards_client_mc_block_id()?;
     for mc_block_id in maps.mc_block_ids.values() {
-        let mc_seq_no = mc_block_id.seq_no;
-        if mc_seq_no <= last_applied_mc_block_id.seq_no {
+        let mc_seqno = mc_block_id.seqno;
+        if mc_seqno <= last_applied_mc_block_id.seqno {
             continue;
         }
 
@@ -204,7 +205,7 @@ async fn import_shard_blocks_with_apply(engine: &Arc<Engine>, maps: &Arc<BlockMa
                 }
 
                 // Special case for zerostate blocks
-                if id.seq_no == 0 {
+                if id.seqno == 0 {
                     engine.download_zero_state(&id).await?;
                     return Ok(());
                 }
@@ -235,13 +236,13 @@ async fn import_shard_blocks_with_apply(engine: &Arc<Engine>, maps: &Arc<BlockMa
                 match block {
                     Some(block) => {
                         engine
-                            .apply_block_ext(&handle, block.as_ref(), mc_seq_no, false, 0)
+                            .apply_block_ext(&handle, block.as_ref(), mc_seqno, false, 0)
                             .await
                     }
                     None => {
-                        tracing::info!(target: "sync", mc_seq_no, "downloading shardchain block");
+                        tracing::info!(target: "sync", mc_seqno, "downloading shardchain block");
                         engine
-                            .download_and_apply_block(handle.id(), mc_seq_no, false, 0)
+                            .download_and_apply_block(handle.id(), mc_seqno, false, 0)
                             .await
                     }
                 }
@@ -262,12 +263,12 @@ async fn import_shard_blocks_with_apply(engine: &Arc<Engine>, maps: &Arc<BlockMa
 }
 
 impl Engine {
-    fn last_applied_block(&self) -> Result<ton_block::BlockIdExt> {
+    fn last_applied_block(&self) -> Result<BlockId> {
         let mc_block_id = self.load_last_applied_mc_block_id()?;
         let sc_block_id = self.load_shards_client_mc_block_id()?;
 
         Ok(match (mc_block_id, sc_block_id) {
-            (mc_block_id, sc_block_id) if mc_block_id.seq_no > sc_block_id.seq_no => sc_block_id,
+            (mc_block_id, sc_block_id) if mc_block_id.seqno > sc_block_id.seqno => sc_block_id,
             (mc_block_id, _) => mc_block_id,
         })
     }
@@ -276,14 +277,14 @@ impl Engine {
         &self,
         block: &BlockStuffAug,
         block_proof: &BlockProofStuffAug,
-        mc_seq_no: u32,
+        mc_seqno: u32,
     ) -> Result<Arc<BlockHandle>> {
         let block_storage = self.storage.block_storage();
 
         let info = self.check_block_proof(block_proof).await?;
 
         let handle = block_storage
-            .store_block_data(block, info.with_mc_seq_no(mc_seq_no))
+            .store_block_data(block, info.with_mc_seqno(mc_seqno))
             .await?
             .handle;
         let handle = block_storage

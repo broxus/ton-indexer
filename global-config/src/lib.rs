@@ -1,16 +1,17 @@
 use std::convert::{TryFrom, TryInto};
 use std::path::Path;
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use everscale_network::proto;
+use everscale_types::models::*;
 use serde::{Deserialize, Deserializer};
 
 #[derive(Clone)]
 pub struct GlobalConfig {
     pub dht_nodes: Vec<proto::dht::NodeOwned>,
-    pub zero_state: ton_block::BlockIdExt,
-    pub init_block: Option<ton_block::BlockIdExt>,
-    pub hard_forks: Vec<ton_block::BlockIdExt>,
+    pub zero_state: BlockId,
+    pub init_block: Option<BlockId>,
+    pub hard_forks: Vec<BlockId>,
 }
 
 impl GlobalConfig {
@@ -127,16 +128,13 @@ impl TryFrom<AddressJson> for proto::adnl::Address {
     }
 }
 
-impl TryFrom<BlockIdJson> for ton_block::BlockIdExt {
+impl TryFrom<BlockIdJson> for BlockId {
     type Error = anyhow::Error;
 
     fn try_from(value: BlockIdJson) -> Result<Self, Self::Error> {
-        Ok(ton_block::BlockIdExt {
-            shard_id: ton_block::ShardIdent::with_tagged_prefix(
-                value.workchain,
-                value.shard as u64,
-            )?,
-            seq_no: value.seqno as u32,
+        Ok(BlockId {
+            shard: ShardIdent::new(value.workchain, value.shard as u64).context("Invalid shard")?,
+            seqno: value.seqno as u32,
             root_hash: value.root_hash.into(),
             file_hash: value.file_hash.into(),
         })

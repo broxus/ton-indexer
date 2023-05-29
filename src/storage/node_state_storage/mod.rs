@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use anyhow::Result;
+use everscale_types::models::*;
 use parking_lot::Mutex;
 
 use crate::db::*;
@@ -23,31 +24,31 @@ impl NodeStateStorage {
         })
     }
 
-    pub fn store_historical_sync_start(&self, id: &ton_block::BlockIdExt) -> Result<()> {
+    pub fn store_historical_sync_start(&self, id: &BlockId) -> Result<()> {
         let node_states = &self.db.node_states;
         node_states.insert(HISTORICAL_SYNC_LOW, id.to_vec())?;
         Ok(())
     }
 
-    pub fn load_historical_sync_start(&self) -> Result<Option<ton_block::BlockIdExt>> {
+    pub fn load_historical_sync_start(&self) -> Result<Option<BlockId>> {
         Ok(match self.db.node_states.get(HISTORICAL_SYNC_LOW)? {
-            Some(data) => Some(ton_block::BlockIdExt::from_slice(data.as_ref())?),
+            Some(data) => Some(BlockId::from_slice(data.as_ref())?),
             None => None,
         })
     }
 
-    pub fn store_historical_sync_end(&self, id: &ton_block::BlockIdExt) -> Result<()> {
+    pub fn store_historical_sync_end(&self, id: &BlockId) -> Result<()> {
         let node_states = &self.db.node_states;
         node_states.insert(HISTORICAL_SYNC_HIGH, id.to_vec())?;
         Ok(())
     }
 
-    pub fn load_historical_sync_end(&self) -> Result<ton_block::BlockIdExt> {
+    pub fn load_historical_sync_end(&self) -> Result<BlockId> {
         let node_states = &self.db.node_states;
         let data = node_states
             .get(HISTORICAL_SYNC_HIGH)?
             .ok_or(NodeStateStorageError::HighBlockNotFound)?;
-        ton_block::BlockIdExt::from_slice(data.as_ref())
+        BlockId::from_slice(data.as_ref())
     }
 
     #[allow(unused)]
@@ -67,36 +68,32 @@ impl NodeStateStorage {
         })
     }
 
-    pub fn store_last_mc_block_id(&self, id: &ton_block::BlockIdExt) -> Result<()> {
+    pub fn store_last_mc_block_id(&self, id: &BlockId) -> Result<()> {
         self.store_block_id(&self.last_mc_block_id, id)
     }
 
-    pub fn load_last_mc_block_id(&self) -> Result<ton_block::BlockIdExt> {
+    pub fn load_last_mc_block_id(&self) -> Result<BlockId> {
         self.load_block_id(&self.last_mc_block_id)
     }
 
-    pub fn store_init_mc_block_id(&self, id: &ton_block::BlockIdExt) -> Result<()> {
+    pub fn store_init_mc_block_id(&self, id: &BlockId) -> Result<()> {
         self.store_block_id(&self.init_mc_block_id, id)
     }
 
-    pub fn load_init_mc_block_id(&self) -> Result<ton_block::BlockIdExt> {
+    pub fn load_init_mc_block_id(&self) -> Result<BlockId> {
         self.load_block_id(&self.init_mc_block_id)
     }
 
-    pub fn store_shards_client_mc_block_id(&self, id: &ton_block::BlockIdExt) -> Result<()> {
+    pub fn store_shards_client_mc_block_id(&self, id: &BlockId) -> Result<()> {
         self.store_block_id(&self.shards_client_mc_block_id, id)
     }
 
-    pub fn load_shards_client_mc_block_id(&self) -> Result<ton_block::BlockIdExt> {
+    pub fn load_shards_client_mc_block_id(&self) -> Result<BlockId> {
         self.load_block_id(&self.shards_client_mc_block_id)
     }
 
     #[inline(always)]
-    fn store_block_id(
-        &self,
-        (cache, key): &BlockIdCache,
-        block_id: &ton_block::BlockIdExt,
-    ) -> Result<()> {
+    fn store_block_id(&self, (cache, key): &BlockIdCache, block_id: &BlockId) -> Result<()> {
         let node_states = &self.db.node_states;
         node_states.insert(key, write_block_id_le(block_id))?;
         *cache.lock() = Some(block_id.clone());
@@ -104,7 +101,7 @@ impl NodeStateStorage {
     }
 
     #[inline(always)]
-    fn load_block_id(&self, (cache, key): &BlockIdCache) -> Result<ton_block::BlockIdExt> {
+    fn load_block_id(&self, (cache, key): &BlockIdCache) -> Result<BlockId> {
         if let Some(a) = &*cache.lock() {
             return Ok(a.clone());
         }
@@ -128,7 +125,7 @@ pub enum NodeStateStorageError {
     InvalidBlockId,
 }
 
-type BlockIdCache = (Mutex<Option<ton_block::BlockIdExt>>, &'static [u8]);
+type BlockIdCache = (Mutex<Option<BlockId>>, &'static [u8]);
 
 const HISTORICAL_SYNC_LOW: &[u8] = b"background_sync_low";
 const HISTORICAL_SYNC_HIGH: &[u8] = b"background_sync_high";

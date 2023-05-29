@@ -4,6 +4,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use arc_swap::ArcSwapOption;
 use broxus_util::now;
+use everscale_types::models::*;
 use futures_util::future::BoxFuture;
 use futures_util::stream::FuturesOrdered;
 use futures_util::{FutureExt, StreamExt};
@@ -19,7 +20,7 @@ use crate::utils::*;
 /// Boot type when the node has not yet started syncing
 ///
 /// Returns last masterchain key block id
-pub async fn cold_boot(engine: &Arc<Engine>) -> Result<ton_block::BlockIdExt> {
+pub async fn cold_boot(engine: &Arc<Engine>) -> Result<BlockId> {
     tracing::info!("starting cold boot");
 
     // Find the last key block (or zerostate) from which we can start downloading other key blocks
@@ -31,10 +32,10 @@ pub async fn cold_boot(engine: &Arc<Engine>) -> Result<ton_block::BlockIdExt> {
     // Choose the latest key block with persistent state
     let last_key_block = choose_key_block(engine)?;
 
-    if last_key_block.id().seq_no == 0 {
+    if last_key_block.id().seqno == 0 {
         // If the last suitable key block is zerostate, we must download all other zerostates
         let zero_state = engine.load_mc_zero_state().await?;
-        download_workchain_zero_state(engine, &zero_state, ton_block::BASE_WORKCHAIN_ID).await?;
+        download_workchain_zero_state(engine, &zero_state, 0).await?;
     } else {
         // If the last suitable key block is not zerostate, we must download all blocks
         // with their states from shards for that
@@ -53,14 +54,14 @@ async fn prepare_prev_key_block(engine: &Arc<Engine>) -> Result<PrevKeyBlock> {
 
     let block_id = &engine.init_mc_block_id;
 
-    if block_id.seq_no == 0 {
+    if block_id.seqno == 0 {
         // Download zerostate when init block id has not yet been changed
-        tracing::info!(block_id = %block_id.display(), "using zero state");
+        tracing::info!(block_id = %block_id.as_short_id(), "using zero state");
         let (handle, state) = engine.download_zero_state(block_id).await?;
         Ok(PrevKeyBlock::ZeroState { handle, state })
     } else {
         // Ensure that block proof is downloaded for the last known key block
-        tracing::info!(block_id = %block_id.display(), "using key block");
+        tracing::info!(block_id = %block_id.as_short_id(), "using key block");
 
         let handle = match block_handle_storage.load_handle(block_id)? {
             // Check whether block proof is already downloaded
@@ -80,9 +81,9 @@ async fn prepare_prev_key_block(engine: &Arc<Engine>) -> Result<PrevKeyBlock> {
 
         // Find previous key block (or zerostate). It is needed for proof verification
         let prev_key_block = block_handle_storage
-            .find_prev_key_block(block_id.seq_no)?
+            .find_prev_key_block(block_id.seqno)?
             .context("Previous key block not found")?;
-        let prev_key_block = if prev_key_block.id().seq_no == 0 {
+        let prev_key_block = if prev_key_block.id().seqno == 0 {
             // Previous key block is zerostate
             PrevKeyBlock::ZeroState {
                 handle: prev_key_block,
@@ -110,7 +111,7 @@ async fn prepare_prev_key_block(engine: &Arc<Engine>) -> Result<PrevKeyBlock> {
                 Ok(info) => {
                     let handle = match handle {
                         Some(handle) => handle.into(),
-                        None => info.with_mc_seq_no(block_id.seq_no).into(),
+                        None => info.with_mc_seqno(block_id.seqno).into(),
                     };
 
                     let handle = block_storage
@@ -143,7 +144,7 @@ async fn download_key_blocks(engine: &Arc<Engine>, mut prev_key_block: PrevKeyBl
     const BLOCKS_PER_BATCH: u16 = 5;
 
     // Create parallel task for downloading key blocks
-    let (tasks_tx, mut tasks_rx) = mpsc::unbounded_channel::<ton_block::BlockIdExt>();
+    let (tasks_tx, mut tasks_rx) = mpsc::unbounded_channel::<BlockId>();
     let (ids_tx, mut ids_rx) = mpsc::unbounded_channel();
 
     let signal = CancellationToken::new();
@@ -159,7 +160,7 @@ async fn download_key_blocks(engine: &Arc<Engine>, mut prev_key_block: PrevKeyBl
             while let Some(block_id) = tasks_rx.recv().await {
                 'inner: loop {
                     tracing::debug!(
-                        block_id = %block_id.display(),
+                        block_id = %block_id.as_short_id(),
                         "downloading next key blocks"
                     );
 
@@ -187,7 +188,7 @@ async fn download_key_blocks(engine: &Arc<Engine>, mut prev_key_block: PrevKeyBl
                         // Reset good_peer in case of error and retry request
                         Err(e) => {
                             tracing::warn!(
-                                block_id = %block_id.display(),
+                                block_id = %block_id.as_short_id(),
                                 "failed to download key block ids: {e:?}"
                             );
                             good_peer.store(None);
@@ -210,16 +211,16 @@ async fn download_key_blocks(engine: &Arc<Engine>, mut prev_key_block: PrevKeyBl
     let node_state = engine.storage.node_state();
     while let Some((mut ids, neighbour)) = ids_rx.recv().await {
         // Id for zerostate as a key block is a trap
-        ids.retain(|id| id.seq_no > 0);
+        ids.retain(|id| id.seqno > 0);
 
         match ids.last() {
             // Start downloading next key blocks in background
             Some(block_id) => {
-                tracing::debug!(last_key_block_id = %block_id.display());
+                tracing::debug!(last_key_block_id = %block_id.as_short_id());
                 tasks_tx.send(block_id.clone()).ok();
             }
             // Allow empty response for syncing from zerostate
-            None if prev_handle.id().seq_no == 0
+            None if prev_handle.id().seqno == 0
                 && !is_persistent_state(now(), sync_start_utime) =>
             {
                 tracing::debug!("starting from zerostate");
@@ -260,7 +261,7 @@ async fn download_key_blocks(engine: &Arc<Engine>, mut prev_key_block: PrevKeyBl
         pg.set_progress(last_utime.saturating_sub(sync_start_utime));
 
         tracing::debug!(
-            last_known_block_id = %prev_handle.id().display(),
+            last_known_block_id = %prev_handle.id().as_short_id(),
             last_utime,
             current_utime,
         );
@@ -279,7 +280,7 @@ async fn download_key_blocks(engine: &Arc<Engine>, mut prev_key_block: PrevKeyBl
 struct BlockProofStream<'a> {
     engine: &'a Engine,
     prev_key_block: &'a mut PrevKeyBlock,
-    ids: &'a [ton_block::BlockIdExt],
+    ids: &'a [BlockId],
     neighbour: &'a Arc<Neighbour>,
     futures: FuturesOrdered<BoxFuture<'a, (usize, Result<BlockProofStuffAug>)>>,
     index: usize,
@@ -289,7 +290,7 @@ impl<'a> BlockProofStream<'a> {
     fn new(
         engine: &'a Engine,
         prev_key_block: &'a mut PrevKeyBlock,
-        ids: &'a [ton_block::BlockIdExt],
+        ids: &'a [BlockId],
         neighbour: &'a Arc<Neighbour>,
     ) -> Self {
         Self {
@@ -346,7 +347,7 @@ impl<'a> BlockProofStream<'a> {
                 Ok(info) => {
                     // Save block proof
                     let handle = block_storage
-                        .store_block_proof(&proof, info.with_mc_seq_no(block_id.seq_no).into())
+                        .store_block_proof(&proof, info.with_mc_seqno(block_id.seqno).into())
                         .await?
                         .handle;
 
@@ -409,7 +410,7 @@ fn choose_key_block(engine: &Engine) -> Result<Arc<BlockHandle>> {
 
         let is_persistent = prev_utime == 0 || is_persistent_state(handle_utime, prev_utime);
         tracing::debug!(
-            seq_no = handle.id().seq_no,
+            seqno = handle.id().seqno,
             is_persistent,
             "new key block candidate",
         );
@@ -424,7 +425,7 @@ fn choose_key_block(engine: &Engine) -> Result<Arc<BlockHandle>> {
         }
 
         // Use first suitable key block
-        tracing::info!(block_id = %handle.id().display(), "found best key block handle");
+        tracing::info!(block_id = %handle.id().as_short_id(), "found best key block handle");
         return Ok(handle);
     }
 
@@ -476,7 +477,7 @@ impl PrevKeyBlock {
             // Allow invalid proofs for hard forks
             if engine.is_hard_fork(block_id) {
                 tracing::warn!(
-                    block_id = %block_id.display(),
+                    block_id = %block_id.as_short_id(),
                     "received hard fork key block, ignoring proof"
                 );
                 Ok(())
@@ -494,16 +495,16 @@ async fn download_workchain_zero_state(
     workchain: i32,
 ) -> Result<()> {
     // Get workchain description
-    let workchains = mc_zero_state.config_params()?.workchains()?;
+    let workchains = mc_zero_state.config_params()?.get_workchains()?;
     let base_workchain = workchains
         .get(&workchain)?
         .ok_or(ColdBootError::BaseWorkchainInfoNotFound)?;
 
     // Download and save zerostate
     engine
-        .download_zero_state(&ton_block::BlockIdExt {
-            shard_id: ton_block::ShardIdent::full(workchain),
-            seq_no: 0,
+        .download_zero_state(&BlockId {
+            shard: ShardIdent::new_full(workchain),
+            seqno: 0,
             root_hash: base_workchain.zerostate_root_hash,
             file_hash: base_workchain.zerostate_file_hash,
         })
@@ -514,7 +515,7 @@ async fn download_workchain_zero_state(
 
 async fn download_start_blocks_and_states(
     engine: &Arc<Engine>,
-    mc_block_id: &ton_block::BlockIdExt,
+    mc_block_id: &BlockId,
 ) -> Result<TopBlocks> {
     // Download and save masterchain block and state
     let (_, init_mc_block) = download_block_with_state(
@@ -529,13 +530,13 @@ async fn download_start_blocks_and_states(
     let top_blocks = TopBlocks::from_mc_block(&init_mc_block)?;
 
     tracing::info!(
-        block_id = %init_mc_block.id().display(),
+        block_id = %init_mc_block.id().as_short_id(),
         "downloaded init mc block state"
     );
 
     // Download and save blocks and states from other shards
     for (_, block_id) in init_mc_block.shard_blocks()? {
-        if block_id.seq_no == 0 {
+        if block_id.seqno == 0 {
             engine.download_zero_state(&block_id).await?;
         } else {
             download_block_with_state(
@@ -559,7 +560,7 @@ async fn download_block_with_state(
     let block_handle_storage = engine.storage.block_handle_storage();
     let block_storage = engine.storage.block_storage();
 
-    let mc_seq_no = full_state_id.mc_block_id.seq_no;
+    let mc_seqno = full_state_id.mc_block_id.seqno;
 
     let handle = block_handle_storage
         .load_handle(&full_state_id.block_id)?
@@ -573,7 +574,7 @@ async fn download_block_with_state(
                 let (block, proof) = engine.download_block(&full_state_id.block_id, None).await?;
                 match proof.pre_check_block_proof() {
                     Ok((_, block_info)) => {
-                        let meta_data = BriefBlockInfo::from(&block_info).with_mc_seq_no(mc_seq_no);
+                        let meta_data = BriefBlockInfo::from(&block_info).with_mc_seqno(mc_seqno);
                         break (block, proof, meta_data);
                     }
                     Err(e) => {
@@ -584,7 +585,7 @@ async fn download_block_with_state(
             };
 
             tracing::info!(
-                block_id = %full_state_id.block_id.display(),
+                block_id = %full_state_id.block_id.as_short_id(),
                 "downloaded block data"
             );
 
@@ -606,9 +607,9 @@ async fn download_block_with_state(
     if !handle.meta().has_state() {
         let state_update = block.block().read_state_update()?;
 
-        tracing::info!(block_id = %handle.id().display(), "downloading state");
+        tracing::info!(block_id = %handle.id().as_short_id(), "downloading state");
         let shard_state = download_state(engine, full_state_id).await?;
-        tracing::info!(block_id = %handle.id().display(), "downloaded state");
+        tracing::info!(block_id = %handle.id().as_short_id(), "downloaded state");
 
         let state_hash = shard_state.root_cell().repr_hash();
         if state_update.new_hash != state_hash {
@@ -621,7 +622,7 @@ async fn download_block_with_state(
             .await?;
     }
 
-    engine.set_applied(&handle, mc_seq_no).await?;
+    engine.set_applied(&handle, mc_seqno).await?;
     Ok((handle, block))
 }
 

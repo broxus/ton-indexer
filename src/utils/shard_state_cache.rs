@@ -1,6 +1,8 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use everscale_types::models::*;
+
 use super::shard_state::ShardStateStuff;
 use super::top_blocks::*;
 use super::FastDashMap;
@@ -42,7 +44,7 @@ impl ShardStateCache {
     /// or the cache is disabled.
     ///
     /// Also removes expired elements and updates the time
-    pub fn get(&self, block_id: &ton_block::BlockIdExt) -> Option<Arc<ShardStateStuff>> {
+    pub fn get(&self, block_id: &BlockId) -> Option<Arc<ShardStateStuff>> {
         if let Some(map) = &self.map {
             let entry = map.get(block_id)?;
             Some(entry.value().clone())
@@ -52,12 +54,12 @@ impl ShardStateCache {
     }
 
     /// Inserts a key-value pair into the cache (if enabled).
-    pub fn set<F>(&self, block_id: &ton_block::BlockIdExt, factory: F)
+    pub fn set<F>(&self, block_id: &BlockId, factory: F)
     where
         F: FnOnce() -> Arc<ShardStateStuff>,
     {
         if let Some(map) = &self.map {
-            map.insert(block_id.clone(), factory());
+            map.insert(*block_id, factory());
         }
     }
 
@@ -94,4 +96,4 @@ impl ShardStateCache {
     }
 }
 
-type ShardStatesMap = FastDashMap<ton_block::BlockIdExt, Arc<ShardStateStuff>>;
+type ShardStatesMap = FastDashMap<BlockId, Arc<ShardStateStuff>>;

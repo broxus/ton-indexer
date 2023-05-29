@@ -1,8 +1,8 @@
 use anyhow::Result;
 use smallvec::SmallVec;
-use ton_types::ByteOrderRead;
 
-use super::block::BlockIdShort;
+use bytes::Buf;
+use everscale_types::models::{BlockId, BlockIdShort, ShardIdent};
 
 /// A trait for writing or reading data from a stack-allocated buffer
 pub trait StoredValue {
@@ -77,19 +77,19 @@ where
     }
 }
 
-impl StoredValue for ton_block::BlockIdExt {
+impl StoredValue for BlockId {
     /// 4 bytes workchain id,
     /// 8 bytes shard id,
     /// 4 bytes seqno,
     /// 32 bytes root hash,
     /// 32 bytes file hash
-    const SIZE_HINT: usize = ton_block::ShardIdent::SIZE_HINT + 4 + 32 + 32;
+    const SIZE_HINT: usize = ShardIdent::SIZE_HINT + 4 + 32 + 32;
 
     type OnStackSlice = [u8; Self::SIZE_HINT];
 
     fn serialize<T: StoredValueBuffer>(&self, buffer: &mut T) {
-        self.shard_id.serialize(buffer);
-        buffer.write_raw_slice(&self.seq_no.to_be_bytes());
+        self.shard.serialize(buffer);
+        buffer.write_raw_slice(&self.seqno.to_be_bytes());
         buffer.write_raw_slice(self.root_hash.as_slice());
         buffer.write_raw_slice(self.file_hash.as_slice());
     }
@@ -98,15 +98,25 @@ impl StoredValue for ton_block::BlockIdExt {
     where
         Self: Sized,
     {
-        let shard_id = ton_block::ShardIdent::deserialize(reader)?;
-        let seq_no = reader.read_be_u32()?;
-        let root_hash = ton_types::UInt256::from(reader.read_u256()?);
-        let file_hash = ton_types::UInt256::from(reader.read_u256()?);
-        Ok(Self::with_params(shard_id, seq_no, root_hash, file_hash))
+        let shard = ShardIdent::deserialize(reader)?;
+        let seqno = reader.get_u32();
+
+        let mut root_hash = [0; 32];
+        root_hash.copy_from_slice(&reader[0..32]);
+
+        let mut file_hash = [0; 32];
+        file_hash.copy_from_slice(&reader[32..64]);
+
+        Ok(Self {
+            shard,
+            seqno,
+            root_hash,
+            file_hash,
+        })
     }
 }
 
-impl StoredValue for ton_block::ShardIdent {
+impl StoredValue for ShardIdent {
     /// 4 bytes workchain id
     /// 8 bytes shard id
     const SIZE_HINT: usize = 4 + 8;
@@ -115,56 +125,56 @@ impl StoredValue for ton_block::ShardIdent {
 
     #[inline(always)]
     fn serialize<T: StoredValueBuffer>(&self, buffer: &mut T) {
-        buffer.write_raw_slice(&self.workchain_id().to_be_bytes());
-        buffer.write_raw_slice(&self.shard_prefix_with_tag().to_be_bytes());
+        buffer.write_raw_slice(&self.workchain().to_be_bytes());
+        buffer.write_raw_slice(&self.prefix().to_be_bytes());
     }
 
     fn deserialize(reader: &mut &[u8]) -> Result<Self>
     where
         Self: Sized,
     {
-        let workchain_id = reader.read_be_u32()? as i32;
-        let shard_prefix_tagged = reader.read_be_u64()?;
-        Ok(unsafe { Self::with_tagged_prefix_unchecked(workchain_id, shard_prefix_tagged) })
+        let workchain = reader.get_u32() as i32;
+        let prefix = reader.get_u64();
+        Ok(unsafe { Self::new_unchecked(workchain, prefix) })
     }
 }
 
 impl StoredValue for BlockIdShort {
     /// 12 bytes shard ident
     /// 4 bytes seqno
-    const SIZE_HINT: usize = ton_block::ShardIdent::SIZE_HINT + 4;
+    const SIZE_HINT: usize = ShardIdent::SIZE_HINT + 4;
 
     type OnStackSlice = [u8; Self::SIZE_HINT];
 
     #[inline(always)]
     fn serialize<T: StoredValueBuffer>(&self, buffer: &mut T) {
-        self.0.serialize(buffer);
-        buffer.write_raw_slice(&self.1.to_be_bytes());
+        self.shard.serialize(buffer);
+        buffer.write_raw_slice(&self.seqno.to_be_bytes());
     }
 
     fn deserialize(reader: &mut &[u8]) -> Result<Self>
     where
         Self: Sized,
     {
-        let shard_id = ton_block::ShardIdent::deserialize(reader)?;
-        let seq_no = reader.read_be_u32()?;
-        Ok((shard_id, seq_no))
+        let shard = ShardIdent::deserialize(reader)?;
+        let seqno = reader.get_u32();
+        Ok(Self { shard, seqno })
     }
 }
 
 /// Writes BlockIdExt in little-endian format
-pub fn write_block_id_le(block_id: &ton_block::BlockIdExt) -> [u8; 80] {
+pub fn write_block_id_le(block_id: &BlockId) -> [u8; 80] {
     let mut bytes = [0u8; 80];
-    bytes[..4].copy_from_slice(&block_id.shard_id.workchain_id().to_le_bytes());
-    bytes[4..12].copy_from_slice(&block_id.shard_id.shard_prefix_with_tag().to_le_bytes());
-    bytes[12..16].copy_from_slice(&block_id.seq_no.to_le_bytes());
+    bytes[..4].copy_from_slice(&block_id.shard.workchain().to_le_bytes());
+    bytes[4..12].copy_from_slice(&block_id.shard.prefix().to_le_bytes());
+    bytes[12..16].copy_from_slice(&block_id.seqno.to_le_bytes());
     bytes[16..48].copy_from_slice(block_id.root_hash.as_slice());
     bytes[48..80].copy_from_slice(block_id.file_hash.as_slice());
     bytes
 }
 
 /// Reads BlockIdExt in little-endian format
-pub fn read_block_id_le(data: &[u8]) -> Option<ton_block::BlockIdExt> {
+pub fn read_block_id_le(data: &[u8]) -> Option<BlockId> {
     if data.len() < 80 {
         return None;
     }
@@ -177,9 +187,9 @@ pub fn read_block_id_le(data: &[u8]) -> Option<ton_block::BlockIdExt> {
     shard_id.copy_from_slice(&data[4..12]);
     let shard_id = u64::from_le_bytes(shard_id);
 
-    let mut seq_no = [0; 4];
-    seq_no.copy_from_slice(&data[12..16]);
-    let seq_no = u32::from_le_bytes(seq_no);
+    let mut seqno = [0; 4];
+    seqno.copy_from_slice(&data[12..16]);
+    let seqno = u32::from_le_bytes(seqno);
 
     let mut root_hash = [0; 32];
     root_hash.copy_from_slice(&data[16..48]);
@@ -187,12 +197,11 @@ pub fn read_block_id_le(data: &[u8]) -> Option<ton_block::BlockIdExt> {
     let mut file_hash = [0; 32];
     file_hash.copy_from_slice(&data[48..80]);
 
-    let shard_id =
-        unsafe { ton_block::ShardIdent::with_tagged_prefix_unchecked(workchain_id, shard_id) };
+    let shard = unsafe { ShardIdent::new_unchecked(workchain_id, shard_id) };
 
-    Some(ton_block::BlockIdExt {
-        shard_id,
-        seq_no,
+    Some(BlockId {
+        shard,
+        seqno,
         root_hash: root_hash.into(),
         file_hash: file_hash.into(),
     })
@@ -204,8 +213,8 @@ mod tests {
 
     #[test]
     fn fully_on_stack() {
-        assert!(!ton_block::BlockIdExt::default().to_vec().spilled());
-        assert!(!ton_block::ShardIdent::default().to_vec().spilled());
+        assert!(!BlockId::default().to_vec().spilled());
+        assert!(!ShardIdent::default().to_vec().spilled());
     }
 
     #[test]
@@ -216,9 +225,9 @@ mod tests {
             2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
         ];
 
-        let block_id = ton_block::BlockIdExt {
-            shard_id: ton_block::ShardIdent::masterchain(),
-            seq_no: 123,
+        let block_id = BlockId {
+            shard: ShardIdent::MASTERCHAIN,
+            seqno: 123,
             root_hash: [1u8; 32].into(),
             file_hash: [2u8; 32].into(),
         };

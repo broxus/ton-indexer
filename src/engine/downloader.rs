@@ -9,6 +9,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
+use everscale_types::models::*;
 
 use crate::engine::NodeRpcClient;
 use crate::network::Neighbour;
@@ -18,7 +19,7 @@ use crate::utils::*;
 impl<'a, T> DownloadContext<'a, T> {
     async fn load_full_block(
         &self,
-        block_id: &ton_block::BlockIdExt,
+        block_id: &BlockId,
     ) -> Result<Option<(BlockStuffAug, BlockProofStuffAug)>> {
         let block_handle_storage = self.storage.block_handle_storage();
         let block_storage = self.storage.block_storage();
@@ -151,7 +152,7 @@ pub trait Downloader: Send + Sync {
 
 pub struct DownloadContext<'a, T> {
     pub name: &'a str,
-    pub block_id: &'a ton_block::BlockIdExt,
+    pub block_id: &'a BlockId,
     pub max_attempts: Option<u32>,
     pub timeouts: Option<DownloaderTimeouts>,
 

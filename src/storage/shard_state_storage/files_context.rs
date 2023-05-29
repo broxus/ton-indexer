@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
+use everscale_types::models::*;
 use tokio::fs::File;
 use tokio::io::{AsyncWriteExt, BufWriter};
 
@@ -13,15 +14,15 @@ pub struct FilesContext {
 }
 
 impl FilesContext {
-    pub async fn new<P>(downloads_dir: P, block_id: &ton_block::BlockIdExt) -> Result<Self>
+    pub async fn new<P>(downloads_dir: P, block_id: &BlockId) -> Result<Self>
     where
         P: AsRef<Path>,
     {
         let block_id = format!(
             "({},{:016x},{})",
-            block_id.shard_id.workchain_id(),
-            block_id.shard_id.shard_prefix_with_tag(),
-            block_id.seq_no
+            block_id.shard.workchain(),
+            block_id.shard.prefix(),
+            block_id.seqno
         );
 
         let cells_path = downloads_dir

@@ -7,6 +7,7 @@
 use std::sync::Arc;
 
 use anyhow::Result;
+use everscale_types::models::*;
 use futures_util::future::{BoxFuture, FutureExt};
 
 use crate::engine::Engine;
@@ -70,8 +71,8 @@ pub fn apply_block<'a>(
 
 async fn ensure_prev_blocks_downloaded(
     engine: &Arc<Engine>,
-    prev1_id: &ton_block::BlockIdExt,
-    prev2_id: &Option<ton_block::BlockIdExt>,
+    prev1_id: &BlockId,
+    prev2_id: &Option<BlockId>,
     mc_seq_no: u32,
     pre_apply: bool,
     depth: u32,
@@ -101,8 +102,8 @@ async fn ensure_prev_blocks_downloaded(
 fn update_block_connections(
     engine: &Arc<Engine>,
     handle: &Arc<BlockHandle>,
-    prev1_id: &ton_block::BlockIdExt,
-    prev2_id: &Option<ton_block::BlockIdExt>,
+    prev1_id: &BlockId,
+    prev2_id: &Option<BlockId>,
 ) -> Result<()> {
     let handles = engine.storage.block_handle_storage();
     let conn = engine.storage.block_connection_storage();
@@ -142,8 +143,8 @@ async fn compute_and_store_shard_state(
     engine: &Arc<Engine>,
     handle: &Arc<BlockHandle>,
     block: &BlockStuff,
-    prev1_id: &ton_block::BlockIdExt,
-    prev2_id: &Option<ton_block::BlockIdExt>,
+    prev1_id: &BlockId,
+    prev2_id: &Option<BlockId>,
 ) -> Result<Arc<ShardStateStuff>> {
     enum RefMcStateHandles {
         Split(Arc<RefMcStateHandle>, Arc<RefMcStateHandle>),

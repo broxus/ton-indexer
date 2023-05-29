@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use anyhow::Result;
+use everscale_types::models::*;
 
 use super::models::BlockHandle;
 use crate::db::*;
@@ -20,7 +21,7 @@ impl BlockConnectionStorage {
         &self,
         handle: &BlockHandle,
         direction: BlockConnection,
-        connected_block_id: &ton_block::BlockIdExt,
+        connected_block_id: &BlockId,
     ) -> Result<()> {
         // Use strange match because all columns have different types
         let store = match direction {
@@ -84,9 +85,9 @@ impl BlockConnectionStorage {
 
     pub fn load_connection(
         &self,
-        block_id: &ton_block::BlockIdExt,
+        block_id: &BlockId,
         direction: BlockConnection,
-    ) -> Result<ton_block::BlockIdExt> {
+    ) -> Result<BlockId> {
         match direction {
             BlockConnection::Prev1 => load_block_connection_impl(&self.db.prev1, block_id),
             BlockConnection::Prev2 => load_block_connection_impl(&self.db.prev2, block_id),
@@ -108,7 +109,7 @@ pub enum BlockConnection {
 fn store_block_connection_impl<T>(
     db: &Table<T>,
     handle: &BlockHandle,
-    block_id: &ton_block::BlockIdExt,
+    block_id: &BlockId,
 ) -> Result<(), rocksdb::Error>
 where
     T: ColumnFamily,
@@ -120,10 +121,7 @@ where
 }
 
 #[inline]
-fn load_block_connection_impl<T>(
-    db: &Table<T>,
-    block_id: &ton_block::BlockIdExt,
-) -> Result<ton_block::BlockIdExt>
+fn load_block_connection_impl<T>(db: &Table<T>, block_id: &BlockId) -> Result<BlockId>
 where
     T: ColumnFamily,
 {

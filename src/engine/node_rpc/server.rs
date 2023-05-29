@@ -10,6 +10,7 @@ use std::sync::{Arc, Weak};
 
 use anyhow::Result;
 use everscale_network::{QueryConsumingResult, QuerySubscriber, SubscriberContext};
+use everscale_types::models::*;
 use tl_proto::{TlRead, TlWrite};
 
 use crate::engine::Engine;
@@ -181,7 +182,7 @@ impl QueryHandler {
             }
 
             let mut iterator = block_handle_storage
-                .key_blocks_iterator(KeyBlocksDirection::ForwardFrom(start_block_id.seq_no))
+                .key_blocks_iterator(KeyBlocksDirection::ForwardFrom(start_block_id.seqno))
                 .take(limit)
                 .peekable();
 
@@ -311,20 +312,20 @@ impl QueryHandler {
     }
 
     async fn get_archive_info(self, query: proto::RpcGetArchiveInfo) -> Result<proto::ArchiveInfo> {
-        let mc_seq_no = query.masterchain_seqno;
+        let mc_seqno = query.masterchain_seqno;
 
         let last_applied_mc_block = self.0.load_last_applied_mc_block_id()?;
-        if mc_seq_no > last_applied_mc_block.seq_no {
+        if mc_seqno > last_applied_mc_block.seqno {
             return Ok(proto::ArchiveInfo::NotFound);
         }
 
         let shards_client_mc_block_id = self.0.load_shards_client_mc_block_id()?;
-        if mc_seq_no > shards_client_mc_block_id.seq_no {
+        if mc_seqno > shards_client_mc_block_id.seqno {
             return Ok(proto::ArchiveInfo::NotFound);
         }
 
         let block_storage = self.storage().block_storage();
-        Ok(match block_storage.get_archive_id(mc_seq_no) {
+        Ok(match block_storage.get_archive_id(mc_seqno) {
             Some(id) => proto::ArchiveInfo::Found { id: id as u64 },
             None => proto::ArchiveInfo::NotFound,
         })
@@ -346,7 +347,7 @@ impl QueryHandler {
 
 fn find_block_proof(
     storage: &Storage,
-    block_id: &ton_block::BlockIdExt,
+    block_id: &BlockId,
     allow_partial: bool,
     key_block: bool,
 ) -> Result<proto::PreparedProof> {
@@ -369,11 +370,7 @@ fn find_block_proof(
     }
 }
 
-async fn load_block_proof(
-    storage: &Storage,
-    block_id: &ton_block::BlockIdExt,
-    is_link: bool,
-) -> Result<Vec<u8>> {
+async fn load_block_proof(storage: &Storage, block_id: &BlockId, is_link: bool) -> Result<Vec<u8>> {
     let block_handle_storage = storage.block_handle_storage();
     let block_storage = storage.block_storage();
 

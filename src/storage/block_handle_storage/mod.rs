@@ -7,6 +7,7 @@
 use std::sync::{Arc, Weak};
 
 use anyhow::Result;
+use everscale_types::models::*;
 
 use super::models::*;
 use crate::db::*;
@@ -14,7 +15,7 @@ use crate::utils::*;
 
 pub struct BlockHandleStorage {
     db: Arc<Db>,
-    cache: Arc<FastDashMap<ton_block::BlockIdExt, Weak<BlockHandle>>>,
+    cache: Arc<FastDashMap<BlockId, Weak<BlockHandle>>>,
 }
 
 impl BlockHandleStorage {
@@ -47,7 +48,7 @@ impl BlockHandleStorage {
 
     pub fn create_or_load_handle(
         &self,
-        block_id: &ton_block::BlockIdExt,
+        block_id: &BlockId,
         meta_data: BlockMetaData,
     ) -> Result<(Arc<BlockHandle>, HandleCreationStatus)> {
         if let Some(handle) = self.load_handle(block_id)? {
@@ -67,10 +68,7 @@ impl BlockHandleStorage {
         Err(BlockHandleStorageError::FailedToCreateBlockHandle.into())
     }
 
-    pub fn load_handle(
-        &self,
-        block_id: &ton_block::BlockIdExt,
-    ) -> Result<Option<Arc<BlockHandle>>> {
+    pub fn load_handle(&self, block_id: &BlockId) -> Result<Option<Arc<BlockHandle>>> {
         Ok(loop {
             if let Some(weak) = self.cache.get(block_id) {
                 if let Some(handle) = weak.upgrade() {
@@ -110,7 +108,7 @@ impl BlockHandleStorage {
             .db
             .key_blocks
             .get(seq_no.to_be_bytes())?
-            .map(|value| ton_block::BlockIdExt::from_slice(value.as_ref()))
+            .map(|value| BlockId::from_slice(value.as_ref()))
             .transpose()?
             .ok_or(BlockHandleStorageError::KeyBlockNotFound)?;
 
@@ -126,7 +124,7 @@ impl BlockHandleStorage {
         // Load key block from current iterator value
         let key_block_id = iter
             .value()
-            .map(ton_block::BlockIdExt::from_slice)
+            .map(BlockId::from_slice)
             .transpose()?
             .ok_or(BlockHandleStorageError::KeyBlockNotFound)?;
 
@@ -146,7 +144,7 @@ impl BlockHandleStorage {
 
         // Load key block from current iterator value
         iter.value()
-            .map(ton_block::BlockIdExt::from_slice)
+            .map(BlockId::from_slice)
             .transpose()?
             .map(|key_block_id| {
                 self.load_handle(&key_block_id)?.ok_or_else(|| {
@@ -168,11 +166,7 @@ impl BlockHandleStorage {
         // Loads key block from current iterator value and moves it backward
         let mut get_key_block = move || -> Result<Option<Arc<BlockHandle>>> {
             // Load key block id
-            let key_block_id = match iter
-                .value()
-                .map(ton_block::BlockIdExt::from_slice)
-                .transpose()?
-            {
+            let key_block_id = match iter.value().map(BlockId::from_slice).transpose()? {
                 Some(prev_key_block) => prev_key_block,
                 None => return Ok(None),
             };
@@ -214,7 +208,7 @@ impl BlockHandleStorage {
     pub fn key_blocks_iterator(
         &self,
         direction: KeyBlocksDirection,
-    ) -> impl Iterator<Item = Result<ton_block::BlockIdExt>> + '_ {
+    ) -> impl Iterator<Item = Result<BlockId>> + '_ {
         let mut raw_iterator = self.db.key_blocks.raw_iterator();
         let reverse = match direction {
             KeyBlocksDirection::ForwardFrom(seq_no) => {
@@ -264,7 +258,7 @@ impl BlockHandleStorage {
 
     fn create_handle(
         &self,
-        block_id: ton_block::BlockIdExt,
+        block_id: BlockId,
         meta: BlockMeta,
     ) -> Result<Option<Arc<BlockHandle>>> {
         use dashmap::mapref::entry::Entry;
@@ -302,13 +296,10 @@ struct KeyBlocksIterator<'a> {
 }
 
 impl Iterator for KeyBlocksIterator<'_> {
-    type Item = Result<ton_block::BlockIdExt>;
+    type Item = Result<BlockId>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let value = self
-            .raw_iterator
-            .value()
-            .map(ton_block::BlockIdExt::from_slice)?;
+        let value = self.raw_iterator.value().map(BlockId::from_slice)?;
         if self.reverse {
             self.raw_iterator.prev();
         } else {

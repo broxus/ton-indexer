@@ -13,6 +13,7 @@ use std::ops::{Bound, RangeBounds};
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
+use everscale_types::models::*;
 use parking_lot::RwLock;
 
 use super::block_handle_storage::{BlockHandleStorage, HandleCreationStatus};
@@ -454,7 +455,7 @@ impl BlockStorage {
 
     pub async fn remove_outdated_blocks(
         &self,
-        key_block_id: &ton_block::BlockIdExt,
+        key_block_id: &BlockId,
         max_blocks_per_batch: Option<usize>,
         gc_type: BlocksGcKind,
     ) -> Result<()> {
@@ -575,7 +576,7 @@ impl BlockStorage {
 
     fn add_data<I>(&self, id: &PackageEntryId<I>, data: &[u8]) -> Result<(), rocksdb::Error>
     where
-        I: Borrow<ton_block::BlockIdExt> + Hash,
+        I: Borrow<BlockId> + Hash,
     {
         self.db.package_entries.insert(id.to_vec(), data)
     }
@@ -583,14 +584,14 @@ impl BlockStorage {
     #[allow(dead_code)]
     fn has_data<I>(&self, id: &PackageEntryId<I>) -> Result<bool, rocksdb::Error>
     where
-        I: Borrow<ton_block::BlockIdExt> + Hash,
+        I: Borrow<BlockId> + Hash,
     {
         self.db.package_entries.contains_key(id.to_vec())
     }
 
     async fn get_data<I>(&self, handle: &BlockHandle, id: &PackageEntryId<I>) -> Result<Vec<u8>>
     where
-        I: Borrow<ton_block::BlockIdExt> + Hash,
+        I: Borrow<BlockId> + Hash,
     {
         let _lock = match &id {
             PackageEntryId::Block(_) => handle.block_data_lock().read().await,
@@ -611,7 +612,7 @@ impl BlockStorage {
         id: &PackageEntryId<I>,
     ) -> Result<impl AsRef<[u8]> + 'a>
     where
-        I: Borrow<ton_block::BlockIdExt> + Hash,
+        I: Borrow<BlockId> + Hash,
     {
         let lock = match id {
             PackageEntryId::Block(_) => handle.block_data_lock().read().await,
@@ -657,7 +658,7 @@ impl BlockStorage {
 
     fn make_archive_segment<I>(&self, entry_id: &PackageEntryId<I>) -> Result<Vec<u8>>
     where
-        I: Borrow<ton_block::BlockIdExt> + Hash,
+        I: Borrow<BlockId> + Hash,
     {
         match self.db.package_entries.get(entry_id.to_vec())? {
             Some(data) => Ok(make_archive_segment(&entry_id.filename(), &data)),
