@@ -53,8 +53,8 @@ ton_types = { git = "https://github.com/broxus/ton-labs-types.git" }
 
 archive-uploader = { path = "archive-uploader", optional = true }
 global-config = { path = "global-config" }
-mini-moka = "0.10.0"
 bytesize = { version = "1.2.0", features = ["serde"] }
+quick_cache = "0.3.0"
 
 [dev-dependencies]
 argh = "0.1"

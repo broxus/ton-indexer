@@ -63,8 +63,6 @@ impl Default for NodeConfig {
 #[serde(deny_unknown_fields, default)]
 pub struct DbOptions {
     pub rocksdb_lru_capacity: ByteSize,
-    pub rocksdb_compaction_memory_budget: ByteSize,
-
     pub cells_cache_size: ByteSize,
 }
 
@@ -76,17 +74,28 @@ impl Default for DbOptions {
         let total = sys.available_memory();
 
         // estimated memory usage of components other than cache
-        let estimated_memory_usage = ByteSize::gib(6);
-        let total = total - estimated_memory_usage.as_u64();
+        // 2 GiBs for write buffers(4 if we are out of luck and all memtables are being flushed at the same time)
+        // 2 GiBs for indexer logic
+        // 10 bits per cell for bloom filter. Realistic case is 100M cells, so 0.25 GiBs
+        // Also 1 third of all available memory is reserved for kernel buffers
+        let estimated_memory_usage =
+            ByteSize::gib(2) + ByteSize::gib(2) + ByteSize::mib(256) + total / 3;
+        let total = match total.checked_sub(estimated_memory_usage.as_u64()) {
+            Some(total) => total,
+            None => {
+                tracing::error!("Not enough memory for cache, using 1/4 of all available memory. Tweak `db_options` in config to improve performance.");
+                sys.available_memory() / 4
+            }
+        };
 
-        let default_lru_capacity = ByteSize::mib(512);
-        let default_compaction_memory_budget = ByteSize(total / 4);
-        let cells_cache_size =
-            ByteSize(total - (default_lru_capacity + default_compaction_memory_budget).as_u64());
+        // will use 3/4 of available memory for cells cache
+        // 4 GB is a reasonable maximum for it (for now)
+        let cells_cache_size = std::cmp::min(ByteSize((total / 3) * 4), ByteSize::gib(4));
+        // rest of memory is used for LRU cache
+        let rocksdb_lru_capacity = ByteSize(total - cells_cache_size.as_u64());
 
         Self {
-            rocksdb_lru_capacity: default_lru_capacity,
-            rocksdb_compaction_memory_budget: default_compaction_memory_budget,
+            rocksdb_lru_capacity,
             cells_cache_size,
         }
     }

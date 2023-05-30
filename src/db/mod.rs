@@ -36,7 +36,6 @@ impl Db {
     pub fn open(path: PathBuf, options: DbOptions) -> Result<Arc<Self>> {
         tracing::info!(
             rocksdb_lru_capacity = %options.rocksdb_lru_capacity,
-            rocksdb_compaction_memory_budget = %options.rocksdb_compaction_memory_budget,
             cells_cache_size = %options.cells_cache_size,
             "opening DB"
         );
@@ -53,14 +52,7 @@ impl Db {
         };
 
         let caches_capacity =
-            std::cmp::max(options.rocksdb_lru_capacity, bytesize::ByteSize::mib(256)).as_u64()
-                as usize;
-
-        let compaction_memory_budget = std::cmp::max(
-            options.rocksdb_compaction_memory_budget,
-            bytesize::ByteSize::gib(1),
-        )
-        .as_u64() as usize;
+            std::cmp::max(options.rocksdb_lru_capacity, ByteSize::mib(256)).as_u64() as usize;
 
         let caches = Caches::with_capacity(caches_capacity);
 
@@ -68,12 +60,9 @@ impl Db {
             .options(|opts, _| {
                 opts.set_paranoid_checks(false);
 
-                opts.set_level_compaction_dynamic_level_bytes(true);
-                // https://github.com/facebook/rocksdb/blob/81aeb15988e43c49952c795e32e5c8b224793589/options/options.cc#L630
-                opts.optimize_level_style_compaction(compaction_memory_budget);
                 // bigger base level size - less compactions
-                opts.set_max_bytes_for_level_base(1024 * 1024 * 1024);
                 // parallel compactions finishes faster - less write stalls
+
                 opts.set_max_subcompactions(num_cpus::get() as u32 / 2);
 
                 // io
@@ -96,8 +85,8 @@ impl Db {
                 opts.set_enable_write_thread_adaptive_yield(true);
 
                 // debug
-                // opts.enable_statistics();
-                // opts.set_stats_dump_period_sec(30);
+                opts.enable_statistics();
+                opts.set_stats_dump_period_sec(600);
             })
             .with_table::<tables::Archives>()
             .with_table::<tables::BlockHandles>()

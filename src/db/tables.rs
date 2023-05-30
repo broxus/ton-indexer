@@ -1,4 +1,5 @@
 use crate::db::rocksdb::DBCompressionType;
+use bytesize::ByteSize;
 use weedb::rocksdb::{
     BlockBasedIndexType, BlockBasedOptions, DataBlockIndexType, MergeOperands, Options, ReadOptions,
 };
@@ -15,6 +16,7 @@ impl ColumnFamily for Archives {
 
     fn options(opts: &mut Options, caches: &Caches) {
         default_block_based_table_factory(opts, caches);
+        optimize_for_level_compaction(opts, ByteSize::mib(512u64));
 
         opts.set_merge_operator_associative("archive_data_merge", archive_data_merge);
         opts.set_compression_type(DBCompressionType::Zstd);
@@ -29,13 +31,14 @@ impl ColumnFamily for BlockHandles {
     const NAME: &'static str = "block_handles";
 
     fn options(opts: &mut Options, caches: &Caches) {
-        opts.set_write_buffer_size(bytesize::mib(128u64) as usize);
+        optimize_for_level_compaction(opts, ByteSize::mib(512u64));
 
         let mut block_factory = BlockBasedOptions::default();
         block_factory.set_block_cache(&caches.block_cache);
 
         block_factory.set_index_type(BlockBasedIndexType::HashSearch);
         block_factory.set_data_block_index_type(DataBlockIndexType::BinaryAndHash);
+        block_factory.set_format_version(5);
 
         opts.set_block_based_table_factory(&block_factory);
         optimize_for_point_lookup(opts, caches);
@@ -107,11 +110,12 @@ impl ColumnFamily for Cells {
     const NAME: &'static str = "cells";
 
     fn options(opts: &mut Options, caches: &Caches) {
+        opts.set_level_compaction_dynamic_level_bytes(true);
+
         opts.set_merge_operator_associative("cell_merge", refcount::merge_operator);
         opts.set_compaction_filter("cell_compaction", refcount::compaction_filter);
 
-        // lowers cpu usage on compaction from 46% to 28%
-        opts.set_write_buffer_size(bytesize::gib(1u64) as usize);
+        optimize_for_level_compaction(opts, ByteSize::gib(1u64));
 
         let mut block_factory = BlockBasedOptions::default();
         block_factory.set_block_cache(&caches.block_cache);
@@ -121,6 +125,7 @@ impl ColumnFamily for Cells {
 
         block_factory.set_bloom_filter(10.0, false);
         block_factory.set_block_size(16 * 1024);
+        block_factory.set_format_version(5);
 
         opts.set_block_based_table_factory(&block_factory);
         opts.set_optimize_filters_for_hits(true);
@@ -237,8 +242,10 @@ fn archive_data_merge(
 }
 
 fn default_block_based_table_factory(opts: &mut Options, caches: &Caches) {
+    opts.set_level_compaction_dynamic_level_bytes(true);
     let mut block_factory = BlockBasedOptions::default();
     block_factory.set_block_cache(&caches.block_cache);
+    block_factory.set_format_version(5);
     opts.set_block_based_table_factory(&block_factory);
 }
 
@@ -265,4 +272,22 @@ fn optimize_for_point_lookup(opts: &mut Options, caches: &Caches) {
 
     opts.set_memtable_prefix_bloom_ratio(0.02);
     opts.set_memtable_whole_key_filtering(true);
+}
+
+fn optimize_for_level_compaction(opts: &mut Options, budget: ByteSize) {
+    opts.set_write_buffer_size(budget.as_u64() as usize / 4);
+    // this means we'll use 50% extra memory in the worst case, but will reduce
+    //  write stalls.
+    opts.set_min_write_buffer_number_to_merge(2);
+    // this means we'll use 50% extra memory in the worst case, but will reduce
+    // write stalls.
+    opts.set_max_write_buffer_number(6);
+    // start flushing L0->L1 as soon as possible. each file on level0 is
+    // (memtable_memory_budget / 2). This will flush level 0 when it's bigger than
+    // memtable_memory_budget.
+    opts.set_level_zero_file_num_compaction_trigger(2);
+    // doesn't really matter much, but we don't want to create too many files
+    opts.set_target_file_size_base(budget.as_u64() / 8);
+    // make Level1 size equal to Level0 size, so that L0->L1 compactions are fast
+    opts.set_max_bytes_for_level_base(budget.as_u64());
 }

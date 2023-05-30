@@ -1,15 +1,17 @@
 use std::collections::hash_map;
+use std::num::NonZeroU32;
 use std::sync::{Arc, Weak};
 
 use anyhow::Result;
 use bumpalo::Bump;
 use bytes::Bytes;
 use parking_lot::RwLock;
+use quick_cache::sync::Cache;
 use smallvec::SmallVec;
 use ton_types::{ByteOrderRead, CellImpl, UInt256};
 
 use crate::db::*;
-use crate::utils::{CacheStats, FastDashMap, FastHashMap, MokaCache};
+use crate::utils::{CacheStats, FastDashMap, FastHashMap, FastHasherState};
 
 pub struct CellStorage {
     db: Arc<Db>,
@@ -292,7 +294,24 @@ impl CellStorage {
     }
 
     pub fn cache_stats(&self) -> CacheStats {
-        self.raw_cells_cache.0.stats()
+        let hits = self.raw_cells_cache.0.hits();
+        let misses = self.raw_cells_cache.0.misses();
+        let occupied = self.raw_cells_cache.0.len() as u64;
+        let weight = self.raw_cells_cache.0.weight();
+
+        let hits_ratio = if hits > 0 {
+            hits as f64 / (hits + misses) as f64
+        } else {
+            0.0
+        } * 100.0;
+        CacheStats {
+            hits,
+            misses,
+            requests: hits + misses,
+            occupied,
+            hits_ratio,
+            size_bytes: weight,
+        }
     }
 }
 
@@ -472,7 +491,18 @@ enum StorageCellError {
     AccessingInvalidReference,
 }
 
-struct RawCellsCache(MokaCache<[u8; 32], Bytes>);
+struct RawCellsCache(Cache<[u8; 32], Bytes, CellSizeEstimator, FastHasherState>);
+
+#[derive(Clone, Copy)]
+struct CellSizeEstimator;
+impl quick_cache::Weighter<[u8; 32], (), Bytes> for CellSizeEstimator {
+    fn weight(&self, key: &[u8; 32], _: &(), val: &Bytes) -> NonZeroU32 {
+        const BYTES_SIZE: usize = std::mem::size_of::<usize>() * 4;
+        let len = key.len() + val.len() + BYTES_SIZE;
+
+        NonZeroU32::new(len as u32).expect("Key is not empty")
+    }
+}
 
 impl RawCellsCache {
     fn new(size_in_bytes: u64) -> Self {
@@ -500,22 +530,17 @@ impl RawCellsCache {
         const MAX_CELL_SIZE: u64 = 192;
         const KEY_SIZE: u64 = 32;
 
-        let esimated_cell_cache_capacity = size_in_bytes / (KEY_SIZE + MAX_CELL_SIZE);
+        let estimated_cell_cache_capacity = size_in_bytes / (KEY_SIZE + MAX_CELL_SIZE);
         tracing::info!(
-            esimated_cell_cache_capacity,
+            estimated_cell_cache_capacity,
             max_cell_cache_size = %bytesize::ByteSize(size_in_bytes),
         );
 
-        fn cell_weigher(_: &[u8; 32], value: &Bytes) -> u32 {
-            KEY_SIZE as u32 + value.len() as u32
-        }
-
-        let raw_cache = MokaCache::with_cache(
-            mini_moka::sync::CacheBuilder::new(size_in_bytes)
-                .weigher(cell_weigher)
-                // preallocate cache
-                .initial_capacity(esimated_cell_cache_capacity as usize)
-                .build_with_hasher(crate::utils::FastHasherState::default()),
+        let raw_cache = Cache::with(
+            estimated_cell_cache_capacity as usize,
+            size_in_bytes,
+            CellSizeEstimator,
+            FastHasherState::default(),
         );
 
         Self(raw_cache)
