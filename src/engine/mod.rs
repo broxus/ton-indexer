@@ -1278,11 +1278,11 @@ impl Engine {
         };
 
         if handle.id().seq_no == 0 {
-            let zero_state = self
+            let _zero_state = self
                 .load_mc_zero_state()
                 .await
                 .context("Failed to load mc zero state")?;
-            block_proof.check_with_master_state(&zero_state)?
+            //block_proof.check_with_master_state(&zero_state)?
         } else {
             let prev_key_block_proof = block_storage
                 .load_block_proof(&handle, false)

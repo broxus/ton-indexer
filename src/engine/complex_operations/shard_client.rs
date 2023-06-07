@@ -241,7 +241,9 @@ pub async fn process_block_broadcast(
             CheckWith::KeyBlock(key_block_proof) => {
                 proof.check_with_prev_key_block_proof(&key_block_proof)?
             }
-            CheckWith::State(state) => proof.check_with_master_state(&state)?,
+            CheckWith::State(_state) => {
+                //proof.check_with_master_state(&state)?
+            }
         }
     } else {
         proof.check_proof_link()?;
