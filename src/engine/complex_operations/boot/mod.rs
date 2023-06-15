@@ -38,6 +38,9 @@ pub async fn boot(engine: &Arc<Engine>) -> Result<()> {
         Ok(block_id) => block_id,
         Err(_) => {
             engine.store_shards_client_mc_block_id(&last_key_block_id)?;
+
+            // NOTE: clippy can't detect the usage later in macros
+            #[allow(clippy::redundant_clone)]
             last_key_block_id.clone()
         }
     };

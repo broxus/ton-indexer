@@ -359,8 +359,7 @@ impl BlockProofStuff {
         let (validator_set, catchain_config) =
             state.state().read_cur_validator_set_and_cc_conf()?;
 
-        let shard_hashes = state.shards()?;
-        self.try_calc_subset_for_workchain(&validator_set, &catchain_config, shard_hashes)
+        self.calc_validators_subset_standard(&validator_set, &catchain_config)
     }
 
     fn process_prev_key_block_proof(
@@ -389,48 +388,19 @@ impl BlockProofStuff {
         self.calc_validators_subset_standard(&validator_set, &catchain_config)
     }
 
-    pub fn try_calc_subset_for_workchain(
-        &self,
-        vset: &ton_block::ValidatorSet,
-        catchain_config: &ton_block::CatchainConfig,
-        shard_hashes: &ton_block::ShardHashes,
-    ) -> Result<ValidatorSubsetInfo> {
-        #[cfg(not(feature = "venom"))]
-        {
-            _ = shard_hashes;
-        }
-
-        #[cfg(feature = "venom")]
-        if !self.id().shard().is_masterchain() {
-            return try_calc_subset_for_workchain_venom(vset, shard_hashes, self.id());
-        }
-
-        self.calc_validators_subset_standard(vset, catchain_config)
-    }
-
     fn calc_validators_subset_standard(
         &self,
         validator_set: &ton_block::ValidatorSet,
         catchain_config: &ton_block::CatchainConfig,
     ) -> Result<ValidatorSubsetInfo> {
-        let (validators, short_hash) = validator_set.calc_subset(
-            catchain_config,
-            self.id.shard().shard_prefix_with_tag(),
-            self.id.shard().workchain_id(),
-            self.proof
-                .signatures
-                .as_ref()
-                .map(|s| s.validator_info.catchain_seqno)
-                .unwrap_or_default(),
-            Default::default(),
-        )?;
+        let cc_seqno = self
+            .proof
+            .signatures
+            .as_ref()
+            .map(|s| s.validator_info.catchain_seqno)
+            .unwrap_or_default();
 
-        Ok(ValidatorSubsetInfo {
-            validators,
-            short_hash,
-            #[cfg(feature = "venom")]
-            collator_range: Default::default(),
-        })
+        ValidatorSubsetInfo::compute_standard(validator_set, &self.id, catchain_config, cc_seqno)
     }
 }
 
@@ -500,93 +470,105 @@ pub struct ValidatorSubsetInfo {
     pub validators: Vec<ton_block::ValidatorDescr>,
     pub short_hash: u32,
     #[cfg(feature = "venom")]
-    pub collator_range: ton_block::CollatorRange,
+    pub collator_range: Option<ton_block::CollatorRange>,
 }
 
 impl ValidatorSubsetInfo {
+    pub fn compute_standard(
+        validator_set: &ton_block::ValidatorSet,
+        block_id: &ton_block::BlockIdExt,
+        catchain_config: &ton_block::CatchainConfig,
+        cc_seqno: u32,
+    ) -> Result<Self> {
+        let (validators, short_hash) = validator_set.calc_subset(
+            catchain_config,
+            block_id.shard().shard_prefix_with_tag(),
+            block_id.shard().workchain_id(),
+            cc_seqno,
+            Default::default(),
+        )?;
+
+        Ok(ValidatorSubsetInfo {
+            validators,
+            short_hash,
+            #[cfg(feature = "venom")]
+            collator_range: None,
+        })
+    }
+
+    #[cfg(feature = "venom")]
+    pub fn compute_for_workchain_venom(
+        validator_set: &ton_block::ValidatorSet,
+        block_id: &ton_block::BlockIdExt,
+        shard_hashes: &ton_block::ShardHashes,
+        cc_seqno: u32,
+    ) -> Result<ValidatorSubsetInfo> {
+        let possible_validators =
+            compute_possible_collator_ranges(shard_hashes, &block_id.shard_id, block_id.seq_no)?;
+        get_validator_descrs_by_collator_range(validator_set, cc_seqno, &possible_validators)
+    }
+
     pub fn compute_validator_set(&self, cc_seqno: u32) -> Result<ton_block::ValidatorSet> {
         ton_block::ValidatorSet::with_cc_seqno(0, 0, 0, cc_seqno, self.validators.clone())
     }
 }
 
 #[cfg(feature = "venom")]
-pub fn try_calc_subset_for_workchain_venom(
-    vset: &ton_block::ValidatorSet,
-    shard_hashes: &ton_block::ShardHashes,
-    block_id: &ton_block::BlockIdExt,
-) -> Result<ValidatorSubsetInfo> {
-    let possible_validators =
-        try_calc_range_for_workchain_venom(shard_hashes, &block_id.shard_id, block_id.seq_no)?;
-    get_validator_descrs_by_collator_range(vset, &possible_validators)
-}
-
-#[cfg(feature = "venom")]
-pub fn try_calc_range_for_workchain_venom(
+pub fn compute_possible_collator_ranges(
     shards: &ton_block::ShardHashes,
     shard_id: &ton_block::ShardIdent,
     block_seqno: u32,
 ) -> Result<Vec<ton_block::CollatorRange>> {
-    use anyhow::Context;
-
     let mut possible_validators: Vec<ton_block::CollatorRange> = Vec::new();
 
     shards.iterate_shards_for_workchain(shard_id.workchain_id(), |ident, descr| {
-        let collators = descr
-            .collators
-            .with_context(|| format!("{} has no collator info", ident))?;
-        if let Some(rng) =
-            get_ranges_that_may_validate_given_block(&collators, &ident, shard_id, block_seqno)?
-        {
+        let Some(collators) = descr.collators else {
+            anyhow::bail!("{} has no collator info", ident);
+        };
+
+        if let Some(rng) = compute_collator_range(&collators, &ident, shard_id, block_seqno)? {
             if !possible_validators.contains(&rng) {
                 possible_validators.push(rng);
             }
         }
-        Ok(false)
+        Ok(true)
     })?;
+
     Ok(possible_validators)
 }
 
 #[cfg(feature = "venom")]
 fn get_validator_descrs_by_collator_range(
     vset: &ton_block::ValidatorSet,
+    cc_seqno: u32,
     possible_validators: &[ton_block::CollatorRange],
 ) -> Result<ValidatorSubsetInfo> {
-    use anyhow::Context;
-
-    let rng = possible_validators
-        .first()
-        .context("no validators present")?;
+    let Some(range) = possible_validators.first() else {
+        anyhow::bail!("No possible validators found");
+    };
 
     anyhow::ensure!(
         possible_validators.len() == 1,
-        "too many validators for collated block"
+        "Too many validators for collating block",
     );
+
+    let Some(validator) = vset.list().get(range.collator as usize) else {
+        anyhow::bail!("No validator no {} in validator set {vset:?}", range.collator)
+    };
 
     let mut subset = Vec::new();
-    subset.push(
-        vset.list()
-            .get(rng.collator as usize)
-            .with_context(|| {
-                format!(
-                    "No validator no {} in validator set {:?}",
-                    rng.collator, vset
-                )
-            })?
-            .clone(),
-    );
+    subset.push(validator.clone());
 
-    let short_hash =
-        ton_block::ValidatorSet::calc_subset_hash_short(subset.as_slice(), vset.cc_seqno())?;
-
+    let short_hash = ton_block::ValidatorSet::calc_subset_hash_short(subset.as_slice(), cc_seqno)?;
     Ok(ValidatorSubsetInfo {
         validators: subset,
         short_hash,
-        collator_range: rng.clone(),
+        collator_range: Some(range.clone()),
     })
 }
 
 #[cfg(feature = "venom")]
-fn get_ranges_that_may_validate_given_block(
+fn compute_collator_range(
     collators: &ton_block::ShardCollators,
     current_shard: &ton_block::ShardIdent,
     block_shard: &ton_block::ShardIdent,
@@ -624,11 +606,10 @@ fn get_ranges_that_may_validate_given_block(
     }
 
     shards_to_check.retain(|(id, range)| {
-        let finish = compute_actual_finish(range);
-        id == block_shard && range.start <= block_seqno && block_seqno <= finish
+        id == block_shard && range.start <= block_seqno && block_seqno <= range.finish
     });
 
-    if let Some((id, rng)) = shards_to_check.get(0) {
+    if let Some((id, rng)) = shards_to_check.first() {
         anyhow::ensure!(
             shards_to_check.len() == 1,
             "Impossilbe state: shard {}, block {} corresponds to two different ranges: ({},{:?}) and {:?}",
@@ -639,9 +620,4 @@ fn get_ranges_that_may_validate_given_block(
     } else {
         Ok(None)
     }
-}
-
-#[cfg(feature = "venom")]
-pub fn compute_actual_finish(range: &ton_block::CollatorRange) -> u32 {
-    range.unexpected_finish.unwrap_or(range.finish)
 }

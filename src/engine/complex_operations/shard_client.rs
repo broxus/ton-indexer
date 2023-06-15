@@ -206,43 +206,17 @@ pub async fn process_block_broadcast(
     let virt_block_info = proof.virtualize_block()?.0.read_info()?;
     let meta_data = BriefBlockInfo::from(&virt_block_info);
 
-    let prev_key_block_seqno = virt_block_info.prev_key_block_seqno();
     let last_applied_mc_block_id = engine.load_last_applied_mc_block_id()?;
-    if prev_key_block_seqno > last_applied_mc_block_id.seq_no {
+    if virt_block_info.prev_key_block_seqno() > last_applied_mc_block_id.seq_no {
         return Ok(());
     }
 
-    #[allow(clippy::large_enum_variant)]
-    enum CheckWith {
-        State(Arc<ShardStateStuff>),
-        KeyBlock(BlockProofStuff),
-    }
-
-    let (key_block_proof, validator_set, catchain_config) = {
-        let handle = block_handle_storage.load_key_block_handle(prev_key_block_seqno)?;
-        if handle.id().seq_no == 0 {
-            let zerostate = engine.load_mc_zero_state().await?;
-            let config_params = zerostate.config_params()?;
-            let validator_set = config_params.validator_set()?;
-            let catchain_config = config_params.catchain_config()?;
-            (CheckWith::State(zerostate), validator_set, catchain_config)
-        } else {
-            let proof = block_storage.load_block_proof(&handle, false).await?;
-            let (validator_set, catchain_config) = proof.get_cur_validators_set()?;
-            (CheckWith::KeyBlock(proof), validator_set, catchain_config)
-        }
-    };
-
-    validate_broadcast(&mut broadcast, &validator_set, &catchain_config)?;
+    let last_mc_state = engine.load_state(&last_applied_mc_block_id).await?;
+    validate_broadcast(&mut broadcast, &last_mc_state)?;
 
     let block_id = &broadcast.id;
     if block_id.shard_id.is_masterchain() {
-        match key_block_proof {
-            CheckWith::KeyBlock(key_block_proof) => {
-                proof.check_with_prev_key_block_proof(&key_block_proof)?
-            }
-            CheckWith::State(state) => proof.check_with_master_state(&state)?,
-        }
+        proof.check_with_master_state(&last_mc_state)?;
     } else {
         proof.check_proof_link()?;
     }
@@ -298,24 +272,39 @@ pub async fn process_block_broadcast(
 
 fn validate_broadcast(
     broadcast: &mut proto::BlockBroadcast,
-    validator_set: &ton_block::ValidatorSet,
-    catchain_config: &ton_block::CatchainConfig,
+    last_mc_state: &ShardStateStuff,
 ) -> Result<()> {
     let block_id = &broadcast.id;
 
-    let (validators, validators_hash_short) = validator_set.calc_subset(
-        catchain_config,
-        block_id.shard_id.shard_prefix_with_tag(),
-        block_id.shard_id.workchain_id(),
-        broadcast.catchain_seqno,
-        ton_block::UnixTime32::new(0),
-    )?;
+    #[allow(unused_labels)]
+    let subset = 'subset: {
+        let config_params = last_mc_state.config_params()?;
+        let validator_set = config_params.validator_set()?;
 
-    if validators_hash_short != broadcast.validator_set_hash {
+        #[cfg(feature = "venom")]
+        if !broadcast.id.shard().is_masterchain() {
+            let shard_hashes = last_mc_state.shards()?;
+            break 'subset ValidatorSubsetInfo::compute_for_workchain_venom(
+                &validator_set,
+                &broadcast.id,
+                shard_hashes,
+                broadcast.catchain_seqno,
+            )?;
+        }
+
+        ValidatorSubsetInfo::compute_standard(
+            &validator_set,
+            &broadcast.id,
+            &config_params.catchain_config()?,
+            broadcast.catchain_seqno,
+        )?
+    };
+
+    if subset.short_hash != broadcast.validator_set_hash {
         return Err(anyhow!(
             "Bad validator set hash in broadcast with block {}, calculated: {}, found: {}",
             block_id,
-            validators_hash_short,
+            subset.short_hash,
             broadcast.validator_set_hash
         ));
     }
@@ -329,8 +318,8 @@ fn validate_broadcast(
     // Check signatures
     let data_to_sign =
         ton_block::Block::build_data_for_sign(&block_id.root_hash, &block_id.file_hash);
-    let total_weight: u64 = validators.iter().map(|v| v.weight).sum();
-    let weight = block_pure_signatures.check_signatures(&validators, &data_to_sign)?;
+    let total_weight: u64 = subset.validators.iter().map(|v| v.weight).sum();
+    let weight = block_pure_signatures.check_signatures(&subset.validators, &data_to_sign)?;
 
     if weight * 3 <= total_weight * 2 {
         return Err(anyhow!(
