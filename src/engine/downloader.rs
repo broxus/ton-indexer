@@ -1,8 +1,10 @@
-/// This file is a modified copy of the file from https://github.com/tonlabs/ton-labs-node
-///
-/// Changes:
-/// - replaced old `failure` crate with `anyhow`
-///
+//! This file is a modified copy of the file from https://github.com/tonlabs/ton-labs-node
+//!
+//! Changes:
+//! - replaced old `failure` crate with `anyhow`
+//!
+
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -158,6 +160,8 @@ pub struct DownloadContext<'a, T> {
 
     pub downloader: Arc<dyn Downloader<Item = T>>,
     pub explicit_neighbour: Option<&'a Arc<Neighbour>>,
+
+    pub counters: Option<&'a DownloaderCounters>,
 }
 
 impl<'a, T> DownloadContext<'a, T> {
@@ -172,10 +176,23 @@ impl<'a, T> DownloadContext<'a, T> {
     pub async fn download(&mut self) -> Result<T> {
         let mut attempt = 1;
         loop {
-            match self.downloader.try_download(self).await {
+            let res = self.downloader.try_download(self).await;
+            if let Some(counters) = &self.counters {
+                counters.total.fetch_add(1, Ordering::Relaxed);
+            }
+
+            match res {
                 Ok(Some(result)) => break Ok(result),
-                Ok(None) => tracing::debug!("got no data for {}", self.name),
+                Ok(None) => {
+                    if let Some(counters) = &self.counters {
+                        counters.timeouts.fetch_add(1, Ordering::Relaxed);
+                    }
+                    tracing::debug!("got no data for {}", self.name)
+                }
                 Err(e) => {
+                    if let Some(counters) = &self.counters {
+                        counters.errors.fetch_add(1, Ordering::Relaxed);
+                    }
                     self.explicit_neighbour = None;
                     tracing::debug!("error in {}: {e:?}", self.name)
                 }
@@ -209,6 +226,13 @@ impl DownloaderTimeouts {
         self.initial = std::cmp::min(self.max, (self.initial as f64 * self.multiplier) as u64);
         self.initial
     }
+}
+
+#[derive(Debug, Default)]
+pub struct DownloaderCounters {
+    total: AtomicU64,
+    errors: AtomicU64,
+    timeouts: AtomicU64,
 }
 
 #[derive(thiserror::Error, Debug)]

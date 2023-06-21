@@ -6,7 +6,7 @@
 /// - slightly changed application of blocks
 ///
 use std::io::Write;
-use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -603,9 +603,21 @@ impl Engine {
                     Err(_) => continue,
                 };
 
+                engine
+                    .metrics
+                    .block_broadcasts
+                    .total
+                    .fetch_add(1, Ordering::Relaxed);
+
                 let engine = engine.clone();
                 tokio::spawn(async move {
                     if let Err(e) = process_block_broadcast(&engine, block).await {
+                        engine
+                            .metrics
+                            .block_broadcasts
+                            .invalid
+                            .fetch_add(1, Ordering::Relaxed);
+
                         tracing::error!("failed to process block broadcast: {e:?}");
                     }
                 });
@@ -645,6 +657,7 @@ impl Engine {
                     max: 3000,
                     multiplier: 1.2,
                 }),
+                None,
             )
             .download()
             .await?;
@@ -680,6 +693,7 @@ impl Engine {
                 max: 1000,
                 multiplier: 1.1,
             }),
+            Some(&self.metrics.download_next_block_requests),
         )
         .download()
         .await
@@ -735,6 +749,7 @@ impl Engine {
             block_id,
             max_attempts,
             None,
+            Some(&self.metrics.download_block_proof_requests),
         )
         .with_explicit_neighbour(neighbour)
         .download()
@@ -1322,6 +1337,7 @@ impl Engine {
             block_id,
             max_attempts,
             timeouts,
+            Some(&self.metrics.download_block_requests),
         )
         .download()
         .await
@@ -1334,6 +1350,7 @@ impl Engine {
         block_id: &'a ton_block::BlockIdExt,
         max_attempts: Option<u32>,
         timeouts: Option<DownloaderTimeouts>,
+        counters: Option<&'a DownloaderCounters>,
     ) -> DownloadContext<'a, T> {
         DownloadContext {
             name,
@@ -1344,6 +1361,7 @@ impl Engine {
             storage: self.storage.as_ref(),
             downloader,
             explicit_neighbour: None,
+            counters,
         }
     }
 }
@@ -1512,7 +1530,7 @@ impl ProcessBlockContext<'_> {
     }
 }
 
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Default)]
 pub struct EngineMetrics {
     pub last_mc_block_seqno: AtomicU32,
     pub last_shard_client_mc_block_seqno: AtomicU32,
@@ -1520,6 +1538,17 @@ pub struct EngineMetrics {
     pub last_mc_utime: AtomicU32,
     pub mc_time_diff: AtomicI64,
     pub shard_client_time_diff: AtomicI64,
+
+    pub block_broadcasts: BlockBroadcastCounters,
+    pub download_next_block_requests: DownloaderCounters,
+    pub download_block_requests: DownloaderCounters,
+    pub download_block_proof_requests: DownloaderCounters,
+}
+
+#[derive(Debug, Default)]
+pub struct BlockBroadcastCounters {
+    pub total: AtomicU64,
+    pub invalid: AtomicU64,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize, Clone, Copy)]
