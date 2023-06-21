@@ -282,7 +282,9 @@ fn validate_broadcast(
         let validator_set = config_params.validator_set()?;
 
         #[cfg(feature = "venom")]
-        if !broadcast.id.shard().is_masterchain() {
+        if !broadcast.id.shard().is_masterchain()
+            && config_params.has_capability(ton_block::GlobalCapabilities::CapFastFinality)
+        {
             let shard_hashes = last_mc_state.shards()?;
             break 'subset ValidatorSubsetInfo::compute_for_workchain_venom(
                 &validator_set,
