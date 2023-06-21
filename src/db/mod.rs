@@ -85,8 +85,11 @@ impl Db {
                 opts.set_enable_write_thread_adaptive_yield(true);
 
                 // debug
-                opts.enable_statistics();
-                opts.set_stats_dump_period_sec(600);
+                // NOTE: could slower everything a bit in some cloud environments.
+                //       See: https://github.com/facebook/rocksdb/issues/3889
+                //
+                // opts.enable_statistics();
+                // opts.set_stats_dump_period_sec(600);
             })
             .with_table::<tables::Archives>()
             .with_table::<tables::BlockHandles>()
