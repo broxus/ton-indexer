@@ -114,10 +114,7 @@ impl Engine {
                 init_mc_block_id = block_id.clone();
             }
         }
-        tracing::info!(
-            init_mc_block_id = %init_mc_block_id.display(),
-            "selected init block"
-        );
+        tracing::info!(%init_mc_block_id, "selected init block");
 
         let hard_forks = global_config.hard_forks.clone().into_iter().collect();
 
@@ -662,10 +659,10 @@ impl Engine {
             .download()
             .await?;
 
-        let (handle, _) = self.storage.block_handle_storage().create_or_load_handle(
-            block_id,
-            BlockMetaData::zero_state(state.state().gen_time()),
-        )?;
+        let (handle, _) = self
+            .storage
+            .block_handle_storage()
+            .create_or_load_handle(block_id, BlockMetaData::zero_state(state.state().gen_utime))?;
         self.store_state(&handle, &state).await?;
 
         self.set_applied(&handle, 0).await?;
@@ -712,7 +709,7 @@ impl Engine {
                 if handle.meta().has_data() {
                     let block = block_storage.load_block_data(&handle).await?;
                     let block_proof = block_storage
-                        .load_block_proof(&handle, !block_id.shard().is_masterchain())
+                        .load_block_proof(&handle, !block_id.shard.is_masterchain())
                         .await?;
 
                     return Ok((
@@ -792,7 +789,7 @@ impl Engine {
         prev_handle: &Arc<BlockHandle>,
         timeout_ms: Option<u64>,
     ) -> Result<(Arc<BlockHandle>, BlockStuff)> {
-        if !prev_handle.id().shard().is_masterchain() {
+        if !prev_handle.id().shard.is_masterchain() {
             return Err(EngineError::NonMasterchainNextBlock.into());
         }
 
@@ -873,7 +870,7 @@ impl Engine {
                 tokio::spawn(async move {
                     if let Err(e) = engine.download_and_apply_block(&block_id, 0, true, 0).await {
                         tracing::error!(
-                            block_id = %block_id.display(),
+                            %block_id,
                             "error while pre-apply block (while waiting state): {e:?}",
                         );
                     }
@@ -966,7 +963,7 @@ impl Engine {
 
         let applied = block_handle_storage.store_block_applied(handle)?;
 
-        if handle.id().shard_id.is_masterchain() {
+        if handle.id().shard.is_masterchain() {
             self.on_masterchain_block(handle).await?;
         }
 
@@ -1104,10 +1101,7 @@ impl Engine {
                 }
             }
 
-            tracing::trace!(
-                block_id = %block_id.display(),
-                "started downloading block for apply"
-            );
+            tracing::trace!(%block_id, "started downloading block for apply");
 
             // Prepare params
             let (max_attempts, timeouts) = if pre_apply {
@@ -1147,10 +1141,7 @@ impl Engine {
                     .await?
                     .handle;
 
-                tracing::trace!(
-                    block_id = %block_id.display(),
-                    "downloaded block for apply"
-                );
+                tracing::trace!(%block_id, "downloaded block for apply");
                 self.apply_block_ext(&handle, &block, mc_seqno, pre_apply, 0)
                     .await?;
                 return Ok(());
@@ -1207,7 +1198,7 @@ impl Engine {
             block_proof_data: None,
         };
 
-        if handle.id().shard().is_masterchain() {
+        if handle.id().shard.is_masterchain() {
             self.metrics
                 .mc_time_diff
                 .store(time_diff, Ordering::Release);
@@ -1250,7 +1241,7 @@ impl Engine {
             block_proof_data: Some(block_proof_data),
         };
 
-        if handle.id().shard().is_masterchain() {
+        if handle.id().shard.is_masterchain() {
             for subscriber in &self.subscribers {
                 subscriber.process_block(ctx).await?;
             }
@@ -1283,7 +1274,7 @@ impl Engine {
         }
 
         let handle = {
-            let prev_key_block_seqno = virt_block_info.prev_key_block_seqno();
+            let prev_key_block_seqno = virt_block_info.prev_key_block_seqno;
             block_handle_storage
                 .load_key_block_handle(prev_key_block_seqno)
                 .context("Failed to load prev key block handle")?
@@ -1313,7 +1304,7 @@ impl Engine {
 
                 // Allow invalid proofs for hard forks
                 tracing::warn!(
-                    block_id = %handle.id().display(),
+                    block_id = %handle.id(),
                     "received hard fork key block, ignoring proof",
                 );
             }

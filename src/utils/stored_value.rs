@@ -1,4 +1,5 @@
 use anyhow::Result;
+use everscale_types::prelude::HashBytes;
 use smallvec::SmallVec;
 
 use bytes::Buf;
@@ -101,11 +102,11 @@ impl StoredValue for BlockId {
         let shard = ShardIdent::deserialize(reader)?;
         let seqno = reader.get_u32();
 
-        let mut root_hash = [0; 32];
-        root_hash.copy_from_slice(&reader[0..32]);
+        let mut root_hash = HashBytes::ZERO;
+        root_hash.0.copy_from_slice(&reader[0..32]);
 
-        let mut file_hash = [0; 32];
-        file_hash.copy_from_slice(&reader[32..64]);
+        let mut file_hash = HashBytes::ZERO;
+        file_hash.0.copy_from_slice(&reader[32..64]);
 
         Ok(Self {
             shard,

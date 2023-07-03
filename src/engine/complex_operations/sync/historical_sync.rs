@@ -17,8 +17,8 @@ pub async fn historical_sync(engine: &Arc<Engine>, from_seqno: u32) -> Result<()
 
     tracing::info!(
         target: "sync",
-        from_seq_no = from,
-        to_seq_no = to,
+        from_seqno = from,
+        to_seqno = to,
         "started historical sync"
     );
 
@@ -66,8 +66,8 @@ impl<'a> HistoricalSyncContext<'a> {
         };
         tracing::debug!(
             target: "sync",
-            lowest_id = %lowest_id.display(),
-            highest_id = %highest_id.display(),
+            %lowest_id,
+            %highest_id,
             "saving archive"
         );
 
@@ -76,13 +76,13 @@ impl<'a> HistoricalSyncContext<'a> {
         self.process_blocks(&maps, &mut block_edge).await?;
         tracing::info!(
             target: "sync",
-            lowest_id = %lowest_id.display(),
-            highest_id = %highest_id.display(),
+            lowest_id = %lowest_id,
+            highest_id = %highest_id,
             "saved archive"
         );
 
         Ok({
-            if highest_id.seq_no >= self.to {
+            if highest_id.seqno >= self.to {
                 ControlFlow::Break(())
             } else {
                 self.last_archive_edge = block_edge;
@@ -112,7 +112,7 @@ impl<'a> HistoricalSyncContext<'a> {
 
             let shard_blocks = block.shard_blocks()?;
             let new_edge = BlockMapsEdge {
-                mc_block_seq_no: mc_seqno,
+                mc_block_seqno: mc_seqno,
                 top_shard_blocks: shard_blocks
                     .iter()
                     .map(|(key, id)| (*key, id.seqno))
@@ -189,7 +189,7 @@ impl<'a> HistoricalSyncContext<'a> {
 
                     // Sort blocks by time (to increase processing locality) and seqno
                     blocks_to_add.sort_unstable_by_key(|(info, block_data, _)| {
-                        (info.gen_utime, block_data.data.id().seq_no)
+                        (info.gen_utime, block_data.data.id().seqno)
                     });
 
                     // Apply blocks
@@ -237,13 +237,13 @@ impl Engine {
         info: BriefBlockInfo,
         block: &BlockStuffAug,
         proof: &BlockProofStuffAug,
-        mc_seq_no: u32,
+        mc_seqno: u32,
     ) -> Result<()> {
         let block_handle_storage = self.storage.block_handle_storage();
         let block_storage = self.storage.block_storage();
 
-        let (handle, _) = block_handle_storage
-            .create_or_load_handle(block.id(), info.with_mc_seqno(mc_seq_no))?;
+        let (handle, _) =
+            block_handle_storage.create_or_load_handle(block.id(), info.with_mc_seqno(mc_seqno))?;
 
         // Archive block
         if self.archive_options.is_some() {

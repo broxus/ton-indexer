@@ -32,7 +32,7 @@ impl BlockMaps {
                         .or_insert_with(BlockMapsEntry::default)
                         .block = Some(BlockStuffAug::new(block, entry.data.to_vec()));
                     if id.is_masterchain() {
-                        maps.mc_block_ids.insert(id.seq_no, id);
+                        maps.mc_block_ids.insert(id.seqno, id);
                     }
                 }
                 PackageEntryId::Proof(id) if id.is_masterchain() => {
@@ -42,7 +42,7 @@ impl BlockMaps {
                         .entry(id.clone())
                         .or_insert_with(BlockMapsEntry::default)
                         .proof = Some(BlockProofStuffAug::new(proof, entry.data.to_vec()));
-                    maps.mc_block_ids.insert(id.seq_no, id);
+                    maps.mc_block_ids.insert(id.seqno, id);
                 }
                 PackageEntryId::ProofLink(id) if !id.is_masterchain() => {
                     let proof = BlockProofStuff::deserialize(id.clone(), entry.data, true)?;
@@ -75,13 +75,13 @@ impl BlockMaps {
                 tracing::info!(
                     target: "sync",
                     index,
-                    left_seq_no = left.seq_no,
-                    right_seq_no = right.seq_no,
+                    left_seqno = left.seqno,
+                    right_seqno = right.seqno,
                     mc_block_count,
                     total_block_count = self.blocks.len(),
                     "checking archive",
                 );
-                (left.seq_no, right.seq_no)
+                (left.seqno, right.seqno)
             }
             _ => return Err(BlockMapsError::EmptyArchive),
         };
@@ -94,9 +94,9 @@ impl BlockMaps {
         // Group all block ids by shards
         let mut map = FastHashMap::with_capacity_and_hasher(16, FastHasherState::new());
         for block_id in self.blocks.keys() {
-            map.entry(block_id.shard_id)
+            map.entry(block_id.shard)
                 .or_insert_with(BTreeSet::new)
-                .insert(block_id.seq_no);
+                .insert(block_id.seqno);
         }
 
         let mut possible_edge = BlockMapsEdgeVerification::new(edge);
@@ -107,7 +107,7 @@ impl BlockMaps {
 
             let mut block_seqnos = blocks
                 .iter()
-                .map(|&seq_no| edge_verification.update(seq_no).map(|_| seq_no));
+                .map(|&seqno| edge_verification.update(seqno).map(|_| seqno));
 
             // Skip empty shards
             let mut prev = match block_seqnos.next().transpose()? {
@@ -213,42 +213,39 @@ enum EdgeBlockSplitStatus {
 #[derive(Debug, Copy, Clone)]
 enum TargetSeqNo {
     /// ```text
-    /// ──B──B(seq_no)──
+    /// ──B──B(seqno)──
     /// ```
-    Next { seq_no: u32, shard: ShardIdent },
+    Next { seqno: u32, shard: ShardIdent },
     /// ```text
     /// ──B─┐ <- left shard
-    ///     ├─B(seq_no)──
+    ///     ├─B(seqno)──
     /// ──B─┘ <- right shard
     /// ```
     AfterMerge {
-        seq_no: u32,
+        seqno: u32,
         left: ShardIdent,
         right: ShardIdent,
     },
     /// ```text
-    ///    ┌─B(seq_no)── AfterSplitSide::Left
+    ///    ┌─B(seqno)── AfterSplitSide::Left
     /// ──B┤ <-parent shard
-    ///    └─B(seq_no)── AfterSplitSide::Right
+    ///    └─B(seqno)── AfterSplitSide::Right
     /// ```
     AfterSplit {
-        seq_no: u32,
+        seqno: u32,
         parent: ShardIdent,
         side: AfterSplitSide,
     },
     /// No particular known seq no, but the shard must be marked
-    Ancestor {
-        after_seq_no: u32,
-        shard: ShardIdent,
-    },
+    Ancestor { after_seqno: u32, shard: ShardIdent },
 }
 
 impl TargetSeqNo {
-    fn seq_no(&self) -> u32 {
+    fn seqno(&self) -> u32 {
         match self {
-            Self::Next { seq_no, .. }
-            | Self::AfterMerge { seq_no, .. }
-            | Self::AfterSplit { seq_no, .. } => *seq_no,
+            Self::Next { seqno, .. }
+            | Self::AfterMerge { seqno, .. }
+            | Self::AfterSplit { seqno, .. } => *seqno,
             Self::Ancestor { .. } => u32::MAX,
         }
     }
@@ -264,8 +261,8 @@ enum AfterSplitSide {
 #[derive(Debug, Clone)]
 pub struct BlockMapsEdge {
     /// Last masterchain block seqno
-    pub mc_block_seq_no: u32,
-    /// Top blocks seqnos in shards for [BlockMapsEdge::mc_block_seq_no]
+    pub mc_block_seqno: u32,
+    /// Top blocks seqnos in shards for [BlockMapsEdge::mc_block_seqno]
     pub top_shard_blocks: FastHashMap<ShardIdent, u32>,
 }
 
@@ -273,25 +270,25 @@ impl BlockMapsEdge {
     /// Checks whether this edge was before the given block
     pub fn is_before(&self, id: &BlockId) -> bool {
         if id.shard.is_masterchain() {
-            self.mc_block_seq_no < id.seqno
+            self.mc_block_seqno < id.seqno
         } else {
-            match self.top_shard_blocks.get(&id.shard_id) {
-                Some(&top_seq_no) => top_seq_no < id.seqno,
+            match self.top_shard_blocks.get(&id.shard) {
+                Some(&top_seqno) => top_seqno < id.seqno,
                 None => self
                     .top_shard_blocks
                     .iter()
-                    .find(|&(shard, _)| id.shard.intersect_with(shard))
-                    .map(|(_, &top_seq_no)| top_seq_no < id.seqno)
+                    .find(|&(shard, _)| id.shard.intersects(shard))
+                    .map(|(_, &top_seqno)| top_seqno < id.seqno)
                     .unwrap_or_default(),
             }
         }
     }
 
-    fn find_target_seq_no(&self, shard_ident: &ShardIdent) -> Option<TargetSeqNo> {
+    fn find_target_seqno(&self, shard_ident: &ShardIdent) -> Option<TargetSeqNo> {
         // Special case for masterchain
         if shard_ident.is_masterchain() {
             return Some(TargetSeqNo::Next {
-                seq_no: self.mc_block_seq_no + 1,
+                seqno: self.mc_block_seqno + 1,
                 shard: *shard_ident,
             });
         }
@@ -299,9 +296,9 @@ impl BlockMapsEdge {
         // Simple case when we just need next block:
         // ────────────B──B──
         // stored prev ^  ^ block we need
-        if let Some(seq_no) = self.top_shard_blocks.get(shard_ident) {
+        if let Some(seqno) = self.top_shard_blocks.get(shard_ident) {
             return Some(TargetSeqNo::Next {
-                seq_no: seq_no + 1,
+                seqno: seqno + 1,
                 shard: *shard_ident,
             });
         }
@@ -312,10 +309,10 @@ impl BlockMapsEdge {
         // ──────────────B─┤   : blocks we need
         //   stored prev ^ │  /
         //                 └─B──────
-        if let Ok(merged) = shard_ident.merge() {
-            if let Some(seq_no) = self.top_shard_blocks.get(&merged) {
+        if let Some(merged) = shard_ident.merge() {
+            if let Some(seqno) = self.top_shard_blocks.get(&merged) {
                 return Some(TargetSeqNo::AfterSplit {
-                    seq_no: seq_no + 1,
+                    seqno: seqno + 1,
                     parent: merged,
                     side: if shard_ident.is_right_child() {
                         AfterSplitSide::Right
@@ -332,14 +329,14 @@ impl BlockMapsEdge {
         // stored prevs : ├─B─────
         //              | │
         // ─────────────B─┘
-        if let Ok((left, right)) = shard_ident.split() {
+        if let Some((left, right)) = shard_ident.split() {
             // Next block could be merged only if there are two parent blocks presented
-            if let (Some(left_seq_no), Some(right_seq_no)) = (
+            if let (Some(left_seqno), Some(right_seqno)) = (
                 self.top_shard_blocks.get(&left),
                 self.top_shard_blocks.get(&right),
             ) {
                 return Some(TargetSeqNo::AfterMerge {
-                    seq_no: std::cmp::max(left_seq_no, right_seq_no) + 1,
+                    seqno: std::cmp::max(left_seqno, right_seqno) + 1,
                     left,
                     right,
                 });
@@ -347,10 +344,10 @@ impl BlockMapsEdge {
         }
 
         // If we are here, we could search an ancestor
-        for (shard, seq_no) in &self.top_shard_blocks {
-            if shard.is_ancestor_for(shard_ident) {
+        for (shard, seqno) in &self.top_shard_blocks {
+            if shard.is_ancestor_of(shard_ident) {
                 return Some(TargetSeqNo::Ancestor {
-                    after_seq_no: *seq_no,
+                    after_seqno: *seqno,
                     shard: *shard,
                 });
             }
@@ -399,7 +396,7 @@ impl<'a> BlockMapsEdgeVerification<'a> {
             target: self
                 .edge
                 .as_ref()
-                .and_then(|edge| edge.find_target_seq_no(shard_ident)),
+                .and_then(|edge| edge.find_target_seqno(shard_ident)),
             possible_edge: self,
             empty: true,
             found: false,
@@ -446,22 +443,19 @@ struct BlockMapsEdgeShardVerification<'a, 'b> {
 
 impl BlockMapsEdgeShardVerification<'_, '_> {
     /// Fills possible block
-    fn update(&mut self, seq_no: u32) -> Result<(), BlockMapsEdgeVerificationError> {
+    fn update(&mut self, seqno: u32) -> Result<(), BlockMapsEdgeVerificationError> {
         use std::collections::hash_map::Entry;
 
         // There is at least one block in shard
         self.empty = match &self.target {
-            Some(TargetSeqNo::Ancestor { after_seq_no, .. }) => seq_no < *after_seq_no,
-            Some(target) => seq_no < target.seq_no(),
+            Some(TargetSeqNo::Ancestor { after_seqno, .. }) => seqno < *after_seqno,
+            Some(target) => seqno < target.seqno(),
             None => false,
         };
 
         match &self.target {
             // Any shard after the edge means that it had to split
-            Some(TargetSeqNo::Ancestor {
-                after_seq_no,
-                shard,
-            }) if seq_no >= *after_seq_no => {
+            Some(TargetSeqNo::Ancestor { after_seqno, shard }) if seqno >= *after_seqno => {
                 match self.possible_edge.top_shard_blocks.entry(*shard) {
                     Entry::Occupied(mut entry) => {
                         if entry.get().is_empty() {
@@ -475,7 +469,7 @@ impl BlockMapsEdgeShardVerification<'_, '_> {
                 Ok(())
             }
             // Store any possible edge block
-            Some(target) if seq_no == target.seq_no() => {
+            Some(target) if seqno == target.seqno() => {
                 let state = &mut self.possible_edge.top_shard_blocks;
 
                 match target {
@@ -595,7 +589,7 @@ fn contains_previous_block(
     shard_ident: &ShardIdent,
     prev_seqno: u32,
 ) -> bool {
-    if let Ok((left, right)) = shard_ident.split() {
+    if let Some((left, right)) = shard_ident.split() {
         // Check case after merge in the same archive in the left child
         if let Some(ids) = map.get(&left) {
             // Search prev seqno in the left shard
@@ -613,7 +607,7 @@ fn contains_previous_block(
         }
     }
 
-    if let Ok(parent) = shard_ident.merge() {
+    if let Some(parent) = shard_ident.merge() {
         // Check case after second split in the same archive
         if let Some(ids) = map.get(&parent) {
             // Search prev shard in the parent shard
@@ -833,7 +827,7 @@ mod tests {
     }
 
     fn make_masterchain(seqnos: impl IntoIterator<Item = u32>) -> (ShardIdent, BTreeSet<u32>) {
-        (ShardIdent::masterchain(), seqnos.into_iter().collect())
+        (ShardIdent::MASTERCHAIN, seqnos.into_iter().collect())
     }
 
     fn make_shard(id: u64, seqnos: impl IntoIterator<Item = u32>) -> (ShardIdent, BTreeSet<u32>) {
@@ -841,12 +835,12 @@ mod tests {
         (shard_ident, seqnos.into_iter().collect())
     }
 
-    fn make_edge(mc_seq_no: u32, shards: impl IntoIterator<Item = (u64, u32)>) -> BlockMapsEdge {
+    fn make_edge(mc_seqno: u32, shards: impl IntoIterator<Item = (u64, u32)>) -> BlockMapsEdge {
         BlockMapsEdge {
-            mc_block_seq_no: mc_seq_no,
+            mc_block_seqno: mc_seqno,
             top_shard_blocks: shards
                 .into_iter()
-                .map(|(id, seq_no)| (ShardIdent::new(0, id << 28).unwrap(), seq_no))
+                .map(|(id, seqno)| (ShardIdent::new(0, id << 28).unwrap(), seqno))
                 .collect(),
         }
     }

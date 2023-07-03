@@ -18,14 +18,14 @@ use crate::utils::*;
 pub async fn walk_masterchain_blocks(engine: &Arc<Engine>, mut block_id: BlockId) -> Result<()> {
     while engine.is_working() {
         tracing::info!(
-            block_id = %block_id.display(),
+            %block_id,
             "walking through masterchain blocks"
         );
         block_id = match load_next_masterchain_block(engine, &block_id).await {
             Ok(id) => id,
             Err(e) => {
                 tracing::error!(
-                    block_id = %block_id.display(),
+                    %block_id,
                     "failed to load next masterchain block: {e:?}"
                 );
                 continue;
@@ -45,7 +45,7 @@ pub async fn walk_shard_blocks(engine: &Arc<Engine>, mc_block_id: BlockId) -> Re
 
     while engine.is_working() {
         tracing::info!(
-            block_id = %handle.id().display(),
+            block_id = %handle.id(),
             "walking through shard blocks"
         );
         let (next_handle, next_block) = engine.wait_next_applied_mc_block(&handle, None).await?;
@@ -75,7 +75,7 @@ async fn load_next_masterchain_block(
             let next1_id =
                 block_connection_storage.load_connection(prev_block_id, BlockConnection::Next1)?;
             engine
-                .download_and_apply_block(&next1_id, next1_id.seq_no, false, 0)
+                .download_and_apply_block(&next1_id, next1_id.seqno, false, 0)
                 .await?;
             return Ok(next1_id);
         }
@@ -88,7 +88,7 @@ async fn load_next_masterchain_block(
         .await?;
     let block_id = block.id();
 
-    if block_id.seq_no != prev_block_id.seq_no + 1 {
+    if block_id.seqno != prev_block_id.seqno + 1 {
         return Err(ShardClientError::BlockIdMismatch.into());
     } else if block_proof.is_link() {
         return Err(ShardClientError::InvalidBlockProof.into());
@@ -108,12 +108,12 @@ async fn load_next_masterchain_block(
         handle => {
             if handle.is_some() {
                 tracing::warn!(
-                    block_id = %block_id.display(),
+                    %block_id,
                     "partially initialized handle detected"
                 );
             }
             block_storage
-                .store_block_data(&block, brief_info.with_mc_seqno(block_id.seq_no))
+                .store_block_data(&block, brief_info.with_mc_seqno(block_id.seqno))
                 .await?
                 .handle
         }
@@ -127,7 +127,7 @@ async fn load_next_masterchain_block(
     }
 
     engine
-        .apply_block_ext(&handle, &block, handle.id().seq_no, false, 0)
+        .apply_block_ext(&handle, &block, handle.id().seqno, false, 0)
         .await?;
 
     Ok(block_id.clone())
@@ -141,7 +141,7 @@ async fn load_shard_blocks(
 ) -> Result<()> {
     let block_handle_storage = engine.storage.block_handle_storage();
 
-    let mc_seq_no = masterchain_block.id().seq_no;
+    let mc_seqno = masterchain_block.id().seqno;
     let mut tasks = Vec::new();
     for (_, shard_block_id) in masterchain_block.shard_blocks()? {
         if matches!(
@@ -154,11 +154,11 @@ async fn load_shard_blocks(
         let engine = engine.clone();
         tasks.push(tokio::spawn(async move {
             while let Err(e) = engine
-                .download_and_apply_block(&shard_block_id, mc_seq_no, false, 0)
+                .download_and_apply_block(&shard_block_id, mc_seqno, false, 0)
                 .await
             {
                 tracing::error!(
-                    block_id = %shard_block_id.display(),
+                    block_id = %shard_block_id,
                     "failed to apply shard block: {e:?}"
                 );
             }
@@ -196,13 +196,13 @@ pub async fn process_block_broadcast(
     let proof = BlockProofStuff::deserialize(
         broadcast.id.clone(),
         &broadcast.proof,
-        !broadcast.id.shard_id.is_masterchain(),
+        !broadcast.id.shard.is_masterchain(),
     )?;
-    let virt_block_info = proof.virtualize_block()?.0.read_info()?;
+    let virt_block_info = proof.virtualize_block()?.0.load_info()?;
     let meta_data = BriefBlockInfo::from(&virt_block_info);
 
     let last_applied_mc_block_id = engine.load_last_applied_mc_block_id()?;
-    if virt_block_info.prev_key_block_seqno() > last_applied_mc_block_id.seq_no {
+    if virt_block_info.prev_key_block_seqno > last_applied_mc_block_id.seqno {
         return Ok(());
     }
 
@@ -210,7 +210,7 @@ pub async fn process_block_broadcast(
     validate_broadcast(&mut broadcast, &last_mc_state)?;
 
     let block_id = &broadcast.id;
-    if block_id.shard_id.is_masterchain() {
+    if block_id.shard.is_masterchain() {
         proof.check_with_master_state(&last_mc_state)?;
     } else {
         proof.check_proof_link()?;
@@ -241,23 +241,23 @@ pub async fn process_block_broadcast(
         };
     }
 
-    if block_id.shard_id.is_masterchain() {
-        if block_id.seq_no == last_applied_mc_block_id.seq_no + 1 {
+    if block_id.shard.is_masterchain() {
+        if block_id.seqno == last_applied_mc_block_id.seqno + 1 {
             engine
-                .apply_block_ext(&handle, &block, block.id().seq_no, false, 0)
+                .apply_block_ext(&handle, &block, block.id().seqno, false, 0)
                 .await?;
         }
     } else {
         let master_ref = block
             .block()
-            .read_info()
-            .and_then(|info| info.read_master_ref())?
+            .load_info()
+            .and_then(|info| info.load_master_ref())?
             .ok_or(ShardClientError::InvalidBlockExtra)?;
 
         let shards_client_mc_block_id = engine.load_shards_client_mc_block_id()?;
-        if shards_client_mc_block_id.seq_no + 8 >= master_ref.master.seq_no {
+        if shards_client_mc_block_id.seqno + 8 >= master_ref.seqno {
             engine
-                .apply_block_ext(&handle, &block, shards_client_mc_block_id.seq_no, true, 0)
+                .apply_block_ext(&handle, &block, shards_client_mc_block_id.seqno, true, 0)
                 .await?;
         }
     }
@@ -274,7 +274,7 @@ fn validate_broadcast(
     #[allow(unused_labels)]
     let subset = 'subset: {
         let config_params = last_mc_state.config_params()?;
-        let validator_set = config_params.validator_set()?;
+        let validator_set = config_params.get_current_validator_set()?;
 
         #[cfg(feature = "venom")]
         if !broadcast.id.shard().is_masterchain()
@@ -292,7 +292,7 @@ fn validate_broadcast(
         ValidatorSubsetInfo::compute_standard(
             &validator_set,
             &broadcast.id,
-            &config_params.catchain_config()?,
+            &config_params.get_catchain_config()?,
             broadcast.catchain_seqno,
         )?
     };

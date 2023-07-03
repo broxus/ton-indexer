@@ -32,7 +32,7 @@ impl PersistentStateKeeper {
         if !self.initialized.load(Ordering::Acquire) {
             let prev_persistent_key_block = self
                 .block_handle_storage
-                .find_prev_persistent_key_block(block_handle.id().seq_no)?;
+                .find_prev_persistent_key_block(block_handle.id().seqno)?;
 
             if let Some(handle) = &prev_persistent_key_block {
                 self.last_utime
@@ -79,7 +79,7 @@ impl PersistentStateKeeper {
         self.current_persistent_state
             .load()
             .as_ref()
-            .map(|handle| (handle.id().seq_no, handle.meta().brief()))
+            .map(|handle| (handle.id().seqno, handle.meta().brief()))
     }
 
     pub fn new_state_found(&self) -> tokio::sync::futures::Notified {

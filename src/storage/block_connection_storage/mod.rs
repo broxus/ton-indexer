@@ -68,7 +68,7 @@ impl BlockConnectionStorage {
                 );
                 write_batch.put_cf(
                     &self.db.key_blocks.cf(),
-                    id.seq_no.to_be_bytes(),
+                    id.seqno.to_be_bytes(),
                     id.to_vec(),
                 );
 

@@ -605,14 +605,14 @@ async fn download_block_with_state(
 
     // Download block state
     if !handle.meta().has_state() {
-        let state_update = block.block().read_state_update()?;
+        let state_update = block.block().load_state_update()?;
 
         tracing::info!(block_id = %handle.id().as_short_id(), "downloading state");
         let shard_state = download_state(engine, full_state_id).await?;
         tracing::info!(block_id = %handle.id().as_short_id(), "downloaded state");
 
         let state_hash = shard_state.root_cell().repr_hash();
-        if state_update.new_hash != state_hash {
+        if &state_update.new_hash != state_hash {
             return Err(ColdBootError::ShardStateHashMismatch.into());
         }
 

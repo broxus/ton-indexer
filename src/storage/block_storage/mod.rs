@@ -374,12 +374,12 @@ impl BlockStorage {
         Ok(())
     }
 
-    pub fn get_archive_id(&self, mc_seq_no: u32) -> Option<u32> {
-        match self.archive_ids.read().range(..=mc_seq_no).next_back() {
-            // NOTE: handles case when mc_seq_no is far in the future.
-            // However if there is a key block between `id` and `mc_seq_no`,
+    pub fn get_archive_id(&self, mc_seqno: u32) -> Option<u32> {
+        match self.archive_ids.read().range(..=mc_seqno).next_back() {
+            // NOTE: handles case when mc_seqno is far in the future.
+            // However if there is a key block between `id` and `mc_seqno`,
             // this will return an archive without that specified block.
-            Some(id) if mc_seq_no < id + ARCHIVE_PACKAGE_SIZE => Some(*id),
+            Some(id) if mc_seqno < id + ARCHIVE_PACKAGE_SIZE => Some(*id),
             _ => None,
         }
     }
@@ -465,18 +465,18 @@ impl BlockStorage {
         let target_block = match gc_type {
             BlocksGcKind::BeforePreviousKeyBlock => self
                 .block_handle_storage
-                .find_prev_key_block(key_block_id.seq_no)?,
+                .find_prev_key_block(key_block_id.seqno)?,
             BlocksGcKind::BeforePreviousPersistentState => self
                 .block_handle_storage
-                .find_prev_persistent_key_block(key_block_id.seq_no)?,
+                .find_prev_persistent_key_block(key_block_id.seqno)?,
         };
 
         // Load target block data
         let top_blocks = match target_block {
             Some(handle) if handle.meta().has_data() => {
                 tracing::info!(
-                    key_block_id = %key_block_id.display(),
-                    target_block_id = %handle.id().display(),
+                    %key_block_id,
+                    target_block_id = %handle.id(),
                     "starting blocks GC",
                 );
                 self.load_block_data(&handle)
@@ -486,10 +486,7 @@ impl BlockStorage {
                     .context("Failed to compute top blocks for target block")?
             }
             _ => {
-                tracing::info!(
-                    key_block_id = %key_block_id.display(),
-                    "blocks GC skipped"
-                );
+                tracing::info!(%key_block_id, "blocks GC skipped");
                 return Ok(());
             }
         };
@@ -508,7 +505,7 @@ impl BlockStorage {
         .await??;
 
         tracing::info!(
-            key_block_id = %key_block_id.display(),
+            %key_block_id,
             total_cached_handles_removed,
             mc_package_entries_removed,
             total_package_entries_removed,
@@ -628,18 +625,18 @@ impl BlockStorage {
     }
 
     fn compute_archive_id(&self, handle: &BlockHandle) -> u32 {
-        let mc_seq_no = handle.masterchain_ref_seqno();
+        let mc_seqno = handle.masterchain_ref_seqno();
 
         if handle.meta().is_key_block() {
-            self.archive_ids.write().insert(mc_seq_no);
-            return mc_seq_no;
+            self.archive_ids.write().insert(mc_seqno);
+            return mc_seqno;
         }
 
-        let mut archive_id = mc_seq_no - mc_seq_no % ARCHIVE_SLICE_SIZE;
+        let mut archive_id = mc_seqno - mc_seqno % ARCHIVE_SLICE_SIZE;
 
         let prev_id = {
             let latest_archives = self.archive_ids.read();
-            latest_archives.range(..=mc_seq_no).next_back().cloned()
+            latest_archives.range(..=mc_seqno).next_back().cloned()
         };
 
         if let Some(prev_id) = prev_id {
@@ -648,9 +645,9 @@ impl BlockStorage {
             }
         }
 
-        if mc_seq_no.saturating_sub(archive_id) >= ARCHIVE_PACKAGE_SIZE {
-            self.archive_ids.write().insert(mc_seq_no);
-            archive_id = mc_seq_no;
+        if mc_seqno.saturating_sub(archive_id) >= ARCHIVE_PACKAGE_SIZE {
+            self.archive_ids.write().insert(mc_seqno);
+            archive_id = mc_seqno;
         }
 
         archive_id
@@ -721,19 +718,20 @@ fn remove_blocks(
         };
 
         // Read only prefix with shard ident and seqno
-        let (shard_ident, seq_no) = BlockIdShort::deserialize(&mut std::convert::identity(key))?;
+        let BlockIdShort { shard, seqno } =
+            BlockIdShort::deserialize(&mut std::convert::identity(key))?;
 
         // Don't gc latest blocks
-        if top_blocks.contains_shard_seq_no(&shard_ident, seq_no) {
+        if top_blocks.contains_shard_seqno(&shard, seqno) {
             blocks_iter.next();
             continue;
         }
 
         // Additionally check whether this item is a key block
-        if seq_no == 0
-            || shard_ident.is_masterchain()
+        if seqno == 0
+            || shard.is_masterchain()
                 && raw
-                    .get_pinned_cf_opt(&key_blocks_cf, seq_no.to_be_bytes(), &key_blocks_readopts)?
+                    .get_pinned_cf_opt(&key_blocks_cf, seqno.to_be_bytes(), &key_blocks_readopts)?
                     .is_some()
         {
             // Don't remove key blocks
@@ -744,7 +742,7 @@ fn remove_blocks(
         // Add item to the batch
         batch.delete_cf(&package_entries_cf, key);
         stats.total_package_entries_removed += 1;
-        if shard_ident.is_masterchain() {
+        if shard.is_masterchain() {
             stats.mc_package_entries_removed += 1;
         }
 

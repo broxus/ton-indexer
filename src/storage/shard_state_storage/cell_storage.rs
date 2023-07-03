@@ -1,21 +1,22 @@
+use std::cell::UnsafeCell;
 use std::collections::hash_map;
+use std::mem::ManuallyDrop;
 use std::num::NonZeroU32;
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Weak};
 
 use anyhow::Result;
 use bumpalo::Bump;
 use bytes::Bytes;
 use everscale_types::cell::*;
-use parking_lot::RwLock;
 use quick_cache::sync::Cache;
-use smallvec::SmallVec;
 
 use crate::db::*;
 use crate::utils::{CacheStats, FastDashMap, FastHashMap, FastHasherState};
 
 pub struct CellStorage {
     db: Arc<Db>,
-    cells_cache: Arc<FastDashMap<UInt256, Weak<StorageCell>>>,
+    cells_cache: Arc<FastDashMap<HashBytes, Weak<StorageCell>>>,
     raw_cells_cache: RawCellsCache,
 }
 
@@ -34,7 +35,7 @@ impl CellStorage {
     pub fn store_cell(
         &self,
         batch: &mut rocksdb::WriteBatch,
-        root: ton_types::Cell,
+        root: Cell,
     ) -> Result<usize, CellStorageError> {
         struct CellWithRefs<'a> {
             rc: u32,
@@ -44,15 +45,15 @@ impl CellStorage {
         struct Context<'a> {
             cells_cf: &'a BoundedCfHandle<'a>,
             alloc: &'a Bump,
-            transaction: FastHashMap<[u8; 32], CellWithRefs<'a>>,
+            transaction: FastHashMap<HashBytes, CellWithRefs<'a>>,
             buffer: Vec<u8>,
         }
 
         impl Context<'_> {
             fn insert_cell<V>(
                 &mut self,
-                key: &[u8; 32],
-                cell: &ton_types::Cell,
+                key: &HashBytes,
+                cell: &DynCell,
                 value: Option<V>,
             ) -> Result<bool, CellStorageError>
             where
@@ -69,7 +70,7 @@ impl CellStorage {
 
                         let data = if !has_value {
                             self.buffer.clear();
-                            if StorageCell::serialize_to(&**cell, &mut self.buffer).is_err() {
+                            if StorageCell::serialize_to(cell, &mut self.buffer).is_err() {
                                 return Err(CellStorageError::InvalidCell);
                             }
                             Some(self.alloc.alloc_slice_copy(self.buffer.as_slice()) as &[u8])
@@ -94,7 +95,7 @@ impl CellStorage {
                     if data.is_some() {
                         raw_cache.insert(key, &self.buffer);
                     }
-                    batch.merge_cf(self.cells_cf, key.as_slice(), &self.buffer);
+                    batch.merge_cf(self.cells_cf, &key.0, &self.buffer);
                 }
                 total
             }
@@ -115,11 +116,9 @@ impl CellStorage {
         // Check root cell
         {
             let key = root.repr_hash();
-            let key = key.as_array();
-
-            match cells.get(key) {
+            match cells.get(&key.0) {
                 Ok(value) => {
-                    if !ctx.insert_cell(key, &root, value.as_deref())? {
+                    if !ctx.insert_cell(key, root.as_ref(), value.as_deref())? {
                         return Ok(0);
                     }
                 }
@@ -128,21 +127,15 @@ impl CellStorage {
         }
 
         let mut stack = Vec::with_capacity(16);
-        stack.push(root);
+        stack.push(root.as_ref());
 
         // Check other cells
         while let Some(current) = stack.pop() {
-            for i in 0..current.references_count() {
-                let cell = match current.reference(i) {
-                    Ok(cell) => cell,
-                    Err(_) => return Err(CellStorageError::InvalidCell),
-                };
+            for cell in current.references() {
                 let key = cell.repr_hash();
-                let key = key.as_array();
-
-                match cells.get(key) {
+                match cells.get(&key.0) {
                     Ok(value) => {
-                        if !ctx.insert_cell(key, &cell, value.as_deref())? {
+                        if !ctx.insert_cell(key, cell, value.as_deref())? {
                             continue;
                         }
                     }
@@ -162,18 +155,15 @@ impl CellStorage {
 
     pub fn load_cell(
         self: &Arc<Self>,
-        hash: UInt256,
+        hash: &HashBytes,
     ) -> Result<Arc<StorageCell>, CellStorageError> {
-        if let Some(cell) = self.cells_cache.get(&hash) {
+        if let Some(cell) = self.cells_cache.get(hash) {
             if let Some(cell) = cell.upgrade() {
                 return Ok(cell);
             }
         }
 
-        let cell = match self
-            .raw_cells_cache
-            .get_raw(self.db.as_ref(), hash.as_slice())
-        {
+        let cell = match self.raw_cells_cache.get_raw(self.db.as_ref(), hash) {
             Ok(value) => 'cell: {
                 if let Some(value) = value {
                     if let Some(value) = refcount::strip_refcount(&value) {
@@ -187,7 +177,7 @@ impl CellStorage {
             }
             Err(e) => return Err(CellStorageError::Internal(e)),
         };
-        self.cells_cache.insert(hash, Arc::downgrade(&cell));
+        self.cells_cache.insert(*hash, Arc::downgrade(&cell));
 
         Ok(cell)
     }
@@ -196,17 +186,17 @@ impl CellStorage {
         &self,
         batch: &mut rocksdb::WriteBatch,
         alloc: &Bump,
-        hash: UInt256,
+        hash: &HashBytes,
     ) -> Result<usize, CellStorageError> {
         #[derive(Clone, Copy)]
         struct CellState<'a> {
             rc: i64,
             removes: u32,
-            refs: &'a [[u8; 32]],
+            refs: &'a [HashBytes],
         }
 
         impl<'a> CellState<'a> {
-            fn remove(&mut self) -> Result<Option<&'a [[u8; 32]]>, CellStorageError> {
+            fn remove(&mut self) -> Result<Option<&'a [HashBytes]>, CellStorageError> {
                 self.removes += 1;
                 if self.removes as i64 <= self.rc {
                     Ok(self.next_refs())
@@ -215,7 +205,7 @@ impl CellStorage {
                 }
             }
 
-            fn next_refs(&self) -> Option<&'a [[u8; 32]]> {
+            fn next_refs(&self) -> Option<&'a [HashBytes]> {
                 if self.rc > self.removes as i64 {
                     None
                 } else {
@@ -227,19 +217,19 @@ impl CellStorage {
         let cells = &self.db.cells;
         let cells_cf = &cells.cf();
 
-        let mut transaction: FastHashMap<&[u8; 32], CellState> =
+        let mut transaction: FastHashMap<&HashBytes, CellState> =
             FastHashMap::with_capacity_and_hasher(128, Default::default());
         let mut buffer = Vec::with_capacity(4);
 
         let mut stack = Vec::with_capacity(16);
-        stack.push(hash.as_slice());
+        stack.push(hash);
 
         // While some cells left
         while let Some(cell_id) = stack.pop() {
             let refs = match transaction.entry(cell_id) {
                 hash_map::Entry::Occupied(mut v) => v.get_mut().remove()?,
                 hash_map::Entry::Vacant(v) => {
-                    let rc = match self.db.cells.get(cell_id) {
+                    let rc = match self.db.cells.get(&cell_id.0) {
                         Ok(value) => 'rc: {
                             if let Some(value) = value {
                                 buffer.clear();
@@ -289,7 +279,7 @@ impl CellStorage {
         Ok(total)
     }
 
-    pub fn drop_cell(&self, hash: &UInt256) {
+    pub fn drop_cell(&self, hash: &HashBytes) {
         self.cells_cache.remove(hash);
     }
 
@@ -328,177 +318,250 @@ pub enum CellStorageError {
 }
 
 pub struct StorageCell {
-    _c: countme::Count<Self>,
     cell_storage: Arc<CellStorage>,
-    cell_data: ton_types::CellData,
-    references: RwLock<SmallVec<[StorageCellReference; 4]>>,
-    tree_bits_count: u64,
-    tree_cell_count: u64,
+    bit_len: u16,
+    descriptor: CellDescriptor,
+    data: Vec<u8>,
+
+    reference_states: [AtomicU8; 4],
+    reference_data: [UnsafeCell<StorageCellReferenceData>; 4],
 }
 
 impl StorageCell {
-    pub fn repr_hash(&self) -> UInt256 {
-        self.hash(ton_types::MAX_LEVEL)
-    }
+    const REF_INCOMPLETE: u8 = 0x0;
+    const REF_RUNNING: u8 = 0x1;
+    const REF_COMPLETE: u8 = 0x2;
 
     pub fn deserialize(boc_db: Arc<CellStorage>, mut data: &[u8]) -> Result<Self> {
-        // deserialize cell
-        let cell_data = ton_types::CellData::deserialize(&mut data)?;
-        let references_count = cell_data.references_count();
-        let mut references = SmallVec::with_capacity(references_count);
+        // // deserialize cell
+        // let cell_data = ton_types::CellData::deserialize(&mut data)?;
+        // let references_count = cell_data.references_count();
+        // let mut references = SmallVec::with_capacity(references_count);
 
-        for _ in 0..references_count {
-            let hash = UInt256::from(data.read_u256()?);
-            references.push(StorageCellReference::Unloaded(hash));
-        }
+        // for _ in 0..references_count {
+        //     let hash = UInt256::from(data.read_u256()?);
+        //     references.push(StorageCellReference::Unloaded(hash));
+        // }
 
-        let (tree_bits_count, tree_cell_count) = match data.read_le_u64() {
-            Ok(tree_bits_count) => match data.read_le_u64() {
-                Ok(tree_cell_count) => (tree_bits_count, tree_cell_count),
-                Err(_) => (0, 0),
-            },
-            Err(_) => (0, 0),
-        };
+        // let (tree_bits_count, tree_cell_count) = match data.read_le_u64() {
+        //     Ok(tree_bits_count) => match data.read_le_u64() {
+        //         Ok(tree_cell_count) => (tree_bits_count, tree_cell_count),
+        //         Err(_) => (0, 0),
+        //     },
+        //     Err(_) => (0, 0),
+        // };
 
-        Ok(Self {
-            _c: Default::default(),
-            cell_storage: boc_db,
-            cell_data,
-            references: RwLock::new(references),
-            tree_bits_count,
-            tree_cell_count,
-        })
+        // Ok(Self {
+        //     _c: Default::default(),
+        //     cell_storage: boc_db,
+        //     cell_data,
+        //     references: RwLock::new(references),
+        //     tree_bits_count,
+        //     tree_cell_count,
+        // })
+
+        todo!()
     }
 
-    pub fn deserialize_references(mut data: &[u8], target: &mut Vec<[u8; 32]>) -> bool {
-        let reader = &mut data;
+    pub fn deserialize_references(mut data: &[u8], target: &mut Vec<HashBytes>) -> bool {
+        // let reader = &mut data;
 
-        let references_count = match ton_types::CellData::deserialize(reader) {
-            Ok(data) => data.references_count(),
-            Err(_) => return false,
-        };
+        // let references_count = match ton_types::CellData::deserialize(reader) {
+        //     Ok(data) => data.references_count(),
+        //     Err(_) => return false,
+        // };
 
-        for _ in 0..references_count {
-            let Ok(hash) = reader.read_u256() else {
-                return false;
-            };
-            target.push(hash);
-        }
+        // for _ in 0..references_count {
+        //     let Ok(hash) = reader.read_u256() else {
+        //         return false;
+        //     };
+        //     target.push(hash);
+        // }
 
-        true
+        // true
+
+        todo!()
     }
 
-    pub fn serialize_to(cell: &dyn CellImpl, target: &mut Vec<u8>) -> Result<()> {
+    pub fn serialize_to(cell: &DynCell, target: &mut Vec<u8>) -> Result<()> {
         target.clear();
 
-        // serialize cell
-        let references_count = cell.references_count();
-        cell.cell_data().serialize(target)?;
+        // // serialize cell
+        // let references_count = cell.references_count();
+        // cell.cell_data().serialize(target)?;
 
-        for i in 0..references_count {
-            target.extend_from_slice(cell.reference(i)?.repr_hash().as_slice());
-        }
+        // for i in 0..references_count {
+        //     target.extend_from_slice(cell.reference(i)?.repr_hash().as_slice());
+        // }
 
-        target.extend_from_slice(&cell.tree_bits_count().to_le_bytes());
-        target.extend_from_slice(&cell.tree_cell_count().to_le_bytes());
+        // target.extend_from_slice(&cell.tree_bits_count().to_le_bytes());
+        // target.extend_from_slice(&cell.tree_cell_count().to_le_bytes());
 
-        Ok(())
+        // Ok(())
+
+        todo!()
     }
 
-    pub fn reference(&self, index: usize) -> Result<Arc<StorageCell>> {
-        let hash = match &self.references.read().get(index) {
-            Some(StorageCellReference::Unloaded(hash)) => *hash,
-            Some(StorageCellReference::Loaded(cell)) => return Ok(cell.clone()),
-            None => return Err(StorageCellError::AccessingInvalidReference.into()),
-        };
+    pub fn reference_raw(&self, index: u8) -> Option<&Arc<StorageCell>> {
+        if index > 3 || index >= self.descriptor.reference_count() {
+            return None;
+        }
 
-        let storage_cell = self.cell_storage.load_cell(hash)?;
-        self.references.write()[index] = StorageCellReference::Loaded(storage_cell.clone());
+        let state = &self.reference_states[index as usize];
+        let slot = self.reference_data[index as usize].get();
 
-        Ok(storage_cell)
+        if state.load(Ordering::Acquire) == Self::REF_COMPLETE {
+            return Some(unsafe { &(*slot).cell });
+        }
+
+        let mut res = Ok(());
+        Self::initialize_inner(state, &mut || match self
+            .cell_storage
+            .load_cell(unsafe { &(*slot).hash })
+        {
+            Ok(cell) => unsafe {
+                *slot = StorageCellReferenceData {
+                    cell: ManuallyDrop::new(cell),
+                };
+                true
+            },
+            Err(err) => {
+                res = Err(err);
+                false
+            }
+        });
+
+        // TODO: just return none?
+        res.unwrap();
+
+        Some(unsafe { &(*slot).cell })
+    }
+
+    // Note: this is intentionally monomorphic
+    #[inline(never)]
+    fn initialize_inner(state: &AtomicU8, init: &mut dyn FnMut() -> bool) {
+        struct Guard<'a> {
+            state: &'a AtomicU8,
+            new_state: u8,
+        }
+
+        impl<'a> Drop for Guard<'a> {
+            fn drop(&mut self) {
+                self.state.store(self.new_state, Ordering::Release);
+                unsafe {
+                    let key = self.state as *const AtomicU8 as usize;
+                    parking_lot_core::unpark_all(key, parking_lot_core::DEFAULT_UNPARK_TOKEN);
+                }
+            }
+        }
+
+        loop {
+            let exchange = state.compare_exchange_weak(
+                Self::REF_INCOMPLETE,
+                Self::REF_RUNNING,
+                Ordering::Acquire,
+                Ordering::Acquire,
+            );
+            match exchange {
+                Ok(_) => {
+                    let mut guard = Guard {
+                        state,
+                        new_state: Self::REF_INCOMPLETE,
+                    };
+                    if init() {
+                        guard.new_state = Self::REF_COMPLETE;
+                    }
+                    return;
+                }
+                Err(Self::REF_COMPLETE) => return,
+                Err(Self::REF_RUNNING) => unsafe {
+                    let key = state as *const AtomicU8 as usize;
+                    parking_lot_core::park(
+                        key,
+                        || state.load(Ordering::Relaxed) == Self::REF_RUNNING,
+                        || (),
+                        |_, _| (),
+                        parking_lot_core::DEFAULT_PARK_TOKEN,
+                        None,
+                    );
+                },
+                Err(Self::REF_INCOMPLETE) => (),
+                Err(_) => debug_assert!(false),
+            }
+        }
     }
 }
 
 impl CellImpl for StorageCell {
+    fn descriptor(&self) -> CellDescriptor {
+        self.descriptor
+    }
+
     fn data(&self) -> &[u8] {
-        self.cell_data.data()
+        &self.data
     }
 
-    fn raw_data(&self) -> ton_types::Result<&[u8]> {
-        Ok(self.cell_data.raw_data())
+    fn bit_len(&self) -> u16 {
+        self.bit_len
     }
 
-    fn cell_data(&self) -> &ton_types::CellData {
-        &self.cell_data
+    fn reference(&self, index: u8) -> Option<&DynCell> {
+        Some(self.reference_raw(index)?.as_ref())
     }
 
-    fn bit_length(&self) -> usize {
-        self.cell_data.bit_length()
+    fn reference_cloned(&self, index: u8) -> Option<Cell> {
+        Some(Cell::from(self.reference_raw(index)?.clone() as Arc<_>))
     }
 
-    fn references_count(&self) -> usize {
-        self.references.read().len()
+    fn virtualize(&self) -> &DynCell {
+        VirtualCellWrapper::wrap(self)
     }
 
-    fn reference(&self, index: usize) -> Result<ton_types::Cell> {
-        Ok(ton_types::Cell::with_cell_impl_arc(self.reference(index)?))
+    fn hash(&self, level: u8) -> &HashBytes {
+        todo!()
     }
 
-    fn cell_type(&self) -> ton_types::CellType {
-        self.cell_data.cell_type()
+    fn depth(&self, level: u8) -> u16 {
+        todo!()
     }
 
-    fn level_mask(&self) -> ton_types::LevelMask {
-        self.cell_data.level_mask()
+    fn take_first_child(&mut self) -> Option<Cell> {
+        todo!()
     }
 
-    fn hash(&self, index: usize) -> UInt256 {
-        self.cell_data.hash(index)
+    fn replace_first_child(&mut self, parent: Cell) -> std::result::Result<Cell, Cell> {
+        todo!()
     }
 
-    fn depth(&self, index: usize) -> u16 {
-        self.cell_data.depth(index)
-    }
-
-    fn store_hashes(&self) -> bool {
-        self.cell_data.store_hashes()
-    }
-
-    fn tree_bits_count(&self) -> u64 {
-        self.tree_bits_count
-    }
-
-    fn tree_cell_count(&self) -> u64 {
-        self.tree_cell_count
+    fn take_next_child(&mut self) -> Option<Cell> {
+        todo!()
     }
 }
 
 impl Drop for StorageCell {
     fn drop(&mut self) {
-        self.cell_storage.drop_cell(&self.repr_hash())
+        self.cell_storage.drop_cell(DynCell::repr_hash(self))
     }
 }
 
-#[derive(Clone)]
-pub enum StorageCellReference {
-    Loaded(Arc<StorageCell>),
-    Unloaded(UInt256),
+unsafe impl Send for StorageCell {}
+unsafe impl Sync for StorageCell {}
+
+pub union StorageCellReferenceData {
+    /// Incplmete state.
+    hash: HashBytes,
+    /// Complete state.
+    cell: ManuallyDrop<Arc<StorageCell>>,
 }
 
-#[derive(thiserror::Error, Debug)]
-enum StorageCellError {
-    #[error("Accessing invalid cell reference")]
-    AccessingInvalidReference,
-}
-
-struct RawCellsCache(Cache<[u8; 32], Bytes, CellSizeEstimator, FastHasherState>);
+struct RawCellsCache(Cache<HashBytes, Bytes, CellSizeEstimator, FastHasherState>);
 
 #[derive(Clone, Copy)]
 struct CellSizeEstimator;
-impl quick_cache::Weighter<[u8; 32], (), Bytes> for CellSizeEstimator {
-    fn weight(&self, key: &[u8; 32], _: &(), val: &Bytes) -> NonZeroU32 {
+impl quick_cache::Weighter<HashBytes, (), Bytes> for CellSizeEstimator {
+    fn weight(&self, _: &HashBytes, _: &(), val: &Bytes) -> NonZeroU32 {
         const BYTES_SIZE: usize = std::mem::size_of::<usize>() * 4;
-        let len = key.len() + val.len() + BYTES_SIZE;
+        let len = 32 + val.len() + BYTES_SIZE;
 
         NonZeroU32::new(len as u32).expect("Key is not empty")
     }
@@ -546,14 +609,14 @@ impl RawCellsCache {
         Self(raw_cache)
     }
 
-    fn get_raw(&self, db: &Db, key: &[u8; 32]) -> Result<Option<Bytes>, rocksdb::Error> {
+    fn get_raw(&self, db: &Db, key: &HashBytes) -> Result<Option<Bytes>, rocksdb::Error> {
         if let Some(value) = self.0.get(key) {
             return Ok(Some(value));
         }
 
         let value = db
             .cells
-            .get(key)?
+            .get(&key.0)?
             .map(|v| Bytes::copy_from_slice(v.as_ref()));
         if let Some(value) = &value {
             self.0.insert(*key, value.clone());
@@ -562,7 +625,7 @@ impl RawCellsCache {
         Ok(value)
     }
 
-    pub fn insert(&self, key: [u8; 32], value: &[u8]) {
+    pub fn insert(&self, key: HashBytes, value: &[u8]) {
         let value = Bytes::copy_from_slice(value);
         self.0.insert(key, value);
     }

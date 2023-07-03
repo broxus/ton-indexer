@@ -114,7 +114,7 @@ impl ArchivesStream {
                                 Ok(block_maps) => {
                                     if matches!(
                                         block_maps.lowest_mc_id(),
-                                        Some(id) if id.seq_no > next_index
+                                        Some(id) if id.seqno > next_index
                                     ) {
                                         has_gap = true;
                                         // Drop acquired lock and `PeekMut` object
@@ -347,7 +347,7 @@ impl ReceivedBlockMaps<'_> {
         self.accepted = true;
         if let Some(highest_mc_id) = self.block_maps.highest_mc_id() {
             self.stream.last_blocks = edge;
-            self.stream.next_mc_seq_no = highest_mc_id.seq_no + 1;
+            self.stream.next_mc_seq_no = highest_mc_id.seqno + 1;
         }
     }
 

@@ -23,7 +23,7 @@ pub async fn sync(engine: &Arc<Engine>) -> Result<()> {
     let mut last_mc_block_id = engine.last_applied_block()?;
     tracing::info!(
         target: "sync",
-        last_mc_block_id = %last_mc_block_id.display(),
+        last_mc_block_id = %last_mc_block_id,
         "creating archives stream"
     );
 
@@ -42,7 +42,7 @@ pub async fn sync(engine: &Arc<Engine>) -> Result<()> {
         {
             tracing::error!(
                 target: "sync",
-                block_id = %last_mc_block_id.display(),
+                block_id = %last_mc_block_id,
                 "failed to apply queued archive: {e:?}"
             );
             continue;
@@ -61,7 +61,7 @@ pub async fn sync(engine: &Arc<Engine>) -> Result<()> {
 
 #[tracing::instrument(
     skip(engine, maps, last_mc_block_id),
-    fields(last_mc_block_id = %last_mc_block_id.display())
+    fields(%last_mc_block_id)
 )]
 async fn import_package_with_apply(
     engine: &Arc<Engine>,
@@ -81,7 +81,7 @@ async fn import_package_with_apply(
     let elapsed_ms = import_start.elapsed().as_millis();
     tracing::info!(
         target: "sync",
-        block_id = %last_mc_block_id.display(),
+        block_id = %last_mc_block_id,
         elapsed_ms,
         "imported archive package"
     );
@@ -149,7 +149,7 @@ async fn import_mc_blocks_with_apply(
 
     tracing::info!(
         target: "sync",
-        last_mc_block_id = %last_mc_block_id.display(),
+        last_mc_block_id = %last_mc_block_id,
         %block_time_diff,
         "imported masterchain blocks from archive"
     );
@@ -161,7 +161,7 @@ async fn import_shard_blocks_with_apply(engine: &Arc<Engine>, maps: &Arc<BlockMa
 
     // Save all shardchain blocks
     for (id, entry) in &maps.blocks {
-        if !id.shard_id.is_masterchain() {
+        if !id.shard.is_masterchain() {
             let (block, block_proof) = entry.get_data()?;
             engine.save_block(block, block_proof, 0).await?;
         }

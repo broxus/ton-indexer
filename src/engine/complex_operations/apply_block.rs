@@ -6,7 +6,7 @@
 ///
 use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use everscale_types::models::*;
 use futures_util::future::{BoxFuture, FutureExt};
 
@@ -124,10 +124,12 @@ fn update_block_connections(
             conn.store_connection(handle, BlockConnection::Prev2, prev2_id)?;
         }
         None => {
-            let prev1_shard = prev1_handle.id().shard_id;
-            let shard = handle.id().shard_id;
+            let prev1_shard = prev1_handle.id().shard;
+            let shard = handle.id().shard;
 
-            if prev1_shard != shard && prev1_shard.split()?.1 == shard {
+            if prev1_shard != shard
+                && prev1_shard.split().context("Failed to split prev shard")?.1 == shard
+            {
                 conn.store_connection(&prev1_handle, BlockConnection::Next2, handle.id())?;
             } else {
                 conn.store_connection(&prev1_handle, BlockConnection::Next1, handle.id())?;
@@ -153,7 +155,7 @@ async fn compute_and_store_shard_state(
 
     let (prev_shard_state_root, _handle) = match prev2_id {
         Some(prev2_id) => {
-            if prev1_id.shard().is_masterchain() {
+            if prev1_id.shard.is_masterchain() {
                 return Err(ApplyBlockError::InvalidMasterchainBlockSequence.into());
             }
 
@@ -178,7 +180,7 @@ async fn compute_and_store_shard_state(
         }
     };
 
-    let merkle_update = block.block().read_state_update()?;
+    let merkle_update = block.block().load_state_update()?;
     let min_ref_mc_state = engine
         .storage
         .shard_state_storage()
@@ -188,7 +190,7 @@ async fn compute_and_store_shard_state(
     let shard_state = tokio::task::spawn_blocking({
         let block_id = block.id().clone();
         move || -> Result<Arc<ShardStateStuff>> {
-            let shard_state_root = merkle_update.apply_for(&prev_shard_state_root)?;
+            let shard_state_root = merkle_update.apply(&prev_shard_state_root)?;
             Ok(Arc::new(ShardStateStuff::new(
                 block_id,
                 shard_state_root,

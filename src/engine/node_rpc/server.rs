@@ -177,7 +177,7 @@ impl QueryHandler {
 
         let get_next_key_block_ids = || {
             let start_block_id = &query.block;
-            if !start_block_id.shard().is_masterchain() {
+            if !start_block_id.shard.is_masterchain() {
                 return Err(NodeRpcServerError::BlockNotFromMasterChain.into());
             }
 
@@ -187,10 +187,10 @@ impl QueryHandler {
                 .peekable();
 
             if let Some(Ok(id)) = iterator.peek() {
-                if id.root_hash != start_block_id.root_hash() {
+                if id.root_hash != start_block_id.root_hash {
                     return Err(NodeRpcServerError::InvalidRootHash.into());
                 }
-                if id.file_hash != start_block_id.file_hash() {
+                if id.file_hash != start_block_id.file_hash {
                     return Err(NodeRpcServerError::InvalidFileHash.into());
                 }
             }

@@ -137,12 +137,12 @@ impl<'a> HashesEntry<'a> {
     }
 
     pub fn hash(&self, n: u8) -> &'a [u8; 32] {
-        let offset = Self::HASHES_OFFSET + 32 * self.level_mask().calc_hash_index(n as usize);
+        let offset = Self::HASHES_OFFSET + 32 * self.level_mask().hash_index(n) as usize;
         unsafe { &*(self.0.as_ptr().add(offset) as *const _) }
     }
 
     pub fn depth(&self, n: u8) -> u16 {
-        let offset = Self::DEPTHS_OFFSET + 2 * self.level_mask().calc_hash_index(n as usize);
+        let offset = Self::DEPTHS_OFFSET + 2 * self.level_mask().hash_index(n) as usize;
         u16::from_le_bytes([self.0[offset], self.0[offset + 1]])
     }
 
@@ -151,7 +151,7 @@ impl<'a> HashesEntry<'a> {
         'a: 'b,
     {
         let level_mask = self.level_mask();
-        let index = level_mask.calc_hash_index(n as usize);
+        let index = level_mask.hash_index(n) as usize;
         let level = level_mask.level() as usize;
 
         Some(if index == level {
@@ -168,7 +168,7 @@ impl<'a> HashesEntry<'a> {
 
     pub fn pruned_branch_depth(&self, n: u8, data: &[u8]) -> u16 {
         let level_mask = self.level_mask();
-        let index = level_mask.calc_hash_index(n as usize);
+        let index = level_mask.hash_index(n) as usize;
         let level = level_mask.level() as usize;
 
         if index == level {

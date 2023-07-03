@@ -32,13 +32,13 @@ pub async fn download_state(
             Ok(Some(peer)) => break peer,
             Ok(None) => {
                 tracing::trace!(
-                    block_id = %full_state_id.block_id.display(),
+                    block_id = %full_state_id.block_id,
                     "failed to download state: state not found"
                 );
             }
             Err(e) => {
                 tracing::trace!(
-                    block_id = %full_state_id.block_id.display(),
+                    block_id = %full_state_id.block_id,
                     "failed to download state: {e:?}"
                 );
             }

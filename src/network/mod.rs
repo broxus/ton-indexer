@@ -11,6 +11,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 use everscale_network::*;
+use everscale_types::prelude::HashBytes;
 use global_config::*;
 use tokio_util::sync::CancellationToken;
 
@@ -33,7 +34,7 @@ pub struct NodeNetwork {
     neighbours_options: NeighboursOptions,
     overlay_shard_options: overlay::OverlayOptions,
     overlays: Arc<FastDashMap<overlay::IdShort, Arc<OverlayClient>>>,
-    zero_state_file_hash: [u8; 32],
+    zero_state_file_hash: HashBytes,
     working_state: Arc<WorkingState>,
 }
 
@@ -89,7 +90,7 @@ impl NodeNetwork {
             neighbours_options,
             overlay_shard_options,
             overlays: Arc::new(Default::default()),
-            zero_state_file_hash: *global_config.zero_state.file_hash.as_array(),
+            zero_state_file_hash: global_config.zero_state.file_hash,
             working_state,
         });
 
@@ -140,7 +141,8 @@ impl NodeNetwork {
     }
 
     pub fn compute_overlay_id(&self, workchain: i32) -> (overlay::IdFull, overlay::IdShort) {
-        let full_id = overlay::IdFull::for_workchain_overlay(workchain, &self.zero_state_file_hash);
+        let full_id =
+            overlay::IdFull::for_workchain_overlay(workchain, &self.zero_state_file_hash.0);
         let short_id = full_id.compute_short_id();
         (full_id, short_id)
     }

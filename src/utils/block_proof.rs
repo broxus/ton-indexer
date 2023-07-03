@@ -22,7 +22,7 @@ pub struct BlockProofStuff {
 
 impl BlockProofStuff {
     pub fn deserialize(block_id: BlockId, data: &[u8], is_link: bool) -> Result<Self> {
-        let proof = BocRepr::decode::<BlockProof>(data)?;
+        let proof = BocRepr::decode::<BlockProof, _>(data)?;
 
         if proof.proof_for != block_id {
             return Err(anyhow!(
@@ -42,11 +42,11 @@ impl BlockProofStuff {
         })
     }
 
-    pub fn virtualize_block_root(&self) -> Result<Cell> {
-        let merkle_proof = self.proof.root.parse::<MerkleProof>()?;
+    pub fn virtualize_block_root(&self) -> Result<&DynCell> {
+        let merkle_proof = self.proof.root.parse::<MerkleProofRef>()?;
         let block_virt_root = merkle_proof.cell.virtualize();
 
-        if self.proof.proof_for.root_hash != block_virt_root.repr_hash() {
+        if &self.proof.proof_for.root_hash != block_virt_root.repr_hash() {
             return Err(anyhow!(
                 "merkle proof has invalid virtual hash (found: {}, expected: {})",
                 block_virt_root.repr_hash(),
@@ -57,7 +57,7 @@ impl BlockProofStuff {
         Ok(block_virt_root)
     }
 
-    pub fn virtualize_block(&self) -> Result<(Block, CellHash)> {
+    pub fn virtualize_block(&self) -> Result<(Block, HashBytes)> {
         let cell = self.virtualize_block_root()?;
         let hash = cell.repr_hash();
         Ok((cell.parse::<Block>()?, *hash))
@@ -73,21 +73,6 @@ impl BlockProofStuff {
 
     pub fn id(&self) -> &BlockId {
         &self.id
-    }
-
-    pub fn get_cur_validators_set(&self) -> Result<(ValidatorSet, CatchainConfig)> {
-        let (virt_block, virt_block_info) = self.pre_check_block_proof()?;
-
-        if !virt_block_info.key_block() {
-            return Err(anyhow!(
-                "proof for key block {} contains a Merkle proof which declares non key block",
-                self.id
-            ));
-        }
-
-        let (validator_set, catchain_config) = virt_block.read_cur_validator_set_and_cc_conf()?;
-
-        Ok((validator_set, catchain_config))
     }
 
     pub fn check_with_prev_key_block_proof(
@@ -139,7 +124,7 @@ impl BlockProofStuff {
                 "proof for block {} contains a Merkle proof with incorrect root hash: expected {}, found: {} ",
                 self.id,
                 self.id.root_hash,
-                virt_block_hash
+                virt_block_hash,
             ));
         }
 
@@ -218,11 +203,7 @@ impl BlockProofStuff {
         Ok((virt_block, info))
     }
 
-    fn check_signatures(
-        &self,
-        validators_list: Vec<ValidatorDescription>,
-        list_hash_short: u32,
-    ) -> Result<()> {
+    fn check_signatures(&self, subset: &ValidatorSubsetInfo) -> Result<()> {
         // Prepare
         let Some(signatures) = self.proof.signatures.as_ref() else {
             anyhow::bail!(
@@ -232,10 +213,10 @@ impl BlockProofStuff {
         };
 
         anyhow::ensure!(
-            signatures.validator_info.validator_list_hash_short == list_hash_short,
+            signatures.validator_info.validator_list_hash_short == subset.short_hash,
             "Bad validator set hash in proof for block {}, calculated: {}, found: {}",
             self.id,
-            list_hash_short,
+            subset.short_hash,
             signatures.validator_info.validator_list_hash_short
         );
 
@@ -265,10 +246,10 @@ impl BlockProofStuff {
 
         // Check signatures
         let checked_data = Block::build_data_for_sign(&self.id);
-        let total_weight: u64 = validators_list.iter().map(|v| v.weight).sum();
+        let total_weight: u64 = subset.validators.iter().map(|v| v.weight).sum();
         let weight = signatures
             .signatures
-            .check_signatures(&validators_list, &checked_data)
+            .check_signatures(&subset.validators, &checked_data)
             .map_err(|e| anyhow!("Proof for {}: error while check signatures: {}", self.id, e))?;
 
         // Check weight
@@ -328,7 +309,7 @@ impl BlockProofStuff {
         &self,
         state: &ShardStateStuff,
         block_info: &BlockInfo,
-    ) -> Result<(Vec<ValidatorDescription>, u32)> {
+    ) -> Result<ValidatorSubsetInfo> {
         anyhow::ensure!(
             state.block_id().is_masterchain(),
             "Can't check proof for {}: given state {} doesn't belong masterchain",
@@ -347,7 +328,7 @@ impl BlockProofStuff {
             "Can't check proof for block {} using master state {}, because it is older than the previous key block with seqno {}",
             self.id,
             state.block_id(),
-            block_info.prev_key_block_seqno()
+            block_info.prev_key_block_seqno,
         );
 
         anyhow::ensure!(
@@ -370,7 +351,7 @@ impl BlockProofStuff {
     fn process_prev_key_block_proof(
         &self,
         prev_key_block_proof: &BlockProofStuff,
-    ) -> Result<(Vec<ValidatorDescription>, u32)> {
+    ) -> Result<ValidatorSubsetInfo> {
         let (virt_key_block, prev_key_block_info) = prev_key_block_proof.pre_check_block_proof()?;
 
         anyhow::ensure!(
@@ -389,13 +370,13 @@ impl BlockProofStuff {
             (validator_set, catchain_config)
         };
 
-        self.calc_validators_subset(&validator_set, &catchain_config)
+        self.calc_validators_subset_standard(&validator_set, &catchain_config)
     }
 
     fn calc_validators_subset_standard(
         &self,
-        validator_set: &ton_block::ValidatorSet,
-        catchain_config: &ton_block::CatchainConfig,
+        validator_set: &ValidatorSet,
+        catchain_config: &CatchainConfig,
     ) -> Result<ValidatorSubsetInfo> {
         let cc_seqno = self
             .proof
@@ -442,14 +423,13 @@ pub fn check_with_prev_key_block_proof(
         prev_key_block_proof.id
     );
 
-    let (validators, validators_hash_short) =
-        proof.process_prev_key_block_proof(prev_key_block_proof)?;
+    let subset = proof.process_prev_key_block_proof(prev_key_block_proof)?;
 
     if virt_block_info.key_block {
         proof.pre_check_key_block_proof(virt_block)?;
     }
 
-    proof.check_signatures(validators, validators_hash_short)
+    proof.check_signatures(&subset)
 }
 
 pub fn check_with_master_state(
@@ -462,14 +442,13 @@ pub fn check_with_master_state(
         proof.pre_check_key_block_proof(virt_block)?;
     }
 
-    let (validators, validators_hash_short) =
-        proof.process_given_state(master_state, virt_block_info)?;
-    proof.check_signatures(validators, validators_hash_short)
+    let subset = proof.process_given_state(master_state, virt_block_info)?;
+    proof.check_signatures(&subset)
 }
 
 #[derive(Clone, Debug)]
 pub struct ValidatorSubsetInfo {
-    pub validators: Vec<ton_block::ValidatorDescr>,
+    pub validators: Vec<ValidatorDescription>,
     pub short_hash: u32,
     #[cfg(feature = "venom")]
     pub collator_range: Option<ton_block::CollatorRange>,
@@ -477,18 +456,14 @@ pub struct ValidatorSubsetInfo {
 
 impl ValidatorSubsetInfo {
     pub fn compute_standard(
-        validator_set: &ton_block::ValidatorSet,
-        block_id: &ton_block::BlockIdExt,
-        catchain_config: &ton_block::CatchainConfig,
+        validator_set: &ValidatorSet,
+        block_id: &BlockId,
+        catchain_config: &CatchainConfig,
         cc_seqno: u32,
     ) -> Result<Self> {
-        let (validators, short_hash) = validator_set.calc_subset(
-            catchain_config,
-            block_id.shard().shard_prefix_with_tag(),
-            block_id.shard().workchain_id(),
-            cc_seqno,
-            Default::default(),
-        )?;
+        let (validators, short_hash) = validator_set
+            .compute_subset(block_id.shard, catchain_config, cc_seqno)
+            .context("Failed to compute validator subset")?;
 
         Ok(ValidatorSubsetInfo {
             validators,
@@ -510,9 +485,9 @@ impl ValidatorSubsetInfo {
         get_validator_descrs_by_collator_range(validator_set, cc_seqno, &possible_validators)
     }
 
-    pub fn compute_validator_set(&self, cc_seqno: u32) -> Result<ton_block::ValidatorSet> {
-        ton_block::ValidatorSet::with_cc_seqno(0, 0, 0, cc_seqno, self.validators.clone())
-    }
+    // pub fn compute_validator_set(&self, cc_seqno: u32) -> Result<ton_block::ValidatorSet> {
+    //     ton_block::ValidatorSet::with_cc_seqno(0, 0, 0, cc_seqno, self.validators.clone())
+    // }
 }
 
 #[cfg(feature = "venom")]

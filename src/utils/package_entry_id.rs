@@ -11,6 +11,7 @@ use std::str::FromStr;
 
 use anyhow::Result;
 use everscale_types::models::*;
+use everscale_types::prelude::HashBytes;
 use smallvec::SmallVec;
 
 use super::StoredValue;
@@ -145,6 +146,7 @@ fn parse_block_id(filename: &str) -> Result<BlockId> {
     let root_hash = match parts.next() {
         Some(part) => hex::decode(part)?
             .try_into()
+            .map(HashBytes)
             .map_err(|_| PackageEntryIdError::InvalidHash)?,
         None => return Err(PackageEntryIdError::RootHashNotFound.into()),
     };
@@ -152,6 +154,7 @@ fn parse_block_id(filename: &str) -> Result<BlockId> {
     let file_hash = match parts.next() {
         Some(part) => hex::decode(part)?
             .try_into()
+            .map(HashBytes)
             .map_err(|_| PackageEntryIdError::InvalidHash)?,
         None => return Err(PackageEntryIdError::FileHashNotFound.into()),
     };
@@ -208,8 +211,8 @@ mod tests {
         let block_id = BlockId {
             shard: ShardIdent::MASTERCHAIN,
             seqno: rand::random(),
-            root_hash: rand::thread_rng().gen(),
-            file_hash: rand::thread_rng().gen(),
+            root_hash: HashBytes(rand::thread_rng().gen()),
+            file_hash: HashBytes(rand::thread_rng().gen()),
         };
 
         check_package_id(PackageEntryId::Block(block_id.clone()));

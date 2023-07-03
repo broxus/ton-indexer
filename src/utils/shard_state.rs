@@ -123,12 +123,12 @@ impl ShardStateStuff {
 
 pub struct RefMcStateHandle {
     min_ref_mc_state: Arc<MinRefMcState>,
-    mc_seq_no: u32,
+    mc_seqno: u32,
 }
 
 impl Drop for RefMcStateHandle {
     fn drop(&mut self) {
-        self.min_ref_mc_state.remove(self.mc_seq_no);
+        self.min_ref_mc_state.remove(self.mc_seqno);
     }
 }
 
@@ -144,32 +144,32 @@ impl MinRefMcState {
         })
     }
 
-    pub fn seq_no(&self) -> Option<u32> {
+    pub fn seqno(&self) -> Option<u32> {
         self.counters.read().0
     }
 
-    fn insert(self: &Arc<Self>, mc_seq_no: u32) -> Arc<RefMcStateHandle> {
+    fn insert(self: &Arc<Self>, mc_seqno: u32) -> Arc<RefMcStateHandle> {
         // Fast path, just increase existing counter
         let counters = self.counters.read();
-        if let Some(counter) = counters.1.get(&mc_seq_no) {
+        if let Some(counter) = counters.1.get(&mc_seqno) {
             counter.fetch_add(1, Ordering::Release);
             return Arc::new(RefMcStateHandle {
                 min_ref_mc_state: self.clone(),
-                mc_seq_no,
+                mc_seqno,
             });
         }
         drop(counters);
 
         // Fallback to exclusive write
         let mut counters = self.counters.write();
-        let (min_ref_seq_no, counters) = &mut *counters;
-        match counters.entry(mc_seq_no) {
+        let (min_ref_seqno, counters) = &mut *counters;
+        match counters.entry(mc_seqno) {
             hash_map::Entry::Vacant(entry) => {
                 entry.insert(AtomicU32::new(1));
 
-                match min_ref_seq_no {
-                    Some(seqno) if mc_seq_no < *seqno => *seqno = mc_seq_no,
-                    None => *min_ref_seq_no = Some(mc_seq_no),
+                match min_ref_seqno {
+                    Some(seqno) if mc_seqno < *seqno => *seqno = mc_seqno,
+                    None => *min_ref_seqno = Some(mc_seqno),
                     _ => {}
                 }
             }
@@ -180,14 +180,14 @@ impl MinRefMcState {
 
         Arc::new(RefMcStateHandle {
             min_ref_mc_state: self.clone(),
-            mc_seq_no,
+            mc_seqno,
         })
     }
 
-    fn remove(&self, mc_seq_no: u32) {
+    fn remove(&self, mc_seqno: u32) {
         // Fast path, just decrease existing counter
         let counters = self.counters.read();
-        if let Some(counter) = counters.1.get(&mc_seq_no) {
+        if let Some(counter) = counters.1.get(&mc_seqno) {
             if counter.fetch_sub(1, Ordering::AcqRel) > 1 {
                 return;
             }
@@ -198,12 +198,12 @@ impl MinRefMcState {
 
         // Fallback to exclusive write to update current min
         let mut counters = self.counters.write();
-        let (min_ref_seq_no, counters) = &mut *counters;
-        match counters.entry(mc_seq_no) {
+        let (min_ref_seqno, counters) = &mut *counters;
+        match counters.entry(mc_seqno) {
             hash_map::Entry::Occupied(entry) if entry.get().load(Ordering::Acquire) == 0 => {
                 entry.remove();
-                if matches!(min_ref_seq_no, Some(seq_no) if *seq_no == mc_seq_no) {
-                    *min_ref_seq_no = counters.keys().min().copied();
+                if matches!(min_ref_seqno, Some(seqno) if *seqno == mc_seqno) {
+                    *min_ref_seqno = counters.keys().min().copied();
                 }
             }
             _ => {}
@@ -228,22 +228,22 @@ mod tests {
 
         {
             let _handle = state.insert(10);
-            assert_eq!(state.seq_no(), Some(10));
+            assert_eq!(state.seqno(), Some(10));
         }
-        assert_eq!(state.seq_no(), None);
+        assert_eq!(state.seqno(), None);
 
         {
             let handle1 = state.insert(10);
-            assert_eq!(state.seq_no(), Some(10));
+            assert_eq!(state.seqno(), Some(10));
             let _handle2 = state.insert(15);
-            assert_eq!(state.seq_no(), Some(10));
+            assert_eq!(state.seqno(), Some(10));
             let handle3 = state.insert(10);
-            assert_eq!(state.seq_no(), Some(10));
+            assert_eq!(state.seqno(), Some(10));
             drop(handle3);
-            assert_eq!(state.seq_no(), Some(10));
+            assert_eq!(state.seqno(), Some(10));
             drop(handle1);
-            assert_eq!(state.seq_no(), Some(15));
+            assert_eq!(state.seqno(), Some(15));
         }
-        assert_eq!(state.seq_no(), None);
+        assert_eq!(state.seqno(), None);
     }
 }

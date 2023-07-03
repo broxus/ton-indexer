@@ -131,7 +131,7 @@ impl NodeRpcClient {
             this.send_adnl_query(
                 proto::RpcPrepareBlockProof {
                     block: block_id.clone(),
-                    allow_partial: !block_id.shard_id.is_masterchain(),
+                    allow_partial: !block_id.shard.is_masterchain(),
                 },
                 None,
                 Some(TIMEOUT_PREPARE),

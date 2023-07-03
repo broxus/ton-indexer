@@ -277,14 +277,17 @@ mod tl_block_signature_vec {
 }
 
 mod tl_block_signature {
+    use everscale_types::prelude::HashBytes;
+
     use super::*;
 
     pub const SIZE_HINT: usize = 32 + 68;
 
     pub fn read(packet: &[u8], offset: &mut usize) -> TlResult<BlockSignature> {
-        let node_id_short = <[u8; 32]>::read_from(packet, offset)?;
+        let node_id_short = HashBytes(<[u8; 32]>::read_from(packet, offset)?);
         let signature = <&[u8]>::read_from(packet, offset)?
             .try_into()
+            .map(Signature)
             .map_err(|_| TlError::InvalidData)?;
 
         Ok(BlockSignature {
@@ -332,8 +335,8 @@ mod tl_block_id {
     }
 
     pub fn write<P: TlPacket>(block: &BlockId, packet: &mut P) {
-        packet.write_i32(block.shard.workchain_id());
-        packet.write_u64(block.shard.shard_prefix_with_tag());
+        packet.write_i32(block.shard.workchain());
+        packet.write_u64(block.shard.prefix());
         packet.write_u32(block.seqno);
         packet.write_raw_slice(block.root_hash.as_slice());
         packet.write_raw_slice(block.file_hash.as_slice());

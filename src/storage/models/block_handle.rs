@@ -62,7 +62,7 @@ impl BlockHandle {
     }
 
     pub fn has_proof_or_link(&self, is_link: &mut bool) -> bool {
-        *is_link = !self.id.shard().is_masterchain();
+        *is_link = !self.id.shard.is_masterchain();
         if *is_link {
             self.meta.has_proof_link()
         } else {
@@ -71,8 +71,8 @@ impl BlockHandle {
     }
 
     pub fn masterchain_ref_seqno(&self) -> u32 {
-        if self.id.shard().is_masterchain() {
-            self.id.seq_no()
+        if self.id.shard.is_masterchain() {
+            self.id.seqno
         } else {
             self.meta.masterchain_ref_seqno()
         }

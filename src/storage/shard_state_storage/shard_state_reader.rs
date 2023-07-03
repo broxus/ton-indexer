@@ -145,54 +145,56 @@ impl ShardStatePacketReader {
     }
 
     pub fn read_cell(&mut self, ref_size: usize, buffer: &mut [u8]) -> Result<Option<usize>> {
-        if self.process_skip() == ReaderAction::Incomplete {
-            return Ok(None);
-        }
+        // if self.process_skip() == ReaderAction::Incomplete {
+        //     return Ok(None);
+        // }
 
-        let mut src = self.begin();
+        // let mut src = self.begin();
 
-        let d1 = try_read!(src.read_byte());
-        let l = d1 >> 5;
-        let h = (d1 & 0b0001_0000) != 0;
-        let r = (d1 & 0b0000_0111) as usize;
-        let absent = r == 0b111 && h;
+        // let d1 = try_read!(src.read_byte());
+        // let l = d1 >> 5;
+        // let h = (d1 & 0b0001_0000) != 0;
+        // let r = (d1 & 0b0000_0111) as usize;
+        // let absent = r == 0b111 && h;
 
-        buffer[0] = d1;
+        // buffer[0] = d1;
 
-        let size = if absent {
-            let data_size = 32 * ((LevelMask::new(l).level() + 1) as usize);
-            try_read!(src.read_exact(&mut buffer[1..1 + data_size]));
+        // let size = if absent {
+        //     let data_size = 32 * ((LevelMask::new(l).level() + 1) as usize);
+        //     try_read!(src.read_exact(&mut buffer[1..1 + data_size]));
 
-            tracing::info!("ABSENT");
+        //     tracing::info!("ABSENT");
 
-            // 1 byte of d1 + fixed data size of absent cell
-            1 + data_size
-        } else {
-            if r > 4 {
-                tracing::error!("CELLS: {r}");
-                return Err(ShardStateParserError::InvalidShardStateCell)
-                    .context("Cell must contain at most 4 references");
-            }
+        //     // 1 byte of d1 + fixed data size of absent cell
+        //     1 + data_size
+        // } else {
+        //     if r > 4 {
+        //         tracing::error!("CELLS: {r}");
+        //         return Err(ShardStateParserError::InvalidShardStateCell)
+        //             .context("Cell must contain at most 4 references");
+        //     }
 
-            let d2 = try_read!(src.read_byte());
-            buffer[1] = d2;
+        //     let d2 = try_read!(src.read_byte());
+        //     buffer[1] = d2;
 
-            // Skip optional precalculated hashes
-            let hash_count = ton_types::LevelMask::with_mask(l).level() as usize + 1;
-            if h && !src.skip(hash_count * (32 + 2)) {
-                return Ok(None);
-            }
+        //     // Skip optional precalculated hashes
+        //     let hash_count = LevelMask::with_mask(l).level() as usize + 1;
+        //     if h && !src.skip(hash_count * (32 + 2)) {
+        //         return Ok(None);
+        //     }
 
-            let data_size = ((d2 >> 1) + u8::from(d2 & 1 != 0)) as usize;
-            try_read!(src.read_exact(&mut buffer[2..2 + data_size + r * ref_size]));
+        //     let data_size = ((d2 >> 1) + u8::from(d2 & 1 != 0)) as usize;
+        //     try_read!(src.read_exact(&mut buffer[2..2 + data_size + r * ref_size]));
 
-            // 2 bytes for d1 and d2 + data size + total references size
-            2 + data_size + r * ref_size
-        };
+        //     // 2 bytes for d1 and d2 + data size + total references size
+        //     2 + data_size + r * ref_size
+        // };
 
-        src.end();
+        // src.end();
 
-        Ok(Some(size))
+        // Ok(Some(size))
+
+        todo!()
     }
 
     pub fn read_crc(&mut self) -> Result<Option<()>> {
@@ -489,4 +491,56 @@ enum ShardStateParserError {
     InvalidShardStateCell,
     #[error("Crc mismatch")]
     CrcMismatch,
+}
+
+pub trait ByteOrderRead {
+    fn read_be_uint(&mut self, bytes: usize) -> std::io::Result<u64>;
+    fn read_byte(&mut self) -> std::io::Result<u8>;
+    fn read_be_u32(&mut self) -> std::io::Result<u32>;
+    fn read_le_u32(&mut self) -> std::io::Result<u32>;
+}
+
+impl<T: std::io::Read> ByteOrderRead for T {
+    fn read_be_uint(&mut self, bytes: usize) -> std::io::Result<u64> {
+        match bytes {
+            1 => {
+                let mut buf = [0];
+                self.read_exact(&mut buf)?;
+                Ok(buf[0] as u64)
+            }
+            2 => {
+                let mut buf = [0; 2];
+                self.read_exact(&mut buf)?;
+                Ok(u16::from_be_bytes(buf) as u64)
+            }
+            3..=4 => {
+                let mut buf = [0; 4];
+                self.read_exact(&mut buf[4 - bytes..])?;
+                Ok(u32::from_be_bytes(buf) as u64)
+            }
+            5..=8 => {
+                let mut buf = [0; 8];
+                self.read_exact(&mut buf[8 - bytes..])?;
+                Ok(u64::from_be_bytes(buf))
+            }
+            _ => Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "too many bytes to read in u64",
+            )),
+        }
+    }
+
+    fn read_byte(&mut self) -> std::io::Result<u8> {
+        self.read_be_uint(1).map(|value| value as u8)
+    }
+
+    fn read_be_u32(&mut self) -> std::io::Result<u32> {
+        self.read_be_uint(4).map(|value| value as u32)
+    }
+
+    fn read_le_u32(&mut self) -> std::io::Result<u32> {
+        let mut buf = [0; 4];
+        self.read_exact(&mut buf)?;
+        Ok(u32::from_le_bytes(buf))
+    }
 }

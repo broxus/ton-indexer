@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use num_traits::ToPrimitive;
-use ton_types::UInt256;
+use everscale_types::cell::*;
+use everscale_types::models::BlockId;
 
 use super::cell_storage::*;
 use super::entries_buffer::*;
@@ -106,7 +106,7 @@ impl<'a> ShardStateReplaceTransaction<'a> {
     pub async fn finalize(
         self,
         ctx: &mut FilesContext,
-        block_id: ton_block::BlockIdExt,
+        block_id: BlockId,
         progress_bar: &mut ProgressBar,
     ) -> Result<Arc<ShardStateStuff>> {
         // 2^7 bits + 1 bytes
@@ -208,7 +208,7 @@ impl<'a> ShardStateReplaceTransaction<'a> {
         let root_hash = ctx.entries_buffer.repr_hash();
         ctx.final_check(root_hash)?;
 
-        let shard_state_key = (block_id.shard_id, block_id.seq_no).to_vec();
+        let shard_state_key = block_id.as_short_id().to_vec();
         self.db.shard_states.insert(&shard_state_key, root_hash)?;
 
         progress_bar.complete();
@@ -216,12 +216,12 @@ impl<'a> ShardStateReplaceTransaction<'a> {
         // Load stored shard state
         match self.db.shard_states.get(shard_state_key)? {
             Some(root) => {
-                let cell_id = UInt256::from_be_bytes(&root);
+                let cell_id = HashBytes::from_slice(&root);
 
-                let cell = self.cell_storage.load_cell(cell_id)?;
+                let cell = self.cell_storage.load_cell(&cell_id)?;
                 Ok(Arc::new(ShardStateStuff::new(
                     block_id,
-                    ton_types::Cell::with_cell_impl_arc(cell),
+                    Cell::from(cell as Arc<_>),
                     self.min_ref_mc_state,
                 )?))
             }
@@ -235,195 +235,194 @@ impl<'a> ShardStateReplaceTransaction<'a> {
         cell_index: u32,
         cell: RawCell<'_>,
     ) -> Result<()> {
-        use sha2::{Digest, Sha256};
+        // use sha2::{Digest, Sha256};
 
-        let (mut current_entry, children) =
-            ctx.entries_buffer.split_children(&cell.reference_indices);
+        // let (mut current_entry, children) =
+        //     ctx.entries_buffer.split_children(&cell.reference_indices);
 
-        current_entry.clear();
+        // current_entry.clear();
 
-        // Prepare mask and counters
-        let data_size = (cell.bit_len / 8) + usize::from(cell.bit_len % 8 != 0);
+        // // Prepare mask and counters
+        // let data_size = (cell.bit_len / 8) + usize::from(cell.bit_len % 8 != 0);
 
-        let mut children_mask = ton_types::LevelMask::with_mask(0);
-        let mut tree_bits_count = cell.bit_len as u64;
-        let mut tree_cell_count = 1;
+        // let mut children_mask = LevelMask::new(0);
+        // let mut tree_bits_count = cell.bit_len as u64;
+        // let mut tree_cell_count = 1;
 
-        for (_, child) in children.iter() {
-            children_mask |= child.level_mask();
-            tree_bits_count += child.tree_bits_count();
-            tree_cell_count += child.tree_cell_count();
-        }
+        // for (_, child) in children.iter() {
+        //     children_mask |= child.level_mask();
+        //     tree_bits_count += child.tree_bits_count();
+        //     tree_cell_count += child.tree_cell_count();
+        // }
 
-        let mut is_merkle_cell = false;
-        let mut is_pruned_cell = false;
-        let level_mask = match cell.cell_type {
-            ton_types::CellType::Ordinary => children_mask,
-            ton_types::CellType::PrunedBranch => {
-                is_pruned_cell = true;
-                ton_types::LevelMask::with_mask(cell.level_mask)
-            }
-            ton_types::CellType::LibraryReference => ton_types::LevelMask::with_mask(0),
-            ton_types::CellType::MerkleProof => {
-                is_merkle_cell = true;
-                ton_types::LevelMask::for_merkle_cell(children_mask)
-            }
-            ton_types::CellType::MerkleUpdate => {
-                is_merkle_cell = true;
-                ton_types::LevelMask::for_merkle_cell(children_mask)
-            }
-            ton_types::CellType::Unknown => {
-                return Err(ReplaceTransactionError::InvalidCell).context("Unknown cell type")
-            }
-        };
+        // let mut is_merkle_cell = false;
+        // let mut is_pruned_cell = false;
+        // let level_mask = match cell.cell_type {
+        //     CellType::Ordinary => children_mask,
+        //     CellType::PrunedBranch => {
+        //         is_pruned_cell = true;
+        //         LevelMask::new(cell.level_mask)
+        //     }
+        //     CellType::LibraryReference => LevelMask::new(0),
+        //     CellType::MerkleProof => {
+        //         is_merkle_cell = true;
+        //         LevelMask::for_merkle_cell(children_mask)
+        //     }
+        //     CellType::MerkleUpdate => {
+        //         is_merkle_cell = true;
+        //         LevelMask::for_merkle_cell(children_mask)
+        //     }
+        // };
 
-        if cell.level_mask != level_mask.mask() {
-            return Err(ReplaceTransactionError::InvalidCell).context("Level mask mismatch");
-        }
+        // if cell.level_mask != level_mask.mask() {
+        //     return Err(ReplaceTransactionError::InvalidCell).context("Level mask mismatch");
+        // }
 
-        // Save mask and counters
-        current_entry.set_level_mask(level_mask);
-        current_entry.set_cell_type(cell.cell_type);
-        current_entry.set_tree_bits_count(tree_bits_count);
-        current_entry.set_tree_cell_count(tree_cell_count);
+        // // Save mask and counters
+        // current_entry.set_level_mask(level_mask);
+        // current_entry.set_cell_type(cell.cell_type);
+        // current_entry.set_tree_bits_count(tree_bits_count);
+        // current_entry.set_tree_cell_count(tree_cell_count);
 
-        // Calculate hashes
-        let hash_count = if is_pruned_cell {
-            1
-        } else {
-            level_mask.level() + 1
-        };
+        // // Calculate hashes
+        // let hash_count = if is_pruned_cell {
+        //     1
+        // } else {
+        //     level_mask.level() + 1
+        // };
 
-        let mut max_depths = [0u16; 4];
-        for i in 0..hash_count {
-            let mut hasher = Sha256::new();
+        // let mut max_depths = [0u16; 4];
+        // for i in 0..hash_count {
+        //     let mut hasher = Sha256::new();
 
-            let level_mask = if is_pruned_cell {
-                level_mask
-            } else {
-                ton_types::LevelMask::with_level(i)
-            };
+        //     let level_mask = if is_pruned_cell {
+        //         level_mask
+        //     } else {
+        //         ton_types::LevelMask::with_level(i)
+        //     };
 
-            let d1 = ton_types::cell::calc_d1(
-                level_mask,
-                false,
-                cell.cell_type,
-                cell.reference_indices.len(),
-            );
-            let d2 = ton_types::cell::calc_d2(cell.bit_len);
+        //     let d1 = ton_types::cell::calc_d1(
+        //         level_mask,
+        //         false,
+        //         cell.cell_type,
+        //         cell.reference_indices.len(),
+        //     );
+        //     let d2 = ton_types::cell::calc_d2(cell.bit_len);
 
-            hasher.update([d1, d2]);
+        //     hasher.update([d1, d2]);
 
-            if i == 0 {
-                hasher.update(&cell.data[..data_size]);
-            } else {
-                hasher.update(current_entry.get_hash_slice(i - 1));
-            }
+        //     if i == 0 {
+        //         hasher.update(&cell.data[..data_size]);
+        //     } else {
+        //         hasher.update(current_entry.get_hash_slice(i - 1));
+        //     }
 
-            for (index, child) in children.iter() {
-                let child_depth = if child.cell_type() == ton_types::CellType::PrunedBranch {
-                    let child_data = ctx
-                        .pruned_branches
-                        .get(index)
-                        .ok_or(ReplaceTransactionError::InvalidCell)
-                        .context("Pruned branch data not found")?;
-                    child.pruned_branch_depth(i, child_data)
-                } else {
-                    child.depth(if is_merkle_cell { i + 1 } else { i })
-                };
-                hasher.update(child_depth.to_be_bytes());
+        //     for (index, child) in children.iter() {
+        //         let child_depth = if child.cell_type() == ton_types::CellType::PrunedBranch {
+        //             let child_data = ctx
+        //                 .pruned_branches
+        //                 .get(index)
+        //                 .ok_or(ReplaceTransactionError::InvalidCell)
+        //                 .context("Pruned branch data not found")?;
+        //             child.pruned_branch_depth(i, child_data)
+        //         } else {
+        //             child.depth(if is_merkle_cell { i + 1 } else { i })
+        //         };
+        //         hasher.update(child_depth.to_be_bytes());
 
-                let depth = &mut max_depths[i as usize];
-                *depth = std::cmp::max(*depth, child_depth + 1);
+        //         let depth = &mut max_depths[i as usize];
+        //         *depth = std::cmp::max(*depth, child_depth + 1);
 
-                if *depth > ton_types::MAX_DEPTH {
-                    return Err(ReplaceTransactionError::InvalidCell)
-                        .context("Max tree depth exceeded");
-                }
+        //         if *depth > ton_types::MAX_DEPTH {
+        //             return Err(ReplaceTransactionError::InvalidCell)
+        //                 .context("Max tree depth exceeded");
+        //         }
 
-                current_entry.set_depth(i, *depth);
-            }
+        //         current_entry.set_depth(i, *depth);
+        //     }
 
-            for (index, child) in children.iter() {
-                let child_hash = if child.cell_type() == ton_types::CellType::PrunedBranch {
-                    let child_data = ctx
-                        .pruned_branches
-                        .get(index)
-                        .ok_or(ReplaceTransactionError::InvalidCell)
-                        .context("Pruned branch data not found")?;
-                    child
-                        .pruned_branch_hash(i, child_data)
-                        .context("Invalid pruned branch")?
-                } else {
-                    child.hash(if is_merkle_cell { i + 1 } else { i })
-                };
-                hasher.update(child_hash);
-            }
+        //     for (index, child) in children.iter() {
+        //         let child_hash = if child.cell_type() == ton_types::CellType::PrunedBranch {
+        //             let child_data = ctx
+        //                 .pruned_branches
+        //                 .get(index)
+        //                 .ok_or(ReplaceTransactionError::InvalidCell)
+        //                 .context("Pruned branch data not found")?;
+        //             child
+        //                 .pruned_branch_hash(i, child_data)
+        //                 .context("Invalid pruned branch")?
+        //         } else {
+        //             child.hash(if is_merkle_cell { i + 1 } else { i })
+        //         };
+        //         hasher.update(child_hash);
+        //     }
 
-            current_entry.set_hash(i, hasher.finalize().as_slice());
-        }
+        //     current_entry.set_hash(i, hasher.finalize().as_slice());
+        // }
 
-        // Update pruned branches
-        if is_pruned_cell {
-            ctx.pruned_branches
-                .insert(cell_index, cell.data[..data_size].to_vec());
-        }
+        // // Update pruned branches
+        // if is_pruned_cell {
+        //     ctx.pruned_branches
+        //         .insert(cell_index, cell.data[..data_size].to_vec());
+        // }
 
-        // Write cell data
-        let output_buffer = &mut ctx.output_buffer;
-        output_buffer.clear();
+        // // Write cell data
+        // let output_buffer = &mut ctx.output_buffer;
+        // output_buffer.clear();
 
-        output_buffer.extend_from_slice(&[1, 0, 0, 0, 0, 0, 0, 0, cell.cell_type.to_u8().unwrap()]);
-        output_buffer.extend_from_slice(&(cell.bit_len as u16).to_le_bytes());
-        output_buffer.extend_from_slice(&cell.data[0..(cell.bit_len + 8) / 8]);
-        output_buffer.extend_from_slice(&[cell.level_mask, 0, 1, hash_count]); // level_mask, store_hashes, has_hashes, hash_count
-        for i in 0..hash_count {
-            output_buffer.extend_from_slice(current_entry.get_hash_slice(i));
-        }
-        output_buffer.extend_from_slice(&[1, hash_count]); // has_depths, depth_count(same as hash_count)
-        for i in 0..hash_count {
-            output_buffer.extend_from_slice(current_entry.get_depth_slice(i));
-        }
+        // output_buffer.extend_from_slice(&[1, 0, 0, 0, 0, 0, 0, 0, cell.cell_type.to_u8().unwrap()]);
+        // output_buffer.extend_from_slice(&(cell.bit_len as u16).to_le_bytes());
+        // output_buffer.extend_from_slice(&cell.data[0..(cell.bit_len + 8) / 8]);
+        // output_buffer.extend_from_slice(&[cell.level_mask, 0, 1, hash_count]); // level_mask, store_hashes, has_hashes, hash_count
+        // for i in 0..hash_count {
+        //     output_buffer.extend_from_slice(current_entry.get_hash_slice(i));
+        // }
+        // output_buffer.extend_from_slice(&[1, hash_count]); // has_depths, depth_count(same as hash_count)
+        // for i in 0..hash_count {
+        //     output_buffer.extend_from_slice(current_entry.get_depth_slice(i));
+        // }
 
-        // Write cell references
-        output_buffer.extend_from_slice(&[cell.reference_indices.len() as u8]);
-        for (index, child) in children.iter() {
-            let child_hash = if child.cell_type() == CellType::PrunedBranch {
-                let child_data = ctx
-                    .pruned_branches
-                    .get(index)
-                    .ok_or(ReplaceTransactionError::InvalidCell)
-                    .context("Pruned branch data not found")?;
-                child
-                    .pruned_branch_hash(MAX_LEVEL, child_data)
-                    .context("Invalid pruned branch")?
-            } else {
-                child.hash(MAX_LEVEL)
-            };
+        // // Write cell references
+        // output_buffer.extend_from_slice(&[cell.reference_indices.len() as u8]);
+        // for (index, child) in children.iter() {
+        //     let child_hash = if child.cell_type() == CellType::PrunedBranch {
+        //         let child_data = ctx
+        //             .pruned_branches
+        //             .get(index)
+        //             .ok_or(ReplaceTransactionError::InvalidCell)
+        //             .context("Pruned branch data not found")?;
+        //         child
+        //             .pruned_branch_hash(MAX_LEVEL, child_data)
+        //             .context("Invalid pruned branch")?
+        //     } else {
+        //         child.hash(MAX_LEVEL)
+        //     };
 
-            *ctx.cell_usages.entry(*child_hash).or_default() += 1;
-            output_buffer.extend_from_slice(child_hash);
-        }
+        //     *ctx.cell_usages.entry(*child_hash).or_default() += 1;
+        //     output_buffer.extend_from_slice(child_hash);
+        // }
 
-        // Write counters
-        output_buffer.extend_from_slice(current_entry.get_tree_counters());
+        // // Write counters
+        // output_buffer.extend_from_slice(current_entry.get_tree_counters());
 
-        // Save serialized data
-        let repr_hash = if is_pruned_cell {
-            current_entry
-                .as_reader()
-                .pruned_branch_hash(3, &cell.data[..data_size])
-                .context("Invalid pruned branch")?
-        } else {
-            current_entry.as_reader().hash(MAX_LEVEL)
-        };
+        // // Save serialized data
+        // let repr_hash = if is_pruned_cell {
+        //     current_entry
+        //         .as_reader()
+        //         .pruned_branch_hash(3, &cell.data[..data_size])
+        //         .context("Invalid pruned branch")?
+        // } else {
+        //     current_entry.as_reader().hash(MAX_LEVEL)
+        // };
 
-        ctx.write_batch
-            .merge_cf(&ctx.cells_cf, repr_hash, output_buffer.as_slice());
-        ctx.cell_usages.insert(*repr_hash, -1);
+        // ctx.write_batch
+        //     .merge_cf(&ctx.cells_cf, repr_hash, output_buffer.as_slice());
+        // ctx.cell_usages.insert(*repr_hash, -1);
 
-        // Done
-        Ok(())
+        // // Done
+        // Ok(())
+
+        todo!()
     }
 }
 

@@ -44,10 +44,6 @@ pub async fn boot(engine: &Arc<Engine>) -> Result<()> {
         }
     };
 
-    tracing::info!(
-        last_key_block_id = %last_key_block_id.display(),
-        shards_client_mc_block_id = %shards_client_mc_block_id.display(),
-        "boot finished"
-    );
+    tracing::info!(%last_key_block_id, %shards_client_mc_block_id, "boot finished");
     Ok(())
 }

@@ -34,14 +34,14 @@ impl TopBlocks {
     /// Checks whether the given block is equal to or greater than
     /// the last block for the given shard
     pub fn contains(&self, block_id: &BlockId) -> bool {
-        self.contains_shard_seq_no(&block_id.shard, block_id.seqno)
+        self.contains_shard_seqno(&block_id.shard, block_id.seqno)
     }
 
     /// Checks whether the given pair of [`ton_block::ShardIdent`] and seqno
     /// is equal to or greater than the last block for the given shard.
     ///
     /// NOTE: Specified shard could be split or merged
-    pub fn contains_shard_seq_no(&self, shard_ident: &ShardIdent, seq_no: u32) -> bool {
+    pub fn contains_shard_seqno(&self, shard_ident: &ShardIdent, seq_no: u32) -> bool {
         if shard_ident.is_masterchain() {
             seq_no >= self.mc_block.seqno
         } else {

@@ -35,12 +35,8 @@ impl BlockHandleStorage {
         }
     }
 
-    pub fn assign_mc_ref_seq_no(
-        &self,
-        handle: &Arc<BlockHandle>,
-        mc_ref_seq_no: u32,
-    ) -> Result<()> {
-        if handle.set_masterchain_ref_seqno(mc_ref_seq_no)? {
+    pub fn assign_mc_ref_seqno(&self, handle: &Arc<BlockHandle>, mc_ref_seqno: u32) -> Result<()> {
+        if handle.set_masterchain_ref_seqno(mc_ref_seqno)? {
             self.store_handle(handle)?;
         }
         Ok(())
@@ -97,23 +93,23 @@ impl BlockHandleStorage {
         if handle.is_key_block() {
             self.db
                 .key_blocks
-                .insert(id.seq_no.to_be_bytes(), id.to_vec())?;
+                .insert(id.seqno.to_be_bytes(), id.to_vec())?;
         }
 
         Ok(())
     }
 
-    pub fn load_key_block_handle(&self, seq_no: u32) -> Result<Arc<BlockHandle>> {
+    pub fn load_key_block_handle(&self, seqno: u32) -> Result<Arc<BlockHandle>> {
         let key_block_id = self
             .db
             .key_blocks
-            .get(seq_no.to_be_bytes())?
+            .get(seqno.to_be_bytes())?
             .map(|value| BlockId::from_slice(value.as_ref()))
             .transpose()?
             .ok_or(BlockHandleStorageError::KeyBlockNotFound)?;
 
         self.load_handle(&key_block_id)?.ok_or_else(|| {
-            BlockHandleStorageError::KeyBlockHandleNotFound(key_block_id.seq_no).into()
+            BlockHandleStorageError::KeyBlockHandleNotFound(key_block_id.seqno).into()
         })
     }
 
@@ -129,18 +125,18 @@ impl BlockHandleStorage {
             .ok_or(BlockHandleStorageError::KeyBlockNotFound)?;
 
         self.load_handle(&key_block_id)?.ok_or_else(|| {
-            BlockHandleStorageError::KeyBlockHandleNotFound(key_block_id.seq_no).into()
+            BlockHandleStorageError::KeyBlockHandleNotFound(key_block_id.seqno).into()
         })
     }
 
-    pub fn find_prev_key_block(&self, seq_no: u32) -> Result<Option<Arc<BlockHandle>>> {
-        if seq_no == 0 {
+    pub fn find_prev_key_block(&self, seqno: u32) -> Result<Option<Arc<BlockHandle>>> {
+        if seqno == 0 {
             return Ok(None);
         }
 
         // Create iterator and move it to the previous key block before the specified
         let mut iter = self.db.key_blocks.raw_iterator();
-        iter.seek_for_prev((seq_no - 1u32).to_be_bytes());
+        iter.seek_for_prev((seqno - 1u32).to_be_bytes());
 
         // Load key block from current iterator value
         iter.value()
@@ -148,20 +144,20 @@ impl BlockHandleStorage {
             .transpose()?
             .map(|key_block_id| {
                 self.load_handle(&key_block_id)?.ok_or_else(|| {
-                    BlockHandleStorageError::KeyBlockHandleNotFound(key_block_id.seq_no).into()
+                    BlockHandleStorageError::KeyBlockHandleNotFound(key_block_id.seqno).into()
                 })
             })
             .transpose()
     }
 
-    pub fn find_prev_persistent_key_block(&self, seq_no: u32) -> Result<Option<Arc<BlockHandle>>> {
-        if seq_no == 0 {
+    pub fn find_prev_persistent_key_block(&self, seqno: u32) -> Result<Option<Arc<BlockHandle>>> {
+        if seqno == 0 {
             return Ok(None);
         }
 
         // Create iterator and move it to the previous key block before the specified
         let mut iter = self.db.key_blocks.raw_iterator();
-        iter.seek_for_prev((seq_no - 1u32).to_be_bytes());
+        iter.seek_for_prev((seqno - 1u32).to_be_bytes());
 
         // Loads key block from current iterator value and moves it backward
         let mut get_key_block = move || -> Result<Option<Arc<BlockHandle>>> {
@@ -173,7 +169,7 @@ impl BlockHandleStorage {
 
             // Load block handle for this id
             let handle = self.load_handle(&key_block_id)?.ok_or(
-                BlockHandleStorageError::KeyBlockHandleNotFound(key_block_id.seq_no),
+                BlockHandleStorageError::KeyBlockHandleNotFound(key_block_id.seqno),
             )?;
 
             // Move iterator backward
@@ -211,8 +207,8 @@ impl BlockHandleStorage {
     ) -> impl Iterator<Item = Result<BlockId>> + '_ {
         let mut raw_iterator = self.db.key_blocks.raw_iterator();
         let reverse = match direction {
-            KeyBlocksDirection::ForwardFrom(seq_no) => {
-                raw_iterator.seek(seq_no.to_be_bytes());
+            KeyBlocksDirection::ForwardFrom(seqno) => {
+                raw_iterator.seek(seqno.to_be_bytes());
                 false
             }
             KeyBlocksDirection::Backward => {
@@ -239,7 +235,7 @@ impl BlockHandleStorage {
                 }
             };
 
-            if block_id.seq_no == 0
+            if block_id.seqno == 0
                 || block_id.is_masterchain() && value.is_key_block()
                 || top_blocks.contains(block_id)
             {
