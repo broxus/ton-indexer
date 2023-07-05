@@ -89,6 +89,7 @@ impl QuerySubscriber for NodeRpcServer {
             RpcDownloadKeyBlockProof => download_key_block_proof => answer_raw,
             RpcDownloadBlockProofLink => download_block_proof_link => answer_raw,
             RpcDownloadKeyBlockProofLink => download_key_block_proof_link => answer_raw,
+            RpcDownloadPersistentStateSlice => download_persistent_state_part => answer_raw,
             RpcGetArchiveInfo => get_archive_info => answer,
             RpcGetArchiveSlice => get_archive_slice => answer_raw,
             _ => {
@@ -154,6 +155,14 @@ impl QueryHandler {
     ) -> Result<proto::PreparedState> {
         // TODO: implement
         Ok(proto::PreparedState::NotFound)
+    }
+
+    async fn download_persistent_state_part(
+        self,
+        _: proto::RpcDownloadPersistentStateSlice,
+    ) -> Result<Vec<u8>> {
+        // TODO: implement
+        Ok(Vec::new())
     }
 
     async fn prepare_zero_state(

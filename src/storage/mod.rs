@@ -20,6 +20,7 @@ mod block_connection_storage;
 mod block_handle_storage;
 mod block_storage;
 mod node_state_storage;
+mod persistent_state_storage;
 mod runtime_storage;
 mod shard_state_storage;
 
