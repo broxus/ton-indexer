@@ -202,7 +202,6 @@ impl Engine {
 
         // Start archives gc
         self.start_archives_gc().await?;
-        self.start_persistent_state_handler().await;
 
         // Synchronize
         match self.old_blocks_policy {
@@ -222,6 +221,7 @@ impl Engine {
         self.prepare_blocks_gc().await?;
         self.start_walking_blocks()?;
         self.start_states_gc();
+        self.start_persistent_state_handler();
 
         // Engine started
         Ok(())
@@ -254,7 +254,7 @@ impl Engine {
             .await
     }
 
-    async fn start_persistent_state_handler(self: &Arc<Self>) {
+    fn start_persistent_state_handler(self: &Arc<Self>) {
         let engine = self.clone();
 
         tokio::spawn(async move {
