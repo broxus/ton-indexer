@@ -267,10 +267,23 @@ impl Engine {
 
                 match persistent_state_keeper.current() {
                     Some(state) => {
-                        let root_hash_bytes = state.id().root_hash.as_slice();
-                        if !persistent_state_storage.state_exists(root_hash_bytes).await
+                        let state = match engine.load_state(state.id()).await {
+                            Ok(state) => state,
+                            Err(e) => {
+                                tracing::error!(
+                                    "Failed to load state for block: {}. Err: {e:?}",
+                                    state.id()
+                                );
+                                continue;
+                            }
+                        };
+
+                        let root_hash = state.root_cell().repr_hash();
+                        if !persistent_state_storage
+                            .state_exists(root_hash.as_slice())
+                            .await
                             && persistent_state_storage
-                                .save_state(*root_hash_bytes)
+                                .save_state(*root_hash.as_slice())
                                 .await
                                 .is_err()
                         {
