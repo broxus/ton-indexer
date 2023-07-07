@@ -202,6 +202,7 @@ impl Engine {
 
         // Start archives gc
         self.start_archives_gc().await?;
+        self.start_persistent_state_handler().await;
 
         // Synchronize
         match self.old_blocks_policy {
@@ -251,6 +252,40 @@ impl Engine {
                 blocks_gc_state.ty,
             )
             .await
+    }
+
+    async fn start_persistent_state_handler(self: &Arc<Self>) {
+        let engine = self.clone();
+
+        tokio::spawn(async move {
+            let fallback_interval = Duration::from_secs(60);
+            let persistent_state_keeper =
+                engine.storage.runtime_storage().persistent_state_keeper();
+            let persistent_state_storage = engine.storage.persistent_state_storage();
+            loop {
+                tokio::pin!(let new_state_found = persistent_state_keeper.new_state_found(););
+
+                match persistent_state_keeper.current() {
+                    Some(state) => {
+                        let root_hash_bytes = state.id().root_hash.as_slice();
+                        if !persistent_state_storage.state_exists(root_hash_bytes).await
+                            && persistent_state_storage
+                                .save_state(*root_hash_bytes)
+                                .await
+                                .is_err()
+                        {
+                            tokio::time::sleep(fallback_interval).await;
+                        }
+                    }
+                    None => {
+                        new_state_found.await;
+                        continue;
+                    }
+                };
+
+                new_state_found.await;
+            }
+        });
     }
 
     async fn start_archives_gc(self: &Arc<Self>) -> Result<()> {

@@ -55,12 +55,11 @@ impl PersistentStateStorage {
     #[allow(unused)]
     pub async fn read_state_part(
         &self,
-        mc_root_hash: &[u8; 32],
-        sc_root_hash: &[u8; 32],
+        block_file_hash: &[u8; 32],
         offset: usize,
         size: usize,
     ) -> Option<Vec<u8>> {
-        let file_path = self.prepare_state_file_path(mc_root_hash, sc_root_hash);
+        let file_path = self.prepare_state_file_path(block_file_hash);
         let file = match File::open(file_path) {
             Ok(file) => file,
             Err(e) => {
@@ -88,8 +87,8 @@ impl PersistentStateStorage {
     }
 
     #[allow(unused)]
-    pub async fn state_exists(&self, mc_root_hash: &[u8; 32], sc_toot_hash: &[u8; 32]) -> bool {
-        let file_name = self.prepare_state_file_path(mc_root_hash, sc_toot_hash);
+    pub async fn state_exists(&self, block_file_hash: &[u8; 32]) -> bool {
+        let file_name = self.prepare_state_file_path(block_file_hash);
         if let Ok(meta) = tokio::fs::metadata(file_name).await {
             meta.is_file()
         } else {
@@ -109,8 +108,8 @@ impl PersistentStateStorage {
     }
 
     #[allow(unused)]
-    fn prepare_state_file_path(&self, mc_root_hash: &[u8; 32], sc_toot_hash: &[u8; 32]) -> PathBuf {
-        let file_name = format!("{:x?}:{:x?}", mc_root_hash, sc_toot_hash);
+    fn prepare_state_file_path(&self, block_file_hash: &[u8; 32]) -> PathBuf {
+        let file_name = format!("{:x?}", block_file_hash);
         self.storage_path.join(file_name)
     }
 }

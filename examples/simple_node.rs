@@ -7,6 +7,7 @@ use anyhow::Result;
 use argh::FromArgs;
 use broxus_util::now;
 use serde::{Deserialize, Serialize};
+use tracing_subscriber::EnvFilter;
 
 use ton_indexer::utils::*;
 use ton_indexer::{Engine, GlobalConfig, NodeConfig, ProcessBlockContext};
@@ -28,7 +29,13 @@ pub struct App {
 
 #[tokio::main]
 async fn main() -> ExitCode {
-    tracing_subscriber::fmt::init();
+    let logger = tracing_subscriber::fmt().with_env_filter(
+        EnvFilter::builder()
+            .with_default_directive(tracing::Level::INFO.into())
+            .from_env_lossy(),
+    );
+
+    logger.init();
 
     if let Err(e) = run(argh::from_env()).await {
         eprintln!("Fatal error: {e:?}");
