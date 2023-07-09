@@ -347,6 +347,7 @@ impl Engine {
         let sem = Arc::new(Semaphore::new(parallelism));
 
         for state in states {
+            tracing::info!("Writing persistent state: {}", state.block_id());
             let engine = self.clone();
             let sem = sem.clone();
             let _permit = sem.acquire_owned().await;
@@ -354,25 +355,23 @@ impl Engine {
             tokio::spawn(async move {
                 let persistent_state_storage = engine.storage.persistent_state_storage();
                 let root_hash = state.root_cell().repr_hash();
-                if persistent_state_storage
+                if !persistent_state_storage
                     .state_exists(root_hash.as_slice())
                     .await
                 {
-                    return;
-                }
-
-                'state: loop {
-                    let cell_hex = hex::encode(root_hash.as_slice());
-                    match persistent_state_storage
-                        .save_state(*root_hash.as_slice())
-                        .await
-                    {
-                        Ok(_) => break 'state,
-                        Err(e) => {
-                            tracing::error!(
-                                cell_hash = &cell_hex,
-                                "Failed to save persistent state to file. Err: {e:?}"
-                            );
+                    'state: loop {
+                        let cell_hex = hex::encode(root_hash.as_slice());
+                        match persistent_state_storage
+                            .save_state(*root_hash.as_slice())
+                            .await
+                        {
+                            Ok(_) => break 'state,
+                            Err(e) => {
+                                tracing::error!(
+                                    cell_hash = &cell_hex,
+                                    "Failed to save persistent state to file. Err: {e:?}"
+                                );
+                            }
                         }
                     }
                 }
