@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::Result;
+use tokio_util::sync::CancellationToken;
 
 use crate::db::Db;
 
@@ -11,6 +12,7 @@ mod cell_writer;
 pub struct PersistentStateStorage {
     storage_path: PathBuf,
     db: Arc<Db>,
+    cancellation_token: CancellationToken,
 }
 
 impl PersistentStateStorage {
@@ -18,37 +20,40 @@ impl PersistentStateStorage {
     pub async fn new(file_db_path: PathBuf, db: Arc<Db>) -> Result<Self> {
         let dir = file_db_path.join("states");
         tokio::fs::create_dir_all(&dir).await?;
+        let cancellation_token = CancellationToken::new();
         Ok(Self {
             storage_path: dir,
             db,
+            cancellation_token,
         })
     }
 
     #[allow(unused)]
     pub async fn save_state(&self, cell_hash: [u8; 32]) -> Result<()> {
+        tokio::pin!(
+            let signal = self.cancellation_token.cancelled();
+        );
+
         let cell_hex = hex::encode(cell_hash);
 
         let db = self.db.clone();
         let path = self.storage_path.clone();
+        let cell_writer = cell_writer::CellWriter::new(&db, &path);
 
-        tokio::spawn(async move {
-            let cell_writer = cell_writer::CellWriter::new(&db, &path);
-            match cell_writer.write(&cell_hash) {
-                Ok(path) => {
-                    tracing::info!(
-                        "Successfully wrote persistent {} state to a file: {} ",
-                        cell_hex,
-                        path.display()
-                    );
-                }
-                Err(e) => {
-                    tracing::error!(
-                        cell_hash = &cell_hex,
-                        "Failed to save persistent state to file. Err: {e:?}"
-                    );
-                }
-            }
-        });
+        let path = tokio::select! {
+            result = async move { cell_writer.write(&cell_hash) } => result?,
+            _ = (&mut signal) => {
+                cell_writer::clear_temp(&path, &cell_hash);
+                return Ok(())
+            },
+        };
+
+        tracing::info!(
+            "Successfully wrote persistent {} state to a file: {} ",
+            cell_hex,
+            path.display()
+        );
+
         Ok(())
     }
 

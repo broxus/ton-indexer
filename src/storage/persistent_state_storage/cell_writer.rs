@@ -1,4 +1,5 @@
 use std::collections::hash_map;
+use std::fs;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::os::unix::io::AsRawFd;
@@ -12,6 +13,14 @@ use ton_types::{ByteOrderRead, UInt256};
 
 use crate::db::Db;
 use crate::utils::FastHashMap;
+
+pub fn clear_temp(base_path: &Path, root_hash: &[u8; 32]) {
+    let file_name = hex::encode(root_hash);
+    let file_path = base_path.join(&file_name);
+    let temp_file_path = base_path.join(format!("{}.temp", &file_name));
+    let _ = fs::remove_file(file_path);
+    let _ = fs::remove_file(temp_file_path);
+}
 
 pub struct CellWriter<'a> {
     db: &'a Db,

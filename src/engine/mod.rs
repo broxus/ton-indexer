@@ -14,7 +14,7 @@ use anyhow::{Context, Result};
 use broxus_util::now;
 use everscale_network::overlay;
 use serde::{Deserialize, Serialize};
-use tokio::sync::Notify;
+use tokio::sync::{Notify, Semaphore};
 
 use global_config::GlobalConfig;
 
@@ -221,7 +221,7 @@ impl Engine {
         self.prepare_blocks_gc().await?;
         self.start_walking_blocks()?;
         self.start_states_gc();
-        self.start_persistent_state_handler();
+        self.start_persistent_state_handler(1usize);
 
         // Engine started
         Ok(())
@@ -254,41 +254,79 @@ impl Engine {
             .await
     }
 
-    fn start_persistent_state_handler(self: &Arc<Self>) {
+    fn start_persistent_state_handler(self: &Arc<Self>, parallelism: usize) {
         let engine = self.clone();
 
         tokio::spawn(async move {
             let fallback_interval = Duration::from_secs(60);
             let persistent_state_keeper =
                 engine.storage.runtime_storage().persistent_state_keeper();
-            let persistent_state_storage = engine.storage.persistent_state_storage();
             loop {
                 tokio::pin!(let new_state_found = persistent_state_keeper.new_state_found(););
 
                 match persistent_state_keeper.current() {
-                    Some(state) => {
-                        let state = match engine.load_state(state.id()).await {
+                    Some(block_handle) => {
+                        let mc_state = match engine.load_state(block_handle.id()).await {
                             Ok(state) => state,
                             Err(e) => {
                                 tracing::error!(
                                     "Failed to load state for block: {}. Err: {e:?}",
-                                    state.id()
+                                    block_handle.id()
                                 );
+                                tokio::time::sleep(fallback_interval).await;
                                 continue;
                             }
                         };
 
-                        let root_hash = state.root_cell().repr_hash();
-                        if !persistent_state_storage
-                            .state_exists(root_hash.as_slice())
+                        let mut persistent_states = Vec::new();
+                        persistent_states.push(mc_state);
+
+                        let block_stuff = match engine
+                            .storage
+                            .block_storage()
+                            .load_block_data(&block_handle)
                             .await
-                            && persistent_state_storage
-                                .save_state(*root_hash.as_slice())
-                                .await
-                                .is_err()
                         {
-                            tokio::time::sleep(fallback_interval).await;
+                            Ok(block_stuff) => block_stuff,
+                            Err(e) => {
+                                tracing::error!(
+                                    "Failed to load block data: {}. Err: {e:?}",
+                                    block_handle.id()
+                                );
+                                tokio::time::sleep(fallback_interval).await;
+                                continue;
+                            }
+                        };
+                        let shard_blocks = match block_stuff.shard_blocks() {
+                            Ok(shard_blocks) => shard_blocks,
+                            Err(e) => {
+                                tracing::error!(
+                                    "Failed to load shard blocks from block stuff: {}. Err: {e:?}",
+                                    block_handle.id()
+                                );
+                                tokio::time::sleep(fallback_interval).await;
+                                continue;
+                            }
+                        };
+
+                        'shard_states: for (_, block) in shard_blocks {
+                            match engine.load_state(&block).await {
+                                Ok(state) => {
+                                    persistent_states.push(state);
+                                }
+                                Err(e) => {
+                                    tracing::error!(
+                                        "Failed to load state for block: {}. Err: {e:?}",
+                                        block_handle.id()
+                                    );
+                                    continue 'shard_states;
+                                }
+                            };
                         }
+
+                        engine
+                            .process_persistent_states(persistent_states, parallelism)
+                            .await;
                     }
                     None => {
                         new_state_found.await;
@@ -299,6 +337,49 @@ impl Engine {
                 new_state_found.await;
             }
         });
+    }
+
+    async fn process_persistent_states(
+        self: &Arc<Self>,
+        states: Vec<Arc<ShardStateStuff>>,
+        parallelism: usize,
+    ) {
+        let sem = Arc::new(Semaphore::new(parallelism));
+
+        for state in states {
+            let engine = self.clone();
+            let sem = sem.clone();
+            let _permit = sem.acquire_owned().await;
+
+            tokio::spawn(async move {
+                let persistent_state_storage = engine.storage.persistent_state_storage();
+                let root_hash = state.root_cell().repr_hash();
+                if persistent_state_storage
+                    .state_exists(root_hash.as_slice())
+                    .await
+                {
+                    return;
+                }
+
+                'state: loop {
+                    let cell_hex = hex::encode(root_hash.as_slice());
+                    match persistent_state_storage
+                        .save_state(*root_hash.as_slice())
+                        .await
+                    {
+                        Ok(_) => break 'state,
+                        Err(e) => {
+                            tracing::error!(
+                                cell_hash = &cell_hex,
+                                "Failed to save persistent state to file. Err: {e:?}"
+                            );
+                        }
+                    }
+                }
+
+                drop(_permit);
+            });
+        }
     }
 
     async fn start_archives_gc(self: &Arc<Self>) -> Result<()> {
