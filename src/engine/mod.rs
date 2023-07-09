@@ -347,7 +347,6 @@ impl Engine {
         let sem = Arc::new(Semaphore::new(parallelism));
 
         for state in states {
-            tracing::info!("Writing persistent state: {}", state.block_id());
             let engine = self.clone();
             let sem = sem.clone();
             let _permit = sem.acquire_owned().await;
@@ -361,6 +360,7 @@ impl Engine {
                 {
                     'state: loop {
                         let cell_hex = hex::encode(root_hash.as_slice());
+                        tracing::info!("Writing persistent state: {}", &cell_hex);
                         match persistent_state_storage
                             .save_state(*root_hash.as_slice())
                             .await
