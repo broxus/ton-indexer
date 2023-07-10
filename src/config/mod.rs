@@ -27,6 +27,8 @@ pub struct NodeConfig {
 
     pub db_options: DbOptions,
 
+    pub adnl_supported_methods: Option<AdnlSupportedMethods>,
+
     pub archive_options: Option<ArchiveOptions>,
     pub sync_options: SyncOptions,
 
@@ -50,6 +52,7 @@ impl Default for NodeConfig {
             archive_options: Some(Default::default()),
             db_options: Default::default(),
             sync_options: Default::default(),
+            adnl_supported_methods: Default::default(),
             adnl_options: Default::default(),
             rldp_options: Default::default(),
             dht_options: Default::default(),
@@ -239,5 +242,20 @@ pub struct ShardStateCacheOptions {
 impl Default for ShardStateCacheOptions {
     fn default() -> Self {
         Self { ttl_sec: 120 }
+    }
+}
+
+#[derive(Debug, Copy, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase", deny_unknown_fields)]
+pub enum AdnlSupportedMethods {
+    All,
+    Partial { persistent_state: bool },
+}
+
+impl Default for AdnlSupportedMethods {
+    fn default() -> Self {
+        Self::Partial {
+            persistent_state: false,
+        }
     }
 }

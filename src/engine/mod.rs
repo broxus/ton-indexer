@@ -58,6 +58,8 @@ pub struct Engine {
     archive_options: Option<ArchiveOptions>,
     sync_options: SyncOptions,
 
+    adnl_supported_methods: AdnlSupportedMethods,
+
     shard_states_operations: ShardStatesOperationsPool,
     block_applying_operations: BlockApplyingOperationsPool,
     next_block_applying_operations: NextBlockApplyingOperationsPool,
@@ -151,8 +153,6 @@ impl Engine {
             )
         };
 
-        tracing::info!("network started");
-
         Ok(Arc::new(Self {
             is_working: AtomicBool::new(true),
             db,
@@ -173,6 +173,7 @@ impl Engine {
             hard_forks,
             archive_options: config.archive_options,
             sync_options: config.sync_options,
+            adnl_supported_methods: config.adnl_supported_methods.unwrap_or_default(),
             shard_states_operations: OperationsPool::new("shard_states_operations"),
             block_applying_operations: OperationsPool::new("block_applying_operations"),
             next_block_applying_operations: OperationsPool::new("next_block_applying_operations"),
@@ -349,11 +350,11 @@ impl Engine {
         for state in states {
             let engine = self.clone();
             let sem = sem.clone();
-            let _permit = sem.acquire_owned().await;
+            let _permit = sem.acquire_owned().await.ok();
 
             tokio::spawn(async move {
                 let persistent_state_storage = engine.storage.persistent_state_storage();
-                let root_hash = state.root_cell().repr_hash();
+                let root_hash = state.block_id().root_hash;
                 if !persistent_state_storage
                     .state_exists(root_hash.as_slice())
                     .await
@@ -915,6 +916,14 @@ impl Engine {
             .current_meta()
     }
 
+    pub fn supports_persistent_state_handling(&self) -> bool {
+        matches!(
+            self.adnl_supported_methods,
+            AdnlSupportedMethods::Partial {
+                persistent_state: true,
+            } | AdnlSupportedMethods::All
+        )
+    }
     async fn wait_next_applied_mc_block(
         &self,
         prev_handle: &Arc<BlockHandle>,

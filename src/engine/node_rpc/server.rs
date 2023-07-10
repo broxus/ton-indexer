@@ -151,18 +151,40 @@ impl QueryHandler {
 
     async fn prepare_persistent_state(
         self,
-        _: proto::RpcPreparePersistentState,
+        query: proto::RpcPreparePersistentState,
     ) -> Result<proto::PreparedState> {
-        // TODO: implement
-        Ok(proto::PreparedState::NotFound)
+        if !self.0.supports_persistent_state_handling() {
+            return Ok(proto::PreparedState::NotFound);
+        }
+
+        let persistent_state_storage = self.0.storage.persistent_state_storage();
+        if persistent_state_storage
+            .state_exists(query.block.root_hash.as_slice())
+            .await
+        {
+            Ok(proto::PreparedState::Found)
+        } else {
+            Ok(proto::PreparedState::NotFound)
+        }
     }
 
     async fn download_persistent_state_part(
         self,
-        _: proto::RpcDownloadPersistentStateSlice,
+        query: proto::RpcDownloadPersistentStateSlice,
     ) -> Result<Vec<u8>> {
-        // TODO: implement
-        Ok(Vec::new())
+        let persistent_state_storage = self.0.storage.persistent_state_storage();
+        let root_hash = query.block.root_hash;
+        match persistent_state_storage
+            .read_state_part(
+                root_hash.as_slice(),
+                query.offset as usize,
+                query.max_size as usize,
+            )
+            .await
+        {
+            Some(part) => Ok(part),
+            None => Ok(Vec::new()),
+        }
     }
 
     async fn prepare_zero_state(
