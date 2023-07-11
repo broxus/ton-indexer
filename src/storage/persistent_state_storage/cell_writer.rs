@@ -34,9 +34,9 @@ impl<'a> CellWriter<'a> {
     }
 
     #[allow(unused)]
-    pub fn write(&self, root_hash: &[u8; 32]) -> Result<PathBuf> {
+    pub fn write(&self, state_root_hash: &[u8; 32], block_root_hash: &[u8; 32]) -> Result<PathBuf> {
         // Open target file in advance to get the error immediately (if any)
-        let file_path = self.base_path.join(hex::encode(root_hash));
+        let file_path = self.base_path.join(hex::encode(block_root_hash));
         let file = std::fs::OpenOptions::new()
             .write(true)
             .create(true)
@@ -46,8 +46,9 @@ impl<'a> CellWriter<'a> {
 
         // Load cells from db in reverse order into the temp file
         tracing::info!("started loading cells");
-        let mut intermediate = write_rev_cells(self.db, self.base_path, root_hash)
-            .context("Failed to write reversed cells data")?;
+        let mut intermediate =
+            write_rev_cells(self.db, self.base_path, state_root_hash, block_root_hash)
+                .context("Failed to write reversed cells data")?;
         tracing::info!("finished loading cells");
         let cell_count = intermediate.cell_sizes.len() as u32;
 
@@ -138,7 +139,8 @@ struct IntermediateState {
 fn write_rev_cells<P: AsRef<Path>>(
     db: &Db,
     base_path: P,
-    root_hash: &[u8; 32],
+    state_root_hash: &[u8; 32],
+    block_root_hash: &[u8; 32],
 ) -> Result<IntermediateState> {
     enum StackItem {
         New([u8; 32]),
@@ -155,7 +157,7 @@ fn write_rev_cells<P: AsRef<Path>>(
 
     let file_path = base_path
         .as_ref()
-        .join(hex::encode(root_hash))
+        .join(hex::encode(block_root_hash))
         .with_extension("temp");
 
     let file = std::fs::OpenOptions::new()
@@ -182,8 +184,8 @@ fn write_rev_cells<P: AsRef<Path>>(
     let mut iteration = 0u32;
     let mut remap_index = 0u32;
 
-    stack.push((iteration, StackItem::New(*root_hash)));
-    indices.insert(*root_hash, (iteration, false));
+    stack.push((iteration, StackItem::New(*state_root_hash)));
+    indices.insert(*state_root_hash, (iteration, false));
 
     let mut temp_file_buffer = std::io::BufWriter::with_capacity(FILE_BUFFER_LEN, file);
 

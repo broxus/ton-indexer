@@ -29,21 +29,25 @@ impl PersistentStateStorage {
     }
 
     #[allow(unused)]
-    pub async fn save_state(&self, cell_hash: [u8; 32]) -> Result<()> {
+    pub async fn save_state(
+        &self,
+        state_root_hash: [u8; 32],
+        block_root_hash: [u8; 32],
+    ) -> Result<()> {
         tokio::pin!(
             let signal = self.cancellation_token.cancelled();
         );
 
-        let cell_hex = hex::encode(cell_hash);
+        let cell_hex = hex::encode(block_root_hash);
 
         let db = self.db.clone();
         let path = self.storage_path.clone();
         let cell_writer = cell_writer::CellWriter::new(&db, &path);
 
         let path = tokio::select! {
-            result = async move { cell_writer.write(&cell_hash) } => result?,
+            result = async move { cell_writer.write(&state_root_hash, &block_root_hash) } => result?,
             _ = (&mut signal) => {
-                cell_writer::clear_temp(&path, &cell_hash);
+                cell_writer::clear_temp(&path, &block_root_hash);
                 return Ok(())
             },
         };

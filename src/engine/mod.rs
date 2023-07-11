@@ -354,16 +354,17 @@ impl Engine {
 
             tokio::spawn(async move {
                 let persistent_state_storage = engine.storage.persistent_state_storage();
-                let root_hash = state.block_id().root_hash;
+                let block_root_hash = state.block_id().root_hash;
+                let state_root_hash = state.root_cell().repr_hash();
                 if !persistent_state_storage
-                    .state_exists(root_hash.as_slice())
+                    .state_exists(block_root_hash.as_slice())
                     .await
                 {
                     'state: loop {
-                        let cell_hex = hex::encode(root_hash.as_slice());
+                        let cell_hex = hex::encode(block_root_hash.as_slice());
                         tracing::info!("Writing persistent state: {}", &cell_hex);
                         match persistent_state_storage
-                            .save_state(*root_hash.as_slice())
+                            .save_state(*state_root_hash.as_slice(), *block_root_hash.as_slice())
                             .await
                         {
                             Ok(_) => break 'state,
