@@ -655,6 +655,7 @@ impl Engine {
     pub fn shutdown(&self) {
         self.is_working.store(false, Ordering::Release);
         self.network.shutdown();
+        self.storage.persistent_state_storage().shutdown();
     }
 
     pub fn is_working(&self) -> bool {

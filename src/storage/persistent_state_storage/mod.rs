@@ -12,6 +12,7 @@ mod cell_writer;
 pub struct PersistentStateStorage {
     storage_path: PathBuf,
     db: Arc<Db>,
+    //drop_guard: DropGuard,
     cancellation_token: CancellationToken,
 }
 
@@ -21,9 +22,11 @@ impl PersistentStateStorage {
         let dir = file_db_path.join("states");
         tokio::fs::create_dir_all(&dir).await?;
         let cancellation_token = CancellationToken::new();
+        //let drop_guard = cancellation_token.drop_guard();
         Ok(Self {
             storage_path: dir,
             db,
+            //drop_guard,
             cancellation_token,
         })
     }
@@ -120,5 +123,9 @@ impl PersistentStateStorage {
     fn prepare_block_root_hash(&self, block_root_hash: &[u8; 32]) -> PathBuf {
         let file_name = format!("{:x?}", block_root_hash);
         self.storage_path.join(file_name)
+    }
+
+    pub fn shutdown(&self) {
+        self.cancellation_token.cancel()
     }
 }
