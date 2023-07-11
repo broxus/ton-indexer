@@ -15,6 +15,7 @@ use crate::db::Db;
 use crate::utils::FastHashMap;
 
 pub fn clear_temp(base_path: &Path, root_hash: &[u8; 32]) {
+    tracing::info!("Cleaning temporary persistent state files");
     let file_name = hex::encode(root_hash);
     let file_path = base_path.join(&file_name);
     let temp_file_path = base_path.join(format!("{}.temp", &file_name));

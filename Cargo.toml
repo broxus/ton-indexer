@@ -73,6 +73,7 @@ broxus-util = { version = "0.2", default-features = false, features = [
     "config",
     "alloc",
     "public-ip",
+    "signal"
 ] }
 
 [features]

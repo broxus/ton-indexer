@@ -28,7 +28,7 @@ pub struct App {
 }
 
 #[tokio::main]
-async fn main() -> ExitCode {
+async fn main() -> Result<()> {
     let logger = tracing_subscriber::fmt().with_env_filter(
         EnvFilter::builder()
             .with_default_directive(tracing::Level::INFO.into())
@@ -37,12 +37,21 @@ async fn main() -> ExitCode {
 
     logger.init();
 
-    if let Err(e) = run(argh::from_env()).await {
-        eprintln!("Fatal error: {e:?}");
-        return ExitCode::FAILURE;
-    }
+    let any_signal = broxus_util::any_signal(broxus_util::TERMINATION_SIGNALS);
 
-    ExitCode::SUCCESS
+    let run = run(argh::from_env());
+
+    tokio::select! {
+        result = run => result,
+        signal = any_signal => {
+            if let Ok(signal) = signal {
+                tracing::warn!(?signal, "received termination signal, flushing state...");
+            }
+            // NOTE: engine future is safely dropped here so rocksdb method
+            // `rocksdb_close` is called in DB object destructor
+            Ok(())
+        }
+    }
 }
 
 async fn run(app: App) -> Result<()> {

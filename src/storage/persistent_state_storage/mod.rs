@@ -47,8 +47,10 @@ impl PersistentStateStorage {
         let path = self.storage_path.clone();
         let cell_writer = cell_writer::CellWriter::new(&db, &path);
 
+        let mut future = async move { cell_writer.write(&state_root_hash, &block_root_hash) };
+
         let path = tokio::select! {
-            result = async move { cell_writer.write(&state_root_hash, &block_root_hash) } => result?,
+            result = future => result?,
             _ = (&mut signal) => {
                 cell_writer::clear_temp(&path, &block_root_hash);
                 return Ok(())
@@ -124,8 +126,11 @@ impl PersistentStateStorage {
         let file_name = format!("{:x?}", block_root_hash);
         self.storage_path.join(file_name)
     }
+}
 
-    pub fn shutdown(&self) {
+impl Drop for PersistentStateStorage {
+    fn drop(&mut self) {
+        tracing::error!("Call drop");
         self.cancellation_token.cancel()
     }
 }
