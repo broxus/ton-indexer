@@ -230,9 +230,9 @@ impl DownloaderTimeouts {
 
 #[derive(Debug, Default)]
 pub struct DownloaderCounters {
-    total: AtomicU64,
-    errors: AtomicU64,
-    timeouts: AtomicU64,
+    pub total: AtomicU64,
+    pub errors: AtomicU64,
+    pub timeouts: AtomicU64,
 }
 
 #[derive(thiserror::Error, Debug)]
