@@ -154,6 +154,8 @@ impl Engine {
             )
         };
 
+        tracing::info!("network started");
+
         Ok(Arc::new(Self {
             is_working: AtomicBool::new(true),
             db,
@@ -343,12 +345,8 @@ impl Engine {
     }
 
     async fn process_persistent_states(self: &Arc<Self>, states: Vec<Arc<ShardStateStuff>>) {
-        //let sem = Arc::new(Semaphore::new(parallelism));
-
         for state in states {
             let engine = self.clone();
-            //let sem = sem.clone();
-            //let _permit = sem.acquire_owned().await.ok();
 
             let persistent_state_storage = engine.storage.persistent_state_storage();
             let block_root_hash = state.block_id().root_hash;

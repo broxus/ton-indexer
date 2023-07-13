@@ -57,7 +57,6 @@ impl PersistentStateStorage {
                     clear_temp(&path, &block_root_hash);
                 }
             }
-            //let _ = tx.send(());
         });
 
         fut.await?;
@@ -120,12 +119,6 @@ impl PersistentStateStorage {
         } else {
             false
         }
-    }
-
-    #[allow(unused)]
-    pub async fn get_state_hash(&self, sc_root_hash: &[u8; 32]) -> Option<[u8; 32]> {
-        let _unused2 = sc_root_hash;
-        todo!()
     }
 
     fn get_state_file_path(&self, dir: PathBuf, file: PathBuf) -> PathBuf {
