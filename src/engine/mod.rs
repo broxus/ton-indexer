@@ -8,7 +8,7 @@
 use std::io::Write;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use broxus_util::now;
@@ -58,7 +58,6 @@ pub struct Engine {
     archive_options: Option<ArchiveOptions>,
     sync_options: SyncOptions,
 
-    adnl_supported_methods: AdnlSupportedMethods,
     prepare_persistent_states: bool,
 
     shard_states_operations: ShardStatesOperationsPool,
@@ -176,7 +175,6 @@ impl Engine {
             hard_forks,
             archive_options: config.archive_options,
             sync_options: config.sync_options,
-            adnl_supported_methods: config.adnl_supported_methods.unwrap_or_default(),
             prepare_persistent_states: config.prepare_persistent_states,
             shard_states_operations: OperationsPool::new("shard_states_operations"),
             block_applying_operations: OperationsPool::new("block_applying_operations"),
@@ -189,7 +187,7 @@ impl Engine {
 
     pub async fn start(self: &Arc<Self>) -> Result<()> {
         // Start full node overlay service
-        let service = NodeRpcServer::new(self);
+        let service: Arc<NodeRpcServer> = NodeRpcServer::new(self);
 
         self.network
             .add_subscriber(ton_block::MASTERCHAIN_ID, service.clone());
@@ -271,109 +269,81 @@ impl Engine {
             loop {
                 tokio::pin!(let new_state_found = persistent_state_keeper.new_state_found(););
 
-                match persistent_state_keeper.current() {
-                    Some(block_handle) => {
-                        let mc_state = match engine.load_state(block_handle.id()).await {
-                            Ok(state) => state,
-                            Err(e) => {
-                                tracing::error!(
-                                    "Failed to load state for block: {}. Err: {e:?}",
-                                    block_handle.id()
-                                );
-                                tokio::time::sleep(fallback_interval).await;
-                                continue;
-                            }
-                        };
-
-                        let mut persistent_states = Vec::new();
-                        persistent_states.push(mc_state);
-
-                        let block_stuff = match engine
-                            .storage
-                            .block_storage()
-                            .load_block_data(&block_handle)
-                            .await
-                        {
-                            Ok(block_stuff) => block_stuff,
-                            Err(e) => {
-                                tracing::error!(
-                                    "Failed to load block data: {}. Err: {e:?}",
-                                    block_handle.id()
-                                );
-                                tokio::time::sleep(fallback_interval).await;
-                                continue;
-                            }
-                        };
-                        let shard_blocks = match block_stuff.shard_blocks() {
-                            Ok(shard_blocks) => shard_blocks,
-                            Err(e) => {
-                                tracing::error!(
-                                    "Failed to load shard blocks from block stuff: {}. Err: {e:?}",
-                                    block_handle.id()
-                                );
-                                tokio::time::sleep(fallback_interval).await;
-                                continue;
-                            }
-                        };
-
-                        'shard_states: for (_, block) in shard_blocks {
-                            match engine.load_state(&block).await {
-                                Ok(state) => {
-                                    persistent_states.push(state);
-                                }
-                                Err(e) => {
-                                    tracing::error!(
-                                        "Failed to load state for block: {}. Err: {e:?}",
-                                        block_handle.id()
-                                    );
-                                    continue 'shard_states;
-                                }
-                            };
-                        }
-
-                        engine.process_persistent_states(persistent_states).await;
-                    }
-                    None => {
-                        new_state_found.await;
-                        continue;
-                    }
+                let Some(block_handle) = persistent_state_keeper.current() else {
+                    new_state_found.await;
+                    continue;
                 };
+
+                if let Err(e) = engine.save_persistent_states(&block_handle).await {
+                    tracing::error!(mc_block_id = %block_handle.id(), "Failed to save persistent states: {e:?}");
+                    tokio::time::sleep(fallback_interval).await;
+                    continue;
+                }
 
                 new_state_found.await;
             }
         });
     }
 
-    async fn process_persistent_states(self: &Arc<Self>, states: Vec<Arc<ShardStateStuff>>) {
-        for state in states {
-            let engine = self.clone();
+    async fn save_persistent_states(self: &Arc<Self>, mc_block_handle: &BlockHandle) -> Result<()> {
+        let persistent_state_storage = self.storage.persistent_state_storage();
 
-            let persistent_state_storage = engine.storage.persistent_state_storage();
-            let block_root_hash = state.block_id().root_hash;
-            let state_root_hash = state.root_cell().repr_hash();
-            if !persistent_state_storage
-                .state_exists(block_root_hash.as_slice())
-                .await
-            {
-                'state: loop {
-                    let cell_hex = hex::encode(block_root_hash.as_slice());
-                    tracing::info!("Writing new persistent state: {}", &cell_hex);
+        tracing::info!(mc_block_id = %mc_block_handle.id(), "Started writing all persistent states");
+        let now = Instant::now();
 
-                    let future = persistent_state_storage
-                        .save_state(*state_root_hash.as_slice(), *block_root_hash.as_slice());
+        // Load master state
+        let mc_state = self
+            .load_state(mc_block_handle.id())
+            .await
+            .context("Failed to load masterchain block state")?;
+        let shard_blocks = mc_state.shard_blocks()?;
 
-                    match future.await {
-                        Ok(_) => break 'state,
-                        Err(e) => {
-                            tracing::error!(
-                                cell_hash = &cell_hex,
-                                "Failed to save persistent state to file. Err: {e:?}"
-                            );
-                        }
-                    }
-                }
-            }
+        // Prepare an array with all states
+        let mut persistent_states = Vec::new();
+        if !persistent_state_storage.state_exists(mc_block_handle.id()) {
+            persistent_states.push(mc_state);
         }
+
+        for block_id in shard_blocks.values() {
+            if persistent_state_storage.state_exists(block_id) {
+                continue;
+            }
+
+            persistent_states.push(
+                self.load_state(block_id)
+                    .await
+                    .context("Failed to load shard state")?,
+            );
+        }
+
+        // Save all states
+        for state in persistent_states {
+            let block_id = state.block_id();
+
+            tracing::info!(
+                block_id = %block_id.display(),
+                "Writing new persistent state"
+            );
+            let now = Instant::now();
+
+            persistent_state_storage
+                .save_state(block_id, &state.root_cell().repr_hash())
+                .await?;
+
+            tracing::info!(
+                block_id = %block_id.display(),
+                elapsed_ms = now.elapsed().as_millis(),
+                "Saved persistent state"
+            );
+        }
+
+        // Done
+        tracing::info!(
+            mc_block_id = %mc_block_handle.id(),
+            elapsed_ms = now.elapsed().as_millis(),
+            "Saved all persistent states"
+        );
+        Ok(())
     }
 
     async fn start_archives_gc(self: &Arc<Self>) -> Result<()> {
@@ -911,13 +881,9 @@ impl Engine {
     }
 
     pub fn supports_persistent_state_handling(&self) -> bool {
-        matches!(
-            self.adnl_supported_methods,
-            AdnlSupportedMethods::Partial {
-                persistent_state: true,
-            } | AdnlSupportedMethods::All
-        )
+        self.prepare_persistent_states
     }
+
     async fn wait_next_applied_mc_block(
         &self,
         prev_handle: &Arc<BlockHandle>,

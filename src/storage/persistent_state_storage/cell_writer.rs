@@ -6,6 +6,7 @@ use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::Instant;
 
 use crate::db;
 use anyhow::{Context, Result};
@@ -16,22 +17,31 @@ use ton_types::{ByteOrderRead, UInt256};
 use crate::db::Db;
 use crate::utils::FastHashMap;
 
-pub fn clear_temp(base_path: &Path, block_root_hash: &[u8; 32]) {
-    tracing::info!("Cleaning temporary persistent state files");
-    let file_name = hex::encode(block_root_hash);
-    let prefix = &file_name[0..8];
-    let file_path = base_path.join(prefix).join(&file_name);
-    let temp_file_path = base_path.join(format!("{}.temp", &file_name));
-    let _ = fs::remove_file(file_path);
-    let _ = fs::remove_file(temp_file_path);
-}
-
 pub struct CellWriter<'a> {
     db: &'a Db,
     base_path: &'a Path,
 }
 
 impl<'a> CellWriter<'a> {
+    pub fn clear_temp(base_path: &Path, block_id: &ton_block::BlockIdExt) {
+        tracing::info!("Cleaning temporary persistent state files");
+
+        let file_path = Self::make_pss_path(base_path, block_id);
+        let temp_file_path = Self::make_temp_pss_path(&file_path);
+        let _ = fs::remove_file(file_path);
+        let _ = fs::remove_file(temp_file_path);
+    }
+
+    pub fn make_pss_path(base_path: &Path, block_id: &ton_block::BlockIdExt) -> PathBuf {
+        let file_name = block_id.root_hash.as_hex_string();
+        // TODO: add _masterchain_ block seqno as folder
+        base_path.join(file_name)
+    }
+
+    pub fn make_temp_pss_path(file_path: &Path) -> PathBuf {
+        file_path.with_extension(".temp")
+    }
+
     #[allow(unused)]
     pub fn new(db: &'a Db, base_path: &'a Path) -> Self {
         Self { db, base_path }
@@ -39,13 +49,11 @@ impl<'a> CellWriter<'a> {
 
     pub fn write(
         &self,
-        state_root_hash: &[u8; 32],
-        block_root_hash: &[u8; 32],
+        block_id: &ton_block::BlockIdExt,
+        state_root_hash: &ton_types::UInt256,
         is_cancelled: Arc<AtomicBool>,
     ) -> Result<PathBuf> {
-        let hex = hex::encode(block_root_hash);
-        let prefix = &hex[0..8];
-        let file_path = self.base_path.join(prefix).join(hex);
+        let file_path = Self::make_pss_path(self.base_path, block_id);
 
         tracing::info!("Creating file {:?}", file_path);
 
@@ -58,16 +66,21 @@ impl<'a> CellWriter<'a> {
 
         // Load cells from db in reverse order into the temp file
         tracing::info!("started loading cells");
+        let now = Instant::now();
         let mut intermediate = write_rev_cells(
             self.db,
-            self.base_path,
-            state_root_hash,
-            block_root_hash,
+            Self::make_temp_pss_path(self.base_path),
+            state_root_hash.as_array(),
             is_cancelled.clone(),
         )
         .context("Failed to write reversed cells data")?;
-        tracing::info!("finished loading cells");
+
         let cell_count = intermediate.cell_sizes.len() as u32;
+        tracing::info!(
+            elapsed_ms = now.elapsed().as_millis(),
+            cell_count,
+            "finished loading cells"
+        );
 
         // Compute offset type size (usually 4 bytes)
         let offset_size =
@@ -115,7 +128,7 @@ impl<'a> CellWriter<'a> {
         // Cells             | current len: 22 + offset_size * (1 + cell_sizes.len())
         let mut cell_buffer = [0; 2 + 128 + 4 * REF_SIZE];
         for &cell_size in intermediate.cell_sizes.iter().rev() {
-            if is_cancelled.load(Ordering::Acquire) {
+            if is_cancelled.load(Ordering::Relaxed) {
                 anyhow::bail!("Persistent state writing cancelled.")
             }
             intermediate.total_size -= cell_size as u64;
@@ -156,11 +169,10 @@ struct IntermediateState {
     _remove_on_drop: RemoveOnDrop,
 }
 
-fn write_rev_cells<P: AsRef<Path>>(
+fn write_rev_cells(
     db: &Db,
-    base_path: P,
+    temp_file_path: PathBuf,
     state_root_hash: &[u8; 32],
-    block_root_hash: &[u8; 32],
     is_cancelled: Arc<AtomicBool>,
 ) -> Result<IntermediateState> {
     enum StackItem {
@@ -176,25 +188,15 @@ fn write_rev_cells<P: AsRef<Path>>(
         indices: SmallVec<[u32; 4]>,
     }
 
-    let hex = hex::encode(block_root_hash);
-    let prefix = &hex[0..8];
-    // Open target file in advance to get the error immediately (if any)
-    let file_path = base_path
-        .as_ref()
-        .join(prefix)
-        .join(hex)
-        .with_extension("temp");
-
-    tracing::info!("Creating file {:?}", file_path);
-
+    tracing::info!("Creating temp file {:?}", temp_file_path);
     let file = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
         .create(true)
         .truncate(true)
-        .open(&file_path)
+        .open(&temp_file_path)
         .context("Failed to create temp file")?;
-    let remove_on_drop = RemoveOnDrop(file_path);
+    let remove_on_drop = RemoveOnDrop(temp_file_path);
 
     let raw = db.raw().as_ref();
     let read_options = db.cells.read_config();
@@ -217,7 +219,7 @@ fn write_rev_cells<P: AsRef<Path>>(
     let mut temp_file_buffer = std::io::BufWriter::with_capacity(FILE_BUFFER_LEN, file);
 
     while let Some((index, data)) = stack.pop() {
-        if is_cancelled.load(Ordering::Acquire) {
+        if is_cancelled.load(Ordering::Relaxed) {
             anyhow::bail!("Persistent state writing cancelled.")
         }
 

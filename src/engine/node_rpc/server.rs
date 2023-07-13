@@ -158,10 +158,7 @@ impl QueryHandler {
         }
 
         let persistent_state_storage = self.0.storage.persistent_state_storage();
-        if persistent_state_storage
-            .state_exists(query.block.root_hash.as_slice())
-            .await
-        {
+        if persistent_state_storage.state_exists(&query.block) {
             Ok(proto::PreparedState::Found)
         } else {
             Ok(proto::PreparedState::NotFound)
@@ -172,18 +169,23 @@ impl QueryHandler {
         self,
         query: proto::RpcDownloadPersistentStateSlice,
     ) -> Result<Vec<u8>> {
+        // TODO: send no response in case of invalid input
+
+        const PART_MAX_SIZE: u64 = 1 << 21;
+
+        anyhow::ensure!(
+            self.0.supports_persistent_state_handling(),
+            "Download persistent state not supported"
+        );
+        anyhow::ensure!(query.max_size > PART_MAX_SIZE, "Unsupported max size");
+
         let persistent_state_storage = self.0.storage.persistent_state_storage();
-        let root_hash = query.block.root_hash;
         match persistent_state_storage
-            .read_state_part(
-                root_hash.as_slice(),
-                query.offset as usize,
-                query.max_size as usize,
-            )
+            .read_state_part(&query.block, query.offset, query.max_size)
             .await
         {
             Some(part) => Ok(part),
-            None => Ok(Vec::new()),
+            None => Ok(Vec::default()),
         }
     }
 

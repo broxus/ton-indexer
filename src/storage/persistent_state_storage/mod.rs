@@ -1,12 +1,13 @@
-use std::fs::File;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use anyhow::Result;
+use bytes::BytesMut;
 
+use self::cell_writer::*;
 use crate::db::Db;
-use crate::storage::persistent_state_storage::cell_writer::clear_temp;
+use crate::utils::*;
 
 mod cell_writer;
 
@@ -31,107 +32,69 @@ impl PersistentStateStorage {
 
     pub async fn save_state(
         &self,
-        state_root_hash: [u8; 32],
-        block_root_hash: [u8; 32],
+        block_id: &ton_block::BlockIdExt,
+        state_root_hash: &ton_types::UInt256,
     ) -> Result<()> {
-        let cell_hex = hex::encode(block_root_hash);
-
+        let block_id = block_id.clone();
+        let state_root_hash = *state_root_hash;
         let db = self.db.clone();
-        let path = self.storage_path.clone();
-        let clone = path.clone();
+        let base_path = self.storage_path.clone();
         let is_cancelled = self.is_cancelled.clone();
 
-        let fut = tokio::task::spawn_blocking(move || {
-            let cell_writer = cell_writer::CellWriter::new(&db, &clone);
-            let path_opt = cell_writer.write(&state_root_hash, &block_root_hash, is_cancelled);
-            match path_opt {
+        tokio::task::spawn_blocking(move || {
+            let cell_writer = CellWriter::new(&db, &base_path);
+            match cell_writer.write(&block_id, &state_root_hash, is_cancelled) {
                 Ok(path) => {
                     tracing::info!(
-                        "Successfully wrote persistent {} state to a file: {} ",
-                        cell_hex,
-                        path.display()
+                        block_id = %block_id.display(),
+                        path = %path.display(),
+                        "Successfully wrote persistent state to a file",
                     );
                 }
                 Err(e) => {
-                    tracing::error!("Writing persistent state {} failed. Err: {e:?}", cell_hex);
-                    clear_temp(&path, &block_root_hash);
+                    tracing::error!(
+                        block_id = %block_id.display(),
+                        "Writing persistent state failed. Err: {e:?}"
+                    );
+
+                    CellWriter::clear_temp(&base_path, &block_id);
                 }
             }
-        });
-
-        fut.await?;
-        Ok(())
+        })
+        .await
+        .map_err(From::from)
     }
 
     pub async fn read_state_part(
         &self,
-        block_root_hash: &[u8; 32],
-        offset: usize,
-        size: usize,
+        block_id: &ton_block::BlockIdExt,
+        offset: u64,
+        size: u64,
     ) -> Option<Vec<u8>> {
-        let hex = hex::encode(block_root_hash);
-        let prefix = &hex[0..8];
-        let postfix = &hex[8..];
+        use tokio::io::{AsyncReadExt, AsyncSeekExt, SeekFrom};
 
-        let dir = PathBuf::from(prefix);
-        let file = PathBuf::from(postfix);
+        // TODO: cache file handles
+        let mut file = tokio::fs::File::open(self.get_state_file_path(block_id))
+            .await
+            .ok()?;
 
-        let file_path = self.get_state_file_path(dir, file);
-        let file = match File::open(file_path) {
-            Ok(file) => file,
-            Err(e) => {
-                tracing::error!("Failed to find file to read part. Err: {e:?} ");
-                return None;
-            }
-        };
-        let mmap = match unsafe { memmap::Mmap::map(&file) } {
-            Ok(nmap) => nmap,
-            Err(e) => {
-                tracing::error!("Failed to create file-memory mapping. Err: {e:?}");
-                return None;
-            }
-        };
+        file.seek(SeekFrom::Start(offset)).await.ok()?;
 
-        let state_size = mmap.len();
-        if offset > state_size {
-            tracing::error!("Trying to read non-existent state slice");
-            return None;
-        }
+        // SAFETY: size must be checked
+        let mut result = BytesMut::with_capacity(size as usize);
+        while file.read_buf(&mut result).await.ok()? > 0 {}
 
-        let length = core::cmp::min(size, state_size - offset);
-
-        Some(Vec::from(&mmap[offset..offset + length]))
+        // TODO: use `Bytes`
+        Some(result.to_vec())
     }
 
-    pub async fn state_exists(&self, block_root_hash: &[u8; 32]) -> bool {
-        let hex = hex::encode(block_root_hash);
-        let prefix = &hex[0..8];
-
-        let dir = PathBuf::from(prefix);
-        if let Err(e) = self.check_directory(dir.clone()).await {
-            tracing::error!("Failed to check directory: {:?}. Err: {e:?}", prefix);
-            return false;
-        }
-
-        let file_name = self.get_state_file_path(dir, PathBuf::from(hex));
-        if let Ok(meta) = tokio::fs::metadata(file_name).await {
-            meta.is_file()
-        } else {
-            false
-        }
+    pub fn state_exists(&self, block_id: &ton_block::BlockIdExt) -> bool {
+        // TODO: cache file handles
+        self.get_state_file_path(block_id).is_file()
     }
 
-    fn get_state_file_path(&self, dir: PathBuf, file: PathBuf) -> PathBuf {
-        self.storage_path.join(dir).join(file)
-    }
-
-    async fn check_directory(&self, dir: PathBuf) -> Result<()> {
-        let path = self.storage_path.join(dir);
-        if tokio::fs::metadata(&path).await.is_err() {
-            tokio::fs::create_dir(path).await?;
-        }
-
-        Ok(())
+    fn get_state_file_path(&self, block_id: &ton_block::BlockIdExt) -> PathBuf {
+        CellWriter::make_pss_path(&self.storage_path, block_id)
     }
 
     pub fn cancel(&self) {
