@@ -131,4 +131,17 @@ impl PersistentStateStorage {
     fn get_state_file_path(&self, dir: PathBuf, file: PathBuf) -> PathBuf {
         self.storage_path.join(dir).join(file)
     }
+
+    async fn check_directory(&self, dir: PathBuf) -> Result<()> {
+        let path = self.storage_path.join(dir);
+        if tokio::fs::metadata(&path).await.is_err() {
+            tokio::fs::create_dir(path).await?;
+        }
+
+        Ok(())
+    }
+
+    pub fn cancel(&self) {
+        self.is_cancelled.store(true, Ordering::Release);
+    }
 }

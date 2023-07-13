@@ -127,3 +127,9 @@ impl Storage {
 pub struct DbMetrics {
     pub shard_state_storage: ShardStateStorageMetrics,
 }
+
+impl Drop for Storage {
+    fn drop(&mut self) {
+        self.persistent_state_storage().cancel();
+    }
+}

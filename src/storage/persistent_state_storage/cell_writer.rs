@@ -4,6 +4,8 @@ use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use crate::db;
 use anyhow::{Context, Result};
