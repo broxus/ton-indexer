@@ -25,7 +25,7 @@ use crate::storage::*;
 use crate::utils::*;
 
 use self::complex_operations::*;
-use self::downloader::*;
+pub use self::downloader::*;
 pub use self::node_rpc::*;
 
 pub mod complex_operations;
