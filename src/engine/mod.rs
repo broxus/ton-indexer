@@ -59,6 +59,7 @@ pub struct Engine {
     sync_options: SyncOptions,
 
     adnl_supported_methods: AdnlSupportedMethods,
+    prepare_persistent_states: bool,
 
     shard_states_operations: ShardStatesOperationsPool,
     block_applying_operations: BlockApplyingOperationsPool,
@@ -174,6 +175,7 @@ impl Engine {
             archive_options: config.archive_options,
             sync_options: config.sync_options,
             adnl_supported_methods: config.adnl_supported_methods.unwrap_or_default(),
+            prepare_persistent_states: config.prepare_persistent_states,
             shard_states_operations: OperationsPool::new("shard_states_operations"),
             block_applying_operations: OperationsPool::new("block_applying_operations"),
             next_block_applying_operations: OperationsPool::new("next_block_applying_operations"),
@@ -222,7 +224,9 @@ impl Engine {
         self.prepare_blocks_gc().await?;
         self.start_walking_blocks()?;
         self.start_states_gc();
-        self.start_persistent_state_handler();
+        if self.prepare_persistent_states {
+            self.start_persistent_state_handler();
+        }
 
         // Engine started
         Ok(())

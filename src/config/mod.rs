@@ -28,6 +28,7 @@ pub struct NodeConfig {
     pub db_options: DbOptions,
 
     pub adnl_supported_methods: Option<AdnlSupportedMethods>,
+    pub prepare_persistent_states: bool,
 
     pub archive_options: Option<ArchiveOptions>,
     pub sync_options: SyncOptions,
@@ -53,6 +54,7 @@ impl Default for NodeConfig {
             db_options: Default::default(),
             sync_options: Default::default(),
             adnl_supported_methods: Default::default(),
+            prepare_persistent_states: false,
             adnl_options: Default::default(),
             rldp_options: Default::default(),
             dht_options: Default::default(),
