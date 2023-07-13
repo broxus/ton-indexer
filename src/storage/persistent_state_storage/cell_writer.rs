@@ -27,8 +27,10 @@ impl<'a> CellWriter<'a> {
         tracing::info!("Cleaning temporary persistent state files");
 
         let file_path = Self::make_pss_path(base_path, block_id);
+        let int_file_path = Self::make_rev_pss_path(&file_path);
         let temp_file_path = Self::make_temp_pss_path(&file_path);
-        let _ = fs::remove_file(file_path);
+
+        let _ = fs::remove_file(int_file_path);
         let _ = fs::remove_file(temp_file_path);
     }
 
@@ -39,7 +41,11 @@ impl<'a> CellWriter<'a> {
     }
 
     pub fn make_temp_pss_path(file_path: &Path) -> PathBuf {
-        file_path.with_extension(".temp")
+        file_path.with_extension("temp")
+    }
+
+    pub fn make_rev_pss_path(file_path: &Path) -> PathBuf {
+        file_path.with_extension("rev")
     }
 
     #[allow(unused)]
@@ -55,25 +61,27 @@ impl<'a> CellWriter<'a> {
     ) -> Result<PathBuf> {
         let file_path = Self::make_pss_path(self.base_path, block_id);
 
-        tracing::info!("Creating file {:?}", file_path);
-
-        let file = fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(file_path.clone())
-            .context("Failed to create target file")?;
-
         // Load cells from db in reverse order into the temp file
         tracing::info!("started loading cells");
         let now = Instant::now();
         let mut intermediate = write_rev_cells(
             self.db,
-            Self::make_temp_pss_path(self.base_path),
+            Self::make_rev_pss_path(&file_path),
             state_root_hash.as_array(),
             is_cancelled.clone(),
         )
         .context("Failed to write reversed cells data")?;
+
+        let temp_file_path = Self::make_temp_pss_path(&file_path);
+
+        tracing::info!("Creating intermediate file {:?}", file_path);
+
+        let file = fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&temp_file_path)
+            .context("Failed to create target file")?;
 
         let cell_count = intermediate.cell_sizes.len() as u32;
         tracing::info!(
@@ -127,8 +135,8 @@ impl<'a> CellWriter<'a> {
 
         // Cells             | current len: 22 + offset_size * (1 + cell_sizes.len())
         let mut cell_buffer = [0; 2 + 128 + 4 * REF_SIZE];
-        for &cell_size in intermediate.cell_sizes.iter().rev() {
-            if is_cancelled.load(Ordering::Relaxed) {
+        for (i, &cell_size) in intermediate.cell_sizes.iter().rev().enumerate() {
+            if i % 1000 == 0 && is_cancelled.load(Ordering::Relaxed) {
                 anyhow::bail!("Persistent state writing cancelled.")
             }
             intermediate.total_size -= cell_size as u64;
@@ -157,6 +165,7 @@ impl<'a> CellWriter<'a> {
         }
 
         buffer.flush()?;
+        std::fs::rename(&temp_file_path, &file_path)?;
 
         Ok(file_path)
     }
@@ -171,7 +180,7 @@ struct IntermediateState {
 
 fn write_rev_cells(
     db: &Db,
-    temp_file_path: PathBuf,
+    file_path: PathBuf,
     state_root_hash: &[u8; 32],
     is_cancelled: Arc<AtomicBool>,
 ) -> Result<IntermediateState> {
@@ -188,15 +197,15 @@ fn write_rev_cells(
         indices: SmallVec<[u32; 4]>,
     }
 
-    tracing::info!("Creating temp file {:?}", temp_file_path);
+    tracing::info!("Creating rev file {:?}", file_path);
     let file = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
         .create(true)
         .truncate(true)
-        .open(&temp_file_path)
-        .context("Failed to create temp file")?;
-    let remove_on_drop = RemoveOnDrop(temp_file_path);
+        .open(&file_path)
+        .context("Failed to write rev file")?;
+    let remove_on_drop = RemoveOnDrop(file_path);
 
     let raw = db.raw().as_ref();
     let read_options = db.cells.read_config();
@@ -219,7 +228,7 @@ fn write_rev_cells(
     let mut temp_file_buffer = std::io::BufWriter::with_capacity(FILE_BUFFER_LEN, file);
 
     while let Some((index, data)) = stack.pop() {
-        if is_cancelled.load(Ordering::Relaxed) {
+        if iteration % 1000 == 0 && is_cancelled.load(Ordering::Relaxed) {
             anyhow::bail!("Persistent state writing cancelled.")
         }
 
