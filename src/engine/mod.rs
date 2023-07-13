@@ -14,7 +14,7 @@ use anyhow::{Context, Result};
 use broxus_util::now;
 use everscale_network::overlay;
 use serde::{Deserialize, Serialize};
-use tokio::sync::{Notify, Semaphore};
+use tokio::sync::Notify;
 
 use global_config::GlobalConfig;
 
@@ -222,7 +222,7 @@ impl Engine {
         self.prepare_blocks_gc().await?;
         self.start_walking_blocks()?;
         self.start_states_gc();
-        self.start_persistent_state_handler(1usize);
+        self.start_persistent_state_handler();
 
         // Engine started
         Ok(())
@@ -255,7 +255,7 @@ impl Engine {
             .await
     }
 
-    fn start_persistent_state_handler(self: &Arc<Self>, parallelism: usize) {
+    fn start_persistent_state_handler(self: &Arc<Self>) {
         let engine = self.clone();
 
         tokio::spawn(async move {
@@ -325,9 +325,7 @@ impl Engine {
                             };
                         }
 
-                        engine
-                            .process_persistent_states(persistent_states, parallelism)
-                            .await;
+                        engine.process_persistent_states(persistent_states).await;
                     }
                     None => {
                         new_state_found.await;
@@ -340,46 +338,39 @@ impl Engine {
         });
     }
 
-    async fn process_persistent_states(
-        self: &Arc<Self>,
-        states: Vec<Arc<ShardStateStuff>>,
-        parallelism: usize,
-    ) {
-        let sem = Arc::new(Semaphore::new(parallelism));
+    async fn process_persistent_states(self: &Arc<Self>, states: Vec<Arc<ShardStateStuff>>) {
+        //let sem = Arc::new(Semaphore::new(parallelism));
 
         for state in states {
             let engine = self.clone();
-            let sem = sem.clone();
-            let _permit = sem.acquire_owned().await.ok();
+            //let sem = sem.clone();
+            //let _permit = sem.acquire_owned().await.ok();
 
-            tokio::spawn(async move {
-                let persistent_state_storage = engine.storage.persistent_state_storage();
-                let block_root_hash = state.block_id().root_hash;
-                let state_root_hash = state.root_cell().repr_hash();
-                if !persistent_state_storage
-                    .state_exists(block_root_hash.as_slice())
-                    .await
-                {
-                    'state: loop {
-                        let cell_hex = hex::encode(block_root_hash.as_slice());
-                        tracing::info!("Writing persistent state: {}", &cell_hex);
-                        match persistent_state_storage
-                            .save_state(*state_root_hash.as_slice(), *block_root_hash.as_slice())
-                            .await
-                        {
-                            Ok(_) => break 'state,
-                            Err(e) => {
-                                tracing::error!(
-                                    cell_hash = &cell_hex,
-                                    "Failed to save persistent state to file. Err: {e:?}"
-                                );
-                            }
+            let persistent_state_storage = engine.storage.persistent_state_storage();
+            let block_root_hash = state.block_id().root_hash;
+            let state_root_hash = state.root_cell().repr_hash();
+            if !persistent_state_storage
+                .state_exists(block_root_hash.as_slice())
+                .await
+            {
+                'state: loop {
+                    let cell_hex = hex::encode(block_root_hash.as_slice());
+                    tracing::info!("Writing new persistent state: {}", &cell_hex);
+
+                    let future = persistent_state_storage
+                        .save_state(*state_root_hash.as_slice(), *block_root_hash.as_slice());
+
+                    match future.await {
+                        Ok(_) => break 'state,
+                        Err(e) => {
+                            tracing::error!(
+                                cell_hash = &cell_hex,
+                                "Failed to save persistent state to file. Err: {e:?}"
+                            );
                         }
                     }
                 }
-
-                drop(_permit);
-            });
+            }
         }
     }
 

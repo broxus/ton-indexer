@@ -34,7 +34,7 @@ pub struct Storage {
     shard_state_storage: ShardStateStorage,
     block_connection_storage: BlockConnectionStorage,
     node_state_storage: NodeStateStorage,
-    persistent_state_storage: Arc<PersistentStateStorage>,
+    persistent_state_storage: PersistentStateStorage,
 }
 
 impl Storage {
@@ -55,7 +55,7 @@ impl Storage {
         )
         .await?;
         let persistent_state_storage =
-            Arc::new(PersistentStateStorage::new(file_db_path.clone(), db.clone()).await?);
+            PersistentStateStorage::new(file_db_path.clone(), db.clone()).await?;
         let node_state_storage = NodeStateStorage::new(db.clone())?;
         let block_connection_storage = BlockConnectionStorage::new(db)?;
 
@@ -84,7 +84,7 @@ impl Storage {
 
     #[inline(always)]
     pub fn persistent_state_storage(&self) -> &PersistentStateStorage {
-        self.persistent_state_storage.as_ref()
+        &self.persistent_state_storage
     }
 
     #[inline(always)]

@@ -14,10 +14,11 @@ use ton_types::{ByteOrderRead, UInt256};
 use crate::db::Db;
 use crate::utils::FastHashMap;
 
-pub fn clear_temp(base_path: &Path, root_hash: &[u8; 32]) {
+pub fn clear_temp(base_path: &Path, block_root_hash: &[u8; 32]) {
     tracing::info!("Cleaning temporary persistent state files");
-    let file_name = hex::encode(root_hash);
-    let file_path = base_path.join(&file_name);
+    let file_name = hex::encode(block_root_hash);
+    let prefix = &file_name[0..8];
+    let file_path = base_path.join(prefix).join(&file_name);
     let temp_file_path = base_path.join(format!("{}.temp", &file_name));
     let _ = fs::remove_file(file_path);
     let _ = fs::remove_file(temp_file_path);
@@ -34,11 +35,19 @@ impl<'a> CellWriter<'a> {
         Self { db, base_path }
     }
 
-    #[allow(unused)]
-    pub fn write(&self, state_root_hash: &[u8; 32], block_root_hash: &[u8; 32]) -> Result<PathBuf> {
-        // Open target file in advance to get the error immediately (if any)
-        let file_path = self.base_path.join(hex::encode(block_root_hash));
-        let file = std::fs::OpenOptions::new()
+    pub fn write(
+        &self,
+        state_root_hash: &[u8; 32],
+        block_root_hash: &[u8; 32],
+        is_cancelled: Arc<AtomicBool>,
+    ) -> Result<PathBuf> {
+        let hex = hex::encode(block_root_hash);
+        let prefix = &hex[0..8];
+        let file_path = self.base_path.join(prefix).join(hex);
+
+        tracing::info!("Creating file {:?}", file_path);
+
+        let file = fs::OpenOptions::new()
             .write(true)
             .create(true)
             .truncate(true)
@@ -47,9 +56,14 @@ impl<'a> CellWriter<'a> {
 
         // Load cells from db in reverse order into the temp file
         tracing::info!("started loading cells");
-        let mut intermediate =
-            write_rev_cells(self.db, self.base_path, state_root_hash, block_root_hash)
-                .context("Failed to write reversed cells data")?;
+        let mut intermediate = write_rev_cells(
+            self.db,
+            self.base_path,
+            state_root_hash,
+            block_root_hash,
+            is_cancelled.clone(),
+        )
+        .context("Failed to write reversed cells data")?;
         tracing::info!("finished loading cells");
         let cell_count = intermediate.cell_sizes.len() as u32;
 
@@ -99,6 +113,9 @@ impl<'a> CellWriter<'a> {
         // Cells             | current len: 22 + offset_size * (1 + cell_sizes.len())
         let mut cell_buffer = [0; 2 + 128 + 4 * REF_SIZE];
         for &cell_size in intermediate.cell_sizes.iter().rev() {
+            if is_cancelled.load(Ordering::Acquire) {
+                anyhow::bail!("Persistent state writing cancelled.")
+            }
             intermediate.total_size -= cell_size as u64;
             intermediate
                 .file
@@ -142,6 +159,7 @@ fn write_rev_cells<P: AsRef<Path>>(
     base_path: P,
     state_root_hash: &[u8; 32],
     block_root_hash: &[u8; 32],
+    is_cancelled: Arc<AtomicBool>,
 ) -> Result<IntermediateState> {
     enum StackItem {
         New([u8; 32]),
@@ -156,10 +174,16 @@ fn write_rev_cells<P: AsRef<Path>>(
         indices: SmallVec<[u32; 4]>,
     }
 
+    let hex = hex::encode(block_root_hash);
+    let prefix = &hex[0..8];
+    // Open target file in advance to get the error immediately (if any)
     let file_path = base_path
         .as_ref()
-        .join(hex::encode(block_root_hash))
+        .join(prefix)
+        .join(hex)
         .with_extension("temp");
+
+    tracing::info!("Creating file {:?}", file_path);
 
     let file = std::fs::OpenOptions::new()
         .read(true)
@@ -191,6 +215,10 @@ fn write_rev_cells<P: AsRef<Path>>(
     let mut temp_file_buffer = std::io::BufWriter::with_capacity(FILE_BUFFER_LEN, file);
 
     while let Some((index, data)) = stack.pop() {
+        if is_cancelled.load(Ordering::Acquire) {
+            anyhow::bail!("Persistent state writing cancelled.")
+        }
+
         match data {
             StackItem::New(hash) => {
                 let value = raw
