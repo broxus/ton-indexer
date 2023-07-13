@@ -104,6 +104,11 @@ impl Engine {
         .await
         .context("Failed to create DB")?;
 
+        storage
+            .runtime_storage()
+            .persistent_state_keeper()
+            .set_shards_gc_lock_enabled(config.prepare_persistent_states);
+
         let zero_state_id = global_config.zero_state.clone();
 
         let mut init_mc_block_id = zero_state_id.clone();
@@ -279,6 +284,12 @@ impl Engine {
                     tokio::time::sleep(fallback_interval).await;
                     continue;
                 }
+
+                engine
+                    .storage
+                    .runtime_storage()
+                    .persistent_state_keeper()
+                    .unlock_states_gc();
 
                 new_state_found.await;
             }
@@ -567,7 +578,7 @@ impl Engine {
         gc_at = (gc_at - gc_at % options.interval_sec) + options.offset_sec;
 
         tokio::spawn(async move {
-            loop {
+            'gc: loop {
                 // Shift gc timestamp one iteration further
                 gc_at += options.interval_sec;
                 // Check if there is some time left before the GC
@@ -580,12 +591,32 @@ impl Engine {
                     None => return,
                 };
 
-                let block_id = match engine.load_shards_client_mc_block_id() {
-                    Ok(block_id) => block_id,
-                    Err(e) => {
-                        tracing::error!("failed to load last shards client block: {e:?}");
+                let mut shards_gc_lock = engine
+                    .storage
+                    .runtime_storage()
+                    .persistent_state_keeper()
+                    .shards_gc_lock()
+                    .subscribe();
+
+                let block_id = loop {
+                    // Load the latest block id
+                    let block_id = match engine.load_shards_client_mc_block_id() {
+                        Ok(block_id) => block_id,
+                        Err(e) => {
+                            tracing::error!("failed to load last shards client block: {e:?}");
+                            continue 'gc;
+                        }
+                    };
+
+                    if *shards_gc_lock.borrow_and_update() {
+                        if shards_gc_lock.changed().await.is_err() {
+                            tracing::warn!("stopping shard states GC");
+                            return;
+                        }
                         continue;
                     }
+
+                    break block_id;
                 };
 
                 for subscriber in &engine.subscribers {
