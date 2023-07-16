@@ -185,7 +185,7 @@ impl QueryHandler {
             "Download persistent state not supported"
         );
         tracing::info!("Node supports persistent state handling");
-        anyhow::ensure!(query.max_size > PART_MAX_SIZE, "Unsupported max size");
+        anyhow::ensure!(query.max_size <= PART_MAX_SIZE, "Unsupported max size");
 
         tracing::info!("Max size is supported");
 
