@@ -169,6 +169,13 @@ impl QueryHandler {
         self,
         query: proto::RpcDownloadPersistentStateSlice,
     ) -> Result<Vec<u8>> {
+        let hex = hex::encode(query.block.root_hash().as_slice());
+        tracing::info!(
+            "Received state part request: max_size: {}, offset: {}, block root: {}",
+            query.max_size,
+            query.offset,
+            hex
+        );
         // TODO: send no response in case of invalid input
 
         const PART_MAX_SIZE: u64 = 1 << 21;
@@ -177,7 +184,10 @@ impl QueryHandler {
             self.0.supports_persistent_state_handling(),
             "Download persistent state not supported"
         );
+        tracing::info!("Node supports persistent state handling");
         anyhow::ensure!(query.max_size > PART_MAX_SIZE, "Unsupported max size");
+
+        tracing::info!("Max size is supported");
 
         let persistent_state_storage = self.0.storage.persistent_state_storage();
         match persistent_state_storage

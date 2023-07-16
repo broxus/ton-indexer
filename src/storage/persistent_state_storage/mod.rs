@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use bytes::BytesMut;
+use tokio::time::Instant;
 
 use self::cell_writer::*;
 use crate::db::Db;
@@ -78,11 +79,20 @@ impl PersistentStateStorage {
             .await
             .ok()?;
 
+        tracing::info!("Opened state file");
+
         file.seek(SeekFrom::Start(offset)).await.ok()?;
 
         // SAFETY: size must be checked
         let mut result = BytesMut::with_capacity(size as usize);
-        while file.read_buf(&mut result).await.ok()? > 0 {}
+        let now = Instant::now();
+        while file.read_buf(&mut result).await.ok()? > 0 {
+            tracing::info!("Reading file to buffer");
+        }
+        tracing::info!(
+            "Finished reading buffer after: {} ms",
+            now.elapsed().as_millis()
+        );
 
         // TODO: use `Bytes`
         Some(result.to_vec())
