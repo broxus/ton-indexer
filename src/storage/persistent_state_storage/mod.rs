@@ -81,13 +81,27 @@ impl PersistentStateStorage {
 
         tracing::info!("Opened state file");
 
-        file.seek(SeekFrom::Start(offset)).await.ok()?;
+        if let Err(e) = file.seek(SeekFrom::Start(offset)).await {
+            tracing::error!("Failed to seek state file offset. Err: {e:?}");
+            return None;
+        }
 
         // SAFETY: size must be checked
         let mut result = BytesMut::with_capacity(size as usize);
         let now = Instant::now();
-        while file.read_buf(&mut result).await.ok()? > 0 {
-            tracing::info!("Reading file to buffer");
+        loop {
+            match file.read_buf(&mut result).await {
+                Ok(bytes_read) => {
+                    tracing::info!("Reading state file. Bytes read: {}", bytes_read);
+                    if bytes_read == 0 {
+                        break;
+                    }
+                }
+                Err(e) => {
+                    tracing::error!("Failed to read state file. Err: {e:?}");
+                    return None;
+                }
+            }
         }
         tracing::info!(
             "Finished reading buffer after: {} ms",

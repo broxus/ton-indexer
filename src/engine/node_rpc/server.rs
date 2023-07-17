@@ -184,10 +184,7 @@ impl QueryHandler {
             self.0.supports_persistent_state_handling(),
             "Download persistent state not supported"
         );
-        tracing::info!("Node supports persistent state handling");
         anyhow::ensure!(query.max_size <= PART_MAX_SIZE, "Unsupported max size");
-
-        tracing::info!("Max size is supported");
 
         let persistent_state_storage = self.0.storage.persistent_state_storage();
         match persistent_state_storage
@@ -195,6 +192,7 @@ impl QueryHandler {
             .await
         {
             Some(part) => Ok(part),
+            //TODO: we should not respond is there was None
             None => Ok(Vec::default()),
         }
     }
