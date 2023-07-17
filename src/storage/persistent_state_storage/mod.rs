@@ -93,7 +93,7 @@ impl PersistentStateStorage {
             match file.read_buf(&mut result).await {
                 Ok(bytes_read) => {
                     tracing::info!("Reading state file. Bytes read: {}", bytes_read);
-                    if bytes_read == 0 {
+                    if bytes_read == 0 || bytes_read == size as usize {
                         break;
                     }
                 }
