@@ -126,9 +126,10 @@ impl PersistentStateStorage {
     }
 
     pub fn prepare_persistent_states_dir(&self, mc_block: &ton_block::BlockIdExt) -> Result<()> {
-        let dir_path = mc_block.root_hash.as_hex_string();
+        let dir_path = mc_block.seq_no.to_string();
         let path = self.storage_path.join(dir_path);
         if !path.exists() {
+            tracing::info!(mc_block = %mc_block.display(), "Creating persistent state directory");
             fs::create_dir(path)?;
         }
         Ok(())
