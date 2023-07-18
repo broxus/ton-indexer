@@ -231,6 +231,7 @@ impl Engine {
         self.start_states_gc();
         if self.prepare_persistent_states {
             self.start_persistent_state_handler();
+            self.start_persistent_state_gc();
         }
 
         // Engine started
@@ -262,6 +263,12 @@ impl Engine {
                 blocks_gc_state.ty,
             )
             .await
+    }
+
+    fn start_persistent_state_gc(self: &Arc<Self>) {
+        self.storage
+            .persistent_state_storage()
+            .start_persistent_state_gc()
     }
 
     fn start_persistent_state_handler(self: &Arc<Self>) {
@@ -298,25 +305,29 @@ impl Engine {
 
     async fn save_persistent_states(self: &Arc<Self>, mc_block_handle: &BlockHandle) -> Result<()> {
         let persistent_state_storage = self.storage.persistent_state_storage();
+        let master_block_id = mc_block_handle.id();
 
-        tracing::info!(mc_block_id = %mc_block_handle.id(), "Started writing all persistent states");
+        persistent_state_storage.prepare_persistent_states_dir(master_block_id)?;
+
+        tracing::info!(mc_block_id = %master_block_id, "Started writing all persistent states");
         let now = Instant::now();
 
         // Load master state
         let mc_state = self
-            .load_state(mc_block_handle.id())
+            .load_state(master_block_id)
             .await
             .context("Failed to load masterchain block state")?;
+
         let shard_blocks = mc_state.shard_blocks()?;
 
         // Prepare an array with all states
         let mut persistent_states = Vec::new();
-        if !persistent_state_storage.state_exists(mc_block_handle.id()) {
+        if !persistent_state_storage.state_exists(master_block_id, master_block_id) {
             persistent_states.push(mc_state);
         }
 
         for block_id in shard_blocks.values() {
-            if persistent_state_storage.state_exists(block_id) {
+            if persistent_state_storage.state_exists(master_block_id, block_id) {
                 continue;
             }
 
@@ -338,7 +349,7 @@ impl Engine {
             let now = Instant::now();
 
             persistent_state_storage
-                .save_state(block_id, &state.root_cell().repr_hash())
+                .save_state(block_id, master_block_id, &state.root_cell().repr_hash())
                 .await?;
 
             tracing::info!(
@@ -350,7 +361,7 @@ impl Engine {
 
         // Done
         tracing::info!(
-            mc_block_id = %mc_block_handle.id(),
+            mc_block_id = %master_block_id,
             elapsed_ms = now.elapsed().as_millis(),
             "Saved all persistent states"
         );

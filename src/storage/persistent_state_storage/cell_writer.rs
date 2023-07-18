@@ -23,10 +23,14 @@ pub struct CellWriter<'a> {
 }
 
 impl<'a> CellWriter<'a> {
-    pub fn clear_temp(base_path: &Path, block_id: &ton_block::BlockIdExt) {
+    pub fn clear_temp(
+        base_path: &Path,
+        master_block_id: &ton_block::BlockIdExt,
+        block_id: &ton_block::BlockIdExt,
+    ) {
         tracing::info!("Cleaning temporary persistent state files");
 
-        let file_path = Self::make_pss_path(base_path, block_id);
+        let file_path = Self::make_pss_path(base_path, master_block_id, block_id);
         let int_file_path = Self::make_rev_pss_path(&file_path);
         let temp_file_path = Self::make_temp_pss_path(&file_path);
 
@@ -34,10 +38,14 @@ impl<'a> CellWriter<'a> {
         let _ = fs::remove_file(temp_file_path);
     }
 
-    pub fn make_pss_path(base_path: &Path, block_id: &ton_block::BlockIdExt) -> PathBuf {
+    pub fn make_pss_path(
+        base_path: &Path,
+        mc_block_id: &ton_block::BlockIdExt,
+        block_id: &ton_block::BlockIdExt,
+    ) -> PathBuf {
+        let dir_path = mc_block_id.seq_no.to_string();
         let file_name = block_id.root_hash.as_hex_string();
-        // TODO: add _masterchain_ block seqno as folder
-        base_path.join(file_name)
+        base_path.join(dir_path).join(file_name)
     }
 
     pub fn make_temp_pss_path(file_path: &Path) -> PathBuf {
@@ -55,11 +63,12 @@ impl<'a> CellWriter<'a> {
 
     pub fn write(
         &self,
+        master_block_id: &ton_block::BlockIdExt,
         block_id: &ton_block::BlockIdExt,
         state_root_hash: &ton_types::UInt256,
         is_cancelled: Arc<AtomicBool>,
     ) -> Result<PathBuf> {
-        let file_path = Self::make_pss_path(self.base_path, block_id);
+        let file_path = Self::make_pss_path(self.base_path, master_block_id, block_id);
 
         // Load cells from db in reverse order into the temp file
         tracing::info!("started loading cells");

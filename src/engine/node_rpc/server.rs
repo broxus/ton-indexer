@@ -158,7 +158,7 @@ impl QueryHandler {
         }
 
         let persistent_state_storage = self.0.storage.persistent_state_storage();
-        if persistent_state_storage.state_exists(&query.block) {
+        if persistent_state_storage.state_exists(&query.masterchain_block, &query.block) {
             Ok(proto::PreparedState::Found)
         } else {
             Ok(proto::PreparedState::NotFound)
@@ -188,7 +188,12 @@ impl QueryHandler {
 
         let persistent_state_storage = self.0.storage.persistent_state_storage();
         match persistent_state_storage
-            .read_state_part(&query.block, query.offset, query.max_size)
+            .read_state_part(
+                &query.masterchain_block,
+                &query.block,
+                query.offset,
+                query.max_size,
+            )
             .await
         {
             Some(part) => Ok(part),
