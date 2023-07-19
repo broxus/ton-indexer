@@ -14,7 +14,7 @@ use anyhow::{Context, Result};
 use broxus_util::now;
 use everscale_network::overlay;
 use serde::{Deserialize, Serialize};
-use tokio::sync::Notify;
+use tokio::sync::{Notify, Semaphore};
 
 use global_config::GlobalConfig;
 
@@ -59,6 +59,7 @@ pub struct Engine {
     sync_options: SyncOptions,
 
     prepare_persistent_states: bool,
+    persistent_state_parallelism: u8,
 
     shard_states_operations: ShardStatesOperationsPool,
     block_applying_operations: BlockApplyingOperationsPool,
@@ -181,6 +182,7 @@ impl Engine {
             archive_options: config.archive_options,
             sync_options: config.sync_options,
             prepare_persistent_states: config.prepare_persistent_states,
+            persistent_state_parallelism: config.persistent_state_parallelism,
             shard_states_operations: OperationsPool::new("shard_states_operations"),
             block_applying_operations: OperationsPool::new("block_applying_operations"),
             next_block_applying_operations: OperationsPool::new("next_block_applying_operations"),
@@ -338,8 +340,11 @@ impl Engine {
             );
         }
 
+        let semaphore = Arc::new(Semaphore::new(self.persistent_state_parallelism as usize));
         // Save all states
         for state in persistent_states {
+            let sem = semaphore.clone();
+            let permit = sem.acquire_owned().await?;
             let block_id = state.block_id();
 
             tracing::info!(
@@ -349,7 +354,12 @@ impl Engine {
             let now = Instant::now();
 
             persistent_state_storage
-                .save_state(block_id, master_block_id, &state.root_cell().repr_hash())
+                .save_state(
+                    block_id,
+                    master_block_id,
+                    &state.root_cell().repr_hash(),
+                    permit,
+                )
                 .await?;
 
             tracing::info!(

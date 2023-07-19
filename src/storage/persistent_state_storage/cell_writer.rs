@@ -8,13 +8,14 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
-use crate::db;
 use anyhow::{Context, Result};
 use num_traits::ToPrimitive;
 use smallvec::SmallVec;
 use ton_types::{ByteOrderRead, UInt256};
 
+use crate::db;
 use crate::db::Db;
+use crate::utils::BlockIdExtDisplay;
 use crate::utils::FastHashMap;
 
 pub struct CellWriter<'a> {
@@ -71,7 +72,7 @@ impl<'a> CellWriter<'a> {
         let file_path = Self::make_pss_path(self.base_path, master_block_id, block_id);
 
         // Load cells from db in reverse order into the temp file
-        tracing::info!("started loading cells");
+        tracing::info!(block = %block_id.display(), "Started loading cells");
         let now = Instant::now();
         let mut intermediate = write_rev_cells(
             self.db,
@@ -83,7 +84,7 @@ impl<'a> CellWriter<'a> {
 
         let temp_file_path = Self::make_temp_pss_path(&file_path);
 
-        tracing::info!("Creating intermediate file {:?}", file_path);
+        tracing::info!(block = %block_id.display(), "Creating intermediate file {:?}", file_path);
 
         let file = fs::OpenOptions::new()
             .write(true)
@@ -96,7 +97,8 @@ impl<'a> CellWriter<'a> {
         tracing::info!(
             elapsed_ms = now.elapsed().as_millis(),
             cell_count,
-            "finished loading cells"
+            block = %block_id.display(),
+            "Finished loading cells"
         );
 
         // Compute offset type size (usually 4 bytes)
@@ -132,7 +134,7 @@ impl<'a> CellWriter<'a> {
         buffer.write_all(&[0, 0, 0, 0])?;
 
         // Cells index       | current len: 22 + offset_size
-        tracing::info!("started building index");
+        tracing::info!(block = %block_id.display(), "Started building index");
         {
             let mut next_offset = 0;
             for &cell_size in intermediate.cell_sizes.iter().rev() {
@@ -140,7 +142,7 @@ impl<'a> CellWriter<'a> {
                 buffer.write_all(&next_offset.to_be_bytes()[(8 - offset_size)..8])?;
             }
         }
-        tracing::info!("finished building index");
+        tracing::info!(block = %block_id.display(), "Finished building index");
 
         // Cells             | current len: 22 + offset_size * (1 + cell_sizes.len())
         let mut cell_buffer = [0; 2 + 128 + 4 * REF_SIZE];

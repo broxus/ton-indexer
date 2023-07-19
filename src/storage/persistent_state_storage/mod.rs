@@ -7,6 +7,7 @@ use std::time::{Duration, SystemTime};
 
 use anyhow::Result;
 use bytes::BytesMut;
+use tokio::sync::OwnedSemaphorePermit;
 use tokio::time::Instant;
 
 use self::cell_writer::*;
@@ -39,6 +40,7 @@ impl PersistentStateStorage {
         block_id: &ton_block::BlockIdExt,
         master_block_id: &ton_block::BlockIdExt,
         state_root_hash: &ton_types::UInt256,
+        permit: OwnedSemaphorePermit,
     ) -> Result<()> {
         let block_id = block_id.clone();
         let master_block_id = master_block_id.clone();
@@ -66,6 +68,7 @@ impl PersistentStateStorage {
                     CellWriter::clear_temp(&base_path, &master_block_id, &block_id);
                 }
             }
+            drop(permit)
         })
         .await
         .map_err(From::from)
@@ -154,7 +157,7 @@ impl PersistentStateStorage {
         tokio::spawn(async move {
             loop {
                 let now = Instant::now();
-                tracing::info!("Running persistent state storage cleanup");
+                tracing::info!(base_path = %base_path.display(), "Running persistent state storage cleanup");
                 let paths = match fs::read_dir(&base_path) {
                     Ok(paths) => paths,
                     Err(e) => {
