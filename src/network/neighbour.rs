@@ -3,6 +3,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use everscale_network::adnl;
 use rand::Rng;
 
+use super::NeighboursOptions;
 use crate::proto;
 
 pub struct Neighbour {
@@ -26,6 +27,14 @@ pub struct Neighbour {
 #[derive(Default, Copy, Clone)]
 pub struct NeighbourOptions {
     pub default_rldp_roundtrip_ms: u64,
+}
+
+impl From<&NeighboursOptions> for NeighbourOptions {
+    fn from(value: &NeighboursOptions) -> Self {
+        Self {
+            default_rldp_roundtrip_ms: value.default_rldp_roundtrip_ms,
+        }
+    }
 }
 
 impl Neighbour {

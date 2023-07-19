@@ -114,7 +114,7 @@ impl OverlayClient {
                     Some(neighbour) => neighbour,
                     None => {
                         tokio::time::sleep(Duration::from_millis(NO_NEIGHBOURS_DELAY)).await;
-                        return Err(OverlayClientError::NeNeighboursFound.into());
+                        return Err(OverlayClientError::NoNeighboursFound.into());
                     }
                 },
             };
@@ -147,7 +147,7 @@ impl OverlayClient {
         self.overlay.wait_for_broadcast().await
     }
 
-    async fn send_adnl_query_to_neighbour<Q, A>(
+    pub async fn send_adnl_query_to_neighbour<Q, A>(
         &self,
         neighbour: &Neighbour,
         query: Q,
@@ -250,7 +250,7 @@ impl std::fmt::Display for ResolvedAddress {
 #[derive(thiserror::Error, Debug)]
 enum OverlayClientError {
     #[error("No neighbours found")]
-    NeNeighboursFound,
+    NoNeighboursFound,
     #[error("Failed to send adnl query in {} attempts", .0)]
     AdnlQueryFailed(u32),
     #[error("No RLDP query answer from {}", .0)]

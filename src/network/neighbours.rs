@@ -78,9 +78,7 @@ impl Neighbours {
         let cache = Arc::new(NeighboursCache::new(
             initial_peers,
             options.max_neighbours,
-            NeighbourOptions {
-                default_rldp_roundtrip_ms: options.default_rldp_roundtrip_ms,
-            },
+            NeighbourOptions::from(&options),
         ));
 
         Arc::new(Self {
@@ -94,6 +92,10 @@ impl Neighbours {
             start: Instant::now(),
             peer_search_task_count: Arc::new(Default::default()),
         })
+    }
+
+    pub fn options(&self) -> &NeighboursOptions {
+        &self.options
     }
 
     pub fn overlay(&self) -> &Arc<overlay::Overlay> {
