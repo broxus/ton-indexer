@@ -178,7 +178,6 @@ impl PersistentStateStorage {
             }
         };
 
-        self.clear_files()?;
         self.clear_outdated_state_directories(block.id().seq_no())?;
 
         let end = SystemTime::now()
@@ -194,30 +193,25 @@ impl PersistentStateStorage {
         Ok(())
     }
 
-    fn clear_files(&self) -> Result<()> {
-        let paths = fs::read_dir(&self.storage_path)?;
-
-        for path in paths.flatten() {
-            if let Ok(meta) = path.metadata() {
-                if meta.is_file() {
-                    fs::remove_file(path.path())?;
-                }
-            }
-        }
-        Ok(())
-    }
-
     fn clear_outdated_state_directories(&self, actual_seqno: u32) -> Result<()> {
         let paths = fs::read_dir(&self.storage_path)?;
-        let mut directories_to_remove: Vec<PathBuf> = Vec::new();
+        let mut entries_to_remove: Vec<PathBuf> = Vec::new();
 
         for path in paths.flatten() {
+            let meta = path.metadata();
+            if let Ok(meta) = meta {
+                if meta.is_file() {
+                    entries_to_remove.push(path.path());
+                    continue;
+                }
+            }
+
             let filename_os = path.file_name();
             let filename_str = filename_os.to_str();
             let name = match filename_str {
                 Some(name) => name,
                 None => {
-                    directories_to_remove.push(path.path());
+                    entries_to_remove.push(path.path());
                     continue;
                 }
             };
@@ -226,16 +220,16 @@ impl PersistentStateStorage {
             match seqno_res {
                 Ok(seqno) => {
                     if seqno < actual_seqno {
-                        directories_to_remove.push(path.path());
+                        entries_to_remove.push(path.path());
                     }
                 }
                 Err(_) => {
-                    directories_to_remove.push(path.path());
+                    entries_to_remove.push(path.path());
                 }
             }
         }
 
-        for dir in directories_to_remove {
+        for dir in entries_to_remove {
             tracing::info!(dir = %dir.display(), "Removing old persistent state directory");
             if let Err(e) = fs::remove_dir_all(&dir) {
                 tracing::error!(dir = %dir.display(), "Removing old persistent state directory failed. Err: {e:?}");
