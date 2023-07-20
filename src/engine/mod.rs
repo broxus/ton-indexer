@@ -230,7 +230,6 @@ impl Engine {
         self.start_states_gc();
         if self.persistent_state_options.prepare_persistent_states {
             self.start_persistent_state_handler();
-            self.start_persistent_state_gc();
         }
 
         // Engine started
@@ -262,12 +261,6 @@ impl Engine {
                 blocks_gc_state.ty,
             )
             .await
-    }
-
-    fn start_persistent_state_gc(self: &Arc<Self>) {
-        self.storage
-            .persistent_state_storage()
-            .start_persistent_state_gc()
     }
 
     fn start_persistent_state_handler(self: &Arc<Self>) {
@@ -383,6 +376,13 @@ impl Engine {
             elapsed_ms = now.elapsed().as_millis(),
             "Saved all persistent states"
         );
+
+        if self.persistent_state_options.remove_old_states {
+            if let Err(e) = persistent_state_storage.clear_old_persistent_states().await {
+                tracing::error!("Failed to remove old persistent states directories. Err: {e:?}");
+            }
+        }
+
         Ok(())
     }
 

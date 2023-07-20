@@ -1,9 +1,8 @@
 use std::fs;
-use std::fs::DirEntry;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, SystemTime};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Result;
 use bytes::BytesMut;
@@ -11,23 +10,30 @@ use tokio::time::Instant;
 
 use self::cell_writer::*;
 use crate::db::Db;
+use crate::storage::BlockHandleStorage;
 use crate::utils::*;
 
 mod cell_writer;
 
 pub struct PersistentStateStorage {
+    block_handle_storage: Arc<BlockHandleStorage>,
     storage_path: PathBuf,
     db: Arc<Db>,
     is_cancelled: Arc<AtomicBool>,
 }
 
 impl PersistentStateStorage {
-    pub async fn new(file_db_path: PathBuf, db: Arc<Db>) -> Result<Self> {
+    pub async fn new(
+        file_db_path: PathBuf,
+        db: Arc<Db>,
+        block_handle_storage: Arc<BlockHandleStorage>,
+    ) -> Result<Self> {
         let dir = file_db_path.join("states");
         tokio::fs::create_dir_all(&dir).await?;
         let is_cancelled = Arc::new(Default::default());
 
         Ok(Self {
+            block_handle_storage,
             storage_path: dir,
             db,
             is_cancelled,
@@ -147,58 +153,93 @@ impl PersistentStateStorage {
         self.is_cancelled.store(true, Ordering::Release);
     }
 
-    pub fn start_persistent_state_gc(&self) {
-        let base_path = self.storage_path.clone();
-        let interval = Duration::from_secs(360);
-        let fallback_interval = Duration::from_secs(60);
-        tokio::spawn(async move {
-            loop {
-                let now = Instant::now();
-                tracing::info!(base_path = %base_path.display(), "Running persistent state storage cleanup");
-                let paths = match fs::read_dir(&base_path) {
-                    Ok(paths) => paths,
-                    Err(e) => {
-                        tracing::error!(path = %base_path.display(), "Failed to read base_path directory. Err: {e:?}");
-                        tokio::time::sleep(fallback_interval).await;
-                        continue;
-                    }
-                };
+    pub async fn clear_old_persistent_states(&self) -> Result<()> {
+        tracing::info!("Started clearing old persistent state directories");
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as u32;
 
-                for path in paths {
-                    let entry = match path {
-                        Ok(entry) => entry,
-                        Err(e) => {
-                            tracing::error!("Failed to get entry. Err: {e:?}");
-                            tokio::time::sleep(fallback_interval).await;
-                            continue;
-                        }
-                    };
+        let mut current_block = self.block_handle_storage.find_last_key_block()?;
 
-                    if let Err(e) = Self::process_entry(&entry) {
-                        tracing::error!(entry = %entry.path().display(), "Failed to process entry. Err: {e:?}");
-                        tokio::time::sleep(fallback_interval).await;
-                        continue;
+        let block = loop {
+            match self
+                .block_handle_storage
+                .find_prev_persistent_key_block(current_block.id().seq_no)?
+            {
+                Some(prev_state_block) => {
+                    let block_get_utime = prev_state_block.meta().gen_utime();
+                    if block_get_utime < now - 86000 {
+                        break prev_state_block;
                     }
+                    current_block = prev_state_block
                 }
-
-                tracing::info!(
-                    elapsed_ms = now.elapsed().as_millis(),
-                    "Persistent state storage cleanup complete"
-                );
-
-                tokio::time::sleep(interval).await;
+                None => return Ok(()),
             }
-        });
+        };
+
+        self.clear_files()?;
+        self.clear_outdated_state_directories(block.id().seq_no())?;
+
+        let end = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as u32;
+
+        tracing::info!(
+            elapsed_secs = end - now,
+            "Clearing old persistent state directories completed"
+        );
+
+        Ok(())
     }
 
-    fn process_entry(entry: &DirEntry) -> Result<()> {
-        let metadata = entry.metadata()?;
-        let created = metadata.created()?;
-        let now = SystemTime::now();
-        let offset = now.duration_since(created)?;
+    fn clear_files(&self) -> Result<()> {
+        let paths = fs::read_dir(&self.storage_path)?;
 
-        if offset > Duration::from_secs(86400 * 2) && metadata.is_dir() {
-            fs::remove_dir(entry.path())?
+        for path in paths.flatten() {
+            if let Ok(meta) = path.metadata() {
+                if meta.is_file() {
+                    fs::remove_file(path.path())?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn clear_outdated_state_directories(&self, actual_seqno: u32) -> Result<()> {
+        let paths = fs::read_dir(&self.storage_path)?;
+        let mut directories_to_remove: Vec<PathBuf> = Vec::new();
+
+        for path in paths.flatten() {
+            let filename_os = path.file_name();
+            let filename_str = filename_os.to_str();
+            let name = match filename_str {
+                Some(name) => name,
+                None => {
+                    directories_to_remove.push(path.path());
+                    continue;
+                }
+            };
+
+            let seqno_res = name.parse::<u32>();
+            match seqno_res {
+                Ok(seqno) => {
+                    if seqno < actual_seqno {
+                        directories_to_remove.push(path.path());
+                    }
+                }
+                Err(_) => {
+                    directories_to_remove.push(path.path());
+                }
+            }
+        }
+
+        for dir in directories_to_remove {
+            tracing::info!(dir = %dir.display(), "Removing old persistent state directory");
+            if let Err(e) = fs::remove_dir_all(&dir) {
+                tracing::error!(dir = %dir.display(), "Removing old persistent state directory failed. Err: {e:?}");
+            }
         }
 
         Ok(())

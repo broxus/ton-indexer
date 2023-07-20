@@ -54,8 +54,12 @@ impl Storage {
             max_cell_cache_size_bytes,
         )
         .await?;
-        let persistent_state_storage =
-            PersistentStateStorage::new(file_db_path.clone(), db.clone()).await?;
+        let persistent_state_storage = PersistentStateStorage::new(
+            file_db_path.clone(),
+            db.clone(),
+            block_handle_storage.clone(),
+        )
+        .await?;
         let node_state_storage = NodeStateStorage::new(db.clone())?;
         let block_connection_storage = BlockConnectionStorage::new(db)?;
 
