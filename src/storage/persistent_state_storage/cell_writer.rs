@@ -95,7 +95,7 @@ impl<'a> CellWriter<'a> {
 
         let cell_count = intermediate.cell_sizes.len() as u32;
         tracing::info!(
-            elapsed_ms = now.elapsed().as_millis(),
+            elapsed = %humantime::format_duration(now.elapsed()),
             cell_count,
             block = %block_id.display(),
             "Finished loading cells"

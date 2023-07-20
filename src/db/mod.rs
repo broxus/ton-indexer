@@ -159,7 +159,7 @@ impl Db {
             self.raw().compact_range_cf(&cf, bound, bound);
 
             tracing::info!(
-                elapsed_ms = instant.elapsed().as_millis(),
+                elapsed = %humantime::format_duration(instant.elapsed()),
                 "{title} compaction finished"
             );
         }

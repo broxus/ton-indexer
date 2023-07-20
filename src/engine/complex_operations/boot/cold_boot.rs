@@ -617,7 +617,7 @@ async fn download_block_with_state(
 
         engine.store_state(&handle, &shard_state).await?;
         engine
-            .notify_subscribers_with_full_state(&shard_state)
+            .notify_subscriber_with_full_state(shard_state)
             .await?;
     }
 

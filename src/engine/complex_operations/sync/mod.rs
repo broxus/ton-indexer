@@ -77,11 +77,10 @@ async fn import_package_with_apply(
     import_mc_blocks_with_apply(engine, &maps, last_mc_block_id, last_gen_utime).await?;
     import_shard_blocks_with_apply(engine, &maps).await?;
 
-    let elapsed_ms = import_start.elapsed().as_millis();
     tracing::info!(
         target: "sync",
         block_id = %last_mc_block_id.display(),
-        elapsed_ms,
+        elapsed = %humantime::format_duration(import_start.elapsed()),
         "imported archive package"
     );
     Ok(())

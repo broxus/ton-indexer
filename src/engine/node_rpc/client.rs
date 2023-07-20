@@ -28,27 +28,43 @@ impl NodeRpcClient {
         &self,
         full_state_id: &FullStateId,
     ) -> Result<Option<Arc<Neighbour>>> {
+        use everscale_network::adnl::PeersSet;
+
         let this = &self.0;
 
-        let (prepare, neighbour): (proto::PreparedState, _) = this
-            .send_adnl_query(
-                proto::RpcPreparePersistentState {
-                    block: full_state_id.block_id.clone(),
-                    masterchain_block: full_state_id.mc_block_id.clone(),
-                },
-                None,
-                Some(TIMEOUT_PREPARE),
-                None,
-            )
-            .await?;
+        // Prepare query
+        let query = tl_proto::serialize(proto::RpcPreparePersistentState {
+            block: full_state_id.block_id.clone(),
+            masterchain_block: full_state_id.mc_block_id.clone(),
+        });
+        let query = tl_proto::RawBytes::<tl_proto::Boxed>::new(&query);
 
-        match prepare {
-            proto::PreparedState::Found => {
+        // Prepare peers set
+        const PEERS_SET_LEN: u32 = 50;
+
+        let peers_set = PeersSet::with_capacity(PEERS_SET_LEN);
+        this.neighbours()
+            .overlay()
+            .write_cached_peers(PEERS_SET_LEN, &peers_set);
+
+        // Iterate through all peers
+        for peer_id in peers_set {
+            let neighbour = Neighbour::new(peer_id, this.neighbours().options().into());
+
+            if let Some(proto::PreparedState::Found) = this
+                .send_adnl_query_to_neighbour::<_, proto::PreparedState>(
+                    &neighbour,
+                    query,
+                    Some(TIMEOUT_PREPARE),
+                )
+                .await?
+            {
                 tracing::info!(peer_id = %neighbour.peer_id(), "found peer with requested state");
-                Ok(Some(neighbour))
+                return Ok(Some(Arc::new(neighbour)));
             }
-            proto::PreparedState::NotFound => Ok(None),
         }
+
+        Ok(None)
     }
 
     pub async fn download_persistent_state_part(
@@ -441,7 +457,7 @@ pub enum ArchiveDownloadStatus {
     NotFound,
 }
 
-const TIMEOUT_PREPARE: u64 = 6000; // Milliseconds
+const TIMEOUT_PREPARE: u64 = 1000; // Milliseconds
 const TIMEOUT_ARCHIVE: u64 = 3000;
 
 #[derive(Debug, thiserror::Error)]

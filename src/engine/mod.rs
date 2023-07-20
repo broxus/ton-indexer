@@ -44,7 +44,7 @@ pub struct Engine {
     storage: Arc<Storage>,
     states_gc_options: Option<StateGcOptions>,
     blocks_gc_state: Option<BlocksGcState>,
-    subscribers: Vec<Arc<dyn Subscriber>>,
+    subscriber: Arc<dyn Subscriber>,
     network: Arc<NodeNetwork>,
 
     masterchain_client: NodeRpcClient,
@@ -90,7 +90,7 @@ impl Engine {
     pub async fn new(
         config: NodeConfig,
         global_config: GlobalConfig,
-        subscribers: Vec<Arc<dyn Subscriber>>,
+        subscriber: Arc<dyn Subscriber>,
     ) -> Result<Arc<Self>> {
         let old_blocks_policy = config.sync_options.old_blocks_policy;
         let db = Db::open(config.rocks_db_path, config.db_options)?;
@@ -169,7 +169,7 @@ impl Engine {
                 max_blocks_per_batch: options.max_blocks_per_batch,
                 enabled: AtomicBool::new(options.enable_for_sync),
             }),
-            subscribers,
+            subscriber,
             network,
             masterchain_client,
             basechain_client,
@@ -200,7 +200,7 @@ impl Engine {
 
         // Boot
         boot(self).await?;
-        self.notify_subscribers_with_status(EngineStatus::Booted)
+        self.notify_subscriber_with_status(EngineStatus::Booted)
             .await;
 
         // Start listening broadcasts
@@ -222,7 +222,7 @@ impl Engine {
         }
         tracing::info!("node synced");
 
-        self.notify_subscribers_with_status(EngineStatus::Synced)
+        self.notify_subscriber_with_status(EngineStatus::Synced)
             .await;
 
         self.prepare_blocks_gc().await?;
@@ -360,7 +360,7 @@ impl Engine {
 
                 tracing::info!(
                     block_id = %state.block_id().display(),
-                    elapsed_ms = now.elapsed().as_millis(),
+                    elapsed = %humantime::format_duration(now.elapsed()),
                     "Saved persistent state"
                 );
 
@@ -373,7 +373,7 @@ impl Engine {
         // Done
         tracing::info!(
             mc_block_id = %master_block_id,
-            elapsed_ms = now.elapsed().as_millis(),
+            elapsed = %humantime::format_duration(now.elapsed()),
             "Saved all persistent states"
         );
 
@@ -483,7 +483,7 @@ impl Engine {
                         tracing::info!(
                             archive_id,
                             data_len,
-                            duration = now.elapsed().as_secs_f64(),
+                            duration = %humantime::format_duration(now.elapsed()),
                             "uploaded archive",
                         );
                     }
@@ -619,6 +619,7 @@ impl Engine {
                     Some(engine) => engine,
                     None => return,
                 };
+                let subscriber = engine.subscriber.as_ref();
 
                 let mut shards_gc_lock = engine
                     .storage
@@ -648,9 +649,7 @@ impl Engine {
                     break block_id;
                 };
 
-                for subscriber in &engine.subscribers {
-                    subscriber.on_before_states_gc(&block_id).await;
-                }
+                subscriber.on_before_states_gc(&block_id).await;
 
                 let shard_state_storage = engine.storage.shard_state_storage();
                 let top_blocks = match shard_state_storage
@@ -667,9 +666,7 @@ impl Engine {
                     }
                 };
 
-                for subscriber in &engine.subscribers {
-                    subscriber.on_after_states_gc(&block_id, &top_blocks).await;
-                }
+                subscriber.on_after_states_gc(&block_id, &top_blocks).await;
             }
         });
     }
@@ -822,7 +819,8 @@ impl Engine {
         self.store_state(&handle, &state).await?;
 
         self.set_applied(&handle, 0).await?;
-        self.notify_subscribers_with_full_state(&state).await?;
+        self.notify_subscriber_with_full_state(state.clone())
+            .await?;
 
         Ok((handle, state))
     }
@@ -1168,11 +1166,7 @@ impl Engine {
             block,
         };
 
-        for subscriber in &self.subscribers {
-            subscriber.process_blocks_edge(ctx).await?;
-        }
-
-        Ok(())
+        self.subscriber.process_blocks_edge(ctx).await
     }
 
     pub fn load_last_applied_mc_block_id(&self) -> Result<ton_block::BlockIdExt> {
@@ -1338,22 +1332,16 @@ impl Engine {
         Ok(())
     }
 
-    async fn notify_subscribers_with_status(&self, status: EngineStatus) {
-        for subscriber in &self.subscribers {
-            subscriber.engine_status_changed(status).await;
-        }
+    async fn notify_subscriber_with_status(&self, status: EngineStatus) {
+        self.subscriber.engine_status_changed(status).await;
     }
 
-    async fn notify_subscribers_with_block(
+    async fn notify_subscriber_with_block(
         &self,
         handle: &Arc<BlockHandle>,
         block: &BlockStuff,
-        shard_state: &ShardStateStuff,
+        shard_state: Arc<ShardStateStuff>,
     ) -> Result<()> {
-        if self.subscribers.is_empty() {
-            return Ok(());
-        }
-
         let meta = handle.meta().brief();
         let time_diff = now() as i64 - meta.gen_utime() as i64;
 
@@ -1374,24 +1362,16 @@ impl Engine {
             self.metrics
                 .last_mc_utime
                 .store(meta.gen_utime(), Ordering::Release);
-
-            for subscriber in &self.subscribers {
-                subscriber.process_block(ctx).await?;
-            }
         } else {
             self.metrics
                 .shard_client_time_diff
                 .store(time_diff, Ordering::Release);
-
-            for subscriber in &self.subscribers {
-                subscriber.process_block(ctx).await?;
-            }
         }
 
-        Ok(())
+        self.subscriber.process_block(ctx).await
     }
 
-    async fn notify_subscribers_with_archive_block(
+    async fn notify_subscriber_with_archive_block(
         &self,
         handle: &Arc<BlockHandle>,
         block: &BlockStuff,
@@ -1410,24 +1390,11 @@ impl Engine {
             block_proof_data: Some(block_proof_data),
         };
 
-        if handle.id().shard().is_masterchain() {
-            for subscriber in &self.subscribers {
-                subscriber.process_block(ctx).await?;
-            }
-        } else {
-            for subscriber in &self.subscribers {
-                subscriber.process_block(ctx).await?;
-            }
-        }
-
-        Ok(())
+        self.subscriber.process_block(ctx).await
     }
 
-    async fn notify_subscribers_with_full_state(&self, state: &ShardStateStuff) -> Result<()> {
-        for subscriber in &self.subscribers {
-            subscriber.process_full_state(state).await?;
-        }
-        Ok(())
+    async fn notify_subscriber_with_full_state(&self, state: Arc<ShardStateStuff>) -> Result<()> {
+        self.subscriber.process_full_state(state).await
     }
 
     async fn check_block_proof(&self, block_proof: &BlockProofStuff) -> Result<BriefBlockInfo> {
@@ -1547,7 +1514,7 @@ pub trait Subscriber: Send + Sync {
         Ok(())
     }
 
-    async fn process_full_state(&self, state: &ShardStateStuff) -> Result<()> {
+    async fn process_full_state(&self, state: Arc<ShardStateStuff>) -> Result<()> {
         let _unused_by_default = state;
         Ok(())
     }
@@ -1593,13 +1560,13 @@ impl ProcessBlocksEdgeContext<'_> {
     }
 }
 
-#[derive(Copy, Clone)]
+#[derive(Clone)]
 pub struct ProcessBlockContext<'a> {
     engine: &'a Engine,
     meta: BriefBlockMeta,
     handle: &'a Arc<BlockHandle>,
     block: &'a BlockStuff,
-    shard_state: Option<&'a ShardStateStuff>,
+    shard_state: Option<Arc<ShardStateStuff>>,
     block_data: Option<&'a [u8]>,
     block_proof_data: Option<&'a [u8]>,
 }
@@ -1632,12 +1599,17 @@ impl ProcessBlockContext<'_> {
 
     #[inline(always)]
     pub fn shard_state(&self) -> Option<&ton_block::ShardStateUnsplit> {
-        self.shard_state.map(ShardStateStuff::state)
+        self.shard_state.as_deref().map(ShardStateStuff::state)
     }
 
     #[inline(always)]
     pub fn shard_state_stuff(&self) -> Option<&ShardStateStuff> {
-        self.shard_state
+        self.shard_state.as_deref()
+    }
+
+    #[inline(always)]
+    pub fn take_shard_state_stuff(&mut self) -> Option<Arc<ShardStateStuff>> {
+        self.shard_state.take()
     }
 
     #[inline(always)]
