@@ -341,6 +341,10 @@ impl Engine {
         }
 
         let semaphore = Arc::new(Semaphore::new(self.persistent_state_parallelism as usize));
+        tracing::info!(
+            "Starting generating states with {} threads",
+            self.persistent_state_parallelism
+        );
         // Save all states
         for state in persistent_states {
             let sem = semaphore.clone();
