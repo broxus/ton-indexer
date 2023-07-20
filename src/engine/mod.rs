@@ -57,9 +57,7 @@ pub struct Engine {
 
     archive_options: Option<ArchiveOptions>,
     sync_options: SyncOptions,
-
-    prepare_persistent_states: bool,
-    persistent_state_parallelism: u8,
+    persistent_state_options: PersistentStateOptions,
 
     shard_states_operations: ShardStatesOperationsPool,
     block_applying_operations: BlockApplyingOperationsPool,
@@ -108,7 +106,7 @@ impl Engine {
         storage
             .runtime_storage()
             .persistent_state_keeper()
-            .set_shards_gc_lock_enabled(config.prepare_persistent_states);
+            .set_shards_gc_lock_enabled(config.persistent_state_options.prepare_persistent_states);
 
         let zero_state_id = global_config.zero_state.clone();
 
@@ -181,8 +179,7 @@ impl Engine {
             hard_forks,
             archive_options: config.archive_options,
             sync_options: config.sync_options,
-            prepare_persistent_states: config.prepare_persistent_states,
-            persistent_state_parallelism: config.persistent_state_parallelism,
+            persistent_state_options: config.persistent_state_options,
             shard_states_operations: OperationsPool::new("shard_states_operations"),
             block_applying_operations: OperationsPool::new("block_applying_operations"),
             next_block_applying_operations: OperationsPool::new("next_block_applying_operations"),
@@ -231,7 +228,7 @@ impl Engine {
         self.prepare_blocks_gc().await?;
         self.start_walking_blocks()?;
         self.start_states_gc();
-        if self.prepare_persistent_states {
+        if self.persistent_state_options.prepare_persistent_states {
             self.start_persistent_state_handler();
             self.start_persistent_state_gc();
         }
@@ -306,12 +303,19 @@ impl Engine {
     }
 
     async fn save_persistent_states(self: &Arc<Self>, mc_block_handle: &BlockHandle) -> Result<()> {
+        use futures_util::stream::{FuturesUnordered, TryStreamExt};
+
+        let parallelism = self
+            .persistent_state_options
+            .persistent_state_parallelism
+            .get();
+
         let persistent_state_storage = self.storage.persistent_state_storage();
         let master_block_id = mc_block_handle.id();
 
         persistent_state_storage.prepare_persistent_states_dir(master_block_id)?;
 
-        tracing::info!(mc_block_id = %master_block_id, "Started writing all persistent states");
+        tracing::info!(mc_block_id = %master_block_id, parallelism, "Started writing all persistent states");
         let now = Instant::now();
 
         // Load master state
@@ -340,38 +344,38 @@ impl Engine {
             );
         }
 
-        let semaphore = Arc::new(Semaphore::new(self.persistent_state_parallelism as usize));
-        tracing::info!(
-            "Starting generating states with {} threads",
-            self.persistent_state_parallelism
-        );
         // Save all states
+
+        let tasks = FuturesUnordered::new();
+        let semaphore = Arc::new(Semaphore::new(parallelism as usize));
+
         for state in persistent_states {
-            let sem = semaphore.clone();
-            let permit = sem.acquire_owned().await?;
-            let block_id = state.block_id();
+            let semaphore = semaphore.clone();
+            tasks.push(async move {
+                let _permit = semaphore.acquire_owned().await?;
 
-            tracing::info!(
-                block_id = %block_id.display(),
-                "Writing new persistent state"
-            );
-            let now = Instant::now();
+                let block_id = state.block_id();
+                tracing::info!(
+                    block_id = %block_id.display(),
+                    "Writing new persistent state"
+                );
 
-            persistent_state_storage
-                .save_state(
-                    block_id,
-                    master_block_id,
-                    &state.root_cell().repr_hash(),
-                    permit,
-                )
-                .await?;
+                let now = Instant::now();
+                persistent_state_storage
+                    .save_state(block_id, master_block_id, &state.root_cell().repr_hash())
+                    .await?;
 
-            tracing::info!(
-                block_id = %block_id.display(),
-                elapsed_ms = now.elapsed().as_millis(),
-                "Saved persistent state"
-            );
+                tracing::info!(
+                    block_id = %state.block_id().display(),
+                    elapsed_ms = now.elapsed().as_millis(),
+                    "Saved persistent state"
+                );
+
+                Ok::<_, anyhow::Error>(())
+            });
         }
+
+        tasks.try_collect().await?;
 
         // Done
         tracing::info!(
@@ -937,7 +941,7 @@ impl Engine {
     }
 
     pub fn supports_persistent_state_handling(&self) -> bool {
-        self.prepare_persistent_states
+        self.persistent_state_options.prepare_persistent_states
     }
 
     async fn wait_next_applied_mc_block(
