@@ -414,7 +414,7 @@ async fn download_archive(
                     mc_seq_no,
                     bytes_len = len,
                     human_len = %bytesize::ByteSize(len as u64),
-                    elapsed_ms = start.elapsed().as_millis(),
+                    elapsed = %humantime::format_duration(start.elapsed()),
                     "downloaded archive",
                 );
                 break Some((writer, neighbour));

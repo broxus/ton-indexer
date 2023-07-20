@@ -350,7 +350,7 @@ impl Engine {
                         tracing::info!(
                             archive_id,
                             data_len,
-                            duration = now.elapsed().as_secs_f64(),
+                            duration = %humantime::format_duration(now.elapsed()),
                             "uploaded archive",
                         );
                     }

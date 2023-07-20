@@ -241,7 +241,7 @@ impl ShardStateStorage {
             removed_states,
             removed_cells,
             block_id = %top_blocks.mc_block.display(),
-            elapsed_sec = instant.elapsed().as_secs_f64(),
+            elapsed = %humantime::format_duration(instant.elapsed()),
             "finished shard states GC",
         );
         Ok(top_blocks)
