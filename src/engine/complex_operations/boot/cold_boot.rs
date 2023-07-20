@@ -625,7 +625,6 @@ async fn download_block_with_state(
     Ok((handle, block))
 }
 
-const KEY_BLOCK_UTIME_STEP: u32 = 86400;
 const INTITAL_SYNC_TIME_SECONDS: u32 = 300;
 
 #[derive(thiserror::Error, Debug)]

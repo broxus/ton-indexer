@@ -379,7 +379,7 @@ impl Engine {
 
         if self.persistent_state_options.remove_old_states {
             if let Err(e) = persistent_state_storage.clear_old_persistent_states().await {
-                tracing::error!("Failed to remove old persistent states directories. Err: {e:?}");
+                tracing::error!("Failed to remove old persistent states directories: {e:?}");
             }
         }
 
