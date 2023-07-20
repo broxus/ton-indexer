@@ -43,7 +43,7 @@ pub fn apply_block<'a>(
         if !pre_apply {
             update_block_connections(engine, handle, &prev1_id, &prev2_id)?;
             engine
-                .notify_subscribers_with_block(handle, block, &shard_state)
+                .notify_subscriber_with_block(handle, block, shard_state)
                 .await?;
 
             if block.id().is_masterchain() {

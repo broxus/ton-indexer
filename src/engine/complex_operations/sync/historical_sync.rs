@@ -255,7 +255,7 @@ impl Engine {
         }
 
         // Notify subscribers
-        self.notify_subscribers_with_archive_block(
+        self.notify_subscriber_with_archive_block(
             &handle,
             &block.data,
             block.new_archive_data()?,

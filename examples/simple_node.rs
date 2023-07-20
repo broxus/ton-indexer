@@ -50,10 +50,12 @@ async fn run(app: App) -> Result<()> {
 
     let global_config = read_global_config(app.global_config)?;
 
-    let subscribers =
-        vec![Arc::new(LoggerSubscriber::default()) as Arc<dyn ton_indexer::Subscriber>];
-
-    let engine = Engine::new(config.indexer, global_config, subscribers).await?;
+    let engine = Engine::new(
+        config.indexer,
+        global_config,
+        Arc::new(LoggerSubscriber::default()),
+    )
+    .await?;
     engine.start().await?;
 
     futures_util::future::pending().await
