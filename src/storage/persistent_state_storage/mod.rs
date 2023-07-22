@@ -178,7 +178,7 @@ impl PersistentStateStorage {
             }
         };
 
-        self.clear_outdated_state_directories(block.id())?;
+        self.clear_outdated_state_entries(block.id())?;
 
         tracing::info!(
             elapsed = %humantime::format_duration(start.elapsed()),
@@ -188,21 +188,20 @@ impl PersistentStateStorage {
         Ok(())
     }
 
-    fn clear_outdated_state_directories(
-        &self,
-        recent_block_id: &ton_block::BlockIdExt,
-    ) -> Result<()> {
-        let mut entries_to_remove: Vec<PathBuf> = Vec::new();
+    fn clear_outdated_state_entries(&self, recent_block_id: &ton_block::BlockIdExt) -> Result<()> {
+        let mut directories_to_remove: Vec<PathBuf> = Vec::new();
+        let mut files_to_remove: Vec<PathBuf> = Vec::new();
+
         for entry in fs::read_dir(&self.storage_path)?.flatten() {
             let path = entry.path();
 
             if path.is_file() {
-                entries_to_remove.push(path);
+                files_to_remove.push(path);
                 continue;
             }
 
             let Ok(name) = entry.file_name().into_string() else {
-                entries_to_remove.push(path);
+                directories_to_remove.push(path);
                 continue;
             };
 
@@ -210,14 +209,21 @@ impl PersistentStateStorage {
                 matches!(name.parse::<u32>(), Ok(seqno) if seqno >= recent_block_id.seq_no);
 
             if !is_recent {
-                entries_to_remove.push(entry.path());
+                directories_to_remove.push(path);
             }
         }
 
-        for dir in entries_to_remove {
+        for dir in directories_to_remove {
             tracing::info!(dir = %dir.display(), "Removing an old persistent state directory");
             if let Err(e) = fs::remove_dir_all(&dir) {
                 tracing::error!(dir = %dir.display(), "Failed to remove an old persistent state: {e:?}");
+            }
+        }
+
+        for file in files_to_remove {
+            tracing::info!(file = %file.display(), "Removing file");
+            if let Err(e) = fs::remove_file(&file) {
+                tracing::error!(file = %file.display(), "Failed to remove file: {e:?}");
             }
         }
 
