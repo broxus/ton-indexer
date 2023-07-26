@@ -8,13 +8,13 @@
 use std::io::Write;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use broxus_util::now;
 use everscale_network::overlay;
 use serde::{Deserialize, Serialize};
-use tokio::sync::Notify;
+use tokio::sync::{Notify, Semaphore};
 
 use global_config::GlobalConfig;
 
@@ -57,6 +57,7 @@ pub struct Engine {
 
     archive_options: Option<ArchiveOptions>,
     sync_options: SyncOptions,
+    persistent_state_options: PersistentStateOptions,
 
     shard_states_operations: ShardStatesOperationsPool,
     block_applying_operations: BlockApplyingOperationsPool,
@@ -101,6 +102,11 @@ impl Engine {
         )
         .await
         .context("Failed to create DB")?;
+
+        storage
+            .runtime_storage()
+            .persistent_state_keeper()
+            .set_shards_gc_lock_enabled(config.persistent_state_options.prepare_persistent_states);
 
         let zero_state_id = global_config.zero_state.clone();
 
@@ -173,6 +179,7 @@ impl Engine {
             hard_forks,
             archive_options: config.archive_options,
             sync_options: config.sync_options,
+            persistent_state_options: config.persistent_state_options,
             shard_states_operations: OperationsPool::new("shard_states_operations"),
             block_applying_operations: OperationsPool::new("block_applying_operations"),
             next_block_applying_operations: OperationsPool::new("next_block_applying_operations"),
@@ -184,7 +191,7 @@ impl Engine {
 
     pub async fn start(self: &Arc<Self>) -> Result<()> {
         // Start full node overlay service
-        let service = NodeRpcServer::new(self);
+        let service: Arc<NodeRpcServer> = NodeRpcServer::new(self);
 
         self.network
             .add_subscriber(ton_block::MASTERCHAIN_ID, service.clone());
@@ -221,6 +228,9 @@ impl Engine {
         self.prepare_blocks_gc().await?;
         self.start_walking_blocks()?;
         self.start_states_gc();
+        if self.persistent_state_options.prepare_persistent_states {
+            self.start_persistent_state_handler();
+        }
 
         // Engine started
         Ok(())
@@ -251,6 +261,129 @@ impl Engine {
                 blocks_gc_state.ty,
             )
             .await
+    }
+
+    fn start_persistent_state_handler(self: &Arc<Self>) {
+        let engine = self.clone();
+
+        tokio::spawn(async move {
+            let fallback_interval = Duration::from_secs(60);
+            let persistent_state_keeper =
+                engine.storage.runtime_storage().persistent_state_keeper();
+            loop {
+                tokio::pin!(let new_state_found = persistent_state_keeper.new_state_found(););
+
+                let Some(block_handle) = persistent_state_keeper.current() else {
+                    new_state_found.await;
+                    continue;
+                };
+
+                if let Err(e) = engine.save_persistent_states(&block_handle).await {
+                    tracing::error!(mc_block_id = %block_handle.id(), "Failed to save persistent states: {e:?}");
+                    tokio::time::sleep(fallback_interval).await;
+                    continue;
+                }
+
+                engine
+                    .storage
+                    .runtime_storage()
+                    .persistent_state_keeper()
+                    .unlock_states_gc();
+
+                new_state_found.await;
+            }
+        });
+    }
+
+    async fn save_persistent_states(self: &Arc<Self>, mc_block_handle: &BlockHandle) -> Result<()> {
+        use futures_util::stream::{FuturesUnordered, TryStreamExt};
+
+        let parallelism = self
+            .persistent_state_options
+            .persistent_state_parallelism
+            .get();
+
+        let persistent_state_storage = self.storage.persistent_state_storage();
+        let master_block_id = mc_block_handle.id();
+
+        persistent_state_storage.prepare_persistent_states_dir(master_block_id)?;
+
+        tracing::info!(mc_block_id = %master_block_id, parallelism, "Started writing all persistent states");
+        let now = Instant::now();
+
+        // Load master state
+        let mc_state = self
+            .load_state(master_block_id)
+            .await
+            .context("Failed to load masterchain block state")?;
+
+        let shard_blocks = mc_state.shard_blocks()?;
+
+        // Prepare an array with all states
+        let mut persistent_states = Vec::new();
+        if !persistent_state_storage.state_exists(master_block_id, master_block_id) {
+            persistent_states.push(mc_state);
+        }
+
+        for block_id in shard_blocks.values() {
+            if persistent_state_storage.state_exists(master_block_id, block_id) {
+                continue;
+            }
+
+            persistent_states.push(
+                self.load_state(block_id)
+                    .await
+                    .context("Failed to load shard state")?,
+            );
+        }
+
+        // Save all states
+
+        let tasks = FuturesUnordered::new();
+        let semaphore = Arc::new(Semaphore::new(parallelism as usize));
+
+        for state in persistent_states {
+            let semaphore = semaphore.clone();
+            tasks.push(async move {
+                let _permit = semaphore.acquire_owned().await?;
+
+                let block_id = state.block_id();
+                tracing::info!(
+                    block_id = %block_id.display(),
+                    "Writing new persistent state"
+                );
+
+                let now = Instant::now();
+                persistent_state_storage
+                    .save_state(block_id, master_block_id, &state.root_cell().repr_hash())
+                    .await?;
+
+                tracing::info!(
+                    block_id = %state.block_id().display(),
+                    elapsed = %humantime::format_duration(now.elapsed()),
+                    "Saved persistent state"
+                );
+
+                Ok::<_, anyhow::Error>(())
+            });
+        }
+
+        tasks.try_collect().await?;
+
+        // Done
+        tracing::info!(
+            mc_block_id = %master_block_id,
+            elapsed = %humantime::format_duration(now.elapsed()),
+            "Saved all persistent states"
+        );
+
+        if self.persistent_state_options.remove_old_states {
+            if let Err(e) = persistent_state_storage.clear_old_persistent_states().await {
+                tracing::error!("Failed to remove old persistent states directories: {e:?}");
+            }
+        }
+
+        Ok(())
     }
 
     async fn start_archives_gc(self: &Arc<Self>) -> Result<()> {
@@ -474,7 +607,7 @@ impl Engine {
         gc_at = (gc_at - gc_at % options.interval_sec) + options.offset_sec;
 
         tokio::spawn(async move {
-            loop {
+            'gc: loop {
                 // Shift gc timestamp one iteration further
                 gc_at += options.interval_sec;
                 // Check if there is some time left before the GC
@@ -488,12 +621,32 @@ impl Engine {
                 };
                 let subscriber = engine.subscriber.as_ref();
 
-                let block_id = match engine.load_shards_client_mc_block_id() {
-                    Ok(block_id) => block_id,
-                    Err(e) => {
-                        tracing::error!("failed to load last shards client block: {e:?}");
+                let mut shards_gc_lock = engine
+                    .storage
+                    .runtime_storage()
+                    .persistent_state_keeper()
+                    .shards_gc_lock()
+                    .subscribe();
+
+                let block_id = loop {
+                    // Load the latest block id
+                    let block_id = match engine.load_shards_client_mc_block_id() {
+                        Ok(block_id) => block_id,
+                        Err(e) => {
+                            tracing::error!("failed to load last shards client block: {e:?}");
+                            continue 'gc;
+                        }
+                    };
+
+                    if *shards_gc_lock.borrow_and_update() {
+                        if shards_gc_lock.changed().await.is_err() {
+                            tracing::warn!("stopping shard states GC");
+                            return;
+                        }
                         continue;
                     }
+
+                    break block_id;
                 };
 
                 subscriber.on_before_states_gc(&block_id).await;
@@ -783,6 +936,10 @@ impl Engine {
             .runtime_storage()
             .persistent_state_keeper()
             .current_meta()
+    }
+
+    pub fn supports_persistent_state_handling(&self) -> bool {
+        self.persistent_state_options.prepare_persistent_states
     }
 
     async fn wait_next_applied_mc_block(

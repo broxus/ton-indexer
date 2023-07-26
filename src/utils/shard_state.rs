@@ -120,6 +120,26 @@ impl ShardStateStuff {
     pub fn config_params(&self) -> Result<&ton_block::ConfigParams> {
         Ok(&self.shard_state_extra()?.config)
     }
+
+    pub fn shard_blocks(
+        &self,
+    ) -> Result<FastHashMap<ton_block::ShardIdent, ton_block::BlockIdExt>> {
+        let mut shards = FastHashMap::default();
+        self.shard_state_extra()?
+            .shards()
+            .iterate_shards(|ident, descr| {
+                let last_shard_block = ton_block::BlockIdExt {
+                    shard_id: ident,
+                    seq_no: descr.seq_no,
+                    root_hash: descr.root_hash,
+                    file_hash: descr.file_hash,
+                };
+                shards.insert(ident, last_shard_block);
+                Ok(true)
+            })?;
+
+        Ok(shards)
+    }
 }
 
 pub struct RefMcStateHandle {

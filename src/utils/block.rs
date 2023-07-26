@@ -202,3 +202,5 @@ impl BlockIdExtExtension for ton_block::BlockIdExt {
         self.shard().is_masterchain()
     }
 }
+
+pub const KEY_BLOCK_UTIME_STEP: u32 = 86400;

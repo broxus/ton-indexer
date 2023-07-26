@@ -12,6 +12,7 @@ use self::block_storage::*;
 use self::node_state_storage::*;
 use self::shard_state_storage::*;
 use crate::db::Db;
+use crate::storage::persistent_state_storage::PersistentStateStorage;
 use crate::utils::CacheStats;
 
 mod models;
@@ -20,6 +21,7 @@ mod block_connection_storage;
 mod block_handle_storage;
 mod block_storage;
 mod node_state_storage;
+mod persistent_state_storage;
 mod runtime_storage;
 mod shard_state_storage;
 
@@ -32,6 +34,7 @@ pub struct Storage {
     shard_state_storage: ShardStateStorage,
     block_connection_storage: BlockConnectionStorage,
     node_state_storage: NodeStateStorage,
+    persistent_state_storage: PersistentStateStorage,
 }
 
 impl Storage {
@@ -51,6 +54,12 @@ impl Storage {
             max_cell_cache_size_bytes,
         )
         .await?;
+        let persistent_state_storage = PersistentStateStorage::new(
+            file_db_path.clone(),
+            db.clone(),
+            block_handle_storage.clone(),
+        )
+        .await?;
         let node_state_storage = NodeStateStorage::new(db.clone())?;
         let block_connection_storage = BlockConnectionStorage::new(db)?;
 
@@ -60,6 +69,7 @@ impl Storage {
             block_handle_storage,
             block_storage,
             shard_state_storage,
+            persistent_state_storage,
             block_connection_storage,
             node_state_storage,
             runtime_storage,
@@ -74,6 +84,11 @@ impl Storage {
     #[inline(always)]
     pub fn runtime_storage(&self) -> &RuntimeStorage {
         self.runtime_storage.as_ref()
+    }
+
+    #[inline(always)]
+    pub fn persistent_state_storage(&self) -> &PersistentStateStorage {
+        &self.persistent_state_storage
     }
 
     #[inline(always)]
@@ -115,4 +130,10 @@ impl Storage {
 #[derive(Debug, Copy, Clone)]
 pub struct DbMetrics {
     pub shard_state_storage: ShardStateStorageMetrics,
+}
+
+impl Drop for Storage {
+    fn drop(&mut self) {
+        self.persistent_state_storage().cancel();
+    }
 }

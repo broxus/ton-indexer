@@ -1,5 +1,6 @@
 use bytesize::ByteSize;
 use std::net::SocketAddrV4;
+use std::num::NonZeroU8;
 use std::path::PathBuf;
 
 use everscale_network::{adnl, dht, overlay, rldp};
@@ -29,6 +30,7 @@ pub struct NodeConfig {
 
     pub archive_options: Option<ArchiveOptions>,
     pub sync_options: SyncOptions,
+    pub persistent_state_options: PersistentStateOptions,
 
     pub adnl_options: adnl::NodeOptions,
     pub rldp_options: rldp::NodeOptions,
@@ -50,6 +52,7 @@ impl Default for NodeConfig {
             archive_options: Some(Default::default()),
             db_options: Default::default(),
             sync_options: Default::default(),
+            persistent_state_options: Default::default(),
             adnl_options: Default::default(),
             rldp_options: Default::default(),
             dht_options: Default::default(),
@@ -239,5 +242,23 @@ pub struct ShardStateCacheOptions {
 impl Default for ShardStateCacheOptions {
     fn default() -> Self {
         Self { ttl_sec: 120 }
+    }
+}
+
+#[derive(Debug, Copy, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct PersistentStateOptions {
+    pub prepare_persistent_states: bool,
+    pub persistent_state_parallelism: NonZeroU8,
+    pub remove_old_states: bool,
+}
+
+impl Default for PersistentStateOptions {
+    fn default() -> Self {
+        Self {
+            prepare_persistent_states: false,
+            persistent_state_parallelism: NonZeroU8::MIN,
+            remove_old_states: true,
+        }
     }
 }

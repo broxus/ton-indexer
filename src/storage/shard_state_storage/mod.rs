@@ -14,7 +14,6 @@ use crate::db::*;
 use crate::utils::*;
 
 mod cell_storage;
-mod cell_writer;
 mod entries_buffer;
 mod files_context;
 mod replace_transaction;

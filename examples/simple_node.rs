@@ -1,5 +1,4 @@
 use std::path::Path;
-use std::process::ExitCode;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
@@ -7,6 +6,7 @@ use anyhow::Result;
 use argh::FromArgs;
 use broxus_util::now;
 use serde::{Deserialize, Serialize};
+use tracing_subscriber::EnvFilter;
 
 use ton_indexer::utils::*;
 use ton_indexer::{Engine, GlobalConfig, NodeConfig, ProcessBlockContext};
@@ -27,15 +27,30 @@ pub struct App {
 }
 
 #[tokio::main]
-async fn main() -> ExitCode {
-    tracing_subscriber::fmt::init();
+async fn main() -> Result<()> {
+    let logger = tracing_subscriber::fmt().with_env_filter(
+        EnvFilter::builder()
+            .with_default_directive(tracing::Level::INFO.into())
+            .from_env_lossy(),
+    );
 
-    if let Err(e) = run(argh::from_env()).await {
-        eprintln!("Fatal error: {e:?}");
-        return ExitCode::FAILURE;
+    logger.init();
+
+    let any_signal = broxus_util::any_signal(broxus_util::TERMINATION_SIGNALS);
+
+    let run = run(argh::from_env());
+
+    tokio::select! {
+        result = run => result,
+        signal = any_signal => {
+            if let Ok(signal) = signal {
+                tracing::warn!(?signal, "received termination signal, flushing state...");
+            }
+            // NOTE: engine future is safely dropped here so rocksdb method
+            // `rocksdb_close` is called in DB object destructor
+            Ok(())
+        }
     }
-
-    ExitCode::SUCCESS
 }
 
 async fn run(app: App) -> Result<()> {

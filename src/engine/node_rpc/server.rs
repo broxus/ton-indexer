@@ -89,6 +89,7 @@ impl QuerySubscriber for NodeRpcServer {
             RpcDownloadKeyBlockProof => download_key_block_proof => answer_raw,
             RpcDownloadBlockProofLink => download_block_proof_link => answer_raw,
             RpcDownloadKeyBlockProofLink => download_key_block_proof_link => answer_raw,
+            RpcDownloadPersistentStateSlice => download_persistent_state_part => answer_raw,
             RpcGetArchiveInfo => get_archive_info => answer,
             RpcGetArchiveSlice => get_archive_slice => answer_raw,
             _ => {
@@ -150,10 +151,55 @@ impl QueryHandler {
 
     async fn prepare_persistent_state(
         self,
-        _: proto::RpcPreparePersistentState,
+        query: proto::RpcPreparePersistentState,
     ) -> Result<proto::PreparedState> {
-        // TODO: implement
-        Ok(proto::PreparedState::NotFound)
+        if !self.0.supports_persistent_state_handling() {
+            return Ok(proto::PreparedState::NotFound);
+        }
+
+        let persistent_state_storage = self.0.storage.persistent_state_storage();
+        if persistent_state_storage.state_exists(&query.masterchain_block, &query.block) {
+            Ok(proto::PreparedState::Found)
+        } else {
+            Ok(proto::PreparedState::NotFound)
+        }
+    }
+
+    async fn download_persistent_state_part(
+        self,
+        query: proto::RpcDownloadPersistentStateSlice,
+    ) -> Result<Vec<u8>> {
+        let hex = hex::encode(query.block.root_hash().as_slice());
+        tracing::info!(
+            "Received state part request: max_size: {}, offset: {}, block root: {}",
+            query.max_size,
+            query.offset,
+            hex
+        );
+        // TODO: send no response in case of invalid input
+
+        const PART_MAX_SIZE: u64 = 1 << 21;
+
+        anyhow::ensure!(
+            self.0.supports_persistent_state_handling(),
+            "Download persistent state not supported"
+        );
+        anyhow::ensure!(query.max_size <= PART_MAX_SIZE, "Unsupported max size");
+
+        let persistent_state_storage = self.0.storage.persistent_state_storage();
+        match persistent_state_storage
+            .read_state_part(
+                &query.masterchain_block,
+                &query.block,
+                query.offset,
+                query.max_size,
+            )
+            .await
+        {
+            Some(part) => Ok(part),
+            //TODO: we should not respond is there was None
+            None => Ok(Vec::default()),
+        }
     }
 
     async fn prepare_zero_state(
