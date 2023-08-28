@@ -553,11 +553,13 @@ fn get_validator_descrs_by_collator_range(
     );
 
     let Some(validator) = vset.list().get(range.collator as usize) else {
-        anyhow::bail!("No validator no {} in validator set {vset:?}", range.collator)
+        anyhow::bail!(
+            "No validator no {} in validator set {vset:?}",
+            range.collator
+        )
     };
 
-    let mut subset = Vec::new();
-    subset.push(validator.clone());
+    let subset = vec![validator.clone()];
 
     let short_hash = ton_block::ValidatorSet::calc_subset_hash_short(subset.as_slice(), cc_seqno)?;
     Ok(ValidatorSubsetInfo {

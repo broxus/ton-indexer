@@ -942,6 +942,40 @@ impl Engine {
         self.persistent_state_options.prepare_persistent_states
     }
 
+    /// Searches for a LT for a key block with max seqno which
+    /// was produced not later than the specified timestamp.
+    pub async fn find_closest_key_block_lt(&self, utime: u32) -> Result<u64> {
+        let block_handle_storage = self.storage.block_handle_storage();
+
+        // Find the key block with max seqno which was preduced not later than `utime`
+        let handle = 'last_key_block: {
+            let iter = block_handle_storage.key_blocks_iterator(KeyBlocksDirection::Backward);
+            for key_block in iter {
+                let handle = block_handle_storage
+                    .load_handle(&key_block?)?
+                    .context("Key block not found")?;
+
+                if handle.meta().gen_utime() <= utime {
+                    break 'last_key_block handle;
+                }
+            }
+
+            return Ok(0);
+        };
+
+        // Load block proof
+        let block_proof = self
+            .storage
+            .block_storage()
+            .load_block_proof(&handle, false)
+            .await?;
+
+        // Read `start_lt` from virtual block info
+        let (virt_block, _) = block_proof.virtualize_block()?;
+        let info = virt_block.read_info()?;
+        Ok(info.start_lt())
+    }
+
     async fn wait_next_applied_mc_block(
         &self,
         prev_handle: &Arc<BlockHandle>,
