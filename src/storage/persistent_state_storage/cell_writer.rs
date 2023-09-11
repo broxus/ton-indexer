@@ -80,7 +80,9 @@ impl<'a> CellWriter<'a> {
             state_root_hash.as_array(),
             is_cancelled.clone(),
         )
-        .context("Failed to write reversed cells data")?;
+        .map_err(|e| {
+            anyhow::Error::msg(format!("Failed to write reversed cells data. Inner: {e:?}"))
+        })?;
 
         let temp_file_path = Self::make_temp_pss_path(&file_path);
 
