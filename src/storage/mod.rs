@@ -7,10 +7,11 @@ pub use self::block_connection_storage::*;
 pub use self::block_handle_storage::*;
 pub use self::models::*;
 pub use self::runtime_storage::*;
+pub use self::shard_state_storage::{ShardStateStorageMetrics, ShardStatesGcStatus};
 
 use self::block_storage::*;
 use self::node_state_storage::*;
-use self::shard_state_storage::*;
+use self::shard_state_storage::ShardStateStorage;
 use crate::db::Db;
 use crate::storage::persistent_state_storage::PersistentStateStorage;
 use crate::utils::CacheStats;
@@ -127,7 +128,7 @@ impl Storage {
     }
 }
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Clone)]
 pub struct DbMetrics {
     pub shard_state_storage: ShardStateStorageMetrics,
 }

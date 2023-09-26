@@ -58,6 +58,25 @@ impl TopBlocks {
         }
     }
 
+    /// Returns the block seqno for the specified shard from this edge.
+    ///
+    /// NOTE: Specified shard could be split or merged
+    pub fn get_seqno(&self, shard_ident: &ton_block::ShardIdent) -> u32 {
+        if shard_ident.is_masterchain() {
+            self.mc_block.1
+        } else {
+            match self.shard_heights.get(shard_ident) {
+                Some(&top_seq_no) => top_seq_no,
+                None => self
+                    .shard_heights
+                    .iter()
+                    .find(|&(shard, _)| shard_ident.intersect_with(shard))
+                    .map(|(_, &top_seq_no)| top_seq_no)
+                    .unwrap_or_default(),
+            }
+        }
+    }
+
     /// Returns an iterator over the short ids of the latest blocks.
     pub fn short_ids(&self) -> TopBlocksShortIdsIter<'_> {
         TopBlocksShortIdsIter {

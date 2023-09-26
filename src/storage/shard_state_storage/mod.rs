@@ -1,9 +1,10 @@
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::{Context, Result};
+use arc_swap::ArcSwapOption;
 use ton_types::UInt256;
 
 use self::cell_storage::*;
@@ -31,6 +32,8 @@ pub struct ShardStateStorage {
     min_ref_mc_state: Arc<MinRefMcState>,
     max_new_mc_cell_count: AtomicUsize,
     max_new_sc_cell_count: AtomicUsize,
+
+    gc_status: ArcSwapOption<ShardStatesGcStatus>,
 }
 
 impl ShardStateStorage {
@@ -55,6 +58,7 @@ impl ShardStateStorage {
             min_ref_mc_state: Arc::new(Default::default()),
             max_new_mc_cell_count: AtomicUsize::new(0),
             max_new_sc_cell_count: AtomicUsize::new(0),
+            gc_status: ArcSwapOption::default(),
         };
 
         // Done
@@ -72,6 +76,7 @@ impl ShardStateStorage {
             storage_cell_max_live_count: storage_cell.max_live,
             max_new_mc_cell_count: self.max_new_mc_cell_count.swap(0, Ordering::AcqRel),
             max_new_sc_cell_count: self.max_new_sc_cell_count.swap(0, Ordering::AcqRel),
+            gc_status: self.gc_status.load_full(),
         }
     }
 
@@ -162,7 +167,16 @@ impl ShardStateStorage {
     }
 
     pub async fn remove_outdated_states(&self, mc_seq_no: u32) -> Result<TopBlocks> {
+        struct ResetGcStatusOnDrop<'a>(&'a ShardStateStorage);
+
+        impl Drop for ResetGcStatusOnDrop<'_> {
+            fn drop(&mut self) {
+                self.0.gc_status.store(None);
+            }
+        }
+
         let _compaction_guard = self.db.delay_compaction().await;
+        let _gc_status_guard = ResetGcStatusOnDrop(self);
 
         // Compute recent block ids for the specified masterchain seqno
         let top_blocks = self
@@ -185,6 +199,8 @@ impl ShardStateStorage {
         states_read_options.set_snapshot(&snapshot);
 
         let cells_write_options = self.db.cells.write_config();
+
+        let mut last_gc_status = None::<Arc<ShardStatesGcStatus>>;
 
         let mut alloc = bumpalo::Bump::new();
 
@@ -209,11 +225,19 @@ impl ShardStateStorage {
             let root_hash = UInt256::from_be_bytes(value);
 
             // Skip blocks from zero state and top blocks
-            if seq_no == 0 || top_blocks.contains_shard_seq_no(&shard_ident, seq_no) {
+            if seq_no == 0 {
                 iter.next();
                 continue;
             }
 
+            // Compute target seqno
+            let target_seqno = top_blocks.get_seqno(&shard_ident);
+            if seq_no >= target_seqno {
+                iter.next();
+                continue;
+            }
+
+            // Remove state
             alloc.reset();
             let mut batch = rocksdb::WriteBatch::default();
             {
@@ -231,6 +255,26 @@ impl ShardStateStorage {
                 );
             }
 
+            // Update GC status for metrics
+            'status: {
+                if let Some(status) = &last_gc_status {
+                    if shard_ident == status.current_shard {
+                        status.current_seqno.store(seq_no, Ordering::Release);
+                        break 'status;
+                    }
+                }
+
+                let new_status = Arc::new(ShardStatesGcStatus {
+                    current_shard: shard_ident,
+                    start_seqno: seq_no,
+                    end_seqno: target_seqno,
+                    current_seqno: AtomicU32::new(seq_no),
+                });
+                self.gc_status.store(Some(new_status.clone()));
+                last_gc_status = Some(new_status);
+            }
+
+            // Update iterator
             removed_states += 1;
             iter.next();
         }
@@ -345,7 +389,7 @@ impl ShardStateStorage {
     }
 }
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Clone)]
 pub struct ShardStateStorageMetrics {
     #[cfg(feature = "count-cells")]
     pub storage_cell_live_count: usize,
@@ -353,6 +397,15 @@ pub struct ShardStateStorageMetrics {
     pub storage_cell_max_live_count: usize,
     pub max_new_mc_cell_count: usize,
     pub max_new_sc_cell_count: usize,
+    pub gc_status: Option<Arc<ShardStatesGcStatus>>,
+}
+
+#[derive(Debug)]
+pub struct ShardStatesGcStatus {
+    pub current_shard: ton_block::ShardIdent,
+    pub start_seqno: u32,
+    pub end_seqno: u32,
+    pub current_seqno: AtomicU32,
 }
 
 async fn prepare_file_db_dir(file_db_path: PathBuf, folder: &str) -> Result<Arc<PathBuf>> {
