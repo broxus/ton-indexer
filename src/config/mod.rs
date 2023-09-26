@@ -1,6 +1,6 @@
 use bytesize::ByteSize;
 use std::net::SocketAddrV4;
-use std::num::NonZeroU8;
+use std::num::{NonZeroU8, NonZeroUsize};
 use std::path::PathBuf;
 
 use everscale_network::{adnl, dht, overlay, rldp};
@@ -67,6 +67,18 @@ impl Default for NodeConfig {
 pub struct DbOptions {
     pub rocksdb_lru_capacity: ByteSize,
     pub cells_cache_size: ByteSize,
+    #[serde(default = "default_thread_pool_size")]
+    pub low_thread_pool_size: NonZeroUsize,
+    #[serde(default = "default_thread_pool_size")]
+    pub high_thread_pool_size: NonZeroUsize,
+    #[serde(default = "default_thread_pool_size")]
+    pub max_subcompactions: NonZeroUsize,
+}
+
+fn default_thread_pool_size() -> NonZeroUsize {
+    let one = NonZeroUsize::new(1).unwrap();
+    let tc = std::thread::available_parallelism().unwrap_or(one);
+    NonZeroUsize::new(std::cmp::max(tc.get() / 2, 1)).unwrap()
 }
 
 impl Default for DbOptions {
@@ -111,6 +123,9 @@ impl Default for DbOptions {
         Self {
             rocksdb_lru_capacity,
             cells_cache_size,
+            low_thread_pool_size: default_thread_pool_size(),
+            high_thread_pool_size: default_thread_pool_size(),
+            max_subcompactions: default_thread_pool_size(),
         }
     }
 }

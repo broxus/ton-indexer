@@ -1,9 +1,9 @@
 [package]
 name = "ton-indexer"
-version = "0.3.0"
+version = "0.3.1"
 authors = ["Ivan Kalinin <i.kalinin@dexpa.io>"]
 edition = "2021"
-rust-version = "1.60"
+rust-version = "1.70"
 
 [workspace]
 members = ["global-config", "archive-downloader", "archive-uploader"]

@@ -63,7 +63,7 @@ impl Db {
                 // bigger base level size - less compactions
                 // parallel compactions finishes faster - less write stalls
 
-                opts.set_max_subcompactions(num_cpus::get() as u32 / 2);
+                opts.set_max_subcompactions(options.max_subcompactions.get() as u32);
 
                 // io
                 opts.set_max_open_files(limit as i32);
@@ -78,8 +78,8 @@ impl Db {
                 opts.create_missing_column_families(true);
 
                 // cpu
-                opts.set_max_background_jobs(std::cmp::max((num_cpus::get() as i32) / 2, 2));
-                opts.increase_parallelism(num_cpus::get() as i32);
+                opts.set_max_background_jobs(options.low_thread_pool_size.get() as i32);
+                opts.increase_parallelism(options.high_thread_pool_size.get() as i32);
 
                 opts.set_allow_concurrent_memtable_write(false);
                 opts.set_enable_write_thread_adaptive_yield(true);

@@ -2,8 +2,7 @@
 /target
 /db
 config.yaml
-ton-global.config.json
-
+/*.json
 Cargo.lock
-
 /**/.DS_Store
+/logs/
