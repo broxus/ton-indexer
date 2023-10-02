@@ -1,12 +1,11 @@
 use std::collections::hash_map;
-use std::num::NonZeroU32;
 use std::sync::{Arc, Weak};
 
 use anyhow::Result;
 use bumpalo::Bump;
 use bytes::Bytes;
 use parking_lot::RwLock;
-use quick_cache::sync::Cache;
+use quick_cache::sync::{Cache, DefaultLifecycle};
 use smallvec::SmallVec;
 use ton_types::{ByteOrderRead, CellImpl, UInt256};
 
@@ -494,13 +493,13 @@ enum StorageCellError {
 struct RawCellsCache(Cache<[u8; 32], Bytes, CellSizeEstimator, FastHasherState>);
 
 #[derive(Clone, Copy)]
-struct CellSizeEstimator;
-impl quick_cache::Weighter<[u8; 32], (), Bytes> for CellSizeEstimator {
-    fn weight(&self, key: &[u8; 32], _: &(), val: &Bytes) -> NonZeroU32 {
+pub struct CellSizeEstimator;
+impl quick_cache::Weighter<[u8; 32], Bytes> for CellSizeEstimator {
+    fn weight(&self, key: &[u8; 32], val: &Bytes) -> u32 {
         const BYTES_SIZE: usize = std::mem::size_of::<usize>() * 4;
         let len = key.len() + val.len() + BYTES_SIZE;
 
-        NonZeroU32::new(len as u32).expect("Key is not empty")
+        len as u32
     }
 }
 
@@ -541,6 +540,7 @@ impl RawCellsCache {
             size_in_bytes,
             CellSizeEstimator,
             FastHasherState::default(),
+            DefaultLifecycle::default(),
         );
 
         Self(raw_cache)
