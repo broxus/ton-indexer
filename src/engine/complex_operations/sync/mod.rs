@@ -74,7 +74,9 @@ async fn import_package_with_apply(
 
     let import_start = std::time::Instant::now();
 
-    import_mc_blocks_with_apply(engine, &maps, last_mc_block_id, last_gen_utime).await?;
+    import_mc_blocks_with_apply(engine, &maps, last_mc_block_id, last_gen_utime)
+        .await
+        .context("Mc block import failed")?;
     import_shard_blocks_with_apply(engine, &maps).await?;
 
     tracing::info!(
@@ -187,6 +189,7 @@ async fn import_shard_blocks_with_apply(engine: &Arc<Engine>, maps: &Arc<BlockMa
         // Start applying blocks for each shard
         let mut tasks = Vec::with_capacity(shard_blocks.len());
         for (_, id) in shard_blocks {
+            tracing::info!("apply shardchain block {}", id.display());
             let engine = engine.clone();
             let maps = maps.clone();
             tasks.push(tokio::spawn(async move {

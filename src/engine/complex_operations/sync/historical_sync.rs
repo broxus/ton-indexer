@@ -1,7 +1,12 @@
 use std::ops::ControlFlow;
 use std::sync::Arc;
 
-use anyhow::Result;
+use crate::engine::complex_operations::sync::import_package_with_apply;
+use crate::engine::complex_operations::{
+    choose_key_block, download_workchain_zero_state, prepare_prev_key_block,
+};
+use anyhow::{Context, Result};
+use futures_util::{Stream, StreamExt};
 
 use super::archives_stream::*;
 use super::block_maps::*;
@@ -38,6 +43,91 @@ pub async fn historical_sync(engine: &Arc<Engine>, from_seqno: u32) -> Result<()
     }
 
     tracing::info!(target: "sync", "historical sync complete");
+    Ok(())
+}
+
+pub async fn boot_from_archives(
+    engine: &Arc<Engine>,
+    mut archive_stream: impl Stream<Item = Vec<u8>> + Unpin,
+) -> Result<()> {
+    let prev_key_block = prepare_prev_key_block(engine).await?;
+    // let last_key_block = choose_key_block(engine)?;
+    let zero_state = engine.load_mc_zero_state().await.context("No zero state")?;
+
+    download_workchain_zero_state(engine, &zero_state, ton_block::BASE_WORKCHAIN_ID).await?;
+    engine.store_last_applied_mc_block_id(prev_key_block.handle().id())?;
+    engine.store_shards_client_mc_block_id(&prev_key_block.handle().id())?;
+
+    let mut last_gen_utime = 0;
+
+    while let Some(pack) = archive_stream.next().await {
+        let pack = BlockMaps::new(&pack)?;
+        tracing::info!(
+            target: "sync",
+            lowest_id = %pack.lowest_mc_id().context("lowest id not found")?.display(),
+            highest_id = %pack.highest_mc_id().context("highest id not found")?.display(),
+            "importing archive");
+        import_package_with_apply(
+            engine,
+            pack,
+            &engine.last_applied_block()?,
+            &mut last_gen_utime,
+        )
+        .await?;
+        // import_shard_blocks_with_apply(engine, &pack).await?;
+        // for master_block in pack.mc_block_ids.values() {
+        //     let mc_seq_no = master_block.seq_no;
+        //     tracing::info!("Applying archive {}", mc_seq_no);
+        //     let master_block = pack
+        //         .blocks
+        //         .get(master_block)
+        //         .context("master block not found")?;
+        //     let master_proof = master_block
+        //         .proof
+        //         .as_ref()
+        //         .context("master block proof not found")?;
+        //     let master_block = master_block
+        //         .block
+        //         .as_ref()
+        //         .context("should be master block")?;
+        //
+        //     let shard_blocks = master_block.shard_blocks()?;
+        //     let handle = engine
+        //         .save_block(master_block, master_proof, mc_seq_no)
+        //         .await?;
+        //     // what is pre apply?
+        //     engine
+        //         .apply_block_ext(&handle, &master_block.data, mc_seq_no, false, 0)
+        //         .await?;
+        //     tracing::info!("Applied mc block {mc_seq_no}");
+        //
+        //     for shard_block_id in shard_blocks.values() {
+        //         if shard_block_id.seq_no == 0 {
+        //             // skip zerostate
+        //             continue;
+        //         }
+        //         let shard_block = pack
+        //             .blocks
+        //             .get(shard_block_id)
+        //             .context("shard block not found")?;
+        //         let shard_proof = shard_block
+        //             .proof
+        //             .as_ref()
+        //             .context("shard proof not found")?;
+        //         let shard_block = shard_block
+        //             .block
+        //             .as_ref()
+        //             .context("should be shard block")?;
+        //
+        //         let handle = engine
+        //             .save_block(shard_block, shard_proof, mc_seq_no)
+        //             .await?;
+        //         engine
+        //             .apply_block_ext(&handle, &shard_block.data, mc_seq_no, false, 0)
+        //             .await?;
+        //     }
+        // }
+    }
     Ok(())
 }
 

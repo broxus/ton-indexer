@@ -47,7 +47,7 @@ pub async fn cold_boot(engine: &Arc<Engine>) -> Result<ton_block::BlockIdExt> {
 
 /// Searches for the last key block (or zerostate) from which
 /// we can start downloading other key blocks
-async fn prepare_prev_key_block(engine: &Arc<Engine>) -> Result<PrevKeyBlock> {
+pub async fn prepare_prev_key_block(engine: &Arc<Engine>) -> Result<PrevKeyBlock> {
     let block_handle_storage = engine.storage.block_handle_storage();
     let block_storage = engine.storage.block_storage();
 
@@ -382,7 +382,7 @@ impl<'a> BlockProofStream<'a> {
 }
 
 /// Selectes the latest suitable key block with persistent state
-fn choose_key_block(engine: &Engine) -> Result<Arc<BlockHandle>> {
+pub fn choose_key_block(engine: &Engine) -> Result<Arc<BlockHandle>> {
     let block_handle_storage = engine.storage.block_handle_storage();
     let mut key_blocks = block_handle_storage
         .key_blocks_iterator(KeyBlocksDirection::Backward)
@@ -431,7 +431,7 @@ fn choose_key_block(engine: &Engine) -> Result<Arc<BlockHandle>> {
     Err(ColdBootError::PersistentShardStateNotFound.into())
 }
 
-enum PrevKeyBlock {
+pub enum PrevKeyBlock {
     ZeroState {
         handle: Arc<BlockHandle>,
         state: Arc<ShardStateStuff>,
@@ -443,7 +443,7 @@ enum PrevKeyBlock {
 }
 
 impl PrevKeyBlock {
-    fn handle(&self) -> &Arc<BlockHandle> {
+    pub fn handle(&self) -> &Arc<BlockHandle> {
         match self {
             Self::ZeroState { handle, .. } => handle,
             Self::KeyBlock { handle, .. } => handle,
@@ -488,7 +488,7 @@ impl PrevKeyBlock {
     }
 }
 
-async fn download_workchain_zero_state(
+pub async fn download_workchain_zero_state(
     engine: &Arc<Engine>,
     mc_zero_state: &ShardStateStuff,
     workchain: i32,

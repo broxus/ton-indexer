@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use broxus_util::now;
 use everscale_network::overlay;
+use futures_util::Stream;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Notify, Semaphore};
 
@@ -233,6 +234,31 @@ impl Engine {
         }
 
         // Engine started
+        Ok(())
+    }
+
+    pub async fn start_from_archives(
+        self: &Arc<Self>,
+        stream: impl Stream<Item = Vec<u8>> + Unpin,
+    ) -> Result<()> {
+        // Start full node overlay service
+        let service: Arc<NodeRpcServer> = NodeRpcServer::new(self);
+        let zero_state = self.load_mc_zero_state().await?;
+        let state = ton_types::serialize_toc(&zero_state.root_cell()).unwrap();
+        println!("{}", hex::encode(&state));
+
+        self.network
+            .add_subscriber(ton_block::MASTERCHAIN_ID, service.clone());
+        self.network
+            .add_subscriber(ton_block::BASE_WORKCHAIN_ID, service);
+
+        boot_from_archives(self, stream).await?;
+        self.notify_subscriber_with_status(EngineStatus::Booted)
+            .await;
+
+        self.start_archives_gc().await?;
+        self.start_states_gc();
+
         Ok(())
     }
 
@@ -1097,6 +1123,7 @@ impl Engine {
         Ok(state)
     }
 
+    #[cfg_attr(feature = "integration-tests", visibility::make(pub))]
     async fn store_state(
         &self,
         handle: &Arc<BlockHandle>,

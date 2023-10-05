@@ -10,6 +10,9 @@ use self::warm_boot::*;
 
 mod cold_boot;
 mod warm_boot;
+pub use cold_boot::{
+    choose_key_block, cold_boot, download_workchain_zero_state, prepare_prev_key_block,
+};
 
 /// Ensures that all shard states are downloaded.
 ///

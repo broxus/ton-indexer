@@ -71,9 +71,29 @@ async fn run(app: App) -> Result<()> {
         Arc::new(LoggerSubscriber::default()),
     )
     .await?;
-    engine.start().await?;
+    let mut files_list: Vec<_> = std::fs::read_dir("/mnt/nas/scratch/archives")?
+        .filter_map(|x| {
+            let res = x.ok()?;
+            Some(res.path())
+        })
+        .collect();
+    files_list.sort();
+    let files_list = files_list
+        .into_iter()
+        .filter_map(|x| match std::fs::read(&x) {
+            Ok(d) => Some(d),
+            Err(e) => {
+                tracing::error!(?e, "failed to read file");
+                None
+            }
+        });
 
-    futures_util::future::pending().await
+    engine
+        .start_from_archives(futures_util::stream::iter(files_list))
+        .await?;
+
+    Ok(())
+    // futures_util::future::pending().await
 }
 
 #[derive(Default)]

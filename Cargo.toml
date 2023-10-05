@@ -54,6 +54,7 @@ archive-uploader = { path = "archive-uploader", optional = true }
 global-config = { path = "global-config" }
 bytesize = { version = "1.2.0", features = ["serde"] }
 quick_cache = "0.4.0"
+visibility = "0.1.0"
 
 [dev-dependencies]
 argh = "0.1"
@@ -80,6 +81,7 @@ count-cells = ["countme/enable", "ton_types/profile"]
 archive-uploader = ["dep:archive-uploader"]
 alloc-profiling = ["broxus-util/alloc-profiling"]
 venom = ["ton_block/venom"]
+integration-tests = []
 
 [profile.release]
 debug = true
