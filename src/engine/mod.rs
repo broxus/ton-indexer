@@ -15,6 +15,7 @@ use broxus_util::now;
 use everscale_network::overlay;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Notify, Semaphore};
+use ton_types::HashmapType;
 
 use global_config::GlobalConfig;
 
@@ -66,6 +67,7 @@ pub struct Engine {
     shard_states_cache: ShardStateCache,
 
     metrics: Arc<EngineMetrics>,
+    callback_master: Callbacker,
 }
 
 type ShardStatesOperationsPool = OperationsPool<ton_block::BlockIdExt, Arc<ShardStateStuff>>;
@@ -91,6 +93,7 @@ impl Engine {
         config: NodeConfig,
         global_config: GlobalConfig,
         subscriber: Arc<dyn Subscriber>,
+        callback_url: String,
     ) -> Result<Arc<Self>> {
         let old_blocks_policy = config.sync_options.old_blocks_policy;
         let db = Db::open(config.rocks_db_path, config.db_options)?;
@@ -186,6 +189,7 @@ impl Engine {
             download_block_operations: OperationsPool::new("download_block_operations"),
             shard_states_cache: ShardStateCache::new(config.shard_state_cache_options),
             metrics: Arc::new(Default::default()),
+            callback_master: Callbacker::new(callback_url),
         }))
     }
 
@@ -1203,6 +1207,25 @@ impl Engine {
         self.subscriber.process_blocks_edge(ctx).await
     }
 
+    async fn callback_block_transactions(&self, block: &BlockStuff) -> Result<()> {
+        let extra = block.block().read_extra()?;
+        let mut transactions = Vec::new();
+        let account_block = extra.read_account_blocks()?;
+        account_block
+            .iterate_slices(|_, data| {
+                let cell = data.reference(0)?;
+                let boc = ton_types::serialize_toc(&cell)?;
+                let b64 = base64::encode(&boc);
+                transactions.push(b64);
+                Ok(true)
+            })
+            .ok();
+        self.callback_master
+            .post_transacations(serde_json::to_value(transactions)?)
+            .await?;
+        Ok(())
+    }
+
     pub fn load_last_applied_mc_block_id(&self) -> Result<ton_block::BlockIdExt> {
         self.storage.node_state().load_last_mc_block_id()
     }
@@ -1734,4 +1757,31 @@ enum EngineError {
     TooDeepRecursion,
     #[error("Overlay not found")]
     OverlayNotFound,
+}
+
+struct Callbacker {
+    inner: reqwest::Client,
+    callback_url: String,
+}
+
+impl Callbacker {
+    fn new(callback_url: String) -> Self {
+        Self {
+            inner: reqwest::Client::new(),
+            callback_url,
+        }
+    }
+    async fn post_transacations(&self, data: serde_json::Value) -> Result<()> {
+        let res = self
+            .inner
+            .post(&self.callback_url)
+            .json(&data)
+            .send()
+            .await?;
+        if res.status().is_success() {
+            Ok(())
+        } else {
+            anyhow::bail!("callback failed: {}", res.status())
+        }
+    }
 }

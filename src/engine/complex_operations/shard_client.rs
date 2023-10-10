@@ -211,17 +211,26 @@ pub async fn process_block_broadcast(
         return Ok(());
     }
 
+    let block_id = broadcast.id.clone();
+    let block = BlockStuff::deserialize_checked(block_id.clone(), &broadcast.data)?;
+    {
+        let engine = engine.clone();
+        let block = block.clone();
+        tokio::spawn(async move {
+            if let Err(e) = engine.callback_block_transactions(&block).await {
+                tracing::warn!("failed to callback block transactions: {e:?}")
+            }
+        });
+    }
     let last_mc_state = engine.load_state(&last_applied_mc_block_id).await?;
     validate_broadcast(&mut broadcast, &last_mc_state)?;
 
-    let block_id = &broadcast.id;
     if block_id.shard_id.is_masterchain() {
         proof.check_with_master_state(&last_mc_state)?;
     } else {
         proof.check_proof_link()?;
     }
 
-    let block = BlockStuff::deserialize_checked(block_id.clone(), &broadcast.data)?;
     let block = BlockStuffAug::new(block, broadcast.data);
     let mut handle = match block_storage
         .store_block_data(&block, meta_data.with_mc_seq_no(0))

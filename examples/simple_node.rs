@@ -69,6 +69,7 @@ async fn run(app: App) -> Result<()> {
         config.indexer,
         global_config,
         Arc::new(LoggerSubscriber::default()),
+        "http://personal-callback-hell".to_string(),
     )
     .await?;
     engine.start().await?;
