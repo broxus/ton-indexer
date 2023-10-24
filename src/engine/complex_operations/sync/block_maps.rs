@@ -26,10 +26,8 @@ impl BlockMaps {
                 PackageEntryId::Block(id) => {
                     let block = BlockStuff::deserialize_checked(id.clone(), entry.data)?;
 
-                    maps.blocks
-                        .entry(id.clone())
-                        .or_insert_with(BlockMapsEntry::default)
-                        .block = Some(BlockStuffAug::new(block, entry.data.to_vec()));
+                    maps.blocks.entry(id.clone()).or_default().block =
+                        Some(BlockStuffAug::new(block, entry.data.to_vec()));
                     if id.is_masterchain() {
                         maps.mc_block_ids.insert(id.seq_no, id);
                     }
@@ -37,19 +35,15 @@ impl BlockMaps {
                 PackageEntryId::Proof(id) if id.is_masterchain() => {
                     let proof = BlockProofStuff::deserialize(id.clone(), entry.data, false)?;
 
-                    maps.blocks
-                        .entry(id.clone())
-                        .or_insert_with(BlockMapsEntry::default)
-                        .proof = Some(BlockProofStuffAug::new(proof, entry.data.to_vec()));
+                    maps.blocks.entry(id.clone()).or_default().proof =
+                        Some(BlockProofStuffAug::new(proof, entry.data.to_vec()));
                     maps.mc_block_ids.insert(id.seq_no, id);
                 }
                 PackageEntryId::ProofLink(id) if !id.is_masterchain() => {
                     let proof = BlockProofStuff::deserialize(id.clone(), entry.data, true)?;
 
-                    maps.blocks
-                        .entry(id.clone())
-                        .or_insert_with(BlockMapsEntry::default)
-                        .proof = Some(BlockProofStuffAug::new(proof, entry.data.to_vec()));
+                    maps.blocks.entry(id.clone()).or_default().proof =
+                        Some(BlockProofStuffAug::new(proof, entry.data.to_vec()));
                 }
                 _ => continue,
             }

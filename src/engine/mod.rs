@@ -51,9 +51,8 @@ pub struct Engine {
     basechain_client: NodeRpcClient,
 
     old_blocks_policy: OldBlocksPolicy,
-    zero_state_id: ton_block::BlockIdExt,
     init_mc_block_id: ton_block::BlockIdExt,
-    hard_forks: FastHashSet<ton_block::BlockIdExt>,
+    global_config_ids: GlobalConfigIds,
 
     archive_options: Option<ArchiveOptions>,
     sync_options: SyncOptions,
@@ -86,6 +85,12 @@ impl Drop for Engine {
     }
 }
 
+struct GlobalConfigIds {
+    zero_state: ton_block::BlockIdExt,
+    init_block: Option<ton_block::BlockIdExt>,
+    hard_forks: FastHashSet<ton_block::BlockIdExt>,
+}
+
 impl Engine {
     pub async fn new(
         config: NodeConfig,
@@ -108,14 +113,18 @@ impl Engine {
             .persistent_state_keeper()
             .set_shards_gc_lock_enabled(config.persistent_state_options.prepare_persistent_states);
 
-        let zero_state_id = global_config.zero_state.clone();
+        let global_config_ids = GlobalConfigIds {
+            zero_state: global_config.zero_state.clone(),
+            init_block: global_config.init_block.clone(),
+            hard_forks: global_config.hard_forks.clone().into_iter().collect(),
+        };
 
-        let mut init_mc_block_id = zero_state_id.clone();
+        let mut init_mc_block_id = global_config_ids.zero_state.clone();
         if let Ok(block_id) = storage.node_state().load_init_mc_block_id() {
             if block_id.seq_no > init_mc_block_id.seq_no {
                 init_mc_block_id = block_id;
             }
-        } else if let Some(block_id) = &global_config.init_block {
+        } else if let Some(block_id) = &global_config_ids.init_block {
             if block_id.seq_no > init_mc_block_id.seq_no {
                 init_mc_block_id = block_id.clone();
             }
@@ -124,8 +133,6 @@ impl Engine {
             init_mc_block_id = %init_mc_block_id.display(),
             "selected init block"
         );
-
-        let hard_forks = global_config.hard_forks.clone().into_iter().collect();
 
         let network = NodeNetwork::new(
             config.ip_address,
@@ -174,9 +181,8 @@ impl Engine {
             masterchain_client,
             basechain_client,
             old_blocks_policy,
-            zero_state_id,
             init_mc_block_id,
-            hard_forks,
+            global_config_ids,
             archive_options: config.archive_options,
             sync_options: config.sync_options,
             persistent_state_options: config.persistent_state_options,
@@ -731,7 +737,7 @@ impl Engine {
     }
 
     fn is_hard_fork(&self, block_id: &ton_block::BlockIdExt) -> bool {
-        self.hard_forks.contains(block_id)
+        self.global_config_ids.hard_forks.contains(block_id)
     }
 
     fn get_rpc_client(&self, workchain: i32) -> Result<&NodeRpcClient> {
@@ -1079,7 +1085,7 @@ impl Engine {
     }
 
     pub async fn load_mc_zero_state(&self) -> Result<Arc<ShardStateStuff>> {
-        self.load_state(&self.zero_state_id).await
+        self.load_state(&self.global_config_ids.zero_state).await
     }
 
     pub async fn load_state(

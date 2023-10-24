@@ -79,25 +79,35 @@ async fn prepare_prev_key_block(engine: &Arc<Engine>) -> Result<PrevKeyBlock> {
         };
 
         // Find previous key block (or zerostate). It is needed for proof verification
-        let prev_key_block = block_handle_storage
-            .find_prev_key_block(block_id.seq_no)?
-            .context("Previous key block not found")?;
-        let prev_key_block = if prev_key_block.id().seq_no == 0 {
-            // Previous key block is zerostate
-            PrevKeyBlock::ZeroState {
-                handle: prev_key_block,
-                state: engine.load_mc_zero_state().await?,
+        let prev_key_block = 'prev_key_block: {
+            // NOTE: we don't need to verify block proof for an explicitly specified init key block
+            if matches!(
+                &engine.global_config_ids.init_block,
+                Some(init_id) if block_id == init_id,
+            ) {
+                break 'prev_key_block None;
             }
-        } else {
-            // Previous key block is also a key block so it must have proof
-            let proof = block_storage
-                .load_block_proof(&prev_key_block, false)
-                .await
-                .context("Failed to found prev key block proof")?;
-            PrevKeyBlock::KeyBlock {
-                handle: prev_key_block,
-                proof: Box::new(proof),
-            }
+
+            let prev_key_block = block_handle_storage
+                .find_prev_key_block(block_id.seq_no)?
+                .context("Previous key block not found")?;
+            Some(if prev_key_block.id().seq_no == 0 {
+                // Previous key block is zerostate
+                PrevKeyBlock::ZeroState {
+                    handle: prev_key_block,
+                    state: engine.load_mc_zero_state().await?,
+                }
+            } else {
+                // Previous key block is also a key block so it must have proof
+                let proof = block_storage
+                    .load_block_proof(&prev_key_block, false)
+                    .await
+                    .context("Failed to found prev key block proof")?;
+                PrevKeyBlock::KeyBlock {
+                    handle: prev_key_block,
+                    proof: Box::new(proof),
+                }
+            })
         };
 
         // Download and save block proof
@@ -106,25 +116,35 @@ async fn prepare_prev_key_block(engine: &Arc<Engine>) -> Result<PrevKeyBlock> {
                 .download_block_proof(block_id, true, None, None)
                 .await?;
 
-            match prev_key_block.check_next_proof(engine, &proof) {
-                Ok(info) => {
-                    let handle = match handle {
-                        Some(handle) => handle.into(),
-                        None => info.with_mc_seq_no(block_id.seq_no).into(),
-                    };
-
-                    let handle = block_storage
-                        .store_block_proof(&proof, handle)
-                        .await?
-                        .handle;
-
-                    break (handle, proof);
+            let info = match &prev_key_block {
+                Some(prev_key_block) => match prev_key_block.check_next_proof(engine, &proof) {
+                    Ok(info) => info,
+                    Err(e) => {
+                        tracing::warn!("got invalid block proof for init block: {e:?}");
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                        continue;
+                    }
+                },
+                None => {
+                    let (_, virt_block_info) = proof
+                        .data
+                        .pre_check_block_proof()
+                        .context("Failed to pre check block proof")?;
+                    BriefBlockInfo::from(&virt_block_info)
                 }
-                Err(e) => {
-                    tracing::warn!("got invalid block proof for init block: {e:?}");
-                    tokio::time::sleep(Duration::from_millis(10)).await;
-                }
-            }
+            };
+
+            let handle = match handle {
+                Some(handle) => handle.into(),
+                None => info.with_mc_seq_no(block_id.seq_no).into(),
+            };
+
+            let handle = block_storage
+                .store_block_proof(&proof, handle)
+                .await?
+                .handle;
+
+            break (handle, proof);
         };
 
         if !handle.is_key_block() {
