@@ -206,16 +206,14 @@ impl OverlayClient {
     {
         const ATTEMPT_INTERVAL: u64 = 50; // Milliseconds
 
+        let roundtrip = neighbour
+            .roundtrip_rldp()
+            .map(|roundtrip| roundtrip + attempt as u64 * ATTEMPT_INTERVAL);
+
+        tracing::warn!(neighbour = %neighbour.peer_id(), roundtrip, "RLDP QUERY");
         let (answer, roundtrip) = self
             .overlay
-            .rldp_query(
-                &self.rldp,
-                neighbour.peer_id(),
-                query,
-                neighbour
-                    .roundtrip_rldp()
-                    .map(|roundtrip| roundtrip + attempt as u64 * ATTEMPT_INTERVAL),
-            )
+            .rldp_query(&self.rldp, neighbour.peer_id(), query, roundtrip)
             .await?;
 
         match answer {

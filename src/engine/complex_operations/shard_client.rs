@@ -130,7 +130,7 @@ async fn load_next_masterchain_block(
         .apply_block_ext(&handle, &block, handle.id().seqno, false, 0)
         .await?;
 
-    Ok(block_id.clone())
+    Ok(*block_id)
 }
 
 async fn load_shard_blocks(
@@ -194,7 +194,7 @@ pub async fn process_block_broadcast(
     }
 
     let proof = BlockProofStuff::deserialize(
-        broadcast.id.clone(),
+        broadcast.id,
         &broadcast.proof,
         !broadcast.id.shard.is_masterchain(),
     )?;
@@ -216,7 +216,7 @@ pub async fn process_block_broadcast(
         proof.check_proof_link()?;
     }
 
-    let block = BlockStuff::deserialize_checked(block_id.clone(), &broadcast.data)?;
+    let block = BlockStuff::deserialize_checked(*block_id, &broadcast.data)?;
     let block = BlockStuffAug::new(block, broadcast.data);
     let mut handle = match block_storage
         .store_block_data(&block, meta_data.with_mc_seqno(0))
@@ -277,7 +277,7 @@ fn validate_broadcast(
         let validator_set = config_params.get_current_validator_set()?;
 
         #[cfg(feature = "venom")]
-        if !broadcast.id.shard().is_masterchain()
+        if !broadcast.id.is_masterchain()
             && config_params.has_capability(ton_block::GlobalCapabilities::CapFastFinality)
         {
             let shard_hashes = last_mc_state.shards()?;

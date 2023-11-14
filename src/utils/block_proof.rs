@@ -224,9 +224,7 @@ impl BlockProofStuff {
 
         {
             let mut count = 0usize;
-            let mut signatures_iter = signatures.signatures.raw_values();
-
-            while let Some(value) = signatures_iter.next() {
+            for value in signatures.signatures.raw_values() {
                 value?;
                 count += 1;
                 if count > expected_count {
@@ -307,14 +305,14 @@ impl BlockProofStuff {
 
     fn process_given_state(
         &self,
-        state: &ShardStateStuff,
+        master_state: &ShardStateStuff,
         block_info: &BlockInfo,
     ) -> Result<ValidatorSubsetInfo> {
         anyhow::ensure!(
-            state.block_id().is_masterchain(),
+            master_state.block_id().is_masterchain(),
             "Can't check proof for {}: given state {} doesn't belong masterchain",
             self.id,
-            state.block_id()
+            master_state.block_id()
         );
 
         anyhow::ensure!(
@@ -324,22 +322,25 @@ impl BlockProofStuff {
         );
 
         anyhow::ensure!(
-            block_info.prev_key_block_seqno < state.block_id().seqno,
+            block_info.prev_key_block_seqno <= master_state.block_id().seqno,
             "Can't check proof for block {} using master state {}, because it is older than the previous key block with seqno {}",
             self.id,
-            state.block_id(),
+            master_state.block_id(),
             block_info.prev_key_block_seqno,
         );
 
         anyhow::ensure!(
-            state.block_id().seqno < self.id.seqno,
+            master_state.block_id().seqno < self.id.seqno,
             "Can't check proof for block {} using newer master state {}",
             self.id,
-            state.block_id(),
+            master_state.block_id(),
         );
 
         let (validator_set, catchain_config) = {
-            let custom = state.state().load_custom()?.context("No custom found")?;
+            let custom = master_state
+                .state()
+                .load_custom()?
+                .context("No custom found")?;
             let validator_set = custom.config.get_current_validator_set()?;
             let catchain_config = custom.config.get_catchain_config()?;
             (validator_set, catchain_config)

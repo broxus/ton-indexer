@@ -8,7 +8,6 @@ use argh::FromArgs;
 use broxus_util::now;
 use serde::{Deserialize, Serialize};
 
-use ton_indexer::utils::*;
 use ton_indexer::{Engine, GlobalConfig, NodeConfig, ProcessBlockContext};
 
 #[global_allocator]
@@ -77,8 +76,8 @@ impl ton_indexer::Subscriber for LoggerSubscriber {
 
         let created_at = ctx.meta().gen_utime() as i64;
 
-        ctx.block().read_info()?;
-        ctx.block().read_value_flow()?;
+        ctx.block().load_info()?;
+        ctx.block().load_value_flow()?;
 
         tracing::info!(time_diff = (now() as i64 - created_at));
 

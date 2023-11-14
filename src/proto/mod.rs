@@ -197,7 +197,7 @@ pub enum PreparedProof {
     Link,
 }
 
-#[derive(Copy, Clone, Eq, PartialEq, TlRead, TlWrite)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, TlRead, TlWrite)]
 #[tl(boxed, scheme = "scheme.tl")]
 pub enum Prepared {
     #[tl(id = "tonNode.notFound")]

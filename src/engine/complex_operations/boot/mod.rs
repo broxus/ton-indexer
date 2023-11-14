@@ -40,7 +40,7 @@ pub async fn boot(engine: &Arc<Engine>) -> Result<()> {
 
             // NOTE: clippy can't detect the usage later in macros
             #[allow(clippy::redundant_clone)]
-            last_key_block_id.clone()
+            last_key_block_id
         }
     };
 

@@ -54,7 +54,7 @@ pub fn apply_block<'a>(
 
                 engine.set_applied(handle, mc_seq_no).await?;
 
-                let id = handle.id().clone();
+                let id = *handle.id();
                 engine
                     .next_block_applying_operations
                     .do_or_wait(&prev1_id, None, async move { Ok(id) })
@@ -188,7 +188,7 @@ async fn compute_and_store_shard_state(
         .clone();
 
     let shard_state = tokio::task::spawn_blocking({
-        let block_id = block.id().clone();
+        let block_id = *block.id();
         move || -> Result<Arc<ShardStateStuff>> {
             let shard_state_root = merkle_update.apply(&prev_shard_state_root)?;
             Ok(Arc::new(ShardStateStuff::new(

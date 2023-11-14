@@ -256,7 +256,7 @@ async fn import_shard_blocks_with_apply(engine: &Arc<Engine>, maps: &Arc<BlockMa
             .unwrap_or(Ok(()))?;
 
         engine.store_shards_client_mc_block_id(mc_block_id)?;
-        last_applied_mc_block_id = mc_block_id.clone();
+        last_applied_mc_block_id = *mc_block_id;
     }
 
     Ok(())

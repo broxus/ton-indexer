@@ -55,7 +55,7 @@ pub async fn download_state(
 
     tokio::spawn({
         let engine = engine.clone();
-        let block_id = full_state_id.block_id.clone();
+        let block_id = full_state_id.block_id;
         let total_size = total_size.clone();
         async move {
             result_tx.send(background_process(&engine, block_id, total_size, packets_rx).await)

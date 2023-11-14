@@ -2,7 +2,7 @@ use std::io::Read;
 
 use anyhow::{Context, Result};
 use crc::{Crc, CRC_32_ISCSI};
-use everscale_types::cell::{CellType, LevelMask};
+use everscale_types::cell::{CellDescriptor, CellType, LevelMask};
 use smallvec::SmallVec;
 
 macro_rules! try_read {
@@ -145,56 +145,54 @@ impl ShardStatePacketReader {
     }
 
     pub fn read_cell(&mut self, ref_size: usize, buffer: &mut [u8]) -> Result<Option<usize>> {
-        // if self.process_skip() == ReaderAction::Incomplete {
-        //     return Ok(None);
-        // }
+        if self.process_skip() == ReaderAction::Incomplete {
+            return Ok(None);
+        }
 
-        // let mut src = self.begin();
+        let mut src = self.begin();
 
-        // let d1 = try_read!(src.read_byte());
-        // let l = d1 >> 5;
-        // let h = (d1 & 0b0001_0000) != 0;
-        // let r = (d1 & 0b0000_0111) as usize;
-        // let absent = r == 0b111 && h;
+        let d1 = try_read!(src.read_byte());
+        let l = d1 >> 5;
+        let h = (d1 & 0b0001_0000) != 0;
+        let r = (d1 & 0b0000_0111) as usize;
+        let absent = r == 0b111 && h;
 
-        // buffer[0] = d1;
+        buffer[0] = d1;
 
-        // let size = if absent {
-        //     let data_size = 32 * ((LevelMask::new(l).level() + 1) as usize);
-        //     try_read!(src.read_exact(&mut buffer[1..1 + data_size]));
+        let size = if absent {
+            let data_size = 32 * ((LevelMask::new(l).level() + 1) as usize);
+            try_read!(src.read_exact(&mut buffer[1..1 + data_size]));
 
-        //     tracing::info!("ABSENT");
+            tracing::info!("ABSENT");
 
-        //     // 1 byte of d1 + fixed data size of absent cell
-        //     1 + data_size
-        // } else {
-        //     if r > 4 {
-        //         tracing::error!("CELLS: {r}");
-        //         return Err(ShardStateParserError::InvalidShardStateCell)
-        //             .context("Cell must contain at most 4 references");
-        //     }
+            // 1 byte of d1 + fixed data size of absent cell
+            1 + data_size
+        } else {
+            if r > 4 {
+                tracing::error!("CELLS: {r}");
+                return Err(ShardStateParserError::InvalidShardStateCell)
+                    .context("Cell must contain at most 4 references");
+            }
 
-        //     let d2 = try_read!(src.read_byte());
-        //     buffer[1] = d2;
+            let d2 = try_read!(src.read_byte());
+            buffer[1] = d2;
 
-        //     // Skip optional precalculated hashes
-        //     let hash_count = LevelMask::with_mask(l).level() as usize + 1;
-        //     if h && !src.skip(hash_count * (32 + 2)) {
-        //         return Ok(None);
-        //     }
+            // Skip optional precalculated hashes
+            let hash_count = LevelMask::new(l).level() as usize + 1;
+            if h && !src.skip(hash_count * (32 + 2)) {
+                return Ok(None);
+            }
 
-        //     let data_size = ((d2 >> 1) + u8::from(d2 & 1 != 0)) as usize;
-        //     try_read!(src.read_exact(&mut buffer[2..2 + data_size + r * ref_size]));
+            let data_size = ((d2 >> 1) + u8::from(d2 & 1 != 0)) as usize;
+            try_read!(src.read_exact(&mut buffer[2..2 + data_size + r * ref_size]));
 
-        //     // 2 bytes for d1 and d2 + data size + total references size
-        //     2 + data_size + r * ref_size
-        // };
+            // 2 bytes for d1 and d2 + data size + total references size
+            2 + data_size + r * ref_size
+        };
 
-        // src.end();
+        src.end();
 
-        // Ok(Some(size))
-
-        todo!()
+        Ok(Some(size))
     }
 
     pub fn read_crc(&mut self) -> Result<Option<()>> {
@@ -289,8 +287,7 @@ pub struct BocHeader {
 }
 
 pub struct RawCell<'a> {
-    pub cell_type: CellType,
-    pub level_mask: u8,
+    pub descriptor: CellDescriptor,
     pub data: &'a [u8],
     pub bit_len: u16,
     pub reference_indices: SmallVec<[u32; 4]>,
@@ -307,34 +304,19 @@ impl<'a> RawCell<'a> {
     where
         R: Read,
     {
-        let d1 = src.read_byte()?;
-        let l = d1 >> 5;
-        let h = (d1 & 0b0001_0000) != 0;
-        let s = (d1 & 0b0000_1000) != 0;
-        let r = (d1 & 0b0000_0111) as usize;
-        let absent = r == 0b111 && h;
+        let mut descriptor = [0u8; 2];
+        src.read_exact(&mut descriptor)?;
+        let descriptor = CellDescriptor::new(descriptor);
+        let byte_len = descriptor.byte_len() as usize;
+        let ref_count = descriptor.reference_count() as usize;
 
-        anyhow::ensure!(!absent, "Absent cells are not supported");
+        anyhow::ensure!(!descriptor.is_absent(), "Absent cells are not supported");
 
-        let d2 = src.read_byte()?;
-        let data_size = ((d2 >> 1) + u8::from(d2 & 1 != 0)) as usize;
-        let no_completion_tag = d2 & 1 == 0;
+        let data = &mut data_buffer[0..byte_len];
+        src.read_exact(&mut data[..byte_len])?;
 
-        let cell_data = &mut data_buffer[0..data_size + usize::from(no_completion_tag)];
-        src.read_exact(&mut cell_data[..data_size])?;
-
-        if no_completion_tag {
-            cell_data[data_size] = 0x80;
-        }
-
-        let cell_type = if !s {
-            CellType::Ordinary
-        } else {
-            CellType::from_byte_exotic(cell_data[0]).context("Invalid cell")?
-        };
-
-        let mut reference_indices = SmallVec::with_capacity(r);
-        for _ in 0..r {
+        let mut reference_indices = SmallVec::with_capacity(ref_count);
+        for _ in 0..ref_count {
             let index = src.read_be_uint(ref_size)? as usize;
             if index > cell_count || index <= cell_index {
                 return Err(ShardStateParserError::InvalidShardStateCell)
@@ -344,18 +326,17 @@ impl<'a> RawCell<'a> {
             }
         }
 
-        let bit_len = if no_completion_tag {
-            (data_size * 8) as u16
-        } else if let Some(data) = cell_data.last() {
-            data_size as u16 * 8 - data.trailing_zeros() as u16 - 1
+        let bit_len = if descriptor.is_aligned() {
+            (byte_len * 8) as u16
+        } else if let Some(data) = data.last() {
+            byte_len as u16 * 8 - data.trailing_zeros() as u16 - 1
         } else {
             0
         };
 
         Ok(RawCell {
-            cell_type,
-            level_mask: l,
-            data: cell_data,
+            descriptor,
+            data,
             bit_len,
             reference_indices,
         })

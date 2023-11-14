@@ -96,21 +96,21 @@ impl NodeStateStorage {
     fn store_block_id(&self, (cache, key): &BlockIdCache, block_id: &BlockId) -> Result<()> {
         let node_states = &self.db.node_states;
         node_states.insert(key, write_block_id_le(block_id))?;
-        *cache.lock() = Some(block_id.clone());
+        *cache.lock() = Some(*block_id);
         Ok(())
     }
 
     #[inline(always)]
     fn load_block_id(&self, (cache, key): &BlockIdCache) -> Result<BlockId> {
-        if let Some(a) = &*cache.lock() {
-            return Ok(a.clone());
+        if let Some(cached) = &*cache.lock() {
+            return Ok(*cached);
         }
 
         let value = match self.db.node_states.get(key)? {
             Some(data) => read_block_id_le(&data).ok_or(NodeStateStorageError::InvalidBlockId)?,
             None => return Err(NodeStateStorageError::ParamNotFound.into()),
         };
-        *cache.lock() = Some(value.clone());
+        *cache.lock() = Some(value);
         Ok(value)
     }
 }

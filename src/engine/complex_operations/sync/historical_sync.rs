@@ -164,7 +164,7 @@ impl<'a> HistoricalSyncContext<'a> {
                         let (info, block, proof) = engine.prepare_archive_block(&maps, &id).await?;
                         let (prev1, prev2) = block.data.construct_prev_id()?;
 
-                        if info.after_split && !splits.insert(prev1.clone()) {
+                        if info.after_split && !splits.insert(prev1) {
                             // Two blocks from different shards, referenced by the same mc block,
                             // could have the same ancestor in case of split. So when we find
                             // a block after split, we check if it's already processed and skip

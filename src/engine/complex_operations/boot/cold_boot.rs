@@ -43,7 +43,7 @@ pub async fn cold_boot(engine: &Arc<Engine>) -> Result<BlockId> {
     };
 
     tracing::info!("finished cold boot");
-    Ok(last_key_block.id().clone())
+    Ok(*last_key_block.id())
 }
 
 /// Searches for the last key block (or zerostate) from which
@@ -206,7 +206,7 @@ async fn download_key_blocks(engine: &Arc<Engine>, mut prev_key_block: PrevKeyBl
 
     // Continue downloading key blocks from the last known block
     let mut prev_handle = prev_key_block.handle().clone();
-    tasks_tx.send(prev_handle.id().clone()).ok();
+    tasks_tx.send(*prev_handle.id()).ok();
 
     let node_state = engine.storage.node_state();
     while let Some((mut ids, neighbour)) = ids_rx.recv().await {
@@ -217,7 +217,7 @@ async fn download_key_blocks(engine: &Arc<Engine>, mut prev_key_block: PrevKeyBl
             // Start downloading next key blocks in background
             Some(block_id) => {
                 tracing::debug!(last_key_block_id = %block_id.as_short_id());
-                tasks_tx.send(block_id.clone()).ok();
+                tasks_tx.send(*block_id).ok();
             }
             // Allow empty response for syncing from zerostate
             None if prev_handle.id().seqno == 0
@@ -229,7 +229,7 @@ async fn download_key_blocks(engine: &Arc<Engine>, mut prev_key_block: PrevKeyBl
             None => {
                 // Reset good peer, because empty ids is suspicious
                 good_peer.store(None);
-                tasks_tx.send(prev_handle.id().clone()).ok();
+                tasks_tx.send(*prev_handle.id()).ok();
                 continue;
             }
         };
@@ -307,7 +307,7 @@ impl<'a> BlockProofStream<'a> {
     async fn next(&mut self) -> Result<Option<(Arc<BlockHandle>, BlockProofStuff)>> {
         // Check ids range end
         let block_id = match self.ids.get(self.index) {
-            Some(block_id) => block_id.clone(),
+            Some(block_id) => *block_id,
             None => return Ok(None),
         };
 
@@ -497,7 +497,7 @@ async fn download_workchain_zero_state(
     // Get workchain description
     let workchains = mc_zero_state.config_params()?.get_workchains()?;
     let base_workchain = workchains
-        .get(&workchain)?
+        .get(workchain)?
         .ok_or(ColdBootError::BaseWorkchainInfoNotFound)?;
 
     // Download and save zerostate
@@ -521,8 +521,8 @@ async fn download_start_blocks_and_states(
     let (_, init_mc_block) = download_block_with_state(
         engine,
         FullStateId {
-            mc_block_id: mc_block_id.clone(),
-            block_id: mc_block_id.clone(),
+            mc_block_id: *mc_block_id,
+            block_id: *mc_block_id,
         },
     )
     .await?;
@@ -539,10 +539,11 @@ async fn download_start_blocks_and_states(
         if block_id.seqno == 0 {
             engine.download_zero_state(&block_id).await?;
         } else {
+            tracing::info!(%block_id, "downloading block and state");
             download_block_with_state(
                 engine,
                 FullStateId {
-                    mc_block_id: mc_block_id.clone(),
+                    mc_block_id: *mc_block_id,
                     block_id,
                 },
             )

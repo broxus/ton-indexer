@@ -144,12 +144,8 @@ impl ShardStateStorage {
         let cell_id = self.load_state_root(block_id.as_short_id())?;
         let cell = self.cell_storage.load_cell(&cell_id)?;
 
-        ShardStateStuff::new(
-            block_id.clone(),
-            Cell::from(cell as Arc<_>),
-            &self.min_ref_mc_state,
-        )
-        .map(Arc::new)
+        ShardStateStuff::new(*block_id, Cell::from(cell as Arc<_>), &self.min_ref_mc_state)
+            .map(Arc::new)
     }
 
     pub async fn begin_replace(
@@ -317,7 +313,7 @@ impl ShardStateStorage {
         let shard_states = &self.db.shard_states;
         let shard_state = shard_states.get(block_id_short.to_vec())?;
         match shard_state {
-            Some(root) => Ok(HashBytes::from_slice(&root)),
+            Some(root) => Ok(HashBytes::from_slice(&root[..32])),
             None => Err(ShardStateStorageError::NotFound.into()),
         }
     }

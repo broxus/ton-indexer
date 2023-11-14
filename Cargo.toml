@@ -23,7 +23,7 @@ countme = { version = "3.0.0" }
 crc = "3.0"
 dashmap = "5.3"
 everscale-network = "0.5.0"
-everscale-types = { path = "../everscale-types", features = [] }
+everscale-types = { path = "../everscale-types", features = ["venom"] }
 fdlimit = "0.2.1"
 futures-util = "0.3"
 hex = "0.4"
@@ -77,6 +77,10 @@ broxus-util = { version = "0.2", default-features = false, features = [
 default = []
 archive-uploader = ["dep:archive-uploader"]
 alloc-profiling = ["broxus-util/alloc-profiling"]
+venom = []
 
 [profile.release]
 debug = true
+
+# [patch.crates-io]
+# everscale-network = { path = "../tiny-adnl" }

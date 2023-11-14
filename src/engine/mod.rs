@@ -102,16 +102,16 @@ impl Engine {
         .await
         .context("Failed to create DB")?;
 
-        let zero_state_id = global_config.zero_state.clone();
+        let zero_state_id = global_config.zero_state;
 
-        let mut init_mc_block_id = zero_state_id.clone();
+        let mut init_mc_block_id = zero_state_id;
         if let Ok(block_id) = storage.node_state().load_init_mc_block_id() {
             if block_id.seqno > init_mc_block_id.seqno {
                 init_mc_block_id = block_id;
             }
         } else if let Some(block_id) = &global_config.init_block {
             if block_id.seqno > init_mc_block_id.seqno {
-                init_mc_block_id = block_id.clone();
+                init_mc_block_id = *block_id;
             }
         }
         tracing::info!(%init_mc_block_id, "selected init block");
@@ -866,7 +866,7 @@ impl Engine {
 
             if allow_block_downloading {
                 let engine = self.clone();
-                let block_id = block_id.clone();
+                let block_id = *block_id;
                 tokio::spawn(async move {
                     if let Err(e) = engine.download_and_apply_block(&block_id, 0, true, 0).await {
                         tracing::error!(
@@ -1494,7 +1494,7 @@ impl ProcessBlockContext<'_> {
     pub async fn load_block_proof(&self) -> Result<BlockProofStuff> {
         match self.block_proof_data {
             Some(data) => {
-                BlockProofStuff::deserialize(self.handle.id().clone(), data, !self.is_masterchain())
+                BlockProofStuff::deserialize(*self.handle.id(), data, !self.is_masterchain())
             }
             None => {
                 let block_storage = self.engine.storage.block_storage();

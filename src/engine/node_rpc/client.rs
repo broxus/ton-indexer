@@ -34,8 +34,8 @@ impl NodeRpcClient {
         let (prepare, neighbour): (proto::PreparedState, _) = this
             .send_adnl_query(
                 proto::RpcPreparePersistentState {
-                    block: full_state_id.block_id.clone(),
-                    masterchain_block: full_state_id.mc_block_id.clone(),
+                    block: full_state_id.block_id,
+                    masterchain_block: full_state_id.mc_block_id,
                 },
                 None,
                 Some(TIMEOUT_PREPARE),
@@ -64,8 +64,8 @@ impl NodeRpcClient {
             .send_rldp_query_raw(
                 neighbour,
                 proto::RpcDownloadPersistentStateSlice {
-                    block: full_state_id.block_id.clone(),
-                    masterchain_block: full_state_id.mc_block_id.clone(),
+                    block: full_state_id.block_id,
+                    masterchain_block: full_state_id.mc_block_id,
                     offset: offset as u64,
                     max_size: mas_size as u64,
                 },
@@ -80,7 +80,7 @@ impl NodeRpcClient {
         // Prepare
         let (prepare, neighbour): (proto::PreparedState, _) = this
             .send_adnl_query(
-                proto::RpcPrepareZeroState { block: id.clone() },
+                proto::RpcPrepareZeroState { block: *id },
                 None,
                 Some(TIMEOUT_PREPARE),
                 None,
@@ -91,15 +91,11 @@ impl NodeRpcClient {
         match prepare {
             proto::PreparedState::Found => {
                 let state_bytes = this
-                    .send_rldp_query_raw(
-                        neighbour,
-                        proto::RpcDownloadZeroState { block: id.clone() },
-                        0,
-                    )
+                    .send_rldp_query_raw(neighbour, proto::RpcDownloadZeroState { block: *id }, 0)
                     .await?;
 
                 Ok(Some(Arc::new(ShardStateStuff::deserialize_zerostate(
-                    id.clone(),
+                    *id,
                     &state_bytes,
                 )?)))
             }
@@ -119,7 +115,7 @@ impl NodeRpcClient {
         let (prepare, neighbour): (proto::PreparedProof, _) = if is_key_block {
             this.send_adnl_query(
                 proto::RpcPrepareKeyBlockProof {
-                    block: block_id.clone(),
+                    block: *block_id,
                     allow_partial: false,
                 },
                 None,
@@ -130,7 +126,7 @@ impl NodeRpcClient {
         } else {
             this.send_adnl_query(
                 proto::RpcPrepareBlockProof {
-                    block: block_id.clone(),
+                    block: *block_id,
                     allow_partial: !block_id.shard.is_masterchain(),
                 },
                 None,
@@ -146,52 +142,44 @@ impl NodeRpcClient {
                 let data = this
                     .send_rldp_query_raw(
                         neighbour,
-                        proto::RpcDownloadKeyBlockProof {
-                            block: block_id.clone(),
-                        },
+                        proto::RpcDownloadKeyBlockProof { block: *block_id },
                         0,
                     )
                     .await?;
-                let proof = BlockProofStuff::deserialize(block_id.clone(), &data, false)?;
+                let proof = BlockProofStuff::deserialize(*block_id, &data, false)?;
                 Ok(Some(WithArchiveData::new(proof, data)))
             }
             proto::PreparedProof::Found => {
                 let data = this
                     .send_rldp_query_raw(
                         neighbour,
-                        proto::RpcDownloadBlockProof {
-                            block: block_id.clone(),
-                        },
+                        proto::RpcDownloadBlockProof { block: *block_id },
                         0,
                     )
                     .await?;
-                let proof = BlockProofStuff::deserialize(block_id.clone(), &data, false)?;
+                let proof = BlockProofStuff::deserialize(*block_id, &data, false)?;
                 Ok(Some(WithArchiveData::new(proof, data)))
             }
             proto::PreparedProof::Link if is_key_block => {
                 let data = this
                     .send_rldp_query_raw(
                         neighbour,
-                        proto::RpcDownloadKeyBlockProofLink {
-                            block: block_id.clone(),
-                        },
+                        proto::RpcDownloadKeyBlockProofLink { block: *block_id },
                         0,
                     )
                     .await?;
-                let proof = BlockProofStuff::deserialize(block_id.clone(), &data, true)?;
+                let proof = BlockProofStuff::deserialize(*block_id, &data, true)?;
                 Ok(Some(WithArchiveData::new(proof, data)))
             }
             proto::PreparedProof::Link => {
                 let data = this
                     .send_rldp_query_raw(
                         neighbour,
-                        proto::RpcDownloadBlockProofLink {
-                            block: block_id.clone(),
-                        },
+                        proto::RpcDownloadBlockProofLink { block: *block_id },
                         0,
                     )
                     .await?;
-                let proof = BlockProofStuff::deserialize(block_id.clone(), &data, true)?;
+                let proof = BlockProofStuff::deserialize(*block_id, &data, true)?;
                 Ok(Some(WithArchiveData::new(proof, data)))
             }
             proto::PreparedProof::Empty => Ok(None),
@@ -207,14 +195,13 @@ impl NodeRpcClient {
         // Prepare
         let (prepare, neighbour): (proto::Prepared, _) = this
             .send_adnl_query(
-                proto::RpcPrepareBlock {
-                    block: block_id.clone(),
-                },
+                proto::RpcPrepareBlock { block: *block_id },
                 Some(1),
                 None,
                 None,
             )
             .await?;
+        tracing::warn!(?prepare, %block_id);
 
         if prepare == proto::Prepared::NotFound {
             return Ok(None);
@@ -223,9 +210,7 @@ impl NodeRpcClient {
         // Download
         let block_data: proto::DataFull = this
             .send_rldp_query(
-                proto::RpcDownloadBlockFull {
-                    block: block_id.clone(),
-                },
+                proto::RpcDownloadBlockFull { block: *block_id },
                 neighbour,
                 0,
             )
@@ -242,8 +227,8 @@ impl NodeRpcClient {
                     return Err(NodeRpcClientError::ReceivedBlockIdMismatch.into());
                 }
 
-                let block = BlockStuff::deserialize_checked(block_id.clone(), &block_data)?;
-                let proof = BlockProofStuff::deserialize(block_id.clone(), &proof_data, is_link)?;
+                let block = BlockStuff::deserialize_checked(*block_id, &block_data)?;
+                let proof = BlockProofStuff::deserialize(*block_id, &proof_data, is_link)?;
 
                 Ok(Some((
                     WithArchiveData::new(block, block_data),
@@ -269,7 +254,7 @@ impl NodeRpcClient {
         let this = &self.0;
 
         let query = proto::RpcDownloadNextBlockFull {
-            prev_block: prev_id.clone(),
+            prev_block: *prev_id,
         };
 
         let neighbour = if let Some(neighbour) = this.neighbours().choose_neighbour() {
@@ -290,7 +275,7 @@ impl NodeRpcClient {
                 proof: proof_data,
                 is_link,
             } => {
-                let block = BlockStuff::deserialize_checked(block_id.clone(), &block_data)?;
+                let block = BlockStuff::deserialize_checked(block_id, &block_data)?;
                 let proof = BlockProofStuff::deserialize(block_id, &proof_data, is_link)?;
 
                 Ok(Some((
@@ -311,7 +296,7 @@ impl NodeRpcClient {
         let this = &self.0;
 
         let query = proto::RpcGetNextKeyBlockIds {
-            block: block_id.clone(),
+            block: *block_id,
             max_size: max_size as u32,
         };
 

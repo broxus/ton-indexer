@@ -51,9 +51,7 @@ impl BlockHandleStorage {
             return Ok((handle, HandleCreationStatus::Fetched));
         }
 
-        if let Some(handle) =
-            self.create_handle(block_id.clone(), BlockMeta::with_data(meta_data))?
-        {
+        if let Some(handle) = self.create_handle(*block_id, BlockMeta::with_data(meta_data))? {
             return Ok((handle, HandleCreationStatus::Created));
         }
 
@@ -74,7 +72,7 @@ impl BlockHandleStorage {
 
             if let Some(meta) = self.db.block_handles.get(block_id.root_hash.as_slice())? {
                 let meta = BlockMeta::from_slice(meta.as_ref())?;
-                if let Some(handle) = self.create_handle(block_id.clone(), meta)? {
+                if let Some(handle) = self.create_handle(*block_id, meta)? {
                     break Some(handle);
                 }
             } else {
@@ -259,7 +257,7 @@ impl BlockHandleStorage {
     ) -> Result<Option<Arc<BlockHandle>>> {
         use dashmap::mapref::entry::Entry;
 
-        let handle = match self.cache.entry(block_id.clone()) {
+        let handle = match self.cache.entry(block_id) {
             Entry::Vacant(entry) => {
                 let handle = Arc::new(BlockHandle::with_values(block_id, meta, self.cache.clone()));
                 entry.insert(Arc::downgrade(&handle));
