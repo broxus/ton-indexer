@@ -75,7 +75,8 @@ impl CellStorage {
                             None => (0, false),
                         };
 
-                        // TODO: add assert `has_value && old_rc > 0 || !has_value && old_rc == 0`
+                        // TODO: lower to `debug_assert` when sure
+                        assert!(has_value && old_rc > 0 || !has_value && old_rc == 0);
 
                         let data = if !has_value {
                             self.buffer.clear();
@@ -567,12 +568,11 @@ impl RawCellsCache {
             GuardResult::Value(value) => return Ok(Some(value)),
             GuardResult::Guard(g) => Ok(if let Some(value) = db.cells.get(key)? {
                 let (rc, data) = refcount::decode_value_with_rc(value.as_ref());
-                let value = RawCellsCacheItem::from_header_and_slice(
-                    AtomicI64::new(rc),
-                    data.unwrap_or_default(),
-                );
-                _ = g.insert(value.clone());
-                Some(value)
+                data.map(|value| {
+                    let value = RawCellsCacheItem::from_header_and_slice(AtomicI64::new(rc), value);
+                    _ = g.insert(value.clone());
+                    value
+                })
             } else {
                 None
             }),
@@ -588,46 +588,44 @@ impl RawCellsCache {
     ) -> Result<i64, CellStorageError> {
         if let Some(value) = self.0.get(key) {
             let rc = value.header.header.load(Ordering::Acquire);
-            if rc > 0 {
-                if StorageCell::deserialize_references(&value.slice, refs_buffer) {
-                    return Ok(rc);
-                } else {
-                    return Err(CellStorageError::InvalidCell);
-                }
+            if rc <= 0 {
+                return Err(CellStorageError::CellNotFound);
             }
-        }
 
-        match db.cells.get(key) {
-            Ok(value) => {
-                if let Some(value) = value {
-                    refs_buffer.clear();
-                    if let (rc, Some(value)) = refcount::decode_value_with_rc(&value) {
-                        if StorageCell::deserialize_references(value, refs_buffer) {
-                            return Ok(rc);
-                        } else {
-                            return Err(CellStorageError::InvalidCell);
+            StorageCell::deserialize_references(&value.slice, refs_buffer)
+                .then_some(rc)
+                .ok_or(CellStorageError::InvalidCell)
+        } else {
+            match db.cells.get(key) {
+                Ok(value) => {
+                    if let Some(value) = value {
+                        refs_buffer.clear();
+                        if let (rc, Some(value)) = refcount::decode_value_with_rc(&value) {
+                            return StorageCell::deserialize_references(value, refs_buffer)
+                                .then_some(rc)
+                                .ok_or(CellStorageError::InvalidCell);
                         }
                     }
-                }
 
-                Err(CellStorageError::CellNotFound)
+                    Err(CellStorageError::CellNotFound)
+                }
+                Err(e) => Err(CellStorageError::Internal(e)),
             }
-            Err(e) => Err(CellStorageError::Internal(e)),
         }
     }
 
-    pub fn insert(&self, key: &[u8; 32], rc: RcType, value: &[u8]) {
+    fn insert(&self, key: &[u8; 32], rc: RcType, value: &[u8]) {
         let value = RawCellsCacheItem::from_header_and_slice(AtomicI64::new(rc), value);
         self.0.insert(*key, value);
     }
 
-    pub fn add_refs(&self, key: &[u8; 32], refs: u32) {
+    fn add_refs(&self, key: &[u8; 32], refs: u32) {
         if let Some(v) = self.0.get(key) {
             v.header.header.fetch_add(refs as i64, Ordering::Release);
         }
     }
 
-    pub fn remove_refs(&self, key: &[u8; 32], refs: u32) {
+    fn remove_refs(&self, key: &[u8; 32], refs: u32) {
         if let Some(v) = self.0.get(key) {
             // TODO: add assert
             v.header.header.fetch_sub(refs as i64, Ordering::Release);
