@@ -561,24 +561,23 @@ impl RawCellsCache {
         db: &Db,
         key: &[u8; 32],
     ) -> Result<Option<RawCellsCacheItem>, rocksdb::Error> {
-        if let Some(value) = self.0.get(key) {
-            return Ok(Some(value));
+        use quick_cache::GuardResult;
+
+        match self.0.get_value_or_guard(key, None) {
+            GuardResult::Value(value) => return Ok(Some(value)),
+            GuardResult::Guard(g) => Ok(if let Some(value) = db.cells.get(key)? {
+                let (rc, data) = refcount::decode_value_with_rc(value.as_ref());
+                let value = RawCellsCacheItem::from_header_and_slice(
+                    AtomicI64::new(rc),
+                    data.unwrap_or_default(),
+                );
+                _ = g.insert(value.clone());
+                Some(value)
+            } else {
+                None
+            }),
+            GuardResult::Timeout => unreachable!(),
         }
-
-        // TODO: maybe replace with `get_value_or_guard` and insert while holding guard
-
-        db.cells
-            .get(key)?
-            .map(|value| {
-                self.0.get_or_insert_with(key, move || {
-                    let (rc, data) = refcount::decode_value_with_rc(value.as_ref());
-                    Ok(RawCellsCacheItem::from_header_and_slice(
-                        AtomicI64::new(rc),
-                        data.unwrap_or_default(),
-                    ))
-                })
-            })
-            .transpose()
     }
 
     fn get_raw_for_delete(
