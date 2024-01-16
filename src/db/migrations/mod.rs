@@ -21,7 +21,7 @@ pub fn apply(db: &WeeDb) -> Result<()> {
 struct NodeStateVersionProvider;
 
 impl NodeStateVersionProvider {
-    const DB_VERSION_KEY: &str = "db_version";
+    const DB_VERSION_KEY: &'static str = "db_version";
 }
 
 impl VersionProvider for NodeStateVersionProvider {

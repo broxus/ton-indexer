@@ -1,14 +1,16 @@
 use std::collections::hash_map;
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Weak};
 
 use anyhow::Result;
 use bumpalo::Bump;
-use bytes::Bytes;
 use parking_lot::RwLock;
 use quick_cache::sync::{Cache, DefaultLifecycle};
 use smallvec::SmallVec;
 use ton_types::{ByteOrderRead, CellImpl, UInt256};
+use triomphe::ThinArc;
 
+use crate::db::refcount::RcType;
 use crate::db::*;
 use crate::utils::{CacheStats, FastDashMap, FastHashMap, FastHasherState};
 
@@ -36,7 +38,9 @@ impl CellStorage {
         root: ton_types::Cell,
     ) -> Result<usize, CellStorageError> {
         struct CellWithRefs<'a> {
+            old_rc: RcType,
             rc: u32,
+            // TODO: always copy data?
             data: Option<&'a [u8]>,
         }
 
@@ -63,8 +67,15 @@ impl CellStorage {
                         false
                     }
                     hash_map::Entry::Vacant(entry) => {
-                        let has_value =
-                            matches!(value, Some(value) if refcount::has_value(value.as_ref()));
+                        let (old_rc, has_value) = match &value {
+                            Some(value) => {
+                                let (rc, value) = refcount::decode_value_with_rc(value.as_ref());
+                                (rc, value.is_some())
+                            }
+                            None => (0, false),
+                        };
+
+                        // TODO: add assert `has_value && old_rc > 0 || !has_value && old_rc == 0`
 
                         let data = if !has_value {
                             self.buffer.clear();
@@ -75,7 +86,11 @@ impl CellStorage {
                         } else {
                             None
                         };
-                        entry.insert(CellWithRefs { rc: 1, data });
+                        entry.insert(CellWithRefs {
+                            old_rc,
+                            rc: 1,
+                            data,
+                        });
                         !has_value
                     }
                 })
@@ -87,11 +102,13 @@ impl CellStorage {
                 raw_cache: &RawCellsCache,
             ) -> usize {
                 let total = self.transaction.len();
-                for (key, CellWithRefs { rc, data }) in self.transaction {
+                for (key, CellWithRefs { old_rc, rc, data }) in self.transaction {
                     self.buffer.clear();
                     refcount::add_positive_refount(rc, data, &mut self.buffer);
-                    if data.is_some() {
-                        raw_cache.insert(key, &self.buffer);
+                    if let Some(data) = data {
+                        raw_cache.insert(&key, old_rc + rc as RcType, data);
+                    } else {
+                        raw_cache.add_refs(&key, rc);
                     }
                     batch.merge_cf(self.cells_cf, key.as_slice(), &self.buffer);
                 }
@@ -175,8 +192,9 @@ impl CellStorage {
         {
             Ok(value) => 'cell: {
                 if let Some(value) = value {
-                    if let Some(value) = refcount::strip_refcount(&value) {
-                        match StorageCell::deserialize(self.clone(), value) {
+                    let rc = &value.header.header;
+                    if rc.load(Ordering::Acquire) > 0 {
+                        match StorageCell::deserialize(self.clone(), &value.slice) {
                             Ok(cell) => break 'cell Arc::new(cell),
                             Err(_) => return Err(CellStorageError::InvalidCell),
                         }
@@ -238,22 +256,9 @@ impl CellStorage {
             let refs = match transaction.entry(cell_id) {
                 hash_map::Entry::Occupied(mut v) => v.get_mut().remove()?,
                 hash_map::Entry::Vacant(v) => {
-                    let rc = match self.db.cells.get(cell_id) {
-                        Ok(value) => 'rc: {
-                            if let Some(value) = value {
-                                buffer.clear();
-                                if let (rc, Some(value)) = refcount::decode_value_with_rc(&value) {
-                                    if StorageCell::deserialize_references(value, &mut buffer) {
-                                        break 'rc rc;
-                                    } else {
-                                        return Err(CellStorageError::InvalidCell);
-                                    }
-                                }
-                            }
-                            return Err(CellStorageError::CellNotFound);
-                        }
-                        Err(e) => return Err(CellStorageError::Internal(e)),
-                    };
+                    let rc =
+                        self.raw_cells_cache
+                            .get_raw_for_delete(&self.db, cell_id, &mut buffer)?;
 
                     v.insert(CellState {
                         rc,
@@ -279,6 +284,7 @@ impl CellStorage {
         // Write transaction to the `WriteBatch`
         let total = transaction.len();
         for (key, CellState { removes, .. }) in transaction {
+            self.raw_cells_cache.remove_refs(key, removes);
             batch.merge_cf(
                 cells_cf,
                 key.as_slice(),
@@ -490,15 +496,19 @@ enum StorageCellError {
     AccessingInvalidReference,
 }
 
-struct RawCellsCache(Cache<[u8; 32], Bytes, CellSizeEstimator, FastHasherState>);
+struct RawCellsCache(Cache<[u8; 32], RawCellsCacheItem, CellSizeEstimator, FastHasherState>);
+
+type RawCellsCacheItem = ThinArc<AtomicI64, u8>;
 
 #[derive(Clone, Copy)]
 pub struct CellSizeEstimator;
-impl quick_cache::Weighter<[u8; 32], Bytes> for CellSizeEstimator {
-    fn weight(&self, key: &[u8; 32], val: &Bytes) -> u32 {
-        const BYTES_SIZE: usize = std::mem::size_of::<usize>() * 4;
-        let len = key.len() + val.len() + BYTES_SIZE;
+impl quick_cache::Weighter<[u8; 32], RawCellsCacheItem> for CellSizeEstimator {
+    fn weight(&self, key: &[u8; 32], val: &RawCellsCacheItem) -> u32 {
+        const STATIC_SIZE: usize = std::mem::size_of::<RawCellsCacheItem>()
+            + std::mem::size_of::<i64>()
+            + std::mem::size_of::<usize>() * 2; // ArcInner refs + HeaderWithLength length
 
+        let len = key.len() + val.slice.len() + STATIC_SIZE;
         len as u32
     }
 }
@@ -546,24 +556,82 @@ impl RawCellsCache {
         Self(raw_cache)
     }
 
-    fn get_raw(&self, db: &Db, key: &[u8; 32]) -> Result<Option<Bytes>, rocksdb::Error> {
+    fn get_raw(
+        &self,
+        db: &Db,
+        key: &[u8; 32],
+    ) -> Result<Option<RawCellsCacheItem>, rocksdb::Error> {
         if let Some(value) = self.0.get(key) {
             return Ok(Some(value));
         }
 
-        let value = db
-            .cells
-            .get(key)?
-            .map(|v| Bytes::copy_from_slice(v.as_ref()));
-        if let Some(value) = &value {
-            self.0.insert(*key, value.clone());
-        }
+        // TODO: maybe replace with `get_value_or_guard` and insert while holding guard
 
-        Ok(value)
+        db.cells
+            .get(key)?
+            .map(|value| {
+                self.0.get_or_insert_with(key, move || {
+                    let (rc, data) = refcount::decode_value_with_rc(value.as_ref());
+                    Ok(RawCellsCacheItem::from_header_and_slice(
+                        AtomicI64::new(rc),
+                        data.unwrap_or_default(),
+                    ))
+                })
+            })
+            .transpose()
     }
 
-    pub fn insert(&self, key: [u8; 32], value: &[u8]) {
-        let value = Bytes::copy_from_slice(value);
-        self.0.insert(key, value);
+    fn get_raw_for_delete(
+        &self,
+        db: &Db,
+        key: &[u8; 32],
+        refs_buffer: &mut Vec<[u8; 32]>,
+    ) -> Result<i64, CellStorageError> {
+        if let Some(value) = self.0.get(key) {
+            let rc = value.header.header.load(Ordering::Acquire);
+            if rc > 0 {
+                if StorageCell::deserialize_references(&value.slice, refs_buffer) {
+                    return Ok(rc);
+                } else {
+                    return Err(CellStorageError::InvalidCell);
+                }
+            }
+        }
+
+        match db.cells.get(key) {
+            Ok(value) => {
+                if let Some(value) = value {
+                    refs_buffer.clear();
+                    if let (rc, Some(value)) = refcount::decode_value_with_rc(&value) {
+                        if StorageCell::deserialize_references(value, refs_buffer) {
+                            return Ok(rc);
+                        } else {
+                            return Err(CellStorageError::InvalidCell);
+                        }
+                    }
+                }
+
+                Err(CellStorageError::CellNotFound)
+            }
+            Err(e) => Err(CellStorageError::Internal(e)),
+        }
+    }
+
+    pub fn insert(&self, key: &[u8; 32], rc: RcType, value: &[u8]) {
+        let value = RawCellsCacheItem::from_header_and_slice(AtomicI64::new(rc), value);
+        self.0.insert(*key, value);
+    }
+
+    pub fn add_refs(&self, key: &[u8; 32], refs: u32) {
+        if let Some(v) = self.0.get(key) {
+            v.header.header.fetch_add(refs as i64, Ordering::Release);
+        }
+    }
+
+    pub fn remove_refs(&self, key: &[u8; 32], refs: u32) {
+        if let Some(v) = self.0.get(key) {
+            // TODO: add assert
+            v.header.header.fetch_sub(refs as i64, Ordering::Release);
+        }
     }
 }
