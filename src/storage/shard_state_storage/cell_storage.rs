@@ -11,7 +11,7 @@ use ton_types::{ByteOrderRead, CellImpl, UInt256};
 use triomphe::ThinArc;
 
 use crate::db::*;
-use crate::utils::{CacheStats, FastDashMap, FastHashMap, FastHasherState};
+use crate::utils::{CacheStats, CellExt, FastDashMap, FastHashMap, FastHasherState};
 
 pub struct CellStorage {
     db: Arc<Db>,
@@ -43,34 +43,37 @@ impl CellStorage {
         }
 
         struct Context<'a> {
-            cells_cf: &'a BoundedCfHandle<'a>,
+            db: &'a Db,
+            raw_cache: &'a RawCellsCache,
             alloc: &'a Bump,
             transaction: FastHashMap<[u8; 32], CellWithRefs<'a>>,
             buffer: Vec<u8>,
         }
 
         impl Context<'_> {
-            fn insert_cell<V>(
+            fn insert_cell(
                 &mut self,
                 key: &[u8; 32],
                 cell: &ton_types::Cell,
-                value: Option<V>,
-            ) -> Result<bool, CellStorageError>
-            where
-                V: AsRef<[u8]>,
-            {
+            ) -> Result<bool, CellStorageError> {
                 Ok(match self.transaction.entry(*key) {
                     hash_map::Entry::Occupied(mut value) => {
                         value.get_mut().rc += 1;
                         false
                     }
                     hash_map::Entry::Vacant(entry) => {
-                        let (old_rc, has_value) = match &value {
-                            Some(value) => {
-                                let (rc, value) = refcount::decode_value_with_rc(value.as_ref());
-                                (rc, value.is_some())
+                        let (old_rc, has_value) = if let Some(entry) = self.raw_cache.0.get(key) {
+                            let rc = entry.header.header.load(Ordering::Acquire);
+                            (rc, rc > 0)
+                        } else {
+                            match self.db.cells.get(key).map_err(CellStorageError::Internal)? {
+                                Some(value) => {
+                                    let (rc, value) =
+                                        refcount::decode_value_with_rc(value.as_ref());
+                                    (rc, value.is_some())
+                                }
+                                None => (0, false),
                             }
-                            None => (0, false),
                         };
 
                         // TODO: lower to `debug_assert` when sure
@@ -91,21 +94,18 @@ impl CellStorage {
                 })
             }
 
-            fn finalize(
-                mut self,
-                batch: &mut rocksdb::WriteBatch,
-                raw_cache: &RawCellsCache,
-            ) -> usize {
+            fn finalize(mut self, batch: &mut rocksdb::WriteBatch) -> usize {
                 let total = self.transaction.len();
+                let cells_cf = &self.db.cells.cf();
                 for (key, CellWithRefs { rc, data }) in self.transaction {
                     self.buffer.clear();
                     refcount::add_positive_refount(rc, data, &mut self.buffer);
                     if let Some(data) = data {
-                        raw_cache.insert(&key, rc, data);
+                        self.raw_cache.insert(&key, rc, data);
                     } else {
-                        raw_cache.add_refs(&key, rc);
+                        self.raw_cache.add_refs(&key, rc);
                     }
-                    batch.merge_cf(self.cells_cf, key.as_slice(), &self.buffer);
+                    batch.merge_cf(cells_cf, key.as_slice(), &self.buffer);
                 }
                 total
             }
@@ -113,11 +113,10 @@ impl CellStorage {
 
         // Prepare context and handles
         let alloc = Bump::new();
-        let cells = &self.db.cells;
-        let cells_cf = &cells.cf();
 
         let mut ctx = Context {
-            cells_cf,
+            db: &self.db,
+            raw_cache: &self.raw_cells_cache,
             alloc: &alloc,
             transaction: FastHashMap::with_capacity_and_hasher(128, Default::default()),
             buffer: Vec::with_capacity(512),
@@ -128,47 +127,34 @@ impl CellStorage {
             let key = root.repr_hash();
             let key = key.as_array();
 
-            match cells.get(key) {
-                Ok(value) => {
-                    if !ctx.insert_cell(key, &root, value.as_deref())? {
-                        return Ok(0);
-                    }
-                }
-                Err(e) => return Err(CellStorageError::Internal(e)),
+            if !ctx.insert_cell(key, &root)? {
+                return Ok(0);
             }
         }
 
         let mut stack = Vec::with_capacity(16);
-        stack.push(root);
+        stack.push(root.into_references());
 
         // Check other cells
-        while let Some(current) = stack.pop() {
-            for i in 0..current.references_count() {
-                let cell = match current.reference(i) {
-                    Ok(cell) => cell,
-                    Err(_) => return Err(CellStorageError::InvalidCell),
-                };
-                let key = cell.repr_hash();
+        'outer: while let Some(iter) = stack.last_mut() {
+            for child in &mut *iter {
+                let key = child.repr_hash();
                 let key = key.as_array();
 
-                match cells.get(key) {
-                    Ok(value) => {
-                        if !ctx.insert_cell(key, &cell, value.as_deref())? {
-                            continue;
-                        }
-                    }
-                    Err(e) => return Err(CellStorageError::Internal(e)),
+                if ctx.insert_cell(key, &child)? {
+                    stack.push(child.into_references());
+                    continue 'outer;
                 }
-
-                stack.push(cell);
             }
+
+            stack.pop();
         }
 
         // Clear big chunks of data before finalization
         drop(stack);
 
         // Write transaction to the `WriteBatch`
-        Ok(ctx.finalize(batch, &self.raw_cells_cache))
+        Ok(ctx.finalize(batch))
     }
 
     pub fn load_cell(
