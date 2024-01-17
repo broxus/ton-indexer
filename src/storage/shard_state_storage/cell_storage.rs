@@ -10,7 +10,6 @@ use smallvec::SmallVec;
 use ton_types::{ByteOrderRead, CellImpl, UInt256};
 use triomphe::ThinArc;
 
-use crate::db::refcount::RcType;
 use crate::db::*;
 use crate::utils::{CacheStats, FastDashMap, FastHashMap, FastHasherState};
 
@@ -38,7 +37,6 @@ impl CellStorage {
         root: ton_types::Cell,
     ) -> Result<usize, CellStorageError> {
         struct CellWithRefs<'a> {
-            old_rc: RcType,
             rc: u32,
             // TODO: always copy data?
             data: Option<&'a [u8]>,
@@ -87,11 +85,7 @@ impl CellStorage {
                         } else {
                             None
                         };
-                        entry.insert(CellWithRefs {
-                            old_rc,
-                            rc: 1,
-                            data,
-                        });
+                        entry.insert(CellWithRefs { rc: 1, data });
                         !has_value
                     }
                 })
@@ -103,11 +97,11 @@ impl CellStorage {
                 raw_cache: &RawCellsCache,
             ) -> usize {
                 let total = self.transaction.len();
-                for (key, CellWithRefs { old_rc, rc, data }) in self.transaction {
+                for (key, CellWithRefs { rc, data }) in self.transaction {
                     self.buffer.clear();
                     refcount::add_positive_refount(rc, data, &mut self.buffer);
                     if let Some(data) = data {
-                        raw_cache.insert(&key, old_rc + rc as RcType, data);
+                        raw_cache.insert(&key, rc, data);
                     } else {
                         raw_cache.add_refs(&key, rc);
                     }
@@ -260,6 +254,7 @@ impl CellStorage {
                     let rc =
                         self.raw_cells_cache
                             .get_raw_for_delete(&self.db, cell_id, &mut buffer)?;
+                    debug_assert!(rc > 0);
 
                     v.insert(CellState {
                         rc,
@@ -586,6 +581,8 @@ impl RawCellsCache {
         key: &[u8; 32],
         refs_buffer: &mut Vec<[u8; 32]>,
     ) -> Result<i64, CellStorageError> {
+        refs_buffer.clear();
+
         if let Some(value) = self.0.get(key) {
             let rc = value.header.header.load(Ordering::Acquire);
             if rc <= 0 {
@@ -599,7 +596,6 @@ impl RawCellsCache {
             match db.cells.get(key) {
                 Ok(value) => {
                     if let Some(value) = value {
-                        refs_buffer.clear();
                         if let (rc, Some(value)) = refcount::decode_value_with_rc(&value) {
                             return StorageCell::deserialize_references(value, refs_buffer)
                                 .then_some(rc)
@@ -614,8 +610,8 @@ impl RawCellsCache {
         }
     }
 
-    fn insert(&self, key: &[u8; 32], rc: RcType, value: &[u8]) {
-        let value = RawCellsCacheItem::from_header_and_slice(AtomicI64::new(rc), value);
+    fn insert(&self, key: &[u8; 32], refs: u32, value: &[u8]) {
+        let value = RawCellsCacheItem::from_header_and_slice(AtomicI64::new(refs as _), value);
         self.0.insert(*key, value);
     }
 
@@ -627,8 +623,8 @@ impl RawCellsCache {
 
     fn remove_refs(&self, key: &[u8; 32], refs: u32) {
         if let Some(v) = self.0.get(key) {
-            // TODO: add assert
-            v.header.header.fetch_sub(refs as i64, Ordering::Release);
+            let old_refs = v.header.header.fetch_sub(refs as i64, Ordering::Release);
+            debug_assert!(old_refs >= refs as i64);
         }
     }
 }
