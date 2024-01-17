@@ -62,6 +62,8 @@ impl CellStorage {
                         false
                     }
                     hash_map::Entry::Vacant(entry) => {
+                        // NOTE: `get` here is used to _affect_ a "hotness" of the value, because
+                        // there is a big chance that we will need it soon during state processing
                         let (old_rc, has_value) = if let Some(entry) = self.raw_cache.0.get(key) {
                             let rc = entry.header.header.load(Ordering::Acquire);
                             (rc, rc > 0)
@@ -569,7 +571,8 @@ impl RawCellsCache {
     ) -> Result<i64, CellStorageError> {
         refs_buffer.clear();
 
-        if let Some(value) = self.0.get(key) {
+        // NOTE: `peek` here is used to avoid affecting a "hotness" of the value
+        if let Some(value) = self.0.peek(key) {
             let rc = value.header.header.load(Ordering::Acquire);
             if rc <= 0 {
                 return Err(CellStorageError::CellNotFound);
@@ -602,13 +605,15 @@ impl RawCellsCache {
     }
 
     fn add_refs(&self, key: &[u8; 32], refs: u32) {
-        if let Some(v) = self.0.get(key) {
+        // NOTE: `peek` here is used to avoid affecting a "hotness" of the value
+        if let Some(v) = self.0.peek(key) {
             v.header.header.fetch_add(refs as i64, Ordering::Release);
         }
     }
 
     fn remove_refs(&self, key: &[u8; 32], refs: u32) {
-        if let Some(v) = self.0.get(key) {
+        // NOTE: `peek` here is used to avoid affecting a "hotness" of the value
+        if let Some(v) = self.0.peek(key) {
             let old_refs = v.header.header.fetch_sub(refs as i64, Ordering::Release);
             debug_assert!(old_refs >= refs as i64);
         }
