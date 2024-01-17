@@ -412,8 +412,8 @@ async fn download_archive(
                 tracing::info!(
                     target: "sync",
                     mc_seq_no,
-                    len_bytes = len,
-                    len = %bytesize::ByteSize(len as u64),
+                    size_bytes = len,
+                    size = %bytesize::ByteSize(len as u64),
                     elapsed = %humantime::format_duration(start.elapsed()),
                     "downloaded archive",
                 );

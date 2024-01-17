@@ -96,7 +96,7 @@ async fn run(app: App) -> Result<()> {
             fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
                 let stats = self.0;
                 let current = stats.current_seqno.load(Ordering::Acquire);
-                let progress = if stats.end_seqno > stats.end_seqno {
+                let progress = if stats.end_seqno > stats.start_seqno {
                     (current.saturating_sub(stats.start_seqno) as f64) * 100.0
                         / ((stats.end_seqno - stats.start_seqno) as f64)
                 } else {

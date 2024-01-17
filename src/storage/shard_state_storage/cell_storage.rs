@@ -55,6 +55,7 @@ impl CellStorage {
                 &mut self,
                 key: &[u8; 32],
                 cell: &ton_types::Cell,
+                depth: usize,
             ) -> Result<bool, CellStorageError> {
                 Ok(match self.transaction.entry(*key) {
                     hash_map::Entry::Occupied(mut value) => {
@@ -62,12 +63,23 @@ impl CellStorage {
                         false
                     }
                     hash_map::Entry::Vacant(entry) => {
-                        // NOTE: `get` here is used to _affect_ a "hotness" of the value, because
-                        // there is a big chance that we will need it soon during state processing
-                        let (old_rc, has_value) = if let Some(entry) = self.raw_cache.0.get(key) {
-                            let rc = entry.header.header.load(Ordering::Acquire);
-                            (rc, rc > 0)
-                        } else {
+                        // A constant which tells since which depth we should start to use cache.
+                        // This method is used mostly for inserting new states, so we can assume
+                        // that first N levels will mostly be new.
+                        //
+                        // This value was chosen empirically.
+                        const NEW_CELLS_DEPTH_THRESHOLD: usize = 4;
+
+                        let (old_rc, has_value) = 'value: {
+                            if depth >= NEW_CELLS_DEPTH_THRESHOLD {
+                                // NOTE: `get` here is used to affect a "hotness" of the value, because
+                                // there is a big chance that we will need it soon during state processing
+                                if let Some(entry) = self.raw_cache.0.get(key) {
+                                    let rc = entry.header.header.load(Ordering::Acquire);
+                                    break 'value (rc, rc > 0);
+                                }
+                            }
+
                             match self.db.cells.get(key).map_err(CellStorageError::Internal)? {
                                 Some(value) => {
                                     let (rc, value) =
@@ -129,7 +141,7 @@ impl CellStorage {
             let key = root.repr_hash();
             let key = key.as_array();
 
-            if !ctx.insert_cell(key, &root)? {
+            if !ctx.insert_cell(key, &root, 0)? {
                 return Ok(0);
             }
         }
@@ -138,12 +150,17 @@ impl CellStorage {
         stack.push(root.into_references());
 
         // Check other cells
-        'outer: while let Some(iter) = stack.last_mut() {
+        'outer: loop {
+            let depth = stack.len();
+            let Some(iter) = stack.last_mut() else {
+                break;
+            };
+
             for child in &mut *iter {
                 let key = child.repr_hash();
                 let key = key.as_array();
 
-                if ctx.insert_cell(key, &child)? {
+                if ctx.insert_cell(key, &child, depth)? {
                     stack.push(child.into_references());
                     continue 'outer;
                 }
