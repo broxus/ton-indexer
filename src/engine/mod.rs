@@ -6,7 +6,7 @@
 /// - slightly changed application of blocks
 ///
 use std::io::Write;
-use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -63,8 +63,6 @@ pub struct Engine {
     next_block_applying_operations: NextBlockApplyingOperationsPool,
     download_block_operations: DownloadBlockOperationsPool,
     shard_states_cache: ShardStateCache,
-
-    metrics: Arc<EngineMetrics>,
 }
 
 type ShardStatesOperationsPool = OperationsPool<ton_block::BlockIdExt, Arc<ShardStateStuff>>;
@@ -191,7 +189,6 @@ impl Engine {
             next_block_applying_operations: OperationsPool::new("next_block_applying_operations"),
             download_block_operations: OperationsPool::new("download_block_operations"),
             shard_states_cache: ShardStateCache::new(config.shard_state_cache_options),
-            metrics: Arc::new(Default::default()),
         }))
     }
 
@@ -695,10 +692,6 @@ impl Engine {
         self.db.get_memory_usage_stats()
     }
 
-    pub fn metrics(&self) -> &Arc<EngineMetrics> {
-        &self.metrics
-    }
-
     pub fn internal_metrics(&self) -> InternalEngineMetrics {
         InternalEngineMetrics {
             shard_states_cache_len: self.shard_states_cache.len(),
@@ -758,22 +751,12 @@ impl Engine {
                     Ok(block) => block,
                     Err(_) => continue,
                 };
-
-                engine
-                    .metrics
-                    .block_broadcasts
-                    .total
-                    .fetch_add(1, Ordering::Relaxed);
+                metrics::counter!("block_broadcasts_total");
 
                 let engine = engine.clone();
                 tokio::spawn(async move {
                     if let Err(e) = process_block_broadcast(&engine, block).await {
-                        engine
-                            .metrics
-                            .block_broadcasts
-                            .invalid
-                            .fetch_add(1, Ordering::Relaxed);
-
+                        metrics::counter!("block_broadcasts_invalid");
                         tracing::error!("failed to process block broadcast: {e:?}");
                     }
                 });
@@ -813,7 +796,7 @@ impl Engine {
                     max: 3000,
                     multiplier: 1.2,
                 }),
-                None,
+                MetricsEmitter::Disabled,
             )
             .download()
             .await?;
@@ -850,7 +833,7 @@ impl Engine {
                 max: 1000,
                 multiplier: 1.1,
             }),
-            Some(&self.metrics.download_next_block_requests),
+            MetricsEmitter::named("download_next_masterchain_block"),
         )
         .download()
         .await
@@ -906,7 +889,7 @@ impl Engine {
             block_id,
             max_attempts,
             None,
-            Some(&self.metrics.download_block_proof_requests),
+            MetricsEmitter::named("download_block_proof"),
         )
         .with_explicit_neighbour(neighbour)
         .download()
@@ -1215,9 +1198,7 @@ impl Engine {
 
     fn store_last_applied_mc_block_id(&self, block_id: &ton_block::BlockIdExt) -> Result<()> {
         self.storage.node_state().store_last_mc_block_id(block_id)?;
-        self.metrics
-            .last_mc_block_seqno
-            .store(block_id.seq_no, Ordering::Release);
+        metrics::gauge!("ton_indexer_last_mc_block_seqno").set(block_id.seq_no as f64);
         Ok(())
     }
 
@@ -1229,16 +1210,20 @@ impl Engine {
         self.storage
             .node_state()
             .store_shards_client_mc_block_id(block_id)?;
-        self.metrics
-            .last_shard_client_mc_block_seqno
-            .store(block_id.seq_no, Ordering::Release);
+        metrics::describe_gauge!(
+            "ton_indexer_last_sc_block_seqno",
+            "Last shard client master ref block seqno"
+        );
+        metrics::gauge!("ton_indexer_last_sc_block_seqno").set(block_id.seq_no as f64);
         Ok(())
     }
 
     fn store_shards_client_mc_block_utime(&self, block_utime: u32) {
-        self.metrics
-            .last_shard_client_mc_block_utime
-            .store(block_utime, Ordering::Release);
+        metrics::describe_gauge!(
+            "ton_indexer_last_shard_client_mc_block_utime",
+            "Last shard client master ref block utime"
+        );
+        metrics::gauge!("ton_indexer_last_shard_client_mc_block_utime").set(block_utime as f64);
     }
 
     async fn download_and_apply_block(
@@ -1396,16 +1381,13 @@ impl Engine {
         };
 
         if handle.id().shard().is_masterchain() {
-            self.metrics
-                .mc_time_diff
-                .store(time_diff, Ordering::Release);
-            self.metrics
-                .last_mc_utime
-                .store(meta.gen_utime(), Ordering::Release);
+            metrics::describe_gauge!("ton_indexer_mc_time_diff", "Masterchain time diff");
+            metrics::gauge!("ton_indexer_mc_time_diff").set(time_diff as f64);
+            metrics::describe_gauge!("ton_indexer_last_mc_utime", "Last masterchain block utime");
+            metrics::gauge!("ton_indexer_last_mc_utime").set(meta.gen_utime() as f64);
         } else {
-            self.metrics
-                .shard_client_time_diff
-                .store(time_diff, Ordering::Release);
+            metrics::describe_gauge!("ton_indexer_sc_time_diff", "Shardchain time diff");
+            metrics::gauge!("ton_indexer_sc_time_diff").set(time_diff as f64);
         }
 
         self.subscriber.process_block(ctx).await
@@ -1501,7 +1483,7 @@ impl Engine {
             block_id,
             max_attempts,
             timeouts,
-            Some(&self.metrics.download_block_requests),
+            MetricsEmitter::named("download_block"),
         )
         .download()
         .await
@@ -1509,12 +1491,12 @@ impl Engine {
 
     fn create_download_context<'a, T>(
         &'a self,
-        name: &'a str,
+        name: &'static str,
         downloader: Arc<dyn Downloader<Item = T>>,
         block_id: &'a ton_block::BlockIdExt,
         max_attempts: Option<u32>,
         timeouts: Option<DownloaderTimeouts>,
-        counters: Option<&'a DownloaderCounters>,
+        metrics_emitter: MetricsEmitter,
     ) -> DownloadContext<'a, T> {
         DownloadContext {
             name,
@@ -1525,7 +1507,7 @@ impl Engine {
             storage: self.storage.as_ref(),
             downloader,
             explicit_neighbour: None,
-            counters,
+            metrics_emitter,
         }
     }
 }
@@ -1697,21 +1679,6 @@ impl ProcessBlockContext<'_> {
             }
         }
     }
-}
-
-#[derive(Debug, Default)]
-pub struct EngineMetrics {
-    pub last_mc_block_seqno: AtomicU32,
-    pub last_shard_client_mc_block_seqno: AtomicU32,
-    pub last_shard_client_mc_block_utime: AtomicU32,
-    pub last_mc_utime: AtomicU32,
-    pub mc_time_diff: AtomicI64,
-    pub shard_client_time_diff: AtomicI64,
-
-    pub block_broadcasts: BlockBroadcastCounters,
-    pub download_next_block_requests: DownloaderCounters,
-    pub download_block_requests: DownloaderCounters,
-    pub download_block_proof_requests: DownloaderCounters,
 }
 
 #[derive(Debug, Default)]
