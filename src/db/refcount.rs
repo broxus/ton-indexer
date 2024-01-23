@@ -64,10 +64,6 @@ pub fn strip_refcount(bytes: &[u8]) -> Option<&[u8]> {
     }
 }
 
-pub fn has_value(bytes: &[u8]) -> bool {
-    bytes.len() >= RC_BYTES && RcType::from_le_bytes(bytes[..RC_BYTES].try_into().unwrap()) > 0
-}
-
 pub fn add_positive_refount(rc: u32, data: Option<&[u8]>, target: &mut Vec<u8>) {
     target.extend_from_slice(&RcType::from(rc).to_le_bytes());
     if let Some(data) = data {
@@ -83,6 +79,6 @@ pub fn encode_negative_refcount(rc: u32) -> [u8; RC_BYTES] {
     (-RcType::from(rc)).to_le_bytes()
 }
 
-type RcType = i64;
+pub type RcType = i64;
 
 const RC_BYTES: usize = std::mem::size_of::<RcType>();

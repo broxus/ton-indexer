@@ -1,6 +1,7 @@
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::Result;
 use argh::FromArgs;
@@ -8,7 +9,7 @@ use broxus_util::now;
 use serde::{Deserialize, Serialize};
 use tracing_subscriber::EnvFilter;
 
-use ton_indexer::utils::*;
+use ton_indexer::{utils::*, ShardStatesGcStatus};
 use ton_indexer::{Engine, GlobalConfig, NodeConfig, ProcessBlockContext};
 
 #[global_allocator]
@@ -71,6 +72,67 @@ async fn run(app: App) -> Result<()> {
         Arc::new(LoggerSubscriber::default()),
     )
     .await?;
+
+    tokio::spawn({
+        struct CacheStatsWriter<'a>(&'a CacheStats);
+
+        impl std::fmt::Debug for CacheStatsWriter<'_> {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                let stats = self.0;
+                f.debug_struct("CacheStats")
+                    .field("hits", &stats.hits)
+                    .field("misses", &stats.misses)
+                    .field("requests", &stats.requests)
+                    .field("occupied", &stats.occupied)
+                    .field("hits_ratio", &stats.hits_ratio)
+                    .field("size", &bytesize::ByteSize::b(stats.size_bytes))
+                    .finish()
+            }
+        }
+
+        struct GcStatsWriter<'a>(&'a ShardStatesGcStatus);
+
+        impl std::fmt::Debug for GcStatsWriter<'_> {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                let stats = self.0;
+                let current = stats.current_seqno.load(Ordering::Acquire);
+                let progress = if stats.end_seqno > stats.start_seqno {
+                    (current.saturating_sub(stats.start_seqno) as f64) * 100.0
+                        / ((stats.end_seqno - stats.start_seqno) as f64)
+                } else {
+                    100.0
+                };
+
+                f.debug_struct("GcStats")
+                    .field("current_shard", &stats.current_shard)
+                    .field("start_seqno", &stats.start_seqno)
+                    .field("end_seqno", &stats.end_seqno)
+                    .field("current_seqno", &current)
+                    .field("progress", &progress)
+                    .finish()
+            }
+        }
+
+        const INTERVAL: Duration = Duration::from_secs(30);
+
+        let engine = engine.clone();
+
+        async move {
+            let mut interval = tokio::time::interval(INTERVAL);
+            loop {
+                interval.tick().await;
+
+                let stats = engine.internal_metrics().cells_cache_stats;
+                tracing::info!("cache stats: {:#?}", CacheStatsWriter(&stats));
+
+                let stats = engine.get_db_metrics().shard_state_storage.gc_status;
+                if let Some(stats) = stats {
+                    tracing::info!("gc stats: {:#?}", GcStatsWriter(&stats));
+                }
+            }
+        }
+    });
+
     engine.start().await?;
 
     futures_util::future::pending().await

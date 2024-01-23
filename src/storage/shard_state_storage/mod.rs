@@ -28,7 +28,7 @@ pub struct ShardStateStorage {
     cell_storage: Arc<CellStorage>,
     downloads_dir: Arc<PathBuf>,
 
-    gc_lock: tokio::sync::RwLock<()>,
+    gc_lock: tokio::sync::Mutex<()>,
     min_ref_mc_state: Arc<MinRefMcState>,
     max_new_mc_cell_count: AtomicUsize,
     max_new_sc_cell_count: AtomicUsize,
@@ -106,7 +106,7 @@ impl ShardStateStorage {
 
         let mut batch = rocksdb::WriteBatch::default();
 
-        let _gc_lock = self.gc_lock.read().await;
+        let _gc_lock = self.gc_lock.lock().await;
 
         let len = self
             .cell_storage
@@ -241,7 +241,7 @@ impl ShardStateStorage {
             alloc.reset();
             let mut batch = rocksdb::WriteBatch::default();
             {
-                let _guard = self.gc_lock.write().await;
+                let _guard = self.gc_lock.lock().await;
                 let total = self
                     .cell_storage
                     .remove_cell(&mut batch, &alloc, root_hash)?;

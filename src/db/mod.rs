@@ -6,7 +6,7 @@ use bytesize::ByteSize;
 use weedb::{Caches, WeeDb};
 
 pub use weedb::Stats as RocksdbStats;
-pub use weedb::{rocksdb, BoundedCfHandle, ColumnFamily, Table, UnboundedCfHandle};
+pub use weedb::{rocksdb, BoundedCfHandle, ColumnFamily, Table};
 
 use crate::config::DbOptions;
 
