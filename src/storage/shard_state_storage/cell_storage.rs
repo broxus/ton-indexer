@@ -11,7 +11,8 @@ use ton_types::{ByteOrderRead, CellImpl, UInt256};
 use triomphe::ThinArc;
 
 use crate::db::*;
-use crate::utils::{CacheStats, CellExt, FastDashMap, FastHashMap, FastHasherState};
+use crate::metrics_updater_loop;
+use crate::utils::{FastDashMap, FastHashMap, FastHasherState};
 
 pub struct CellStorage {
     db: Arc<Db>,
@@ -20,15 +21,22 @@ pub struct CellStorage {
 }
 
 impl CellStorage {
-    pub fn new(db: Arc<Db>, cache_size_bytes: u64) -> Result<Arc<Self>> {
+    pub fn new(db: Arc<Db>, cache_size_bytes: u64) -> Arc<Self> {
         let cells_cache = Default::default();
         let raw_cells_cache = RawCellsCache::new(cache_size_bytes);
 
-        Ok(Arc::new(Self {
+        let this = Arc::new(Self {
             db,
             cells_cache,
             raw_cells_cache,
-        }))
+        });
+        {
+            let this = this.clone();
+            tokio::spawn(async move {
+                this.cache_stats_updater().await;
+            });
+        }
+        this
     }
 
     pub fn store_cell(
@@ -299,24 +307,18 @@ impl CellStorage {
         self.cells_cache.remove(hash);
     }
 
-    pub fn cache_stats(&self) -> CacheStats {
-        let hits = self.raw_cells_cache.0.hits();
-        let misses = self.raw_cells_cache.0.misses();
-        let occupied = self.raw_cells_cache.0.len() as u64;
-        let weight = self.raw_cells_cache.0.weight();
-
-        let hits_ratio = if hits > 0 {
-            hits as f64 / (hits + misses) as f64
-        } else {
-            0.0
-        } * 100.0;
-        CacheStats {
-            hits,
-            misses,
-            requests: hits + misses,
-            occupied,
-            hits_ratio,
-            size_bytes: weight,
+    async fn cache_stats_updater(&self) {
+        metrics_updater_loop! {
+            sleep => 1,
+            "cells_cache_hits" => self.raw_cells_cache.0.hits(),
+            "cells_cache_requests" => self.raw_cells_cache.0.misses() + self.raw_cells_cache.0.hits(),
+            "cells_cache_occupied" => self.raw_cells_cache.0.len() ,
+            "cells_cache_size_bytes" => self.raw_cells_cache.0.weight(),
+            "cells_cache_hits_ratio" => if self.raw_cells_cache.0.hits() > 0 {
+                self.raw_cells_cache.0.hits() as f64 / (self.raw_cells_cache.0.hits() + self.raw_cells_cache.0.misses()) as f64
+            } else {
+                0.0
+            } * 100.0,
         }
     }
 }

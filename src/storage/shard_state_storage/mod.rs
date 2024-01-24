@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -30,8 +30,6 @@ pub struct ShardStateStorage {
 
     gc_lock: tokio::sync::Mutex<()>,
     min_ref_mc_state: Arc<MinRefMcState>,
-    max_new_mc_cell_count: AtomicUsize,
-    max_new_sc_cell_count: AtomicUsize,
 
     gc_status: ArcSwapOption<ShardStatesGcStatus>,
 }
@@ -46,7 +44,7 @@ impl ShardStateStorage {
     ) -> Result<Self> {
         let downloads_dir = prepare_file_db_dir(file_db_path, "downloads").await?;
 
-        let cell_storage = CellStorage::new(db.clone(), cache_size_bytes)?;
+        let cell_storage = CellStorage::new(db.clone(), cache_size_bytes);
 
         let res = Self {
             db,
@@ -56,32 +54,11 @@ impl ShardStateStorage {
             downloads_dir,
             gc_lock: Default::default(),
             min_ref_mc_state: Arc::new(Default::default()),
-            max_new_mc_cell_count: AtomicUsize::new(0),
-            max_new_sc_cell_count: AtomicUsize::new(0),
             gc_status: ArcSwapOption::default(),
         };
 
         // Done
         Ok(res)
-    }
-
-    pub fn metrics(&self) -> ShardStateStorageMetrics {
-        #[cfg(feature = "count-cells")]
-        let storage_cell = countme::get::<StorageCell>();
-
-        ShardStateStorageMetrics {
-            #[cfg(feature = "count-cells")]
-            storage_cell_live_count: storage_cell.live,
-            #[cfg(feature = "count-cells")]
-            storage_cell_max_live_count: storage_cell.max_live,
-            max_new_mc_cell_count: self.max_new_mc_cell_count.swap(0, Ordering::AcqRel),
-            max_new_sc_cell_count: self.max_new_sc_cell_count.swap(0, Ordering::AcqRel),
-            gc_status: self.gc_status.load_full(),
-        }
-    }
-
-    pub fn cache_metrics(&self) -> CacheStats {
-        self.cell_storage.cache_stats()
     }
 
     pub fn min_ref_mc_state(&self) -> &Arc<MinRefMcState> {
@@ -113,9 +90,9 @@ impl ShardStateStorage {
             .store_cell(&mut batch, state.root_cell().clone())?;
 
         if block_id.shard_id.is_masterchain() {
-            self.max_new_mc_cell_count.fetch_max(len, Ordering::Release);
+            metrics::gauge!("db_shard_state_storage_max_new_mc_cell_count").set(len as f64);
         } else {
-            self.max_new_sc_cell_count.fetch_max(len, Ordering::Release);
+            metrics::gauge!("db_shard_state_storage_max_new_sc_cell_count").set(len as f64);
         }
 
         let mut value = [0; 32 * 3];
@@ -270,6 +247,9 @@ impl ShardStateStorage {
                     end_seqno: target_seqno,
                     current_seqno: AtomicU32::new(seq_no),
                 });
+                let labels = [("shard", shard_ident.to_string())];
+                metrics::gauge!("ton_indexer_gc_finished", &labels) //todo: check this
+                    .set(seq_no as f64);
                 self.gc_status.store(Some(new_status.clone()));
                 last_gc_status = Some(new_status);
             }
@@ -391,12 +371,6 @@ impl ShardStateStorage {
 
 #[derive(Debug, Clone)]
 pub struct ShardStateStorageMetrics {
-    #[cfg(feature = "count-cells")]
-    pub storage_cell_live_count: usize,
-    #[cfg(feature = "count-cells")]
-    pub storage_cell_max_live_count: usize,
-    pub max_new_mc_cell_count: usize,
-    pub max_new_sc_cell_count: usize,
     pub gc_status: Option<Arc<ShardStatesGcStatus>>,
 }
 

@@ -58,6 +58,7 @@ impl ShardStateCache {
     {
         if let Some(map) = &self.map {
             map.insert(block_id.clone(), factory());
+            metrics::gauge!("shard_state_cache_size").set(map.len() as f64);
         }
     }
 
@@ -81,15 +82,6 @@ impl ShardStateCache {
             map.is_empty()
         } else {
             true
-        }
-    }
-
-    /// Returns number of elements in the cache
-    pub fn len(&self) -> usize {
-        if let Some(map) = &self.map {
-            map.len()
-        } else {
-            0
         }
     }
 }

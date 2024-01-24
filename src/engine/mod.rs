@@ -13,7 +13,6 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use broxus_util::now;
 use everscale_network::overlay;
-use serde::{Deserialize, Serialize};
 use tokio::sync::{Notify, Semaphore};
 
 use global_config::GlobalConfig;
@@ -684,23 +683,8 @@ impl Engine {
         self.is_working.load(Ordering::Acquire)
     }
 
-    pub fn get_db_metrics(&self) -> DbMetrics {
-        self.storage.metrics()
-    }
-
     pub fn get_memory_usage_stats(&self) -> Result<RocksdbStats> {
         self.db.get_memory_usage_stats()
-    }
-
-    pub fn internal_metrics(&self) -> InternalEngineMetrics {
-        InternalEngineMetrics {
-            shard_states_cache_len: self.shard_states_cache.len(),
-            shard_states_operations_len: self.shard_states_operations.len(),
-            block_applying_operations_len: self.block_applying_operations.len(),
-            next_block_applying_operations_len: self.next_block_applying_operations.len(),
-            download_block_operations_len: self.download_block_operations.len(),
-            cells_cache_stats: self.storage.cells_cache_stats(),
-        }
     }
 
     pub fn network_metrics(&self) -> NetworkMetrics {
@@ -1685,16 +1669,6 @@ impl ProcessBlockContext<'_> {
 pub struct BlockBroadcastCounters {
     pub total: AtomicU64,
     pub invalid: AtomicU64,
-}
-
-#[derive(Debug, Default, Serialize, Deserialize, Clone, Copy)]
-pub struct InternalEngineMetrics {
-    pub shard_states_cache_len: usize,
-    pub shard_states_operations_len: usize,
-    pub block_applying_operations_len: usize,
-    pub next_block_applying_operations_len: usize,
-    pub download_block_operations_len: usize,
-    pub cells_cache_stats: CacheStats,
 }
 
 #[derive(thiserror::Error, Debug)]

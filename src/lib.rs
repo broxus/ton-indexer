@@ -1,13 +1,11 @@
 pub use crate::config::*;
 pub use crate::db::RocksdbStats;
 pub use crate::engine::{
-    BlockBroadcastCounters, Engine, EngineStatus, InternalEngineMetrics, ProcessBlockContext,
-    ProcessBlocksEdgeContext, Subscriber,
+    BlockBroadcastCounters, Engine, EngineStatus, ProcessBlockContext, ProcessBlocksEdgeContext,
+    Subscriber,
 };
 pub use crate::network::{NeighboursOptions, NetworkMetrics, NodeNetwork};
-pub use crate::storage::{
-    BriefBlockMeta, DbMetrics, ShardStateStorageMetrics, ShardStatesGcStatus,
-};
+pub use crate::storage::{BriefBlockMeta, ShardStateStorageMetrics, ShardStatesGcStatus};
 
 #[cfg(feature = "archive-uploader")]
 pub use archive_uploader;
