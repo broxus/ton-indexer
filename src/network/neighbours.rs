@@ -2,6 +2,7 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use crate::set_metrics;
 use anyhow::Result;
 use everscale_network::{adnl, dht, overlay};
 use tokio::sync::Semaphore;
@@ -81,7 +82,7 @@ impl Neighbours {
             NeighbourOptions::from(&options),
         ));
 
-        Arc::new(Self {
+        let this = Arc::new(Self {
             dht: dht.clone(),
             overlay: overlay.clone(),
             options,
@@ -90,8 +91,15 @@ impl Neighbours {
             failed_attempts: Default::default(),
             all_attempts: Default::default(),
             start: Instant::now(),
-            peer_search_task_count: Arc::new(Default::default()),
-        })
+            peer_search_task_count: Arc::new(Default::default()), //todo is not set anywhere
+        });
+        {
+            let this = this.clone();
+            tokio::spawn(async move {
+                this.metrics_update_loop().await;
+            });
+        }
+        this
     }
 
     pub fn options(&self) -> &NeighboursOptions {
@@ -205,6 +213,13 @@ impl Neighbours {
     /// Returns neighbours cache len
     pub fn len(&self) -> usize {
         self.cache.len()
+    }
+
+    async fn metrics_update_loop(&self) {
+        loop {
+            set_metrics!("neighbours_peers_count" => self.len() as i64);
+            tokio::time::sleep(Duration::from_secs(5)).await;
+        }
     }
 
     /// Instant neighbours metrics

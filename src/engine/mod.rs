@@ -683,14 +683,6 @@ impl Engine {
         self.is_working.load(Ordering::Acquire)
     }
 
-    pub fn get_memory_usage_stats(&self) -> Result<RocksdbStats> {
-        self.db.get_memory_usage_stats()
-    }
-
-    pub fn network_metrics(&self) -> NetworkMetrics {
-        self.network.metrics()
-    }
-
     pub fn network_neighbour_metrics(
         &self,
     ) -> impl Iterator<Item = (overlay::IdShort, NeighboursMetrics)> + '_ {

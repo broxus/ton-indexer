@@ -4,7 +4,7 @@ pub use crate::engine::{
     BlockBroadcastCounters, Engine, EngineStatus, ProcessBlockContext, ProcessBlocksEdgeContext,
     Subscriber,
 };
-pub use crate::network::{NeighboursOptions, NetworkMetrics, NodeNetwork};
+pub use crate::network::{NeighboursOptions, NodeNetwork};
 pub use crate::storage::{BriefBlockMeta, ShardStateStorageMetrics, ShardStatesGcStatus};
 
 #[cfg(feature = "archive-uploader")]

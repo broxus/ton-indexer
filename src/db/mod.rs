@@ -9,6 +9,7 @@ pub use weedb::Stats as RocksdbStats;
 pub use weedb::{rocksdb, BoundedCfHandle, ColumnFamily, Table};
 
 use crate::config::DbOptions;
+use crate::set_metrics;
 
 pub mod refcount;
 pub mod tables;
@@ -107,7 +108,7 @@ impl Db {
 
         migrations::apply(&inner).context("Failed to apply migrations")?;
 
-        Ok(Arc::new(Self {
+        let this = Arc::new(Self {
             archives: inner.instantiate_table(),
             block_handles: inner.instantiate_table(),
             key_blocks: inner.instantiate_table(),
@@ -121,7 +122,16 @@ impl Db {
             next2: inner.instantiate_table(),
             compaction_lock: tokio::sync::RwLock::default(),
             inner,
-        }))
+        });
+        {
+            let this = this.clone();
+            tokio::spawn(async move {
+                if let Err(e) = this.memory_usage_update_loop().await {
+                    tracing::error!("Failed to update memory usage stats: {}", e);
+                }
+            });
+        }
+        Ok(this)
     }
 
     #[inline]
@@ -129,8 +139,21 @@ impl Db {
         self.inner.raw()
     }
 
-    pub fn get_memory_usage_stats(&self) -> Result<RocksdbStats> {
-        self.inner.get_memory_usage_stats().map_err(From::from)
+    async fn memory_usage_update_loop(&self) -> Result<RocksdbStats> {
+        loop {
+            let RocksdbStats {
+                whole_db_stats,
+                block_cache_usage,
+                block_cache_pined_usage,
+            } = self.inner.get_memory_usage_stats()?;
+            set_metrics!(
+                "rocksdb_block_cache_usage_bytes" => block_cache_usage,
+                "rocksdb_block_cache_pined_usage_bytes" => block_cache_pined_usage,
+                "rocksdb_memtable_total_size_bytes" => whole_db_stats.mem_table_total,
+                "rocksdb_memtable_unflushed_size_bytes" => whole_db_stats.mem_table_unflushed,
+                "rocksdb_memtable_cache_bytes" => whole_db_stats.cache_total);
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+        }
     }
 
     pub async fn delay_compaction(&self) -> tokio::sync::RwLockReadGuard<'_, ()> {

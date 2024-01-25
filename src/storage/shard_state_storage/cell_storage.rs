@@ -11,7 +11,7 @@ use ton_types::{ByteOrderRead, CellImpl, UInt256};
 use triomphe::ThinArc;
 
 use crate::db::*;
-use crate::metrics_updater_loop;
+use crate::set_metrics;
 use crate::utils::{FastDashMap, FastHashMap, FastHasherState};
 
 pub struct CellStorage {
@@ -308,17 +308,18 @@ impl CellStorage {
     }
 
     async fn cache_stats_updater(&self) {
-        metrics_updater_loop! {
-            sleep => 1,
-            "cells_cache_hits" => self.raw_cells_cache.0.hits(),
-            "cells_cache_requests" => self.raw_cells_cache.0.misses() + self.raw_cells_cache.0.hits(),
-            "cells_cache_occupied" => self.raw_cells_cache.0.len() ,
-            "cells_cache_size_bytes" => self.raw_cells_cache.0.weight(),
-            "cells_cache_hits_ratio" => if self.raw_cells_cache.0.hits() > 0 {
-                self.raw_cells_cache.0.hits() as f64 / (self.raw_cells_cache.0.hits() + self.raw_cells_cache.0.misses()) as f64
-            } else {
-                0.0
-            } * 100.0,
+        loop {
+            set_metrics! {
+                "cells_cache_hits" => self.raw_cells_cache.0.hits(),
+                "cells_cache_requests" => self.raw_cells_cache.0.misses() + self.raw_cells_cache.0.hits(),
+                "cells_cache_occupied" => self.raw_cells_cache.0.len() ,
+                "cells_cache_size_bytes" => self.raw_cells_cache.0.weight(),
+                "cells_cache_hits_ratio" => if self.raw_cells_cache.0.hits() > 0 {
+                    self.raw_cells_cache.0.hits() as f64 / (self.raw_cells_cache.0.hits() + self.raw_cells_cache.0.misses()) as f64
+                } else {
+                    0.0
+                } * 100.0,
+            }
         }
     }
 }
