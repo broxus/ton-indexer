@@ -17,7 +17,7 @@ use tokio_util::sync::CancellationToken;
 
 pub use self::neighbour::Neighbour;
 use self::neighbours::Neighbours;
-pub use self::neighbours::{NeighboursMetrics, NeighboursOptions};
+pub use self::neighbours::NeighboursOptions;
 pub use self::overlay_client::OverlayClient;
 use crate::utils::FastDashMap;
 
@@ -163,14 +163,6 @@ impl NodeNetwork {
 
     pub fn dht(&self) -> &Arc<dht::Node> {
         &self.dht
-    }
-
-    pub fn neighbour_metrics(
-        &self,
-    ) -> impl Iterator<Item = (overlay::IdShort, NeighboursMetrics)> + '_ {
-        self.overlays
-            .iter()
-            .map(|item| (*item.key(), item.neighbours().metrics()))
     }
 
     pub fn overlay_metrics(

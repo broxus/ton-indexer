@@ -6,7 +6,7 @@
 /// - slightly changed application of blocks
 ///
 use std::io::Write;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -62,6 +62,8 @@ pub struct Engine {
     next_block_applying_operations: NextBlockApplyingOperationsPool,
     download_block_operations: DownloadBlockOperationsPool,
     shard_states_cache: ShardStateCache,
+
+    metrics: Arc<EngineMetrics>,
 }
 
 type ShardStatesOperationsPool = OperationsPool<ton_block::BlockIdExt, Arc<ShardStateStuff>>;
@@ -188,12 +190,19 @@ impl Engine {
             next_block_applying_operations: OperationsPool::new("next_block_applying_operations"),
             download_block_operations: OperationsPool::new("download_block_operations"),
             shard_states_cache: ShardStateCache::new(config.shard_state_cache_options),
+            metrics: Arc::new(Default::default()),
         }))
     }
 
     pub async fn start(self: &Arc<Self>) -> Result<()> {
         // Start full node overlay service
         let service: Arc<NodeRpcServer> = NodeRpcServer::new(self);
+        {
+            let this = self.clone();
+            tokio::spawn(async move {
+                this.metrics_update_loop().await;
+            });
+        }
 
         self.network
             .add_subscriber(ton_block::MASTERCHAIN_ID, service.clone());
@@ -683,10 +692,25 @@ impl Engine {
         self.is_working.load(Ordering::Acquire)
     }
 
-    pub fn network_neighbour_metrics(
-        &self,
-    ) -> impl Iterator<Item = (overlay::IdShort, NeighboursMetrics)> + '_ {
-        self.network.neighbour_metrics()
+    pub fn metrics(&self) -> &Arc<EngineMetrics> {
+        &self.metrics
+    }
+
+    async fn metrics_update_loop(&self) {
+        use crate::set_metrics;
+        loop {
+            let metrics = self.metrics();
+            set_metrics!(
+                "ton_indexer_mc_time_diff" => metrics.mc_time_diff.load(Ordering::Acquire),
+                "ton_indexer_sc_time_diff" => metrics.shard_client_time_diff.load(Ordering::Acquire),
+                "ton_indexer_last_mc_utime" => metrics.last_mc_utime.load(Ordering::Acquire),
+                "ton_indexer_last_mc_block_seqno" => metrics.last_mc_block_seqno.load(Ordering::Acquire),
+                "ton_indexer_last_sc_block_seqno" => metrics.last_shard_client_mc_block_seqno.load(Ordering::Acquire),
+                "ton_indexer_last_shard_client_mc_block_utime" => metrics.last_shard_client_mc_block_utime.load(Ordering::Acquire),
+            );
+
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
     }
 
     pub fn network_overlay_metrics(
@@ -1174,7 +1198,9 @@ impl Engine {
 
     fn store_last_applied_mc_block_id(&self, block_id: &ton_block::BlockIdExt) -> Result<()> {
         self.storage.node_state().store_last_mc_block_id(block_id)?;
-        metrics::gauge!("ton_indexer_last_mc_block_seqno").set(block_id.seq_no as f64);
+        self.metrics
+            .last_mc_block_seqno
+            .store(block_id.seq_no, Ordering::Release);
         Ok(())
     }
 
@@ -1186,20 +1212,16 @@ impl Engine {
         self.storage
             .node_state()
             .store_shards_client_mc_block_id(block_id)?;
-        metrics::describe_gauge!(
-            "ton_indexer_last_sc_block_seqno",
-            "Last shard client master ref block seqno"
-        );
-        metrics::gauge!("ton_indexer_last_sc_block_seqno").set(block_id.seq_no as f64);
+        self.metrics
+            .last_shard_client_mc_block_seqno
+            .store(block_id.seq_no, Ordering::Release);
         Ok(())
     }
 
     fn store_shards_client_mc_block_utime(&self, block_utime: u32) {
-        metrics::describe_gauge!(
-            "ton_indexer_last_shard_client_mc_block_utime",
-            "Last shard client master ref block utime"
-        );
-        metrics::gauge!("ton_indexer_last_shard_client_mc_block_utime").set(block_utime as f64);
+        self.metrics
+            .last_shard_client_mc_block_utime
+            .store(block_utime, Ordering::Release);
     }
 
     async fn download_and_apply_block(
@@ -1357,13 +1379,16 @@ impl Engine {
         };
 
         if handle.id().shard().is_masterchain() {
-            metrics::describe_gauge!("ton_indexer_mc_time_diff", "Masterchain time diff");
-            metrics::gauge!("ton_indexer_mc_time_diff").set(time_diff as f64);
-            metrics::describe_gauge!("ton_indexer_last_mc_utime", "Last masterchain block utime");
-            metrics::gauge!("ton_indexer_last_mc_utime").set(meta.gen_utime() as f64);
+            self.metrics
+                .mc_time_diff
+                .store(time_diff, Ordering::Release);
+            self.metrics
+                .last_mc_utime
+                .store(meta.gen_utime(), Ordering::Release);
         } else {
-            metrics::describe_gauge!("ton_indexer_sc_time_diff", "Shardchain time diff");
-            metrics::gauge!("ton_indexer_sc_time_diff").set(time_diff as f64);
+            self.metrics
+                .shard_client_time_diff
+                .store(time_diff, Ordering::Release);
         }
 
         self.subscriber.process_block(ctx).await
@@ -1655,6 +1680,16 @@ impl ProcessBlockContext<'_> {
             }
         }
     }
+}
+
+#[derive(Debug, Default)]
+pub struct EngineMetrics {
+    pub last_mc_block_seqno: AtomicU32,
+    pub last_shard_client_mc_block_seqno: AtomicU32,
+    pub last_shard_client_mc_block_utime: AtomicU32,
+    pub last_mc_utime: AtomicU32,
+    pub mc_time_diff: AtomicI64,
+    pub shard_client_time_diff: AtomicI64,
 }
 
 #[derive(Debug, Default)]

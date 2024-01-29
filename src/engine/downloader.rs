@@ -6,11 +6,12 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use anyhow::Result;
+
 use crate::engine::NodeRpcClient;
 use crate::network::Neighbour;
 use crate::storage::*;
 use crate::utils::*;
-use anyhow::Result;
 
 impl<'a, T> DownloadContext<'a, T> {
     async fn load_full_block(
@@ -147,7 +148,7 @@ pub trait Downloader: Send + Sync {
 }
 
 pub struct DownloadContext<'a, T> {
-    pub name: &'static str,
+    pub name: &'a str,
     pub block_id: &'a ton_block::BlockIdExt,
     pub max_attempts: Option<u32>,
     pub timeouts: Option<DownloaderTimeouts>,
@@ -157,6 +158,7 @@ pub struct DownloadContext<'a, T> {
 
     pub downloader: Arc<dyn Downloader<Item = T>>,
     pub explicit_neighbour: Option<&'a Arc<Neighbour>>,
+
     pub metrics_emitter: MetricsEmitter,
 }
 

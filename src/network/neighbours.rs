@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -23,8 +23,6 @@ pub struct Neighbours {
     all_attempts: AtomicU64,
 
     start: Instant,
-
-    peer_search_task_count: Arc<AtomicUsize>,
 }
 
 #[derive(Debug, Copy, Clone, serde::Serialize, serde::Deserialize)]
@@ -91,7 +89,6 @@ impl Neighbours {
             failed_attempts: Default::default(),
             all_attempts: Default::default(),
             start: Instant::now(),
-            peer_search_task_count: Arc::new(Default::default()), //todo is not set anywhere
         });
         {
             let this = this.clone();
@@ -219,13 +216,6 @@ impl Neighbours {
         loop {
             set_metrics!("neighbours_peers_count" => self.len() as i64);
             tokio::time::sleep(Duration::from_secs(5)).await;
-        }
-    }
-
-    /// Instant neighbours metrics
-    pub fn metrics(&self) -> NeighboursMetrics {
-        NeighboursMetrics {
-            peer_search_task_count: self.peer_search_task_count.load(Ordering::Acquire),
         }
     }
 

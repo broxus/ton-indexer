@@ -12,7 +12,7 @@ use triomphe::ThinArc;
 
 use crate::db::*;
 use crate::set_metrics;
-use crate::utils::{FastDashMap, FastHashMap, FastHasherState};
+use crate::utils::{CellExt, FastDashMap, FastHashMap, FastHasherState};
 
 pub struct CellStorage {
     db: Arc<Db>,
