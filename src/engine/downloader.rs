@@ -175,16 +175,16 @@ impl<'a, T> DownloadContext<'a, T> {
         let mut attempt = 1;
         loop {
             let res = self.downloader.try_download(self).await;
-            self.metrics_emitter.total();
+            self.metrics_emitter.inc_total();
 
             match res {
                 Ok(Some(result)) => break Ok(result),
                 Ok(None) => {
-                    self.metrics_emitter.timeout();
+                    self.metrics_emitter.inc_timeout();
                     tracing::debug!("got no data for {}", self.name)
                 }
                 Err(e) => {
-                    self.metrics_emitter.error();
+                    self.metrics_emitter.inc_error();
                     self.explicit_neighbour = None;
                     tracing::debug!("error in {}: {e:?}", self.name)
                 }
@@ -234,19 +234,19 @@ impl MetricsEmitter {
         }
     }
 
-    fn total(&self) {
+    fn inc_total(&self) {
         if let Self::Named { ref total, .. } = self {
             total.increment(1);
         }
     }
 
-    fn error(&self) {
+    fn inc_error(&self) {
         if let Self::Named { ref errors, .. } = self {
             errors.increment(1);
         }
     }
 
-    fn timeout(&self) {
+    fn inc_timeout(&self) {
         if let Self::Named { ref timeouts, .. } = self {
             timeouts.increment(1);
         }

@@ -58,13 +58,13 @@ impl ShardStateCache {
     {
         if let Some(map) = &self.map {
             map.insert(block_id.clone(), factory());
-            metrics::gauge!("shard_state_cache_size").set(map.len() as f64);
         }
     }
 
     /// Removes all outdated elements from the cache before the top blocks
     pub fn remove(&self, top_blocks: &TopBlocks) {
         if let Some(map) = &self.map {
+            metrics::gauge!("shard_state_cache_size").set(map.len() as f64); // measuring worst case
             map.retain(|key, _| top_blocks.contains(key));
         }
     }

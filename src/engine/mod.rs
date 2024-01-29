@@ -198,12 +198,13 @@ impl Engine {
         // Start full node overlay service
         let service: Arc<NodeRpcServer> = NodeRpcServer::new(self);
         {
-            let this = self.clone();
+            let this = Arc::downgrade(self);
             tokio::spawn(async move {
-                this.metrics_update_loop().await;
+                while let Some(this) = this.upgrade() {
+                    this.metrics_update_step().await;
+                }
             });
         }
-
         self.network
             .add_subscriber(ton_block::MASTERCHAIN_ID, service.clone());
         self.network
@@ -632,12 +633,14 @@ impl Engine {
                 };
                 let subscriber = engine.subscriber.as_ref();
 
+                let start = Instant::now();
                 let mut shards_gc_lock = engine
                     .storage
                     .runtime_storage()
                     .persistent_state_keeper()
                     .shards_gc_lock()
                     .subscribe();
+                metrics::histogram!("shard_states_gc_lock_time").record(start.elapsed());
 
                 let block_id = loop {
                     // Load the latest block id
@@ -696,21 +699,20 @@ impl Engine {
         &self.metrics
     }
 
-    async fn metrics_update_loop(&self) {
+    async fn metrics_update_step(&self) {
         use crate::set_metrics;
-        loop {
-            let metrics = self.metrics();
-            set_metrics!(
-                "ton_indexer_mc_time_diff" => metrics.mc_time_diff.load(Ordering::Acquire),
-                "ton_indexer_sc_time_diff" => metrics.shard_client_time_diff.load(Ordering::Acquire),
-                "ton_indexer_last_mc_utime" => metrics.last_mc_utime.load(Ordering::Acquire),
-                "ton_indexer_last_mc_block_seqno" => metrics.last_mc_block_seqno.load(Ordering::Acquire),
-                "ton_indexer_last_sc_block_seqno" => metrics.last_shard_client_mc_block_seqno.load(Ordering::Acquire),
-                "ton_indexer_last_shard_client_mc_block_utime" => metrics.last_shard_client_mc_block_utime.load(Ordering::Acquire),
-            );
 
-            tokio::time::sleep(Duration::from_secs(1)).await;
-        }
+        let metrics = self.metrics();
+        set_metrics!(
+            "ton_indexer_mc_time_diff" => metrics.mc_time_diff.load(Ordering::Acquire),
+            "ton_indexer_sc_time_diff" => metrics.shard_client_time_diff.load(Ordering::Acquire),
+            "ton_indexer_last_mc_utime" => metrics.last_mc_utime.load(Ordering::Acquire),
+            "ton_indexer_last_mc_block_seqno" => metrics.last_mc_block_seqno.load(Ordering::Acquire),
+            "ton_indexer_last_sc_block_seqno" => metrics.last_shard_client_mc_block_seqno.load(Ordering::Acquire),
+            "ton_indexer_last_shard_client_mc_block_utime" => metrics.last_shard_client_mc_block_utime.load(Ordering::Acquire),
+        );
+
+        tokio::time::sleep(Duration::from_secs(1)).await;
     }
 
     pub fn network_overlay_metrics(

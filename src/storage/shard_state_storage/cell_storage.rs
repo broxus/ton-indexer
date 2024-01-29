@@ -31,9 +31,11 @@ impl CellStorage {
             raw_cells_cache,
         });
         {
-            let this = this.clone();
+            let this = Arc::downgrade(&this);
             tokio::spawn(async move {
-                this.cache_stats_updater().await;
+                while let Some(this) = this.upgrade() {
+                    this.cache_stats_update_step().await
+                }
             });
         }
         this
@@ -307,20 +309,15 @@ impl CellStorage {
         self.cells_cache.remove(hash);
     }
 
-    async fn cache_stats_updater(&self) {
-        loop {
-            set_metrics! {
-                "cells_cache_hits" => self.raw_cells_cache.0.hits(),
-                "cells_cache_requests" => self.raw_cells_cache.0.misses() + self.raw_cells_cache.0.hits(),
-                "cells_cache_occupied" => self.raw_cells_cache.0.len() ,
-                "cells_cache_size_bytes" => self.raw_cells_cache.0.weight(),
-                "cells_cache_hits_ratio" => if self.raw_cells_cache.0.hits() > 0 {
-                    self.raw_cells_cache.0.hits() as f64 / (self.raw_cells_cache.0.hits() + self.raw_cells_cache.0.misses()) as f64
-                } else {
-                    0.0
-                } * 100.0,
-            }
+    async fn cache_stats_update_step(&self) {
+        set_metrics! {
+            "cells_cache_hits" => self.raw_cells_cache.0.hits(),
+            "cells_cache_requests" => self.raw_cells_cache.0.misses() + self.raw_cells_cache.0.hits(),
+            "cells_cache_occupied" => self.raw_cells_cache.0.len() ,
+            "cells_cache_size_bytes" => self.raw_cells_cache.0.weight(),
+            "cells_cache_hits_ratio" => self.raw_cells_cache.hit_ratio(),
         }
+        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
     }
 }
 
@@ -502,6 +499,16 @@ enum StorageCellError {
 
 struct RawCellsCache(Cache<[u8; 32], RawCellsCacheItem, CellSizeEstimator, FastHasherState>);
 
+impl RawCellsCache {
+    pub(crate) fn hit_ratio(&self) -> f64 {
+        (if self.0.hits() > 0 {
+            self.0.hits() as f64 / (self.0.hits() + self.0.misses()) as f64
+        } else {
+            0.0
+        }) * 100.0
+    }
+}
+
 type RawCellsCacheItem = ThinArc<AtomicI64, u8>;
 
 #[derive(Clone, Copy)]
@@ -568,7 +575,7 @@ impl RawCellsCache {
         use quick_cache::GuardResult;
 
         match self.0.get_value_or_guard(key, None) {
-            GuardResult::Value(value) => return Ok(Some(value)),
+            GuardResult::Value(value) => Ok(Some(value)),
             GuardResult::Guard(g) => Ok(if let Some(value) = db.cells.get(key)? {
                 let (rc, data) = refcount::decode_value_with_rc(value.as_ref());
                 data.map(|value| {

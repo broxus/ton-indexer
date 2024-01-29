@@ -248,8 +248,7 @@ impl ShardStateStorage {
                     current_seqno: AtomicU32::new(seq_no),
                 });
                 let labels = [("shard", shard_ident.to_string())];
-                metrics::gauge!("ton_indexer_gc_finished", &labels) //todo: check this
-                    .set(seq_no as f64);
+                metrics::gauge!("ton_indexer_gc_finished", &labels).set(seq_no as f64);
                 self.gc_status.store(Some(new_status.clone()));
                 last_gc_status = Some(new_status);
             }

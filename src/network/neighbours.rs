@@ -2,13 +2,13 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crate::set_metrics;
 use anyhow::Result;
 use everscale_network::{adnl, dht, overlay};
 use tokio::sync::Semaphore;
 
 use super::neighbour::*;
 use super::neighbours_cache::*;
+use crate::set_metrics;
 use crate::utils::FastDashSet;
 
 pub struct Neighbours {
@@ -91,9 +91,11 @@ impl Neighbours {
             start: Instant::now(),
         });
         {
-            let this = this.clone();
+            let this = Arc::downgrade(&this);
             tokio::spawn(async move {
-                this.metrics_update_loop().await;
+                while let Some(this) = this.upgrade() {
+                    this.metrics_update_loop().await;
+                }
             });
         }
         this
@@ -213,10 +215,8 @@ impl Neighbours {
     }
 
     async fn metrics_update_loop(&self) {
-        loop {
-            set_metrics!("neighbours_peers_count" => self.len() as i64);
-            tokio::time::sleep(Duration::from_secs(5)).await;
-        }
+        set_metrics!("neighbours_peers_count" => self.len() as i64);
+        tokio::time::sleep(Duration::from_secs(5)).await;
     }
 
     pub fn add(&self, peer_id: adnl::NodeIdShort) -> bool {

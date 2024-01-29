@@ -97,56 +97,55 @@ impl NodeNetwork {
         });
 
         {
-            let node_network = node_network.clone();
+            let node_network = Arc::downgrade(&node_network);
             tokio::spawn(async move {
-                node_network.metrics_update_loop().await;
+                while let Some(node_network) = node_network.upgrade() {
+                    node_network.metrics_update_step().await;
+                }
             });
         }
 
         Ok(node_network)
     }
-
-    async fn metrics_update_loop(&self) {
+    async fn metrics_update_step(&self) {
         const OVERLAY_ID: &str = "overlay_id";
 
-        loop {
-            let adnl_metrics = self.adnl.metrics();
-            let dht_metrics = self.dht.metrics();
-            let rldp_metrics = self.rldp.metrics();
+        let adnl_metrics = self.adnl.metrics();
+        let dht_metrics = self.dht.metrics();
+        let rldp_metrics = self.rldp.metrics();
 
-            set_metrics!(
-                // ADNL Metrics
-                "network_adnl_peer_count" => adnl_metrics.peer_count,
-                "network_adnl_channels_by_id_len" => adnl_metrics.channels_by_id_len,
-                "network_adnl_channels_by_peers_len" => adnl_metrics.channels_by_peers_len,
-                "network_adnl_incoming_transfers_len" => adnl_metrics.incoming_transfers_len,
-                "network_adnl_query_count" => adnl_metrics.query_count,
-                // DHT Metrics
-                "network_dht_peers_cache_len" => dht_metrics.known_peers_len,
-                "network_dht_bucket_peer_count" => dht_metrics.bucket_peer_count,
-                "network_dht_storage_len" => dht_metrics.storage_len,
-                "network_dht_storage_total_size" => dht_metrics.storage_total_size,
-                // RLDP Metrics
-                "network_rldp_peer_count" => rldp_metrics.peer_count,
-                "network_rldp_transfers_cache_len" => rldp_metrics.transfers_cache_len,
+        set_metrics!(
+            // ADNL Metrics
+            "network_adnl_peer_count" => adnl_metrics.peer_count,
+            "network_adnl_channels_by_id_len" => adnl_metrics.channels_by_id_len,
+            "network_adnl_channels_by_peers_len" => adnl_metrics.channels_by_peers_len,
+            "network_adnl_incoming_transfers_len" => adnl_metrics.incoming_transfers_len,
+            "network_adnl_query_count" => adnl_metrics.query_count,
+            // DHT Metrics
+            "network_dht_peers_cache_len" => dht_metrics.known_peers_len,
+            "network_dht_bucket_peer_count" => dht_metrics.bucket_peer_count,
+            "network_dht_storage_len" => dht_metrics.storage_len,
+            "network_dht_storage_total_size" => dht_metrics.storage_total_size,
+            // RLDP Metrics
+            "network_rldp_peer_count" => rldp_metrics.peer_count,
+            "network_rldp_transfers_cache_len" => rldp_metrics.transfers_cache_len,
+        );
+        for (overlay_id, overlay_metrics) in self.overlay_metrics() {
+            let overlay_id = base64::encode(overlay_id.as_slice());
+            let label = Label::new(OVERLAY_ID, overlay_id);
+
+            set_metrics_with_label!(label.clone();
+                "overlay_owned_broadcasts_len" => overlay_metrics.owned_broadcasts_len,
+                "overlay_finished_broadcasts_len" => overlay_metrics.finished_broadcasts_len,
+                "overlay_node_count" => overlay_metrics.node_count,
+                "overlay_known_peers_len" => overlay_metrics.known_peers,
+                "overlay_neighbours" => overlay_metrics.neighbours,
+                "overlay_received_broadcasts_data_len" => overlay_metrics.received_broadcasts_data_len,
+                "overlay_received_broadcasts_barrier_count" => overlay_metrics.received_broadcasts_barrier_count
             );
-            for (overlay_id, overlay_metrics) in self.overlay_metrics() {
-                let overlay_id = base64::encode(overlay_id.as_slice());
-                let label = Label::new(OVERLAY_ID, overlay_id);
-
-                set_metrics_with_label!(label.clone();
-                    "overlay_owned_broadcasts_len" => overlay_metrics.owned_broadcasts_len,
-                    "overlay_finished_broadcasts_len" => overlay_metrics.finished_broadcasts_len,
-                    "overlay_node_count" => overlay_metrics.node_count,
-                    "overlay_known_peers_len" => overlay_metrics.known_peers,
-                    "overlay_neighbours" => overlay_metrics.neighbours,
-                    "overlay_received_broadcasts_data_len" => overlay_metrics.received_broadcasts_data_len,
-                    "overlay_received_broadcasts_barrier_count" => overlay_metrics.received_broadcasts_barrier_count
-                );
-            }
-
-            tokio::time::sleep(Duration::from_secs(5)).await;
         }
+
+        tokio::time::sleep(Duration::from_secs(2)).await;
     }
 
     pub fn adnl(&self) -> &Arc<adnl::Node> {

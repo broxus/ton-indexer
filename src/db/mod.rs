@@ -124,10 +124,12 @@ impl Db {
             inner,
         });
         {
-            let this = this.clone();
+            let this = Arc::downgrade(&this);
             tokio::spawn(async move {
-                if let Err(e) = this.memory_usage_update_loop().await {
-                    tracing::error!("Failed to update memory usage stats: {}", e);
+                while let Some(this) = this.upgrade() {
+                    if let Err(e) = this.rocksdb_usage_stats().await {
+                        tracing::error!("Failed to update memory usage stats: {}", e);
+                    }
                 }
             });
         }
@@ -139,21 +141,21 @@ impl Db {
         self.inner.raw()
     }
 
-    async fn memory_usage_update_loop(&self) -> Result<RocksdbStats> {
-        loop {
-            let RocksdbStats {
-                whole_db_stats,
-                block_cache_usage,
-                block_cache_pined_usage,
-            } = self.inner.get_memory_usage_stats()?;
-            set_metrics!(
+    async fn rocksdb_usage_stats(&self) -> Result<()> {
+        let RocksdbStats {
+            whole_db_stats,
+            block_cache_usage,
+            block_cache_pined_usage,
+        } = self.inner.get_memory_usage_stats()?;
+
+        set_metrics!(
                 "rocksdb_block_cache_usage_bytes" => block_cache_usage,
                 "rocksdb_block_cache_pined_usage_bytes" => block_cache_pined_usage,
                 "rocksdb_memtable_total_size_bytes" => whole_db_stats.mem_table_total,
                 "rocksdb_memtable_unflushed_size_bytes" => whole_db_stats.mem_table_unflushed,
                 "rocksdb_memtable_cache_bytes" => whole_db_stats.cache_total);
-            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-        }
+        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+        Ok(())
     }
 
     pub async fn delay_compaction(&self) -> tokio::sync::RwLockReadGuard<'_, ()> {
