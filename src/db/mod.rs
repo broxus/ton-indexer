@@ -10,6 +10,7 @@ pub use weedb::Stats as RocksdbStats;
 pub use weedb::{rocksdb, BoundedCfHandle, ColumnFamily, Table};
 
 use crate::config::DbOptions;
+use crate::utils::spawn_metrics_loop;
 
 pub mod refcount;
 pub mod tables;
@@ -124,24 +125,11 @@ impl Db {
             inner,
         });
 
-        {
-            // RocksDB metrics update loop
-            const UPDATE_INTERVAL: Duration = Duration::from_secs(5);
-
-            let this = Arc::downgrade(&this);
-            tokio::spawn(async move {
-                let mut interval = tokio::time::interval(UPDATE_INTERVAL);
-                loop {
-                    interval.tick().await;
-                    let Some(this) = this.upgrade() else {
-                        break;
-                    };
-                    if let Err(e) = this.update_metrics() {
-                        tracing::error!("Failed to update memory usage stats: {}", e);
-                    }
-                }
-            });
-        }
+        spawn_metrics_loop(&this, Duration::from_secs(5), |this| async move {
+            if let Err(e) = this.update_metrics() {
+                tracing::error!("Failed to update memory usage stats: {}", e);
+            }
+        });
 
         Ok(this)
     }

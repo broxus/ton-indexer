@@ -8,7 +8,7 @@ use tokio::sync::Semaphore;
 
 use super::neighbour::*;
 use super::neighbours_cache::*;
-use crate::utils::FastDashSet;
+use crate::utils::{spawn_metrics_loop, FastDashSet};
 
 pub struct Neighbours {
     dht: Arc<dht::Node>,
@@ -90,30 +90,13 @@ impl Neighbours {
             start: Instant::now(),
         });
 
-        {
-            // Neighbours metrics update loop
-            const UPDATE_INTERVAL: Duration = Duration::from_secs(5);
-
-            let this = Arc::downgrade(&this);
-            tokio::spawn(async move {
-                let mut interval = tokio::time::interval(UPDATE_INTERVAL);
-                loop {
-                    interval.tick().await;
-                    let Some(this) = this.upgrade() else {
-                        break;
-                    };
-                    this.update_metrics();
-                }
-            });
-        }
+        spawn_metrics_loop(&this, Duration::from_secs(5), |this| async move {
+            crate::set_metrics! {
+                "neighbours_peers_count" => this.len() as i64,
+            }
+        });
 
         this
-    }
-
-    fn update_metrics(&self) {
-        crate::set_metrics! {
-            "neighbours_peers_count" => self.len() as i64,
-        }
     }
 
     pub fn options(&self) -> &NeighboursOptions {

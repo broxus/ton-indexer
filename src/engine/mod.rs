@@ -193,36 +193,19 @@ impl Engine {
             metrics: Arc::new(Default::default()),
         });
 
-        {
-            // Engine metrics update loop
-            const UPDATE_INTERVAL: Duration = Duration::from_secs(5);
-
-            let this = Arc::downgrade(&this);
-            tokio::spawn(async move {
-                let mut interval = tokio::time::interval(UPDATE_INTERVAL);
-                loop {
-                    interval.tick().await;
-                    let Some(this) = this.upgrade() else {
-                        break;
-                    };
-                    this.update_metrics();
-                }
-            });
-        }
+        spawn_metrics_loop(&this, Duration::from_secs(5), |this| async move {
+            let metrics = this.metrics();
+            crate::set_metrics! {
+                "ton_indexer_mc_time_diff" => metrics.mc_time_diff.load(Ordering::Acquire),
+                "ton_indexer_sc_time_diff" => metrics.shard_client_time_diff.load(Ordering::Acquire),
+                "ton_indexer_last_mc_utime" => metrics.last_mc_utime.load(Ordering::Acquire),
+                "ton_indexer_last_mc_block_seqno" => metrics.last_mc_block_seqno.load(Ordering::Acquire),
+                "ton_indexer_last_sc_block_seqno" => metrics.last_shard_client_mc_block_seqno.load(Ordering::Acquire),
+                "ton_indexer_last_shard_client_mc_block_utime" => metrics.last_shard_client_mc_block_utime.load(Ordering::Acquire),
+            }
+        });
 
         Ok(this)
-    }
-
-    fn update_metrics(&self) {
-        let metrics = self.metrics();
-        crate::set_metrics! {
-            "ton_indexer_mc_time_diff" => metrics.mc_time_diff.load(Ordering::Acquire),
-            "ton_indexer_sc_time_diff" => metrics.shard_client_time_diff.load(Ordering::Acquire),
-            "ton_indexer_last_mc_utime" => metrics.last_mc_utime.load(Ordering::Acquire),
-            "ton_indexer_last_mc_block_seqno" => metrics.last_mc_block_seqno.load(Ordering::Acquire),
-            "ton_indexer_last_sc_block_seqno" => metrics.last_shard_client_mc_block_seqno.load(Ordering::Acquire),
-            "ton_indexer_last_shard_client_mc_block_utime" => metrics.last_shard_client_mc_block_utime.load(Ordering::Acquire),
-        }
     }
 
     pub async fn start(self: &Arc<Self>) -> Result<()> {

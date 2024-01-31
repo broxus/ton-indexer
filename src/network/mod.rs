@@ -19,7 +19,7 @@ pub use self::neighbour::Neighbour;
 use self::neighbours::Neighbours;
 pub use self::neighbours::NeighboursOptions;
 pub use self::overlay_client::OverlayClient;
-use crate::utils::FastDashMap;
+use crate::utils::{spawn_metrics_loop, FastDashMap};
 
 mod neighbour;
 mod neighbours;
@@ -94,22 +94,9 @@ impl NodeNetwork {
             working_state,
         });
 
-        {
-            // Network metrics update loop
-            const UPDATE_INTERVAL: Duration = Duration::from_secs(2);
-
-            let this = Arc::downgrade(&this);
-            tokio::spawn(async move {
-                let mut interval = tokio::time::interval(UPDATE_INTERVAL);
-                loop {
-                    interval.tick().await;
-                    let Some(this) = this.upgrade() else {
-                        break;
-                    };
-                    this.update_metrics();
-                }
-            });
-        }
+        spawn_metrics_loop(&this, Duration::from_secs(2), |this| async move {
+            this.update_metrics();
+        });
 
         Ok(this)
     }

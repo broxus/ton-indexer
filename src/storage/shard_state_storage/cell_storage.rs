@@ -12,7 +12,7 @@ use ton_types::{ByteOrderRead, CellImpl, UInt256};
 use triomphe::ThinArc;
 
 use crate::db::*;
-use crate::utils::{CellExt, FastDashMap, FastHashMap, FastHasherState};
+use crate::utils::{spawn_metrics_loop, CellExt, FastDashMap, FastHashMap, FastHasherState};
 
 pub struct CellStorage {
     db: Arc<Db>,
@@ -31,34 +31,17 @@ impl CellStorage {
             raw_cells_cache,
         });
 
-        {
-            // Cell storage metrics update loop
-            const UPDATE_INTERVAL: Duration = Duration::from_secs(5);
-
-            let this = Arc::downgrade(&this);
-            tokio::spawn(async move {
-                let mut interval = tokio::time::interval(UPDATE_INTERVAL);
-                loop {
-                    interval.tick().await;
-                    let Some(this) = this.upgrade() else {
-                        break;
-                    };
-                    this.update_metrics();
-                }
-            });
-        }
+        spawn_metrics_loop(&this, Duration::from_secs(5), |this| async move {
+            crate::set_metrics! {
+                "cells_cache_hits" => this.raw_cells_cache.0.hits(),
+                "cells_cache_requests" => this.raw_cells_cache.0.misses() + this.raw_cells_cache.0.hits(),
+                "cells_cache_occupied" => this.raw_cells_cache.0.len() ,
+                "cells_cache_size_bytes" => this.raw_cells_cache.0.weight(),
+                "cells_cache_hits_ratio" => this.raw_cells_cache.hit_ratio(),
+            }
+        });
 
         this
-    }
-
-    fn update_metrics(&self) {
-        crate::set_metrics! {
-            "cells_cache_hits" => self.raw_cells_cache.0.hits(),
-            "cells_cache_requests" => self.raw_cells_cache.0.misses() + self.raw_cells_cache.0.hits(),
-            "cells_cache_occupied" => self.raw_cells_cache.0.len() ,
-            "cells_cache_size_bytes" => self.raw_cells_cache.0.weight(),
-            "cells_cache_hits_ratio" => self.raw_cells_cache.hit_ratio(),
-        }
     }
 
     pub fn store_cell(

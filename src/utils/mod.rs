@@ -14,11 +14,14 @@ pub use stored_value::*;
 pub use top_blocks::*;
 pub use with_archive_data::*;
 
+pub(crate) use self::metrics::*;
+
 mod archive_package;
 mod block;
 mod block_proof;
 mod macros;
 mod mapped_file;
+mod metrics;
 mod operations_pool;
 mod package_entry_id;
 mod progress_bar;
