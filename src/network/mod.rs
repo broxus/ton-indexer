@@ -21,8 +21,6 @@ pub use self::neighbours::NeighboursOptions;
 pub use self::overlay_client::OverlayClient;
 use crate::utils::FastDashMap;
 
-use crate::{set_metrics, set_metrics_with_label};
-
 mod neighbour;
 mod neighbours;
 mod neighbours_cache;
@@ -84,7 +82,7 @@ impl NodeNetwork {
         tracing::info!(local_id = %overlay_key.id(), "created overlay node");
         start_broadcasting_our_ip(working_state.clone(), dht.clone(), overlay_key);
 
-        let node_network = Arc::new(NodeNetwork {
+        let this = Arc::new(NodeNetwork {
             adnl,
             dht,
             overlay,
@@ -97,24 +95,31 @@ impl NodeNetwork {
         });
 
         {
-            let node_network = Arc::downgrade(&node_network);
+            // Network metrics update loop
+            const UPDATE_INTERVAL: Duration = Duration::from_secs(2);
+
+            let this = Arc::downgrade(&this);
             tokio::spawn(async move {
-                while let Some(node_network) = node_network.upgrade() {
-                    node_network.metrics_update_step().await;
+                let mut interval = tokio::time::interval(UPDATE_INTERVAL);
+                loop {
+                    interval.tick().await;
+                    let Some(this) = this.upgrade() else {
+                        break;
+                    };
+                    this.update_metrics();
                 }
             });
         }
 
-        Ok(node_network)
+        Ok(this)
     }
-    async fn metrics_update_step(&self) {
-        const OVERLAY_ID: &str = "overlay_id";
 
+    fn update_metrics(&self) {
         let adnl_metrics = self.adnl.metrics();
         let dht_metrics = self.dht.metrics();
         let rldp_metrics = self.rldp.metrics();
 
-        set_metrics!(
+        crate::set_metrics! {
             // ADNL Metrics
             "network_adnl_peer_count" => adnl_metrics.peer_count,
             "network_adnl_channels_by_id_len" => adnl_metrics.channels_by_id_len,
@@ -129,12 +134,13 @@ impl NodeNetwork {
             // RLDP Metrics
             "network_rldp_peer_count" => rldp_metrics.peer_count,
             "network_rldp_transfers_cache_len" => rldp_metrics.transfers_cache_len,
-        );
+        }
+
         for (overlay_id, overlay_metrics) in self.overlay_metrics() {
             let overlay_id = base64::encode(overlay_id.as_slice());
-            let label = Label::new(OVERLAY_ID, overlay_id);
+            let label = Label::new("overlay_id", overlay_id);
 
-            set_metrics_with_label!(label.clone();
+            crate::set_metrics_with_label!(label.clone(), {
                 "overlay_owned_broadcasts_len" => overlay_metrics.owned_broadcasts_len,
                 "overlay_finished_broadcasts_len" => overlay_metrics.finished_broadcasts_len,
                 "overlay_node_count" => overlay_metrics.node_count,
@@ -142,10 +148,8 @@ impl NodeNetwork {
                 "overlay_neighbours" => overlay_metrics.neighbours,
                 "overlay_received_broadcasts_data_len" => overlay_metrics.received_broadcasts_data_len,
                 "overlay_received_broadcasts_barrier_count" => overlay_metrics.received_broadcasts_barrier_count
-            );
+            });
         }
-
-        tokio::time::sleep(Duration::from_secs(2)).await;
     }
 
     pub fn adnl(&self) -> &Arc<adnl::Node> {

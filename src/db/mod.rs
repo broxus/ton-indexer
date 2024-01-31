@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use bytesize::ByteSize;
@@ -9,7 +10,6 @@ pub use weedb::Stats as RocksdbStats;
 pub use weedb::{rocksdb, BoundedCfHandle, ColumnFamily, Table};
 
 use crate::config::DbOptions;
-use crate::set_metrics;
 
 pub mod refcount;
 pub mod tables;
@@ -123,39 +123,49 @@ impl Db {
             compaction_lock: tokio::sync::RwLock::default(),
             inner,
         });
+
         {
+            // RocksDB metrics update loop
+            const UPDATE_INTERVAL: Duration = Duration::from_secs(5);
+
             let this = Arc::downgrade(&this);
             tokio::spawn(async move {
-                while let Some(this) = this.upgrade() {
-                    if let Err(e) = this.rocksdb_usage_stats().await {
+                let mut interval = tokio::time::interval(UPDATE_INTERVAL);
+                loop {
+                    interval.tick().await;
+                    let Some(this) = this.upgrade() else {
+                        break;
+                    };
+                    if let Err(e) = this.update_metrics() {
                         tracing::error!("Failed to update memory usage stats: {}", e);
                     }
                 }
             });
         }
+
         Ok(this)
     }
 
-    #[inline]
-    pub fn raw(&self) -> &Arc<rocksdb::DB> {
-        self.inner.raw()
-    }
-
-    async fn rocksdb_usage_stats(&self) -> Result<()> {
+    fn update_metrics(&self) -> Result<()> {
         let RocksdbStats {
             whole_db_stats,
             block_cache_usage,
             block_cache_pined_usage,
         } = self.inner.get_memory_usage_stats()?;
 
-        set_metrics!(
-                "rocksdb_block_cache_usage_bytes" => block_cache_usage,
-                "rocksdb_block_cache_pined_usage_bytes" => block_cache_pined_usage,
-                "rocksdb_memtable_total_size_bytes" => whole_db_stats.mem_table_total,
-                "rocksdb_memtable_unflushed_size_bytes" => whole_db_stats.mem_table_unflushed,
-                "rocksdb_memtable_cache_bytes" => whole_db_stats.cache_total);
-        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+        crate::set_metrics! {
+            "rocksdb_block_cache_usage_bytes" => block_cache_usage,
+            "rocksdb_block_cache_pined_usage_bytes" => block_cache_pined_usage,
+            "rocksdb_memtable_total_size_bytes" => whole_db_stats.mem_table_total,
+            "rocksdb_memtable_unflushed_size_bytes" => whole_db_stats.mem_table_unflushed,
+            "rocksdb_memtable_cache_bytes" => whole_db_stats.cache_total,
+        }
         Ok(())
+    }
+
+    #[inline]
+    pub fn raw(&self) -> &Arc<rocksdb::DB> {
+        self.inner.raw()
     }
 
     pub async fn delay_compaction(&self) -> tokio::sync::RwLockReadGuard<'_, ()> {

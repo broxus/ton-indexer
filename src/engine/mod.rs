@@ -165,7 +165,7 @@ impl Engine {
 
         tracing::info!("network started");
 
-        Ok(Arc::new(Self {
+        let this = Arc::new(Self {
             is_working: AtomicBool::new(true),
             db,
             storage,
@@ -191,20 +191,43 @@ impl Engine {
             download_block_operations: OperationsPool::new("download_block_operations"),
             shard_states_cache: ShardStateCache::new(config.shard_state_cache_options),
             metrics: Arc::new(Default::default()),
-        }))
+        });
+
+        {
+            // Engine metrics update loop
+            const UPDATE_INTERVAL: Duration = Duration::from_secs(5);
+
+            let this = Arc::downgrade(&this);
+            tokio::spawn(async move {
+                let mut interval = tokio::time::interval(UPDATE_INTERVAL);
+                loop {
+                    interval.tick().await;
+                    let Some(this) = this.upgrade() else {
+                        break;
+                    };
+                    this.update_metrics();
+                }
+            });
+        }
+
+        Ok(this)
+    }
+
+    fn update_metrics(&self) {
+        let metrics = self.metrics();
+        crate::set_metrics! {
+            "ton_indexer_mc_time_diff" => metrics.mc_time_diff.load(Ordering::Acquire),
+            "ton_indexer_sc_time_diff" => metrics.shard_client_time_diff.load(Ordering::Acquire),
+            "ton_indexer_last_mc_utime" => metrics.last_mc_utime.load(Ordering::Acquire),
+            "ton_indexer_last_mc_block_seqno" => metrics.last_mc_block_seqno.load(Ordering::Acquire),
+            "ton_indexer_last_sc_block_seqno" => metrics.last_shard_client_mc_block_seqno.load(Ordering::Acquire),
+            "ton_indexer_last_shard_client_mc_block_utime" => metrics.last_shard_client_mc_block_utime.load(Ordering::Acquire),
+        }
     }
 
     pub async fn start(self: &Arc<Self>) -> Result<()> {
         // Start full node overlay service
         let service: Arc<NodeRpcServer> = NodeRpcServer::new(self);
-        {
-            let this = Arc::downgrade(self);
-            tokio::spawn(async move {
-                while let Some(this) = this.upgrade() {
-                    this.metrics_update_step().await;
-                }
-            });
-        }
         self.network
             .add_subscriber(ton_block::MASTERCHAIN_ID, service.clone());
         self.network
@@ -697,22 +720,6 @@ impl Engine {
 
     pub fn metrics(&self) -> &Arc<EngineMetrics> {
         &self.metrics
-    }
-
-    async fn metrics_update_step(&self) {
-        use crate::set_metrics;
-
-        let metrics = self.metrics();
-        set_metrics!(
-            "ton_indexer_mc_time_diff" => metrics.mc_time_diff.load(Ordering::Acquire),
-            "ton_indexer_sc_time_diff" => metrics.shard_client_time_diff.load(Ordering::Acquire),
-            "ton_indexer_last_mc_utime" => metrics.last_mc_utime.load(Ordering::Acquire),
-            "ton_indexer_last_mc_block_seqno" => metrics.last_mc_block_seqno.load(Ordering::Acquire),
-            "ton_indexer_last_sc_block_seqno" => metrics.last_shard_client_mc_block_seqno.load(Ordering::Acquire),
-            "ton_indexer_last_shard_client_mc_block_utime" => metrics.last_shard_client_mc_block_utime.load(Ordering::Acquire),
-        );
-
-        tokio::time::sleep(Duration::from_secs(1)).await;
     }
 
     pub fn network_overlay_metrics(

@@ -1,6 +1,7 @@
 use std::collections::hash_map;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Weak};
+use std::time::Duration;
 
 use anyhow::Result;
 use bumpalo::Bump;
@@ -11,7 +12,6 @@ use ton_types::{ByteOrderRead, CellImpl, UInt256};
 use triomphe::ThinArc;
 
 use crate::db::*;
-use crate::set_metrics;
 use crate::utils::{CellExt, FastDashMap, FastHashMap, FastHasherState};
 
 pub struct CellStorage {
@@ -30,15 +30,35 @@ impl CellStorage {
             cells_cache,
             raw_cells_cache,
         });
+
         {
+            // Cell storage metrics update loop
+            const UPDATE_INTERVAL: Duration = Duration::from_secs(5);
+
             let this = Arc::downgrade(&this);
             tokio::spawn(async move {
-                while let Some(this) = this.upgrade() {
-                    this.cache_stats_update_step().await
+                let mut interval = tokio::time::interval(UPDATE_INTERVAL);
+                loop {
+                    interval.tick().await;
+                    let Some(this) = this.upgrade() else {
+                        break;
+                    };
+                    this.update_metrics();
                 }
             });
         }
+
         this
+    }
+
+    fn update_metrics(&self) {
+        crate::set_metrics! {
+            "cells_cache_hits" => self.raw_cells_cache.0.hits(),
+            "cells_cache_requests" => self.raw_cells_cache.0.misses() + self.raw_cells_cache.0.hits(),
+            "cells_cache_occupied" => self.raw_cells_cache.0.len() ,
+            "cells_cache_size_bytes" => self.raw_cells_cache.0.weight(),
+            "cells_cache_hits_ratio" => self.raw_cells_cache.hit_ratio(),
+        }
     }
 
     pub fn store_cell(
@@ -307,17 +327,6 @@ impl CellStorage {
 
     pub fn drop_cell(&self, hash: &UInt256) {
         self.cells_cache.remove(hash);
-    }
-
-    async fn cache_stats_update_step(&self) {
-        set_metrics! {
-            "cells_cache_hits" => self.raw_cells_cache.0.hits(),
-            "cells_cache_requests" => self.raw_cells_cache.0.misses() + self.raw_cells_cache.0.hits(),
-            "cells_cache_occupied" => self.raw_cells_cache.0.len() ,
-            "cells_cache_size_bytes" => self.raw_cells_cache.0.weight(),
-            "cells_cache_hits_ratio" => self.raw_cells_cache.hit_ratio(),
-        }
-        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
     }
 }
 
