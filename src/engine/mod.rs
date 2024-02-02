@@ -13,7 +13,6 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use broxus_util::now;
 use everscale_network::overlay;
-use serde::{Deserialize, Serialize};
 use tokio::sync::{Notify, Semaphore};
 
 use global_config::GlobalConfig;
@@ -166,7 +165,7 @@ impl Engine {
 
         tracing::info!("network started");
 
-        Ok(Arc::new(Self {
+        let this = Arc::new(Self {
             is_working: AtomicBool::new(true),
             db,
             storage,
@@ -192,13 +191,26 @@ impl Engine {
             download_block_operations: OperationsPool::new("download_block_operations"),
             shard_states_cache: ShardStateCache::new(config.shard_state_cache_options),
             metrics: Arc::new(Default::default()),
-        }))
+        });
+
+        spawn_metrics_loop(&this, Duration::from_secs(5), |this| async move {
+            let metrics = this.metrics();
+            crate::set_metrics! {
+                "ton_indexer_mc_time_diff" => metrics.mc_time_diff.load(Ordering::Acquire),
+                "ton_indexer_sc_time_diff" => metrics.shard_client_time_diff.load(Ordering::Acquire),
+                "ton_indexer_last_mc_utime" => metrics.last_mc_utime.load(Ordering::Acquire),
+                "ton_indexer_last_mc_block_seqno" => metrics.last_mc_block_seqno.load(Ordering::Acquire),
+                "ton_indexer_last_sc_block_seqno" => metrics.last_shard_client_mc_block_seqno.load(Ordering::Acquire),
+                "ton_indexer_last_shard_client_mc_block_utime" => metrics.last_shard_client_mc_block_utime.load(Ordering::Acquire),
+            }
+        });
+
+        Ok(this)
     }
 
     pub async fn start(self: &Arc<Self>) -> Result<()> {
         // Start full node overlay service
         let service: Arc<NodeRpcServer> = NodeRpcServer::new(self);
-
         self.network
             .add_subscriber(ton_block::MASTERCHAIN_ID, service.clone());
         self.network
@@ -627,12 +639,14 @@ impl Engine {
                 };
                 let subscriber = engine.subscriber.as_ref();
 
+                let start = Instant::now();
                 let mut shards_gc_lock = engine
                     .storage
                     .runtime_storage()
                     .persistent_state_keeper()
                     .shards_gc_lock()
                     .subscribe();
+                metrics::histogram!("shard_states_gc_lock_time").record(start.elapsed());
 
                 let block_id = loop {
                     // Load the latest block id
@@ -687,37 +701,8 @@ impl Engine {
         self.is_working.load(Ordering::Acquire)
     }
 
-    pub fn get_db_metrics(&self) -> DbMetrics {
-        self.storage.metrics()
-    }
-
-    pub fn get_memory_usage_stats(&self) -> Result<RocksdbStats> {
-        self.db.get_memory_usage_stats()
-    }
-
     pub fn metrics(&self) -> &Arc<EngineMetrics> {
         &self.metrics
-    }
-
-    pub fn internal_metrics(&self) -> InternalEngineMetrics {
-        InternalEngineMetrics {
-            shard_states_cache_len: self.shard_states_cache.len(),
-            shard_states_operations_len: self.shard_states_operations.len(),
-            block_applying_operations_len: self.block_applying_operations.len(),
-            next_block_applying_operations_len: self.next_block_applying_operations.len(),
-            download_block_operations_len: self.download_block_operations.len(),
-            cells_cache_stats: self.storage.cells_cache_stats(),
-        }
-    }
-
-    pub fn network_metrics(&self) -> NetworkMetrics {
-        self.network.metrics()
-    }
-
-    pub fn network_neighbour_metrics(
-        &self,
-    ) -> impl Iterator<Item = (overlay::IdShort, NeighboursMetrics)> + '_ {
-        self.network.neighbour_metrics()
     }
 
     pub fn network_overlay_metrics(
@@ -758,22 +743,12 @@ impl Engine {
                     Ok(block) => block,
                     Err(_) => continue,
                 };
-
-                engine
-                    .metrics
-                    .block_broadcasts
-                    .total
-                    .fetch_add(1, Ordering::Relaxed);
+                metrics::counter!("block_broadcasts_total");
 
                 let engine = engine.clone();
                 tokio::spawn(async move {
                     if let Err(e) = process_block_broadcast(&engine, block).await {
-                        engine
-                            .metrics
-                            .block_broadcasts
-                            .invalid
-                            .fetch_add(1, Ordering::Relaxed);
-
+                        metrics::counter!("block_broadcasts_invalid");
                         tracing::error!("failed to process block broadcast: {e:?}");
                     }
                 });
@@ -813,7 +788,7 @@ impl Engine {
                     max: 3000,
                     multiplier: 1.2,
                 }),
-                None,
+                MetricsEmitter::Disabled,
             )
             .download()
             .await?;
@@ -850,7 +825,7 @@ impl Engine {
                 max: 1000,
                 multiplier: 1.1,
             }),
-            Some(&self.metrics.download_next_block_requests),
+            MetricsEmitter::named("download_next_masterchain_block"),
         )
         .download()
         .await
@@ -906,7 +881,7 @@ impl Engine {
             block_id,
             max_attempts,
             None,
-            Some(&self.metrics.download_block_proof_requests),
+            MetricsEmitter::named("download_block_proof"),
         )
         .with_explicit_neighbour(neighbour)
         .download()
@@ -1501,7 +1476,7 @@ impl Engine {
             block_id,
             max_attempts,
             timeouts,
-            Some(&self.metrics.download_block_requests),
+            MetricsEmitter::named("download_block"),
         )
         .download()
         .await
@@ -1509,12 +1484,12 @@ impl Engine {
 
     fn create_download_context<'a, T>(
         &'a self,
-        name: &'a str,
+        name: &'static str,
         downloader: Arc<dyn Downloader<Item = T>>,
         block_id: &'a ton_block::BlockIdExt,
         max_attempts: Option<u32>,
         timeouts: Option<DownloaderTimeouts>,
-        counters: Option<&'a DownloaderCounters>,
+        metrics_emitter: MetricsEmitter,
     ) -> DownloadContext<'a, T> {
         DownloadContext {
             name,
@@ -1525,7 +1500,7 @@ impl Engine {
             storage: self.storage.as_ref(),
             downloader,
             explicit_neighbour: None,
-            counters,
+            metrics_emitter,
         }
     }
 }
@@ -1707,27 +1682,12 @@ pub struct EngineMetrics {
     pub last_mc_utime: AtomicU32,
     pub mc_time_diff: AtomicI64,
     pub shard_client_time_diff: AtomicI64,
-
-    pub block_broadcasts: BlockBroadcastCounters,
-    pub download_next_block_requests: DownloaderCounters,
-    pub download_block_requests: DownloaderCounters,
-    pub download_block_proof_requests: DownloaderCounters,
 }
 
 #[derive(Debug, Default)]
 pub struct BlockBroadcastCounters {
     pub total: AtomicU64,
     pub invalid: AtomicU64,
-}
-
-#[derive(Debug, Default, Serialize, Deserialize, Clone, Copy)]
-pub struct InternalEngineMetrics {
-    pub shard_states_cache_len: usize,
-    pub shard_states_operations_len: usize,
-    pub block_applying_operations_len: usize,
-    pub next_block_applying_operations_len: usize,
-    pub download_block_operations_len: usize,
-    pub cells_cache_stats: CacheStats,
 }
 
 #[derive(thiserror::Error, Debug)]

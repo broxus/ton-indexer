@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -8,7 +8,7 @@ use tokio::sync::Semaphore;
 
 use super::neighbour::*;
 use super::neighbours_cache::*;
-use crate::utils::FastDashSet;
+use crate::utils::{spawn_metrics_loop, FastDashSet};
 
 pub struct Neighbours {
     dht: Arc<dht::Node>,
@@ -22,8 +22,6 @@ pub struct Neighbours {
     all_attempts: AtomicU64,
 
     start: Instant,
-
-    peer_search_task_count: Arc<AtomicUsize>,
 }
 
 #[derive(Debug, Copy, Clone, serde::Serialize, serde::Deserialize)]
@@ -81,7 +79,7 @@ impl Neighbours {
             NeighbourOptions::from(&options),
         ));
 
-        Arc::new(Self {
+        let this = Arc::new(Self {
             dht: dht.clone(),
             overlay: overlay.clone(),
             options,
@@ -90,8 +88,15 @@ impl Neighbours {
             failed_attempts: Default::default(),
             all_attempts: Default::default(),
             start: Instant::now(),
-            peer_search_task_count: Arc::new(Default::default()),
-        })
+        });
+
+        spawn_metrics_loop(&this, Duration::from_secs(5), |this| async move {
+            crate::set_metrics! {
+                "neighbours_peers_count" => this.len() as i64,
+            }
+        });
+
+        this
     }
 
     pub fn options(&self) -> &NeighboursOptions {
@@ -205,13 +210,6 @@ impl Neighbours {
     /// Returns neighbours cache len
     pub fn len(&self) -> usize {
         self.cache.len()
-    }
-
-    /// Instant neighbours metrics
-    pub fn metrics(&self) -> NeighboursMetrics {
-        NeighboursMetrics {
-            peer_search_task_count: self.peer_search_task_count.load(Ordering::Acquire),
-        }
     }
 
     pub fn add(&self, peer_id: adnl::NodeIdShort) -> bool {

@@ -14,10 +14,14 @@ pub use stored_value::*;
 pub use top_blocks::*;
 pub use with_archive_data::*;
 
+pub(crate) use self::metrics::*;
+
 mod archive_package;
 mod block;
 mod block_proof;
+mod macros;
 mod mapped_file;
+mod metrics;
 mod operations_pool;
 mod package_entry_id;
 mod progress_bar;
@@ -33,13 +37,3 @@ pub(crate) type FastHashMap<K, V> = HashMap<K, V, FastHasherState>;
 pub(crate) type FastDashSet<K> = dashmap::DashSet<K, FastHasherState>;
 pub(crate) type FastDashMap<K, V> = dashmap::DashMap<K, V, FastHasherState>;
 pub(crate) type FastHasherState = ahash::RandomState;
-
-#[derive(Default, Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
-pub struct CacheStats {
-    pub hits: u64,
-    pub misses: u64,
-    pub requests: u64,
-    pub occupied: u64,
-    pub hits_ratio: f64,
-    pub size_bytes: u64,
-}

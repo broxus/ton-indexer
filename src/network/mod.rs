@@ -12,13 +12,14 @@ use std::time::Duration;
 use anyhow::Result;
 use everscale_network::*;
 use global_config::*;
+use metrics::Label;
 use tokio_util::sync::CancellationToken;
 
 pub use self::neighbour::Neighbour;
 use self::neighbours::Neighbours;
-pub use self::neighbours::{NeighboursMetrics, NeighboursOptions};
+pub use self::neighbours::NeighboursOptions;
 pub use self::overlay_client::OverlayClient;
-use crate::utils::FastDashMap;
+use crate::utils::{spawn_metrics_loop, FastDashMap};
 
 mod neighbour;
 mod neighbours;
@@ -81,7 +82,7 @@ impl NodeNetwork {
         tracing::info!(local_id = %overlay_key.id(), "created overlay node");
         start_broadcasting_our_ip(working_state.clone(), dht.clone(), overlay_key);
 
-        let node_network = Arc::new(NodeNetwork {
+        let this = Arc::new(NodeNetwork {
             adnl,
             dht,
             overlay,
@@ -93,14 +94,48 @@ impl NodeNetwork {
             working_state,
         });
 
-        Ok(node_network)
+        spawn_metrics_loop(&this, Duration::from_secs(2), |this| async move {
+            this.update_metrics();
+        });
+
+        Ok(this)
     }
 
-    pub fn metrics(&self) -> NetworkMetrics {
-        NetworkMetrics {
-            adnl: self.adnl.metrics(),
-            dht: self.dht.metrics(),
-            rldp: self.rldp.metrics(),
+    fn update_metrics(&self) {
+        let adnl_metrics = self.adnl.metrics();
+        let dht_metrics = self.dht.metrics();
+        let rldp_metrics = self.rldp.metrics();
+
+        crate::set_metrics! {
+            // ADNL Metrics
+            "network_adnl_peer_count" => adnl_metrics.peer_count,
+            "network_adnl_channels_by_id_len" => adnl_metrics.channels_by_id_len,
+            "network_adnl_channels_by_peers_len" => adnl_metrics.channels_by_peers_len,
+            "network_adnl_incoming_transfers_len" => adnl_metrics.incoming_transfers_len,
+            "network_adnl_query_count" => adnl_metrics.query_count,
+            // DHT Metrics
+            "network_dht_peers_cache_len" => dht_metrics.known_peers_len,
+            "network_dht_bucket_peer_count" => dht_metrics.bucket_peer_count,
+            "network_dht_storage_len" => dht_metrics.storage_len,
+            "network_dht_storage_total_size" => dht_metrics.storage_total_size,
+            // RLDP Metrics
+            "network_rldp_peer_count" => rldp_metrics.peer_count,
+            "network_rldp_transfers_cache_len" => rldp_metrics.transfers_cache_len,
+        }
+
+        for (overlay_id, overlay_metrics) in self.overlay_metrics() {
+            let overlay_id = base64::encode(overlay_id.as_slice());
+            let label = Label::new("overlay_id", overlay_id);
+
+            crate::set_metrics_with_label!(label.clone(), {
+                "overlay_owned_broadcasts_len" => overlay_metrics.owned_broadcasts_len,
+                "overlay_finished_broadcasts_len" => overlay_metrics.finished_broadcasts_len,
+                "overlay_node_count" => overlay_metrics.node_count,
+                "overlay_known_peers_len" => overlay_metrics.known_peers,
+                "overlay_neighbours" => overlay_metrics.neighbours,
+                "overlay_received_broadcasts_data_len" => overlay_metrics.received_broadcasts_data_len,
+                "overlay_received_broadcasts_barrier_count" => overlay_metrics.received_broadcasts_barrier_count
+            });
         }
     }
 
@@ -118,14 +153,6 @@ impl NodeNetwork {
 
     pub fn dht(&self) -> &Arc<dht::Node> {
         &self.dht
-    }
-
-    pub fn neighbour_metrics(
-        &self,
-    ) -> impl Iterator<Item = (overlay::IdShort, NeighboursMetrics)> + '_ {
-        self.overlays
-            .iter()
-            .map(|item| (*item.key(), item.neighbours().metrics()))
     }
 
     pub fn overlay_metrics(

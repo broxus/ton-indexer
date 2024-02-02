@@ -208,8 +208,8 @@ pub struct StateGcOptions {
 impl Default for StateGcOptions {
     fn default() -> Self {
         Self {
-            offset_sec: rand::thread_rng().gen_range(0..900),
-            interval_sec: 900,
+            offset_sec: rand::thread_rng().gen_range(0..60),
+            interval_sec: 60,
         }
     }
 }

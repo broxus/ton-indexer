@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use bytesize::ByteSize;
@@ -9,6 +10,7 @@ pub use weedb::Stats as RocksdbStats;
 pub use weedb::{rocksdb, BoundedCfHandle, ColumnFamily, Table};
 
 use crate::config::DbOptions;
+use crate::utils::spawn_metrics_loop;
 
 pub mod refcount;
 pub mod tables;
@@ -107,7 +109,7 @@ impl Db {
 
         migrations::apply(&inner).context("Failed to apply migrations")?;
 
-        Ok(Arc::new(Self {
+        let this = Arc::new(Self {
             archives: inner.instantiate_table(),
             block_handles: inner.instantiate_table(),
             key_blocks: inner.instantiate_table(),
@@ -121,16 +123,37 @@ impl Db {
             next2: inner.instantiate_table(),
             compaction_lock: tokio::sync::RwLock::default(),
             inner,
-        }))
+        });
+
+        spawn_metrics_loop(&this, Duration::from_secs(5), |this| async move {
+            if let Err(e) = this.update_metrics() {
+                tracing::error!("Failed to update memory usage stats: {}", e);
+            }
+        });
+
+        Ok(this)
+    }
+
+    fn update_metrics(&self) -> Result<()> {
+        let RocksdbStats {
+            whole_db_stats,
+            block_cache_usage,
+            block_cache_pined_usage,
+        } = self.inner.get_memory_usage_stats()?;
+
+        crate::set_metrics! {
+            "rocksdb_block_cache_usage_bytes" => block_cache_usage,
+            "rocksdb_block_cache_pined_usage_bytes" => block_cache_pined_usage,
+            "rocksdb_memtable_total_size_bytes" => whole_db_stats.mem_table_total,
+            "rocksdb_memtable_unflushed_size_bytes" => whole_db_stats.mem_table_unflushed,
+            "rocksdb_memtable_cache_bytes" => whole_db_stats.cache_total,
+        }
+        Ok(())
     }
 
     #[inline]
     pub fn raw(&self) -> &Arc<rocksdb::DB> {
         self.inner.raw()
-    }
-
-    pub fn get_memory_usage_stats(&self) -> Result<RocksdbStats> {
-        self.inner.get_memory_usage_stats().map_err(From::from)
     }
 
     pub async fn delay_compaction(&self) -> tokio::sync::RwLockReadGuard<'_, ()> {

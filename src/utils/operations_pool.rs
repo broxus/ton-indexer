@@ -12,6 +12,7 @@ use crate::utils::FastDashMap;
 pub struct OperationsPool<K, R> {
     name: &'static str,
     operations: FastDashMap<K, Arc<Operation<R>>>,
+    gauge: metrics::Gauge,
 }
 
 impl<K, R> OperationsPool<K, R>
@@ -23,15 +24,12 @@ where
         Self {
             name,
             operations: FastDashMap::default(),
+            gauge: metrics::gauge!(format!("{}_len", name)),
         }
     }
 
     pub fn is_empty(&self) -> bool {
         self.operations.is_empty()
-    }
-
-    pub fn len(&self) -> usize {
-        self.operations.len()
     }
 
     pub async fn do_or_wait<O>(
@@ -125,6 +123,7 @@ where
                 }
                 _ => result_rx.changed().await,
             };
+            self.gauge.set(self.operations.len() as f64);
 
             if result.is_err() {
                 return Ok(None);

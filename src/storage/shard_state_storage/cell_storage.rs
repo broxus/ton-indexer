@@ -1,6 +1,7 @@
 use std::collections::hash_map;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Weak};
+use std::time::Duration;
 
 use anyhow::Result;
 use bumpalo::Bump;
@@ -11,7 +12,7 @@ use ton_types::{ByteOrderRead, CellImpl, UInt256};
 use triomphe::ThinArc;
 
 use crate::db::*;
-use crate::utils::{CacheStats, CellExt, FastDashMap, FastHashMap, FastHasherState};
+use crate::utils::{spawn_metrics_loop, CellExt, FastDashMap, FastHashMap, FastHasherState};
 
 pub struct CellStorage {
     db: Arc<Db>,
@@ -20,15 +21,27 @@ pub struct CellStorage {
 }
 
 impl CellStorage {
-    pub fn new(db: Arc<Db>, cache_size_bytes: u64) -> Result<Arc<Self>> {
+    pub fn new(db: Arc<Db>, cache_size_bytes: u64) -> Arc<Self> {
         let cells_cache = Default::default();
         let raw_cells_cache = RawCellsCache::new(cache_size_bytes);
 
-        Ok(Arc::new(Self {
+        let this = Arc::new(Self {
             db,
             cells_cache,
             raw_cells_cache,
-        }))
+        });
+
+        spawn_metrics_loop(&this, Duration::from_secs(5), |this| async move {
+            crate::set_metrics! {
+                "cells_cache_hits" => this.raw_cells_cache.0.hits(),
+                "cells_cache_requests" => this.raw_cells_cache.0.misses() + this.raw_cells_cache.0.hits(),
+                "cells_cache_occupied" => this.raw_cells_cache.0.len() ,
+                "cells_cache_size_bytes" => this.raw_cells_cache.0.weight(),
+                "cells_cache_hits_ratio" => this.raw_cells_cache.hit_ratio(),
+            }
+        });
+
+        this
     }
 
     pub fn store_cell(
@@ -298,27 +311,6 @@ impl CellStorage {
     pub fn drop_cell(&self, hash: &UInt256) {
         self.cells_cache.remove(hash);
     }
-
-    pub fn cache_stats(&self) -> CacheStats {
-        let hits = self.raw_cells_cache.0.hits();
-        let misses = self.raw_cells_cache.0.misses();
-        let occupied = self.raw_cells_cache.0.len() as u64;
-        let weight = self.raw_cells_cache.0.weight();
-
-        let hits_ratio = if hits > 0 {
-            hits as f64 / (hits + misses) as f64
-        } else {
-            0.0
-        } * 100.0;
-        CacheStats {
-            hits,
-            misses,
-            requests: hits + misses,
-            occupied,
-            hits_ratio,
-            size_bytes: weight,
-        }
-    }
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -499,6 +491,16 @@ enum StorageCellError {
 
 struct RawCellsCache(Cache<[u8; 32], RawCellsCacheItem, CellSizeEstimator, FastHasherState>);
 
+impl RawCellsCache {
+    pub(crate) fn hit_ratio(&self) -> f64 {
+        (if self.0.hits() > 0 {
+            self.0.hits() as f64 / (self.0.hits() + self.0.misses()) as f64
+        } else {
+            0.0
+        }) * 100.0
+    }
+}
+
 type RawCellsCacheItem = ThinArc<AtomicI64, u8>;
 
 #[derive(Clone, Copy)]
@@ -565,7 +567,7 @@ impl RawCellsCache {
         use quick_cache::GuardResult;
 
         match self.0.get_value_or_guard(key, None) {
-            GuardResult::Value(value) => return Ok(Some(value)),
+            GuardResult::Value(value) => Ok(Some(value)),
             GuardResult::Guard(g) => Ok(if let Some(value) = db.cells.get(key)? {
                 let (rc, data) = refcount::decode_value_with_rc(value.as_ref());
                 data.map(|value| {

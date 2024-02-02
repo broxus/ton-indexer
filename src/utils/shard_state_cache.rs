@@ -64,6 +64,7 @@ impl ShardStateCache {
     /// Removes all outdated elements from the cache before the top blocks
     pub fn remove(&self, top_blocks: &TopBlocks) {
         if let Some(map) = &self.map {
+            metrics::gauge!("shard_state_cache_size").set(map.len() as f64); // measuring worst case
             map.retain(|key, _| top_blocks.contains(key));
         }
     }
@@ -81,15 +82,6 @@ impl ShardStateCache {
             map.is_empty()
         } else {
             true
-        }
-    }
-
-    /// Returns number of elements in the cache
-    pub fn len(&self) -> usize {
-        if let Some(map) = &self.map {
-            map.len()
-        } else {
-            0
         }
     }
 }

@@ -14,7 +14,6 @@ use self::node_state_storage::*;
 use self::shard_state_storage::ShardStateStorage;
 use crate::db::Db;
 use crate::storage::persistent_state_storage::PersistentStateStorage;
-use crate::utils::CacheStats;
 
 mod models;
 
@@ -116,21 +115,6 @@ impl Storage {
     pub fn node_state(&self) -> &NodeStateStorage {
         &self.node_state_storage
     }
-
-    pub fn metrics(&self) -> DbMetrics {
-        DbMetrics {
-            shard_state_storage: self.shard_state_storage.metrics(),
-        }
-    }
-
-    pub fn cells_cache_stats(&self) -> CacheStats {
-        self.shard_state_storage.cache_metrics()
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct DbMetrics {
-    pub shard_state_storage: ShardStateStorageMetrics,
 }
 
 impl Drop for Storage {

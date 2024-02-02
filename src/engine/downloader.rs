@@ -3,8 +3,6 @@
 //! Changes:
 //! - replaced old `failure` crate with `anyhow`
 //!
-
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -161,7 +159,7 @@ pub struct DownloadContext<'a, T> {
     pub downloader: Arc<dyn Downloader<Item = T>>,
     pub explicit_neighbour: Option<&'a Arc<Neighbour>>,
 
-    pub counters: Option<&'a DownloaderCounters>,
+    pub metrics_emitter: MetricsEmitter,
 }
 
 impl<'a, T> DownloadContext<'a, T> {
@@ -177,22 +175,16 @@ impl<'a, T> DownloadContext<'a, T> {
         let mut attempt = 1;
         loop {
             let res = self.downloader.try_download(self).await;
-            if let Some(counters) = &self.counters {
-                counters.total.fetch_add(1, Ordering::Relaxed);
-            }
+            self.metrics_emitter.inc_total();
 
             match res {
                 Ok(Some(result)) => break Ok(result),
                 Ok(None) => {
-                    if let Some(counters) = &self.counters {
-                        counters.timeouts.fetch_add(1, Ordering::Relaxed);
-                    }
+                    self.metrics_emitter.inc_timeout();
                     tracing::debug!("got no data for {}", self.name)
                 }
                 Err(e) => {
-                    if let Some(counters) = &self.counters {
-                        counters.errors.fetch_add(1, Ordering::Relaxed);
-                    }
+                    self.metrics_emitter.inc_error();
                     self.explicit_neighbour = None;
                     tracing::debug!("error in {}: {e:?}", self.name)
                 }
@@ -221,18 +213,51 @@ pub struct DownloaderTimeouts {
     pub multiplier: f64,
 }
 
+pub enum MetricsEmitter {
+    Named {
+        total: metrics::Counter,
+        errors: metrics::Counter,
+        timeouts: metrics::Counter,
+    },
+    Disabled,
+}
+
+impl MetricsEmitter {
+    pub fn named(name: &str) -> Self {
+        let counter_with_name =
+            |suffix| metrics::counter!(format!("ton_indexer_{}_{}", name, suffix));
+
+        Self::Named {
+            total: counter_with_name("total"),
+            errors: counter_with_name("errors"),
+            timeouts: counter_with_name("timeouts"),
+        }
+    }
+
+    fn inc_total(&self) {
+        if let Self::Named { ref total, .. } = self {
+            total.increment(1);
+        }
+    }
+
+    fn inc_error(&self) {
+        if let Self::Named { ref errors, .. } = self {
+            errors.increment(1);
+        }
+    }
+
+    fn inc_timeout(&self) {
+        if let Self::Named { ref timeouts, .. } = self {
+            timeouts.increment(1);
+        }
+    }
+}
+
 impl DownloaderTimeouts {
     fn update(&mut self) -> u64 {
         self.initial = std::cmp::min(self.max, (self.initial as f64 * self.multiplier) as u64);
         self.initial
     }
-}
-
-#[derive(Debug, Default)]
-pub struct DownloaderCounters {
-    pub total: AtomicU64,
-    pub errors: AtomicU64,
-    pub timeouts: AtomicU64,
 }
 
 #[derive(thiserror::Error, Debug)]
