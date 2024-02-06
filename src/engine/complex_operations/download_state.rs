@@ -116,9 +116,9 @@ async fn background_process(
         .begin_replace(&block_id)
         .await?;
 
-    let mut pg = ProgressBar::builder("downloading state")
+    let mut pg = ProgressBar::builder()
         .exact_unit("cells")
-        .build();
+        .build(|msg| tracing::info!("downloading state... {msg}"));
 
     let mut full = false;
     let mut total_size_known = false;
@@ -152,9 +152,9 @@ async fn background_process(
         return Err(DownloadStateError::UnexpectedEof.into());
     }
 
-    let mut pg = ProgressBar::builder("processing state")
+    let mut pg = ProgressBar::builder()
         .with_mapper(|x| bytesize::to_string(x, false))
-        .build();
+        .build(|msg| tracing::info!("processing state... {msg}"));
     let result = transaction.finalize(&mut ctx, block_id, &mut pg).await;
 
     ctx.clear().await?;

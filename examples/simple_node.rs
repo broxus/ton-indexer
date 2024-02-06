@@ -74,25 +74,9 @@ async fn run(app: App) -> Result<()> {
     .await?;
 
     tokio::spawn({
-        struct CacheStatsWriter<'a>(&'a CacheStats);
+        struct GcStatusWriter<'a>(&'a ShardStatesGcStatus);
 
-        impl std::fmt::Debug for CacheStatsWriter<'_> {
-            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                let stats = self.0;
-                f.debug_struct("CacheStats")
-                    .field("hits", &stats.hits)
-                    .field("misses", &stats.misses)
-                    .field("requests", &stats.requests)
-                    .field("occupied", &stats.occupied)
-                    .field("hits_ratio", &stats.hits_ratio)
-                    .field("size", &bytesize::ByteSize::b(stats.size_bytes))
-                    .finish()
-            }
-        }
-
-        struct GcStatsWriter<'a>(&'a ShardStatesGcStatus);
-
-        impl std::fmt::Debug for GcStatsWriter<'_> {
+        impl std::fmt::Debug for GcStatusWriter<'_> {
             fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
                 let stats = self.0;
                 let current = stats.current_seqno.load(Ordering::Acquire);
@@ -103,7 +87,7 @@ async fn run(app: App) -> Result<()> {
                     100.0
                 };
 
-                f.debug_struct("GcStats")
+                f.debug_struct("GcStatus")
                     .field("current_shard", &stats.current_shard)
                     .field("start_seqno", &stats.start_seqno)
                     .field("end_seqno", &stats.end_seqno)
@@ -122,12 +106,9 @@ async fn run(app: App) -> Result<()> {
             loop {
                 interval.tick().await;
 
-                let stats = engine.internal_metrics().cells_cache_stats;
-                tracing::info!("cache stats: {:#?}", CacheStatsWriter(&stats));
-
-                let stats = engine.get_db_metrics().shard_state_storage.gc_status;
-                if let Some(stats) = stats {
-                    tracing::info!("gc stats: {:#?}", GcStatsWriter(&stats));
+                let status = engine.states_gc_status();
+                if let Some(status) = status {
+                    tracing::info!("gc status: {:#?}", GcStatusWriter(&status));
                 }
             }
         }

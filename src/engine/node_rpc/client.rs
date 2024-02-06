@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 
-use crate::network::{Neighbour, OverlayClient};
+use crate::network::{Neighbour, OverlayClient, ResolvedAddress};
 use crate::proto;
 use crate::utils::*;
 
@@ -59,7 +59,11 @@ impl NodeRpcClient {
                 )
                 .await?
             {
-                tracing::info!(peer_id = %neighbour.peer_id(), "found peer with requested state");
+                tracing::info!(
+                    peer_id = %neighbour.peer_id(),
+                    addr = %ResolvedAddress(this.resolve_address(&neighbour)),
+                    "found peer with requested state"
+                );
                 return Ok(Some(Arc::new(neighbour)));
             }
         }

@@ -61,6 +61,10 @@ impl ShardStateStorage {
         Ok(res)
     }
 
+    pub fn gc_status(&self) -> Option<Arc<ShardStatesGcStatus>> {
+        self.gc_status.load_full()
+    }
+
     pub fn min_ref_mc_state(&self) -> &Arc<MinRefMcState> {
         &self.min_ref_mc_state
     }
@@ -366,11 +370,6 @@ impl ShardStateStorage {
                 })
             }))
     }
-}
-
-#[derive(Debug, Clone)]
-pub struct ShardStateStorageMetrics {
-    pub gc_status: Option<Arc<ShardStatesGcStatus>>,
 }
 
 #[derive(Debug)]

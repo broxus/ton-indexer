@@ -60,12 +60,12 @@ base64 = "0.13.1"
 
 [dev-dependencies]
 argh = "0.1"
-cargo-husky = { version = "1.5.0", features = [
-    "precommit-hook",
-    "run-cargo-test",
-    "run-cargo-clippy",
-    "run-cargo-fmt",
-] }
+# cargo-husky = { version = "1.5.0", features = [
+#     "precommit-hook",
+#     "run-cargo-test",
+#     "run-cargo-clippy",
+#     "run-cargo-fmt",
+# ] }
 config = { version = "0.13", default-features = false, features = ["yaml"] }
 serde_yaml = "0.9"
 tokio = { version = "1", features = ["full"] }
@@ -74,7 +74,7 @@ broxus-util = { version = "0.2", default-features = false, features = [
     "config",
     "alloc",
     "public-ip",
-    "signal"
+    "signal",
 ] }
 
 [features]
@@ -87,3 +87,6 @@ ton = ["ton_block/ton"]
 
 [profile.release]
 debug = true
+
+[patch.crates-io]
+everscale-network = { git = "https://github.com/broxus/everscale-network.git" }

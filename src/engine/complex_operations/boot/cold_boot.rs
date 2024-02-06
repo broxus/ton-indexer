@@ -219,9 +219,9 @@ async fn download_key_blocks(engine: &Arc<Engine>, mut prev_key_block: PrevKeyBl
     });
 
     let sync_start_utime = prev_key_block.handle().meta().gen_utime();
-    let mut pg = ProgressBarBuilder::new("downloading key blocks")
+    let mut pg = ProgressBarBuilder::new()
         .total(now().checked_sub(sync_start_utime).unwrap_or(1))
-        .build();
+        .build(|msg| tracing::info!("downloading key blocks... {msg}"));
 
     // Continue downloading key blocks from the last known block
     let mut prev_handle = prev_key_block.handle().clone();

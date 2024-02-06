@@ -236,7 +236,7 @@ impl OverlayClient {
 
 const DEFAULT_ADNL_ATTEMPTS: u32 = 50;
 
-struct ResolvedAddress(Option<SocketAddrV4>);
+pub struct ResolvedAddress(pub Option<SocketAddrV4>);
 
 impl std::fmt::Display for ResolvedAddress {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

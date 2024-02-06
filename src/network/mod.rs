@@ -18,7 +18,7 @@ use tokio_util::sync::CancellationToken;
 pub use self::neighbour::Neighbour;
 use self::neighbours::Neighbours;
 pub use self::neighbours::NeighboursOptions;
-pub use self::overlay_client::OverlayClient;
+pub use self::overlay_client::{OverlayClient, ResolvedAddress};
 use crate::utils::{spawn_metrics_loop, FastDashMap};
 
 mod neighbour;

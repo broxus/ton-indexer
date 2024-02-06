@@ -721,6 +721,10 @@ impl Engine {
         self.db.get_disk_usage()
     }
 
+    pub fn states_gc_status(&self) -> Option<Arc<ShardStatesGcStatus>> {
+        self.storage.shard_state_storage().gc_status()
+    }
+
     fn is_hard_fork(&self, block_id: &ton_block::BlockIdExt) -> bool {
         self.global_config_ids.hard_forks.contains(block_id)
     }
