@@ -138,7 +138,12 @@ async fn background_process(
         .with_mapper(|x| bytesize::to_string(x, false))
         .build(|msg| tracing::info!("processing state... {msg}"));
 
-    transaction.finalize(&mut ctx, block_id, &mut pg).await
+    match transaction.finalize(&mut ctx, block_id, &mut pg).await {
+        Ok(state) => Ok(state),
+        Err(e) => {
+            panic!("Fatal error during persistent state transaction. Resync is required.\nError: {e:?}");
+        }
+    }
 }
 
 struct Scheduler {
