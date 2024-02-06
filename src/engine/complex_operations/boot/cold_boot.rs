@@ -624,16 +624,45 @@ async fn download_block_with_state(
 
     // Download block state
     if !handle.meta().has_state() {
+        const MAX_ATTEMPTS: usize = 10;
+
+        let mut attempt = 0;
         let state_update = block.block().read_state_update()?;
 
-        tracing::info!(block_id = %handle.id().display(), "downloading state");
-        let shard_state = download_state(engine, full_state_id).await?;
-        tracing::info!(block_id = %handle.id().display(), "downloaded state");
+        let shard_state = loop {
+            attempt += 1;
+            anyhow::ensure!(
+                attempt < MAX_ATTEMPTS,
+                "Failed to download persistent state {}",
+                full_state_id.block_id.display(),
+            );
 
-        let state_hash = shard_state.root_cell().repr_hash();
-        if state_update.new_hash != state_hash {
-            return Err(ColdBootError::ShardStateHashMismatch.into());
-        }
+            tracing::info!(block_id = %handle.id().display(), "downloading state");
+            let shard_state = match download_state(engine, &full_state_id).await {
+                Ok(shard_state) => shard_state,
+                Err(e) => {
+                    tracing::error!(
+                        block_id = %handle.id().display(),
+                        "Failed to download persistent state: {e:?}"
+                    );
+                    continue;
+                }
+            };
+            tracing::info!(block_id = %handle.id().display(), "downloaded state");
+
+            let state_hash = shard_state.root_cell().repr_hash();
+            if state_update.new_hash != state_hash {
+                tracing::error!(
+                    block_id = %handle.id().display(),
+                    "Downloaded persistent state hash mismatch. \
+                    Expected: {}, got: {state_hash}",
+                    state_update.new_hash
+                );
+                continue;
+            }
+
+            break shard_state;
+        };
 
         engine.store_state(&handle, &shard_state).await?;
         engine
@@ -655,8 +684,6 @@ enum ColdBootError {
     FailedToLoadKeyBlock,
     #[error("Base workchain info not found")]
     BaseWorkchainInfoNotFound,
-    #[error("Downloaded shard state hash mismatch")]
-    ShardStateHashMismatch,
     #[error("Persistent shard state not found")]
     PersistentShardStateNotFound,
 }

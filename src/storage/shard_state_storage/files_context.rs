@@ -49,12 +49,6 @@ impl FilesContext {
         })
     }
 
-    pub async fn clear(self) -> Result<()> {
-        tokio::fs::remove_file(self.cells_path).await?;
-        tokio::fs::remove_file(self.hashes_path).await?;
-        Ok(())
-    }
-
     pub fn cells_file(&mut self) -> Result<&mut BufWriter<File>> {
         match &mut self.cells_file {
             Some(file) => Ok(file),
@@ -78,6 +72,13 @@ impl FilesContext {
 
         let mapped_file = MappedFile::from_existing_file(file)?;
         Ok(mapped_file)
+    }
+}
+
+impl Drop for FilesContext {
+    fn drop(&mut self) {
+        std::fs::remove_file(&self.cells_path).ok();
+        std::fs::remove_file(&self.hashes_path).ok();
     }
 }
 

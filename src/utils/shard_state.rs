@@ -15,6 +15,7 @@ use ton_types::{Cell, UInt256};
 use super::FastHashMap;
 
 /// Full persistent state block id (relative to the masterchain)
+#[derive(Clone)]
 pub struct FullStateId {
     pub mc_block_id: ton_block::BlockIdExt,
     pub block_id: ton_block::BlockIdExt,

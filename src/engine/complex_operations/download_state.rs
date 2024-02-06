@@ -1,16 +1,10 @@
-/// This file is a modified copy of the file from https://github.com/tonlabs/ton-labs-node
-///
-/// Changes:
-/// - replaced old `failure` crate with `anyhow`
-/// - optimized state downloading and processing
-///
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use tokio::sync::{mpsc, oneshot};
-use tokio_util::sync::CancellationToken;
+use tokio::sync::mpsc;
+use tokio::task::JoinSet;
 
 use crate::engine::{Engine, NodeRpcClient};
 use crate::network::Neighbour;
@@ -22,12 +16,12 @@ const PACKET_SIZE: usize = 1 << 20; // 1 MB
 
 pub async fn download_state(
     engine: &Arc<Engine>,
-    full_state_id: FullStateId,
+    full_state_id: &FullStateId,
 ) -> Result<Arc<ShardStateStuff>> {
     let mc_client = engine.masterchain_client.clone();
 
     let neighbour = loop {
-        match mc_client.find_persistent_state(&full_state_id).await {
+        match mc_client.find_persistent_state(full_state_id).await {
             Ok(Some(peer)) => break peer,
             Ok(None) => {
                 tracing::trace!(
@@ -44,70 +38,53 @@ pub async fn download_state(
         };
     };
 
-    let (result_tx, result_rx) = oneshot::channel();
     let (packets_tx, packets_rx) = mpsc::channel(PROCESSING_QUEUE_LEN);
 
-    let completion_signal = CancellationToken::new();
-    let _completion_trigger = completion_signal.clone().drop_guard();
-
-    let total_size = Arc::new(AtomicU64::new(u64::MAX));
-
-    tokio::spawn({
+    let processing_fut = tokio::spawn({
         let engine = engine.clone();
         let block_id = full_state_id.block_id.clone();
-        let total_size = total_size.clone();
+        async move { background_process(&engine, block_id, packets_rx).await }
+    });
+
+    let downloader_fut = tokio::spawn({
+        let full_state_id = full_state_id.clone();
         async move {
-            result_tx.send(background_process(&engine, block_id, total_size, packets_rx).await)
+            let mut scheduler = Scheduler::with_slots(
+                mc_client,
+                full_state_id,
+                neighbour,
+                DOWNLOADING_QUEUE_LEN,
+                PACKET_SIZE,
+            )
+            .await;
+
+            while let Some(packet) = scheduler.wait_next_packet().await? {
+                if packets_tx.send(packet).await.is_err() {
+                    anyhow::bail!("Packets receiver closed");
+                }
+            }
+            Ok::<_, anyhow::Error>(())
         }
     });
 
-    let downloader = async move {
-        let mut scheduler = Scheduler::with_slots(
-            mc_client,
-            full_state_id,
-            neighbour,
-            total_size,
-            DOWNLOADING_QUEUE_LEN,
-            PACKET_SIZE,
-        )
-        .await?;
-
-        let mut total_bytes = 0;
-        while let Some(packet) = scheduler.wait_next_packet().await? {
-            total_bytes += packet.len();
-            if packets_tx.send(packet).await.is_err() {
-                break;
+    match futures_util::future::select(processing_fut, downloader_fut).await {
+        // State processing finished first - ignore downloader result, return processing result
+        futures_util::future::Either::Left((result, _)) => result.unwrap(),
+        // Downloader finished first
+        futures_util::future::Either::Right((downloader_result, result_fut)) => {
+            match downloader_result.unwrap() {
+                // Downloader finished - wait for processing result and return it
+                Ok(()) => result_fut.await.unwrap(),
+                // Downloader failed - cancel processing and return downloader error
+                Err(e) => Err(e),
             }
         }
-
-        Ok::<_, anyhow::Error>(total_bytes)
-    };
-
-    tokio::spawn(async move {
-        tokio::select! {
-            result = downloader => match result {
-                Ok(total_bytes) => {
-                    tracing::info!(
-                        size_bytes = total_bytes,
-                        size = %bytesize::ByteSize::b(total_bytes as _),
-                        "persistent state downloader finished",
-                    );
-                },
-                Err(e) => {
-                    tracing::error!("persistent state downloader failed: {e:?}");
-                },
-            },
-            _ = completion_signal.cancelled() => {}
-        }
-    });
-
-    result_rx.await?
+    }
 }
 
 async fn background_process(
     engine: &Arc<Engine>,
     block_id: ton_block::BlockIdExt,
-    total_size: Arc<AtomicU64>,
     mut packets_rx: PacketsRx,
 ) -> Result<Arc<ShardStateStuff>> {
     let (mut transaction, mut ctx) = engine
@@ -121,14 +98,15 @@ async fn background_process(
         .build(|msg| tracing::info!("downloading state... {msg}"));
 
     let mut full = false;
-    let mut total_size_known = false;
 
+    let mut received_bytes = 0;
     while let Some(packet) = packets_rx.recv().await {
-        if !total_size_known {
-            if let Some(header) = transaction.header() {
-                total_size.store(header.total_size, Ordering::Release);
-                total_size_known = true;
-            }
+        received_bytes += packet.len();
+        if let Some(header) = transaction.header() {
+            anyhow::ensure!(
+                received_bytes <= header.total_size as usize,
+                "Received more data than expected"
+            );
         }
 
         match transaction.process_packet(&mut ctx, packet, &mut pg).await {
@@ -138,27 +116,29 @@ async fn background_process(
             }
             Ok(false) => continue,
             Err(e) => {
-                ctx.clear().await?;
                 return Err(e);
             }
         }
     }
 
+    if !full {
+        return Err(DownloadStateError::UnexpectedEof.into());
+    }
+
     packets_rx.close();
     while packets_rx.recv().await.is_some() {}
 
-    if !full {
-        ctx.clear().await?;
-        return Err(DownloadStateError::UnexpectedEof.into());
-    }
+    tracing::info!(
+        size_bytes = received_bytes,
+        size = %bytesize::ByteSize::b(received_bytes as _),
+        "downloaded persistent state",
+    );
 
     let mut pg = ProgressBar::builder()
         .with_mapper(|x| bytesize::to_string(x, false))
         .build(|msg| tracing::info!("processing state... {msg}"));
-    let result = transaction.finalize(&mut ctx, block_id, &mut pg).await;
 
-    ctx.clear().await?;
-    result
+    transaction.finalize(&mut ctx, block_id, &mut pg).await
 }
 
 struct Scheduler {
@@ -168,7 +148,7 @@ struct Scheduler {
     packet_size: usize,
     current_offset: usize,
     complete: Arc<AtomicBool>,
-    cancellation_token: CancellationToken,
+    join_set: JoinSet<()>,
 }
 
 impl Scheduler {
@@ -176,14 +156,12 @@ impl Scheduler {
         mc_client: NodeRpcClient,
         full_state_id: FullStateId,
         neighbour: Arc<Neighbour>,
-        total_size: Arc<AtomicU64>,
         worker_count: usize,
         packet_size: usize,
-    ) -> Result<Self> {
+    ) -> Self {
         let (response_tx, response_rx) = mpsc::channel(worker_count);
 
         let complete = Arc::new(AtomicBool::new(false));
-        let cancellation_token = CancellationToken::new();
 
         let ctx = Arc::new(DownloadContext {
             mc_client,
@@ -191,36 +169,35 @@ impl Scheduler {
             neighbour,
             packet_size,
             response_tx,
-            peer_attempt: AtomicU32::new(0),
             complete: complete.clone(),
-            total_size,
-            cancellation_token: cancellation_token.clone(),
         });
 
         let mut offset_txs = Vec::with_capacity(worker_count);
         let mut pending_packets = Vec::with_capacity(worker_count);
+        let mut join_set = tokio::task::JoinSet::new();
 
         let mut offset = 0;
         for _ in 0..worker_count {
             let (offsets_tx, offsets_rx) = mpsc::channel(1);
-            tokio::spawn(download_packet_worker(ctx.clone(), offsets_rx));
 
             pending_packets.push((offset, PacketStatus::Downloading));
-            offsets_tx.send(offset).await?;
+            offsets_tx.send(offset).await.ok();
             offset_txs.push(offsets_tx);
 
             offset += packet_size;
+
+            join_set.spawn(download_packet_worker(ctx.clone(), offsets_rx));
         }
 
-        Ok(Self {
+        Self {
             offset_txs,
             pending_packets,
             response_rx,
             packet_size,
             current_offset: 0,
             complete,
-            cancellation_token,
-        })
+            join_set,
+        }
     }
 
     async fn wait_next_packet(&mut self) -> Result<Option<Vec<u8>>> {
@@ -277,7 +254,7 @@ impl Scheduler {
             if data.len() < self.packet_size {
                 *packet = PacketStatus::Done;
                 self.complete.store(true, Ordering::Release);
-                self.cancellation_token.cancel();
+                self.join_set.abort_all();
             } else {
                 *offset += self.packet_size * self.offset_txs.len();
                 self.offset_txs[worker_id]
@@ -300,67 +277,60 @@ struct DownloadContext {
     neighbour: Arc<Neighbour>,
     packet_size: usize,
     response_tx: ResponseTx,
-    peer_attempt: AtomicU32,
     complete: Arc<AtomicBool>,
-    total_size: Arc<AtomicU64>,
-    cancellation_token: CancellationToken,
 }
 
 async fn download_packet_worker(ctx: Arc<DownloadContext>, mut offsets_rx: OffsetsRx) {
-    tokio::pin!(let complete_signal = ctx.cancellation_token.cancelled(););
+    const MAX_ATTEMPTS: u32 = 10;
+    const RETRY_INTERVAL: Duration = Duration::from_millis(100);
 
     'tasks: while let Some(offset) = offsets_rx.recv().await {
-        let mut part_attempt = 0;
+        let mut attempt = 0;
         loop {
             if ctx.complete.load(Ordering::Acquire) {
                 break 'tasks;
             }
 
-            let recv_fut = ctx.mc_client.download_persistent_state_part(
-                &ctx.full_state_id,
-                offset,
-                ctx.packet_size,
-                ctx.neighbour.clone(),
-                ctx.peer_attempt.load(Ordering::Acquire),
-            );
-
-            let result = tokio::select! {
-                data = recv_fut => data,
-                _ = &mut complete_signal => {
-                    tracing::debug!(offset, "got last_part_signal");
-                    continue;
-                }
-            };
-
-            match result {
+            match ctx
+                .mc_client
+                .download_persistent_state_part(
+                    &ctx.full_state_id,
+                    offset,
+                    ctx.packet_size,
+                    ctx.neighbour.clone(),
+                    attempt,
+                )
+                .await
+            {
                 Ok(part) => {
+                    tracing::debug!(
+                        offset,
+                        part_size = part.len(),
+                        "downloaded persistent state part"
+                    );
+
                     if ctx.response_tx.send((offset, Ok(part))).await.is_err() {
                         break 'tasks;
                     }
                     continue 'tasks;
                 }
                 Err(e) => {
-                    part_attempt += 1;
-                    ctx.peer_attempt.fetch_add(1, Ordering::Release);
+                    attempt += 1;
 
-                    if !ctx.complete.load(Ordering::Acquire)
-                        && offset < ctx.total_size.load(Ordering::Acquire) as usize
-                    {
-                        tracing::error!(offset, "failed to download persistent state part: {e:?}");
-                    }
-
-                    if part_attempt > 10 {
-                        offsets_rx.close();
-                        while offsets_rx.recv().await.is_some() {}
-
+                    if attempt > MAX_ATTEMPTS {
                         let _ = ctx
                             .response_tx
-                            .send((offset, Err(DownloadStateError::RanOutOfAttempts.into())))
+                            .send((
+                                offset,
+                                Err(DownloadStateError::RanOutOfAttempts).with_context(|| {
+                                    format!("Failed to download persistent state part at offset {offset}: {e:?}")
+                                }),
+                            ))
                             .await;
                         break 'tasks;
                     }
 
-                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    tokio::time::sleep(RETRY_INTERVAL).await;
                 }
             }
         }
