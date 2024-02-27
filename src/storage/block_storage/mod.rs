@@ -601,7 +601,7 @@ impl BlockStorage {
 
         match self.db.package_entries.get(id.to_vec())? {
             Some(a) => Ok(a.to_vec()),
-            None => Err(BlockStorageError::InvalidBlockData.into()),
+            None => Err(BlockStorageError::BlockNotFound("get_data").into()),
         }
     }
 
@@ -622,7 +622,7 @@ impl BlockStorage {
 
         match self.db.package_entries.get(id.to_vec())? {
             Some(data) => Ok(BlockContentsLock { _lock: lock, data }),
-            None => Err(BlockStorageError::InvalidBlockData.into()),
+            None => Err(BlockStorageError::BlockNotFound("get_data_ref").into()),
         }
     }
 
@@ -661,7 +661,7 @@ impl BlockStorage {
     {
         match self.db.package_entries.get(entry_id.to_vec())? {
             Some(data) => Ok(make_archive_segment(&entry_id.filename(), &data)),
-            None => Err(BlockStorageError::InvalidBlockData.into()),
+            None => Err(BlockStorageError::BlockNotFound("make_archive_segment").into()),
         }
     }
 }
@@ -813,8 +813,8 @@ enum BlockStorageError {
     BlockProofNotFound,
     #[error("Block handle id mismatch")]
     BlockHandleIdMismatch,
-    #[error("Invalid block data")]
-    InvalidBlockData,
+    #[error("Block data not found in the storage. Source: {0}")]
+    BlockNotFound(&'static str),
     #[error("Offset is outside of the archive slice")]
     InvalidOffset,
 }

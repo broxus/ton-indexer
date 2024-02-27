@@ -166,6 +166,7 @@ async fn load_shard_blocks(
                     block_id = %shard_block_id.display(),
                     "failed to apply shard block: {e:?}"
                 );
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
             }
         }));
     }
