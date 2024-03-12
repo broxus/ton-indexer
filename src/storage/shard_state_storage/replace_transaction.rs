@@ -4,12 +4,13 @@ use anyhow::{Context, Result};
 use num_traits::ToPrimitive;
 use ton_types::UInt256;
 
+use crate::db::*;
+use crate::utils::*;
+
 use super::cell_storage::*;
 use super::entries_buffer::*;
 use super::files_context::*;
 use super::shard_state_reader::*;
-use crate::db::*;
-use crate::utils::*;
 
 pub struct ShardStateReplaceTransaction<'a> {
     db: &'a Db,
@@ -482,3 +483,292 @@ enum ReplaceTransactionError {
 }
 
 const MAX_LEVEL: u8 = 3;
+
+#[cfg(test)]
+mod test {
+    use std::fs::File;
+    use std::io::{self, BufReader, Read};
+    use std::path::Path;
+    use std::sync::atomic::AtomicBool;
+    use std::sync::Arc;
+
+    use ahash::HashSet;
+    use anyhow::{Context, Result};
+    use bumpalo::Bump;
+    use ton_block::{BlockIdExt, ShardIdent};
+    use ton_types::UInt256;
+    use weedb::rocksdb;
+    use weedb::rocksdb::WriteBatch;
+
+    use crate::db::rocksdb::IteratorMode;
+    use crate::storage::shard_state_storage::cell_storage::StorageCell;
+    use crate::storage::shard_state_storage::files_context::FilesContext;
+    use crate::storage::shard_state_storage::replace_transaction::ShardStateReplaceTransaction;
+    use crate::utils::{ProgressBar, StoredValue};
+
+    fn deserialize(path: &Path) -> io::Result<Vec<(u32, Vec<u8>)>> {
+        let reader = File::open(path)?;
+        let mut reader = BufReader::new(reader);
+
+        let mut data = Vec::new();
+
+        loop {
+            let mut seq_no_bytes = [0u8; 4];
+            let seq_no = match reader.read_exact(&mut seq_no_bytes) {
+                Ok(_) => u32::from_le_bytes(seq_no_bytes),
+                Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => break, // End of file reached.
+                Err(e) => return Err(e),
+            };
+            let mut len_bytes = [0u8; 8];
+
+            // Read the length of the next Vec<u8>.
+            match reader.read_exact(&mut len_bytes) {
+                Ok(_) => {
+                    let len = u64::from_le_bytes(len_bytes) as usize;
+                    let mut buf = vec![0u8; len];
+                    // Read the actual bytes.
+                    reader.read_exact(&mut buf)?;
+                    data.push((seq_no, buf));
+                }
+                Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => break, // End of file reached.
+                Err(e) => return Err(e),
+            }
+        }
+
+        Ok(data)
+    }
+
+    #[tokio::test]
+    async fn test_store_plus_gc_empty_db() -> Result<()> {
+        //setup
+        let dir = tempfile::tempdir()?;
+        let db = super::Db::open(dir.path().to_path_buf(), Default::default())?;
+        let cell_storage = super::CellStorage::new(db.clone(), 1 << 20);
+        let min_ref_mc_state = super::MinRefMcState::new();
+        let transaction = ShardStateReplaceTransaction::new(&db, &cell_storage, &min_ref_mc_state);
+        let mut progress_bar = ProgressBar::builder("test").build();
+
+        let id = BlockIdExt {
+            shard_id: ton_block::ShardIdent::masterchain(),
+            ..Default::default()
+        };
+        let mut files_ctx = FilesContext::new(dir.path(), &id).await?;
+
+        let boc = include_bytes!("../../../tests/everscale_zerostate.boc");
+        let state_hash = insert_root(
+            boc.to_vec(),
+            transaction,
+            &mut progress_bar,
+            &mut files_ctx,
+            id,
+        )
+        .await?;
+
+        // Assertions and cleanup
+        let len = db
+            .shard_states
+            .iterator(rocksdb::IteratorMode::Start)
+            .count();
+        assert_eq!(len, 1);
+
+        let cells_len = db.cells.iterator(rocksdb::IteratorMode::Start).count();
+        println!("cells_len: {}", cells_len);
+
+        let mut batch = WriteBatch::default();
+        let bump = Bump::new();
+        let batch_size = cell_storage.remove_cell(&mut batch, &bump, state_hash)?;
+        println!("batch_size: {}", batch_size);
+        println!("Real batch size: {}", batch.len());
+
+        batch.delete_cf(&db.shard_states.cf(), state_hash);
+        db.raw().write_opt(batch, db.cells.write_config())?;
+
+        for cell in db.cells.iterator(rocksdb::IteratorMode::Start) {
+            println!("Cell: {:?}", cell.unwrap().1);
+        }
+
+        println!("Temp dir: {:?}", dir);
+        db.trigger_compaction().await;
+
+        for table in db.get_disk_usage()? {
+            println!("Table: {:?}", table);
+        }
+
+        assert_eq!(cells_len, 0);
+
+        let len = db
+            .shard_states
+            .iterator(rocksdb::IteratorMode::Start)
+            .count();
+        assert_eq!(len, 0);
+
+        Ok(())
+    }
+
+    async fn insert_root(
+        boc: Vec<u8>,
+        mut transaction: ShardStateReplaceTransaction<'_>,
+        progress_bar: &mut ProgressBar,
+        files_ctx: &mut FilesContext,
+        id: BlockIdExt,
+    ) -> Result<UInt256> {
+        transaction
+            .process_packet(files_ctx, boc, progress_bar)
+            .await?;
+
+        let state = transaction.finalize(files_ctx, id, progress_bar).await?;
+        let state_hash = state.root_cell().repr_hash();
+        Ok(state_hash)
+    }
+
+    #[tokio::test]
+    async fn test_first_n_states() -> anyhow::Result<()> {
+        use ahash::HashSetExt;
+
+        let test_data = include_bytes!("../../../tests/test_data.tar.xz");
+        let dir = tempfile::tempdir()?;
+        let tar_path = dir.path().join("test_data.tar.xz");
+        std::fs::write(&tar_path, test_data)?;
+        println!("Extracting test data");
+        std::process::Command::new("tar")
+            .arg("-xf")
+            .arg(&tar_path)
+            .arg("-C")
+            .arg(dir.path())
+            .status()?;
+        println!("Test data extracted");
+
+        let test_data = dir.path().join("test_data");
+
+        let db = super::Db::open(dir.path().to_path_buf(), Default::default())?;
+        let cell_storage = super::CellStorage::new(db.clone(), 1 << 20);
+        let mut cell_hashes = Vec::new();
+
+        let files_list = std::fs::read_dir(test_data)?;
+
+        let mut total = 0;
+        for file in files_list {
+            let file = file?;
+            let states = deserialize(&file.path())?;
+            let file_name = file
+                .path()
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .to_string();
+            println!("Processing file: {}", file_name);
+            let (wc, shard) = file_name.split_once(':').unwrap();
+            let wc = wc.parse::<i32>().unwrap();
+            let shard = u64::from_str_radix(shard, 16).unwrap();
+            let shard_id = ShardIdent::with_tagged_prefix(wc, shard).unwrap();
+
+            for (seqno, boc) in states.into_iter() {
+                let cell = ton_types::deserialize_tree_of_cells(&mut &boc[..])?;
+                let root_hash = cell.repr_hash();
+
+                let shard_state_key = (shard_id, seqno).to_vec();
+                db.shard_states.insert(&shard_state_key, root_hash)?;
+                cell_hashes.push(root_hash);
+
+                let mut batch = WriteBatch::default();
+                cell_storage.store_cell(&mut batch, cell)?;
+                db.raw().write_opt(batch, db.cells.write_config())?;
+                if total % 2000 == 0 {
+                    println!("Stored {total} states");
+                }
+                total += 1;
+            }
+        }
+
+        println!("Stored states");
+        db.cells
+            .iterator(IteratorMode::Start)
+            .filter_map(Result::ok)
+            .count();
+
+        let len = cell_hashes.len();
+        let mut total = 0;
+        let mut deleted = HashSet::new();
+        let num_cpus = std::thread::available_parallelism()?.get();
+
+        let last_states = cell_hashes.split_off(len - num_cpus);
+        let mut handles = Vec::new();
+        let should_exit = Arc::new(AtomicBool::new(false));
+        for root in last_states.iter().copied() {
+            for _ in 0..3 {
+                let cell_storage = cell_storage.clone();
+                let exit_now = should_exit.clone();
+                let cell = cell_storage.load_cell(root)?;
+                let handle = std::thread::spawn(move || {
+                    traverse_state(&cell, &exit_now);
+                });
+                handles.push(handle);
+            }
+        }
+
+        for (num, root) in cell_hashes.into_iter().enumerate() {
+            if !deleted.insert(root) {
+                continue;
+            }
+
+            let cell = cell_storage
+                .load_cell(root)
+                .with_context(|| format!("Cell not found for num {num} of {len}",))?; // check that cell was stored
+
+            let mut batch = WriteBatch::default();
+            cell_storage
+                .remove_cell(&mut batch, &Bump::new(), cell.repr_hash())
+                .with_context(|| format!("Error removing cell for num {num} of {len}",))?; // check that cell was removed;
+            db.raw().write_opt(batch, db.cells.write_config())?;
+            total += 1;
+            if total % 2000 == 0 {
+                println!("Deleted {total} states");
+            }
+        }
+        should_exit.store(true, std::sync::atomic::Ordering::Relaxed);
+        for handle in handles {
+            handle.join().unwrap();
+        }
+        for root in last_states {
+            let cell = cell_storage.load_cell(root)?;
+            let mut batch = WriteBatch::default();
+            cell_storage
+                .remove_cell(&mut batch, &Bump::new(), cell.repr_hash())
+                .context("Error removing cell")?;
+            db.raw().write_opt(batch, db.cells.write_config())?;
+        }
+
+        db.trigger_compaction().await;
+
+        let num_not_deleted = db
+            .cells
+            .iterator(IteratorMode::Start)
+            .filter_map(Result::ok)
+            .filter(|x| !x.1.is_empty())
+            .count();
+        println!("Not deleted: {num_not_deleted}. Total: {total}");
+        assert_eq!(num_not_deleted, 0);
+        println!("{:?}", cell_storage.raw_cells_cache.hit_ratio());
+
+        Ok(())
+    }
+
+    fn traverse_state(cell: &Arc<StorageCell>, exit_now: &AtomicBool) {
+        use ton_types::CellImpl;
+        let mut total_visited = 0usize;
+        loop {
+            let mut stack = vec![cell.clone()];
+            while let Some(cell) = stack.pop() {
+                total_visited += 1;
+                if exit_now.load(std::sync::atomic::Ordering::Relaxed) {
+                    println!("Total visited: {total_visited}");
+                    return;
+                }
+                for i in 0..cell.references_count() {
+                    let child = cell.reference(i).unwrap();
+                    stack.push(child);
+                }
+            }
+        }
+    }
+}

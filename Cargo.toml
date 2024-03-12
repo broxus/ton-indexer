@@ -70,12 +70,14 @@ config = { version = "0.13", default-features = false, features = ["yaml"] }
 serde_yaml = "0.9"
 tokio = { version = "1", features = ["full"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-appender = "0.2"
 broxus-util = { version = "0.2", default-features = false, features = [
     "config",
     "alloc",
     "public-ip",
     "signal"
 ] }
+tempfile = "3.10.1"
 
 [features]
 default = []

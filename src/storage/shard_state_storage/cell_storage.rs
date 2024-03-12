@@ -17,7 +17,7 @@ use crate::utils::{spawn_metrics_loop, CellExt, FastDashMap, FastHashMap, FastHa
 pub struct CellStorage {
     db: Arc<Db>,
     cells_cache: Arc<FastDashMap<UInt256, Weak<StorageCell>>>,
-    raw_cells_cache: RawCellsCache,
+    pub(super) raw_cells_cache: RawCellsCache,
 }
 
 impl CellStorage {
@@ -489,7 +489,9 @@ enum StorageCellError {
     AccessingInvalidReference,
 }
 
-struct RawCellsCache(Cache<[u8; 32], RawCellsCacheItem, CellSizeEstimator, FastHasherState>);
+pub(super) struct RawCellsCache(
+    Cache<[u8; 32], RawCellsCacheItem, CellSizeEstimator, FastHasherState>,
+);
 
 impl RawCellsCache {
     pub(crate) fn hit_ratio(&self) -> f64 {
