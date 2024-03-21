@@ -44,7 +44,6 @@ tokio = { version = "1", features = ["sync", "fs", "rt-multi-thread", "parking_l
 tokio-util = "0.7.0"
 tracing = "0.1"
 broxus-util = { version = "0.2", default-features = false, features = ["alloc"] }
-triomphe = "0.1"
 
 weedb = { version = "0.1", features = ["zstd", "lz4", "jemalloc"] }
 

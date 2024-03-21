@@ -88,8 +88,7 @@ pub async fn download_state(
             result = downloader => match result {
                 Ok(total_bytes) => {
                     tracing::info!(
-                        size_bytes = total_bytes,
-                        size = %bytesize::ByteSize::b(total_bytes as _),
+                        total_bytes,
                         "persistent state downloader finished",
                     );
                 },
