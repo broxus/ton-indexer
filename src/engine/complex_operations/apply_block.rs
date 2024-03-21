@@ -42,6 +42,13 @@ pub fn apply_block<'a>(
 
         if !pre_apply {
             update_block_connections(engine, handle, &prev1_id, &prev2_id)?;
+
+            // NOTE: Might not work as expected
+            engine
+                .storage
+                .block_handle_storage()
+                .assign_mc_ref_seq_no(handle, mc_seq_no)?;
+
             engine
                 .notify_subscriber_with_block(handle, block, shard_state)
                 .await?;
