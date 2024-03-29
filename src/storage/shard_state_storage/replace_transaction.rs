@@ -3,11 +3,13 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use num_traits::ToPrimitive;
 use ton_types::UInt256;
+use weedb::BoundedCfHandle;
 
 use super::cell_storage::*;
 use super::entries_buffer::*;
 use super::files_context::*;
 use super::shard_state_reader::*;
+use crate::db::refcount::{RcType, RC_BYTES};
 use crate::db::*;
 use crate::utils::*;
 
@@ -128,9 +130,6 @@ impl<'a> ShardStateReplaceTransaction<'a> {
             ctx.create_mapped_hashes_file(header.cell_count as usize * HashesEntry::LEN)?;
         let cells_file = ctx.create_mapped_cells_file().await?;
 
-        let raw = self.db.raw().as_ref();
-        let write_options = self.db.cells.new_write_config();
-
         let mut tail = [0; 4];
         let mut ctx = FinalizationContext::new(self.db);
 
@@ -199,7 +198,6 @@ impl<'a> ShardStateReplaceTransaction<'a> {
 
             if batch_len > CELLS_PER_BATCH {
                 ctx.finalize_cell_usages(self.clear_on_insert);
-                raw.write_opt(std::mem::take(&mut ctx.write_batch), &write_options)?;
                 batch_len = 0;
             }
 
@@ -209,7 +207,6 @@ impl<'a> ShardStateReplaceTransaction<'a> {
 
         if batch_len > 0 {
             ctx.finalize_cell_usages(self.clear_on_insert);
-            raw.write_opt(std::mem::take(&mut ctx.write_batch), &write_options)?;
         }
 
         // Current entry contains root cell
@@ -442,15 +439,16 @@ impl<'a> ShardStateReplaceTransaction<'a> {
         let output_buffer = output_buffer.as_slice();
         if self.clear_on_insert {
             // We have an exclusive access to the cells CF, so we can safely merge
-            ctx.write_batch
-                .merge_cf(&ctx.cells_cf, repr_hash, output_buffer);
+            ctx.db.cells.insert(repr_hash, output_buffer).unwrap();
         } else {
             // Otherwise, we need to store the data in the temp cells CF first
 
             // NOTE: Skip the first 8 bytes, as they contain the reference counter
             // that is not needed in the temp cells CF.
-            ctx.write_batch
-                .put_cf(&ctx.temp_cells_cf, repr_hash, &output_buffer[8..]);
+            ctx.db
+                .temp_cells
+                .insert(repr_hash, &output_buffer[8..])
+                .unwrap();
         }
 
         ctx.cell_usages.insert(*repr_hash, -1);
@@ -467,7 +465,7 @@ struct FinalizationContext<'a> {
     output_buffer: Vec<u8>,
     cells_cf: BoundedCfHandle<'a>,
     temp_cells_cf: BoundedCfHandle<'a>,
-    write_batch: rocksdb::WriteBatch,
+    db: &'a Db,
 }
 
 impl<'a> FinalizationContext<'a> {
@@ -479,7 +477,7 @@ impl<'a> FinalizationContext<'a> {
             output_buffer: Vec::with_capacity(1 << 10),
             cells_cf: db.cells.cf(),
             temp_cells_cf: db.temp_cells.cf(),
-            write_batch: rocksdb::WriteBatch::default(),
+            db,
         }
     }
 
@@ -495,11 +493,15 @@ impl<'a> FinalizationContext<'a> {
         if use_merge {
             self.cell_usages.retain(|key, &mut rc| {
                 if rc > 0 {
-                    self.write_batch.merge_cf(
-                        &self.cells_cf,
-                        key,
-                        refcount::encode_positive_refcount(rc as u32),
-                    );
+                    let prev = self.db.cells.get(key).unwrap().unwrap();
+                    let prev = refcount::decode_value_with_rc(prev.as_ref());
+                    let new_rc = prev.0 + rc as RcType;
+                    self.output_buffer.clear();
+                    refcount::add_positive_refount(new_rc, prev.1, &mut self.output_buffer);
+                    self.db
+                        .cells
+                        .insert(key, self.output_buffer.as_slice())
+                        .unwrap();
                 }
 
                 rc < 0

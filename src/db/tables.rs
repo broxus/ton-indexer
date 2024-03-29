@@ -1,11 +1,10 @@
-use crate::db::rocksdb::DBCompressionType;
 use bytesize::ByteSize;
 use weedb::rocksdb::{
     BlockBasedIndexType, BlockBasedOptions, DataBlockIndexType, MergeOperands, Options, ReadOptions,
 };
 use weedb::{rocksdb, Caches, ColumnFamily};
 
-use super::refcount;
+use crate::db::rocksdb::DBCompressionType;
 
 /// Stores prepared archives
 /// - Key: `u32 (BE)` (archive id)
@@ -111,9 +110,6 @@ impl ColumnFamily for Cells {
 
     fn options(opts: &mut Options, caches: &Caches) {
         opts.set_level_compaction_dynamic_level_bytes(true);
-
-        opts.set_merge_operator_associative("cell_merge", refcount::merge_operator);
-        opts.set_compaction_filter("cell_compaction", refcount::compaction_filter);
 
         optimize_for_level_compaction(opts, ByteSize::gib(1u64));
 

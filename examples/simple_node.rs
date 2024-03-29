@@ -1,13 +1,16 @@
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::{fmt, EnvFilter, Layer};
+
+use ton_indexer::utils::*;
 
 use anyhow::Result;
 use argh::FromArgs;
 use broxus_util::now;
 use serde::{Deserialize, Serialize};
-use tracing_subscriber::EnvFilter;
 
 use ton_indexer::utils::*;
 use ton_indexer::{Engine, GlobalConfig, NodeConfig, ProcessBlockContext};
@@ -29,14 +32,28 @@ pub struct App {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let logger = tracing_subscriber::fmt().with_env_filter(
-        EnvFilter::builder()
-            .with_default_directive(tracing::Level::INFO.into())
-            .from_env_lossy(),
-    );
+    std::panic::set_hook(Box::new(move |info| {
+        tracing::error!(?info, "unhandled panic");
+        std::process::exit(1);
+    }));
 
-    logger.init();
-
+    let file_appender = tracing_appender::rolling::never("logs", "gc-test.log");
+    let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
+    let collector = tracing_subscriber::registry()
+        .with(
+            fmt::Layer::new()
+                .with_ansi(false)
+                .compact()
+                .with_writer(non_blocking)
+                .with_filter(EnvFilter::new("trace")),
+        )
+        .with(
+            fmt::Layer::new()
+                .with_ansi(true)
+                .with_writer(std::io::stdout)
+                .with_filter(EnvFilter::new("info")),
+        );
+    tracing::subscriber::set_global_default(collector)?;
     let any_signal = broxus_util::any_signal(broxus_util::TERMINATION_SIGNALS);
 
     let run = run(argh::from_env());
@@ -72,6 +89,66 @@ async fn run(app: App) -> Result<()> {
         Arc::new(LoggerSubscriber::default()),
     )
     .await?;
+
+    // tokio::spawn({
+    //     struct CacheStatsWriter<'a>(&'a CacheStats);
+    //
+    //     impl std::fmt::Debug for CacheStatsWriter<'_> {
+    //         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    //             let stats = self.0;
+    //             f.debug_struct("CacheStats")
+    //                 .field("hits", &stats.hits)
+    //                 .field("misses", &stats.misses)
+    //                 .field("requests", &stats.requests)
+    //                 .field("occupied", &stats.occupied)
+    //                 .field("hits_ratio", &stats.hits_ratio)
+    //                 .field("size", &bytesize::ByteSize::b(stats.size_bytes))
+    //                 .finish()
+    //         }
+    //     }
+    //
+    //     struct GcStatsWriter<'a>(&'a ShardStatesGcStatus);
+    //
+    //     impl std::fmt::Debug for GcStatsWriter<'_> {
+    //         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    //             let stats = self.0;
+    //             let current = stats.current_seqno.load(Ordering::Acquire);
+    //             let progress = if stats.end_seqno > stats.start_seqno {
+    //                 (current.saturating_sub(stats.start_seqno) as f64) * 100.0
+    //                     / ((stats.end_seqno - stats.start_seqno) as f64)
+    //             } else {
+    //                 100.0
+    //             };
+    //
+    //             f.debug_struct("GcStats")
+    //                 .field("current_shard", &stats.current_shard)
+    //                 .field("start_seqno", &stats.start_seqno)
+    //                 .field("end_seqno", &stats.end_seqno)
+    //                 .field("current_seqno", &current)
+    //                 .field("progress", &progress)
+    //                 .finish()
+    //         }
+    //     }
+    //
+    //     const INTERVAL: Duration = Duration::from_secs(30);
+    //
+    //     let engine = engine.clone();
+    //
+    //     async move {
+    //         let mut interval = tokio::time::interval(INTERVAL);
+    //         loop {
+    //             interval.tick().await;
+    //
+    //             let stats = engine.internal_metrics().cells_cache_stats;
+    //             tracing::info!("cache stats: {:#?}", CacheStatsWriter(&stats));
+    //
+    //             let stats = engine.get_db_metrics().shard_state_storage.gc_status;
+    //             if let Some(stats) = stats {
+    //                 tracing::info!("gc stats: {:#?}", GcStatsWriter(&stats));
+    //             }
+    //         }
+    //     }
+    // });
 
     engine.start().await?;
 
