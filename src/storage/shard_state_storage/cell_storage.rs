@@ -1,6 +1,6 @@
 use std::collections::hash_map;
 use std::sync::atomic::{AtomicI64, Ordering};
-use std::sync::{Arc, Weak};
+use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
 use anyhow::Result;
@@ -18,6 +18,7 @@ pub struct CellStorage {
     db: Arc<Db>,
     cells_cache: Arc<FastDashMap<UInt256, Weak<StorageCell>>>,
     raw_cells_cache: RawCellsCache,
+    pending: PendingOperations,
 }
 
 impl CellStorage {
@@ -29,6 +30,7 @@ impl CellStorage {
             db,
             cells_cache,
             raw_cells_cache,
+            pending: PendingOperations::default(),
         });
 
         spawn_metrics_loop(&this, Duration::from_secs(5), |this| async move {
@@ -48,7 +50,7 @@ impl CellStorage {
         &self,
         batch: &mut rocksdb::WriteBatch,
         root: ton_types::Cell,
-    ) -> Result<usize, CellStorageError> {
+    ) -> Result<(PendingOperation<'_>, usize), CellStorageError> {
         struct CellWithRefs<'a> {
             rc: u32,
             // TODO: always copy data?
@@ -138,6 +140,8 @@ impl CellStorage {
             }
         }
 
+        let pending_op = self.pending.begin();
+
         // Prepare context and handles
         let alloc = Bump::new();
 
@@ -155,7 +159,7 @@ impl CellStorage {
             let key = key.as_array();
 
             if !ctx.insert_cell(key, &root, 0)? {
-                return Ok(0);
+                return Ok((pending_op, 0));
             }
         }
 
@@ -186,7 +190,7 @@ impl CellStorage {
         drop(stack);
 
         // Write transaction to the `WriteBatch`
-        Ok(ctx.finalize(batch))
+        Ok((pending_op, ctx.finalize(batch)))
     }
 
     pub fn load_cell(
@@ -199,24 +203,25 @@ impl CellStorage {
             }
         }
 
-        let cell = match self
-            .raw_cells_cache
-            .get_raw(self.db.as_ref(), hash.as_slice())
-        {
-            Ok(value) => 'cell: {
-                if let Some(value) = value {
-                    let rc = &value.header.header;
-                    if rc.load(Ordering::Acquire) > 0 {
-                        match StorageCell::deserialize(self.clone(), &value.slice) {
-                            Ok(cell) => break 'cell Arc::new(cell),
-                            Err(_) => return Err(CellStorageError::InvalidCell),
+        let cell =
+            match self
+                .raw_cells_cache
+                .get_raw(self.db.as_ref(), hash.as_slice(), &self.pending)
+            {
+                Ok(value) => 'cell: {
+                    if let Some(value) = value {
+                        let rc = &value.header.header;
+                        if rc.load(Ordering::Acquire) > 0 {
+                            match StorageCell::deserialize(self.clone(), &value.slice) {
+                                Ok(cell) => break 'cell Arc::new(cell),
+                                Err(_) => return Err(CellStorageError::InvalidCell),
+                            }
                         }
                     }
+                    return Err(CellStorageError::CellNotFound);
                 }
-                return Err(CellStorageError::CellNotFound);
-            }
-            Err(e) => return Err(CellStorageError::Internal(e)),
-        };
+                Err(e) => return Err(CellStorageError::Internal(e)),
+            };
         self.cells_cache.insert(hash, Arc::downgrade(&cell));
 
         Ok(cell)
@@ -227,7 +232,7 @@ impl CellStorage {
         batch: &mut rocksdb::WriteBatch,
         alloc: &Bump,
         hash: UInt256,
-    ) -> Result<usize, CellStorageError> {
+    ) -> Result<(PendingOperation<'_>, usize), CellStorageError> {
         #[derive(Clone, Copy)]
         struct CellState<'a> {
             rc: i64,
@@ -253,6 +258,8 @@ impl CellStorage {
                 }
             }
         }
+
+        let pending_op = self.pending.begin();
 
         let cells = &self.db.cells;
         let cells_cf = &cells.cf();
@@ -305,11 +312,45 @@ impl CellStorage {
                 refcount::encode_negative_refcount(removes),
             );
         }
-        Ok(total)
+        Ok((pending_op, total))
     }
 
     pub fn drop_cell(&self, hash: &UInt256) {
         self.cells_cache.remove(hash);
+    }
+}
+
+#[derive(Default)]
+struct PendingOperations {
+    // TODO: Replace with two atomic counters for inserts and pending operations
+    pending_count: Mutex<usize>,
+}
+
+impl PendingOperations {
+    fn begin(&self) -> PendingOperation<'_> {
+        *self.pending_count.lock().unwrap() += 1;
+        PendingOperation { operations: self }
+    }
+
+    #[inline]
+    fn run_if_none<F: FnOnce()>(&self, f: F) {
+        let guard = self.pending_count.lock().unwrap();
+        if *guard == 0 {
+            f();
+        }
+
+        // NOTE: Make sure to drop the lock only after the operation is executed
+        drop(guard);
+    }
+}
+
+pub struct PendingOperation<'a> {
+    operations: &'a PendingOperations,
+}
+
+impl Drop for PendingOperation<'_> {
+    fn drop(&mut self) {
+        *self.operations.pending_count.lock().unwrap() -= 1;
     }
 }
 
@@ -563,6 +604,7 @@ impl RawCellsCache {
         &self,
         db: &Db,
         key: &[u8; 32],
+        pending: &PendingOperations,
     ) -> Result<Option<RawCellsCacheItem>, rocksdb::Error> {
         use quick_cache::GuardResult;
 
@@ -572,7 +614,12 @@ impl RawCellsCache {
                 let (rc, data) = refcount::decode_value_with_rc(value.as_ref());
                 data.map(|value| {
                     let value = RawCellsCacheItem::from_header_and_slice(AtomicI64::new(rc), value);
-                    _ = g.insert(value.clone());
+
+                    pending.run_if_none(|| {
+                        // Insert value to the cache only if there are no pending operations
+                        _ = g.insert(value.clone());
+                    });
+
                     value
                 })
             } else {
