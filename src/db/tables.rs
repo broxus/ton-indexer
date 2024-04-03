@@ -1,3 +1,4 @@
+use crate::db::refcount;
 use bytesize::ByteSize;
 use weedb::rocksdb::{
     BlockBasedIndexType, BlockBasedOptions, DataBlockIndexType, MergeOperands, Options, ReadOptions,
@@ -112,6 +113,8 @@ impl ColumnFamily for Cells {
         opts.set_level_compaction_dynamic_level_bytes(true);
 
         optimize_for_level_compaction(opts, ByteSize::gib(1u64));
+        opts.set_merge_operator_associative("cell_merge", refcount::merge_operator);
+        opts.set_compaction_filter("cell_compaction", refcount::compaction_filter);
 
         let mut block_factory = BlockBasedOptions::default();
         block_factory.set_block_cache(&caches.block_cache);
