@@ -18,6 +18,7 @@ pub struct ShardStateReplaceTransaction<'a> {
     reader: ShardStatePacketReader,
     header: Option<BocHeader>,
     cells_read: u64,
+    clear_on_insert: bool,
 }
 
 impl<'a> ShardStateReplaceTransaction<'a> {
@@ -25,6 +26,7 @@ impl<'a> ShardStateReplaceTransaction<'a> {
         db: &'a Db,
         cell_storage: &'a Arc<CellStorage>,
         min_ref_mc_state: &'a Arc<MinRefMcState>,
+        clear_on_insert: bool,
     ) -> Self {
         Self {
             db,
@@ -33,6 +35,7 @@ impl<'a> ShardStateReplaceTransaction<'a> {
             reader: ShardStatePacketReader::new(),
             header: None,
             cells_read: 0,
+            clear_on_insert,
         }
     }
 
@@ -131,6 +134,11 @@ impl<'a> ShardStateReplaceTransaction<'a> {
         let mut tail = [0; 4];
         let mut ctx = FinalizationContext::new(self.db);
 
+        ctx.clear_temp_cells(self.db)?;
+        if self.clear_on_insert {
+            ctx.clear_cells(self.db)?;
+        }
+
         // Allocate on heap to prevent big future size
         let mut chunk_buffer = Vec::with_capacity(1 << 20);
         let mut data_buffer = vec![0u8; MAX_DATA_SIZE];
@@ -207,6 +215,12 @@ impl<'a> ShardStateReplaceTransaction<'a> {
         // Current entry contains root cell
         let root_hash = ctx.entries_buffer.repr_hash();
         ctx.final_check(root_hash)?;
+
+        if !self.clear_on_insert {
+            self.cell_storage
+                .apply_temp_cell(&ton_types::UInt256::from(root_hash))?;
+        }
+        ctx.clear_temp_cells(self.db)?;
 
         let shard_state_key = (block_id.shard_id, block_id.seq_no).to_vec();
         self.db.shard_states.insert(&shard_state_key, root_hash)?;
@@ -418,8 +432,20 @@ impl<'a> ShardStateReplaceTransaction<'a> {
             current_entry.as_reader().hash(MAX_LEVEL)
         };
 
-        ctx.write_batch
-            .merge_cf(&ctx.cells_cf, repr_hash, output_buffer.as_slice());
+        let output_buffer = output_buffer.as_slice();
+        if self.clear_on_insert {
+            // We have an exclusive access to the cells CF, so we can safely merge
+            ctx.write_batch
+                .merge_cf(&ctx.cells_cf, repr_hash, output_buffer);
+        } else {
+            // Otherwise, we need to store the data in the temp cells CF first
+
+            // NOTE: Skip the first 8 bytes, as they contain the reference counter
+            // that is not needed in the temp cells CF.
+            ctx.write_batch
+                .put_cf(&ctx.temp_cells_cf, repr_hash, &output_buffer[8..]);
+        }
+
         ctx.cell_usages.insert(*repr_hash, -1);
 
         // Done
@@ -433,6 +459,7 @@ struct FinalizationContext<'a> {
     entries_buffer: EntriesBuffer,
     output_buffer: Vec<u8>,
     cells_cf: BoundedCfHandle<'a>,
+    temp_cells_cf: BoundedCfHandle<'a>,
     write_batch: rocksdb::WriteBatch,
 }
 
@@ -444,8 +471,17 @@ impl<'a> FinalizationContext<'a> {
             entries_buffer: EntriesBuffer::new(),
             output_buffer: Vec::with_capacity(1 << 10),
             cells_cf: db.cells.cf(),
+            temp_cells_cf: db.temp_cells.cf(),
             write_batch: rocksdb::WriteBatch::default(),
         }
+    }
+
+    fn clear_cells(&self, db: &Db) -> Result<(), rocksdb::Error> {
+        Self::clear_cells_range(db, &self.cells_cf)
+    }
+
+    fn clear_temp_cells(&self, db: &Db) -> Result<(), rocksdb::Error> {
+        Self::clear_cells_range(db, &self.temp_cells_cf)
     }
 
     fn finalize_cell_usages(&mut self) {
@@ -468,6 +504,12 @@ impl<'a> FinalizationContext<'a> {
             "Invalid shard state cell"
         );
         Ok(())
+    }
+
+    fn clear_cells_range(db: &Db, cf: &BoundedCfHandle<'_>) -> Result<(), rocksdb::Error> {
+        let from = &[0x00; 32];
+        let to = &[0xff; 32];
+        db.raw().delete_range_cf(cf, from, to)
     }
 }
 

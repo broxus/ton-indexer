@@ -46,6 +46,197 @@ impl CellStorage {
         this
     }
 
+    pub fn apply_temp_cell(&self, root: &UInt256) -> Result<()> {
+        const MAX_NEW_CELLS_BATCH_SIZE: usize = 10000;
+
+        struct CellHashesIter<'a> {
+            data: rocksdb::DBPinnableSlice<'a>,
+            offset: usize,
+            remaining_refs: u8,
+        }
+
+        impl<'a> Iterator for CellHashesIter<'a> {
+            type Item = [u8; 32];
+
+            fn next(&mut self) -> Option<Self::Item> {
+                if self.remaining_refs == 0 {
+                    return None;
+                }
+
+                // NOTE: Unwrap is safe here because we have already checked
+                // that data can contain all references.
+                let item = self.data[self.offset..self.offset + 32].try_into().unwrap();
+
+                self.remaining_refs -= 1;
+                self.offset += 32;
+
+                Some(item)
+            }
+
+            fn size_hint(&self) -> (usize, Option<usize>) {
+                let r = self.remaining_refs as usize;
+                (r, Some(r))
+            }
+        }
+
+        enum InsertedCell<'a> {
+            New(CellHashesIter<'a>),
+            Existing,
+        }
+
+        struct Context<'a> {
+            cells_cf: BoundedCfHandle<'a>,
+            db: &'a Db,
+            buffer: Vec<u8>,
+            transaction: FastHashMap<[u8; 32], u32>,
+            new_cells_batch: rocksdb::WriteBatch,
+            new_cell_count: usize,
+        }
+
+        impl<'a> Context<'a> {
+            fn new(db: &'a Db) -> Self {
+                Self {
+                    cells_cf: db.cells.cf(),
+                    db,
+                    buffer: Vec::with_capacity(512),
+                    transaction: Default::default(),
+                    new_cells_batch: rocksdb::WriteBatch::default(),
+                    new_cell_count: 0,
+                }
+            }
+
+            fn load_temp(&self, key: &[u8; 32]) -> Result<CellHashesIter<'a>, CellStorageError> {
+                let data = match self.db.temp_cells.get(key) {
+                    Ok(Some(data)) => data,
+                    Ok(None) => return Err(CellStorageError::CellNotFound),
+                    Err(e) => return Err(CellStorageError::Internal(e)),
+                };
+
+                let (offset, remaining_refs) = {
+                    let data = data.as_ref();
+
+                    let len_before = data.len();
+                    let (_, Some(mut data)) = refcount::decode_value_with_rc(data) else {
+                        return Err(CellStorageError::CellNotFound);
+                    };
+
+                    let refs = match ton_types::CellData::deserialize(&mut data) {
+                        Ok(data) => data.references_count(),
+                        Err(_) => return Err(CellStorageError::InvalidCell),
+                    };
+                    let offset = data.len() - len_before;
+
+                    if data.len() < refs * 32 {
+                        return Err(CellStorageError::InvalidCell);
+                    }
+
+                    (offset, refs as u8)
+                };
+
+                Ok(CellHashesIter {
+                    data,
+                    offset,
+                    remaining_refs,
+                })
+            }
+
+            fn insert_cell(
+                &mut self,
+                key: &[u8; 32],
+            ) -> Result<InsertedCell<'a>, CellStorageError> {
+                Ok(match self.transaction.entry(*key) {
+                    hash_map::Entry::Occupied(mut entry) => {
+                        *entry.get_mut() += 1; // 1 new reference
+                        InsertedCell::Existing
+                    }
+                    hash_map::Entry::Vacant(entry) => {
+                        if let Some(value) =
+                            self.db.cells.get(key).map_err(CellStorageError::Internal)?
+                        {
+                            let (_, value) = refcount::decode_value_with_rc(value.as_ref());
+                            if value.is_some() {
+                                entry.insert(1); // 1 new reference
+                                return Ok(InsertedCell::Existing);
+                            }
+                        };
+
+                        entry.insert(0); // 0 new references (the first one is included in the merge below)
+                        let iter = self.load_temp(key)?;
+
+                        self.buffer.clear();
+                        refcount::add_positive_refount(
+                            1,
+                            Some(iter.data.as_ref()),
+                            &mut self.buffer,
+                        );
+
+                        self.flush_new_cells()?;
+                        self.new_cells_batch
+                            .put_cf(&self.cells_cf, key, self.buffer.as_slice());
+
+                        InsertedCell::New(iter)
+                    }
+                })
+            }
+
+            fn flush_new_cells(&mut self) -> Result<(), rocksdb::Error> {
+                if self.new_cell_count >= MAX_NEW_CELLS_BATCH_SIZE {
+                    self.db
+                        .raw()
+                        .write(std::mem::take(&mut self.new_cells_batch))?;
+                    self.new_cell_count = 0;
+                }
+                Ok(())
+            }
+
+            fn flush_existing_cells(&mut self) -> Result<(), rocksdb::Error> {
+                let mut batch = rocksdb::WriteBatch::default();
+
+                for (key, &refs) in &self.transaction {
+                    if refs == 0 {
+                        continue;
+                    }
+
+                    self.buffer.clear();
+                    refcount::add_positive_refount(refs, None, &mut self.buffer);
+                    batch.merge_cf(&self.cells_cf, key, self.buffer.as_slice());
+                }
+
+                self.db.raw().write(batch)
+            }
+        }
+
+        let mut ctx = Context::new(&self.db);
+
+        let mut stack = Vec::with_capacity(16);
+        if let InsertedCell::New(iter) = ctx.insert_cell(root.as_slice())? {
+            stack.push(iter);
+        }
+
+        'outer: loop {
+            let Some(iter) = stack.last_mut() else {
+                break;
+            };
+
+            for ref child in iter {
+                if let InsertedCell::New(iter) = ctx.insert_cell(child)? {
+                    stack.push(iter);
+                    continue 'outer;
+                }
+            }
+
+            stack.pop();
+        }
+
+        // Clear big chunks of data before finalization
+        drop(stack);
+
+        ctx.flush_new_cells()?;
+        ctx.flush_existing_cells()?;
+
+        Ok(())
+    }
+
     pub fn store_cell(
         &self,
         batch: &mut rocksdb::WriteBatch,
@@ -363,7 +554,7 @@ pub enum CellStorageError {
     #[error("Cell counter mismatch")]
     CounterMismatch,
     #[error("Internal rocksdb error")]
-    Internal(#[source] rocksdb::Error),
+    Internal(#[from] rocksdb::Error),
 }
 
 pub struct StorageCell {
