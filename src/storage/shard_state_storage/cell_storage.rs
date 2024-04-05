@@ -113,18 +113,14 @@ impl CellStorage {
                 };
 
                 let (offset, remaining_refs) = {
-                    let data = data.as_ref();
+                    let data = &mut data.as_ref();
 
                     let len_before = data.len();
-                    let (_, Some(mut data)) = refcount::decode_value_with_rc(data) else {
-                        return Err(CellStorageError::CellNotFound);
-                    };
-
-                    let refs = match ton_types::CellData::deserialize(&mut data) {
+                    let refs = match ton_types::CellData::deserialize(data) {
                         Ok(data) => data.references_count(),
                         Err(_) => return Err(CellStorageError::InvalidCell),
                     };
-                    let offset = data.len() - len_before;
+                    let offset = len_before - data.len();
 
                     if data.len() < refs * 32 {
                         return Err(CellStorageError::InvalidCell);
@@ -170,9 +166,13 @@ impl CellStorage {
                             &mut self.buffer,
                         );
 
-                        self.flush_new_cells()?;
                         self.new_cells_batch
                             .put_cf(&self.cells_cf, key, self.buffer.as_slice());
+
+                        self.new_cell_count += 1;
+                        if self.new_cell_count >= MAX_NEW_CELLS_BATCH_SIZE {
+                            self.flush_new_cells()?;
+                        }
 
                         InsertedCell::New(iter)
                     }
@@ -180,7 +180,7 @@ impl CellStorage {
             }
 
             fn flush_new_cells(&mut self) -> Result<(), rocksdb::Error> {
-                if self.new_cell_count >= MAX_NEW_CELLS_BATCH_SIZE {
+                if self.new_cell_count > 0 {
                     self.db
                         .raw()
                         .write(std::mem::take(&mut self.new_cells_batch))?;
