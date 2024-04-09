@@ -309,13 +309,18 @@ impl<'a> ShardStateReplaceTransaction<'a> {
         };
 
         let mut max_depths = [0u16; 4];
-        for i in 0..hash_count {
+        let mut i = 0;
+        for level in 0..4 {
+            if level != 0 && (is_pruned_cell || ((1 << (level - 1)) & level_mask.mask()) == 0) {
+                continue;
+            }
+
             let mut hasher = Sha256::new();
 
             let level_mask = if is_pruned_cell {
                 level_mask
             } else {
-                ton_types::LevelMask::with_level(i)
+                ton_types::LevelMask::with_level(level)
             };
 
             let d1 = ton_types::cell::calc_d1(
@@ -348,12 +353,12 @@ impl<'a> ShardStateReplaceTransaction<'a> {
                 hasher.update(child_depth.to_be_bytes());
 
                 let depth = &mut max_depths[i as usize];
-                *depth = std::cmp::max(*depth, child_depth + 1);
-
-                if *depth > ton_types::MAX_DEPTH {
-                    return Err(ReplaceTransactionError::InvalidCell)
-                        .context("Max tree depth exceeded");
-                }
+                *depth = child_depth
+                    .checked_add(1)
+                    .map(|next_depth| next_depth.max(*depth))
+                    .filter(|&depth| depth <= ton_types::MAX_DEPTH)
+                    .ok_or(ReplaceTransactionError::InvalidCell)
+                    .context("Max tree depth exceeded")?;
 
                 current_entry.set_depth(i, *depth);
             }
@@ -375,6 +380,8 @@ impl<'a> ShardStateReplaceTransaction<'a> {
             }
 
             current_entry.set_hash(i, hasher.finalize().as_slice());
+
+            i += 1;
         }
 
         // Update pruned branches
