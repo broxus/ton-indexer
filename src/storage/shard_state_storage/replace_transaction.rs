@@ -327,7 +327,7 @@ impl<'a> ShardStateReplaceTransaction<'a> {
                         .get(index)
                         .ok_or(ReplaceTransactionError::InvalidCell)
                         .context("Pruned branch data not found")?;
-                    child.pruned_branch_depth(i, child_data)
+                    child.pruned_branch_depth(if is_merkle_cell { i + 1 } else { i }, child_data)
                 } else {
                     child.depth(if is_merkle_cell { i + 1 } else { i })
                 };
@@ -352,7 +352,7 @@ impl<'a> ShardStateReplaceTransaction<'a> {
                         .ok_or(ReplaceTransactionError::InvalidCell)
                         .context("Pruned branch data not found")?;
                     child
-                        .pruned_branch_hash(i, child_data)
+                        .pruned_branch_hash(if is_merkle_cell { i + 1 } else { i }, child_data)
                         .context("Invalid pruned branch")?
                 } else {
                     child.hash(if is_merkle_cell { i + 1 } else { i })
