@@ -152,6 +152,7 @@ async fn compute_and_store_shard_state(
     prev1_id: &ton_block::BlockIdExt,
     prev2_id: &Option<ton_block::BlockIdExt>,
 ) -> Result<Arc<ShardStateStuff>> {
+    #[allow(unused)]
     enum RefMcStateHandles {
         Split(Arc<RefMcStateHandle>, Arc<RefMcStateHandle>),
         Single(Arc<RefMcStateHandle>),

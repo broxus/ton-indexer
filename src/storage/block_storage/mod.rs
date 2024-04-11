@@ -11,6 +11,7 @@ use std::convert::TryInto;
 use std::hash::Hash;
 use std::ops::{Bound, RangeBounds};
 use std::sync::Arc;
+use std::time::Instant;
 
 use anyhow::{Context, Result};
 use parking_lot::RwLock;
@@ -460,6 +461,8 @@ impl BlockStorage {
     ) -> Result<()> {
         let _compaction_guard = self.db.delay_compaction().await;
 
+        let instant = Instant::now();
+
         // Find target block
         let target_block = match gc_type {
             BlocksGcKind::BeforePreviousKeyBlock => self
@@ -512,6 +515,7 @@ impl BlockStorage {
             mc_package_entries_removed,
             total_package_entries_removed,
             total_handles_removed,
+            elapsed = %humantime::format_duration(instant.elapsed()),
             "finished blocks GC"
         );
 

@@ -270,11 +270,16 @@ impl Engine {
 
         blocks_gc_state.enabled.store(true, Ordering::Release);
 
-        let handle = self.storage.block_handle_storage().find_last_key_block()?;
+        let key_block = self.storage.block_handle_storage().find_last_key_block()?;
+        if self.load_shards_client_mc_block_id()?.seq_no < key_block.id().seq_no {
+            // Blocks GC will be called later when the shards client will reach the key block
+            return Ok(());
+        }
+
         self.storage
             .block_storage()
             .remove_outdated_blocks(
-                handle.id(),
+                key_block.id(),
                 blocks_gc_state.max_blocks_per_batch,
                 blocks_gc_state.ty,
             )
@@ -1147,21 +1152,6 @@ impl Engine {
     }
 
     async fn on_masterchain_block(&self, handle: &Arc<BlockHandle>) -> Result<()> {
-        if handle.is_key_block() {
-            if let Some(blocks_gc) = &self.blocks_gc_state {
-                if blocks_gc.enabled.load(Ordering::Acquire) {
-                    self.storage
-                        .block_storage()
-                        .remove_outdated_blocks(
-                            handle.id(),
-                            blocks_gc.max_blocks_per_batch,
-                            blocks_gc.ty,
-                        )
-                        .await?
-                }
-            }
-        }
-
         self.storage
             .runtime_storage()
             .persistent_state_keeper()
@@ -1181,7 +1171,20 @@ impl Engine {
             block,
         };
 
-        self.subscriber.process_blocks_edge(ctx).await
+        self.subscriber.process_blocks_edge(ctx).await?;
+
+        if let Some(gc) = self
+            .blocks_gc_state
+            .as_ref()
+            .filter(|gc| meta.is_key_block() && gc.enabled.load(Ordering::Acquire))
+        {
+            self.storage
+                .block_storage()
+                .remove_outdated_blocks(handle.id(), gc.max_blocks_per_batch, gc.ty)
+                .await?
+        }
+
+        Ok(())
     }
 
     pub fn load_last_applied_mc_block_id(&self) -> Result<ton_block::BlockIdExt> {
