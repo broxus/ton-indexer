@@ -406,14 +406,15 @@ impl NodeRpcClient {
                         .write_all(&chunk)
                         .context("Failed to write archive chunk")?;
 
+                    offset += chunk.len() as u64;
+
                     if is_last {
                         return Ok(ArchiveDownloadStatus::Downloaded {
                             neighbour,
-                            len: chunk.len(),
+                            len: offset as usize,
                         });
                     }
 
-                    offset += chunk.len() as u64;
                     part_attempt = 0;
                 }
                 Ok(Err(e)) => {
