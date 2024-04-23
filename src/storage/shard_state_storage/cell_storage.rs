@@ -149,12 +149,13 @@ impl CellStorage {
                         if let Some(value) =
                             self.db.cells.get(key).map_err(CellStorageError::Internal)?
                         {
-                            let (_, value) = refcount::decode_value_with_rc(value.as_ref());
+                            let (rc, value) = refcount::decode_value_with_rc(value.as_ref());
+                            debug_assert!(rc > 0 && value.is_some() || rc == 0 && value.is_none());
                             if value.is_some() {
                                 entry.insert(1); // 1 new reference
                                 return Ok(InsertedCell::Existing);
                             }
-                        };
+                        }
 
                         entry.insert(0); // 0 new references (the first one is included in the merge below)
                         let iter = self.load_temp(key)?;

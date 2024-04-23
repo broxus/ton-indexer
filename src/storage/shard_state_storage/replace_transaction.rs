@@ -198,7 +198,7 @@ impl<'a> ShardStateReplaceTransaction<'a> {
             }
 
             if batch_len > CELLS_PER_BATCH {
-                ctx.finalize_cell_usages();
+                ctx.finalize_cell_usages(self.clear_on_insert);
                 raw.write_opt(std::mem::take(&mut ctx.write_batch), &write_options)?;
                 batch_len = 0;
             }
@@ -208,7 +208,7 @@ impl<'a> ShardStateReplaceTransaction<'a> {
         }
 
         if batch_len > 0 {
-            ctx.finalize_cell_usages();
+            ctx.finalize_cell_usages(self.clear_on_insert);
             raw.write_opt(std::mem::take(&mut ctx.write_batch), &write_options)?;
         }
 
@@ -491,18 +491,22 @@ impl<'a> FinalizationContext<'a> {
         Self::clear_cells_range(db, &self.temp_cells_cf)
     }
 
-    fn finalize_cell_usages(&mut self) {
-        self.cell_usages.retain(|key, &mut rc| {
-            if rc > 0 {
-                self.write_batch.merge_cf(
-                    &self.cells_cf,
-                    key,
-                    refcount::encode_positive_refcount(rc as u32),
-                );
-            }
+    fn finalize_cell_usages(&mut self, use_merge: bool) {
+        if use_merge {
+            self.cell_usages.retain(|key, &mut rc| {
+                if rc > 0 {
+                    self.write_batch.merge_cf(
+                        &self.cells_cf,
+                        key,
+                        refcount::encode_positive_refcount(rc as u32),
+                    );
+                }
 
-            rc < 0
-        });
+                rc < 0
+            });
+        } else {
+            self.cell_usages.retain(|_, &mut rc| rc < 0);
+        }
     }
 
     fn final_check(&self, root_hash: &[u8; 32]) -> Result<()> {
