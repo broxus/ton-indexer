@@ -543,7 +543,6 @@ async fn download_start_blocks_and_states(
             mc_block_id: mc_block_id.clone(),
             block_id: mc_block_id.clone(),
         },
-        true,
     )
     .await?;
 
@@ -565,7 +564,6 @@ async fn download_start_blocks_and_states(
                     mc_block_id: mc_block_id.clone(),
                     block_id,
                 },
-                false,
             )
             .await?;
         };
@@ -577,7 +575,6 @@ async fn download_start_blocks_and_states(
 async fn download_block_with_state(
     engine: &Arc<Engine>,
     full_state_id: FullStateId,
-    clear_on_insert: bool,
 ) -> Result<(Arc<BlockHandle>, BlockStuff)> {
     let block_handle_storage = engine.storage.block_handle_storage();
     let block_storage = engine.storage.block_storage();
@@ -630,7 +627,7 @@ async fn download_block_with_state(
         let state_update = block.block().read_state_update()?;
 
         tracing::info!(block_id = %handle.id().display(), "downloading state");
-        let shard_state = download_state(engine, full_state_id, clear_on_insert).await?;
+        let shard_state = download_state(engine, full_state_id).await?;
         tracing::info!(block_id = %handle.id().display(), "downloaded state");
 
         let state_hash = shard_state.root_cell().repr_hash();

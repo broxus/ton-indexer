@@ -23,7 +23,6 @@ const PACKET_SIZE: usize = 1 << 20; // 1 MB
 pub async fn download_state(
     engine: &Arc<Engine>,
     full_state_id: FullStateId,
-    clear_on_insert: bool,
 ) -> Result<Arc<ShardStateStuff>> {
     let mc_client = engine.masterchain_client.clone();
 
@@ -58,10 +57,7 @@ pub async fn download_state(
         let block_id = full_state_id.block_id.clone();
         let total_size = total_size.clone();
         async move {
-            result_tx.send(
-                background_process(&engine, block_id, clear_on_insert, total_size, packets_rx)
-                    .await,
-            )
+            result_tx.send(background_process(&engine, block_id, total_size, packets_rx).await)
         }
     });
 
@@ -111,14 +107,13 @@ pub async fn download_state(
 async fn background_process(
     engine: &Arc<Engine>,
     block_id: ton_block::BlockIdExt,
-    clear_on_insert: bool,
     total_size: Arc<AtomicU64>,
     mut packets_rx: PacketsRx,
 ) -> Result<Arc<ShardStateStuff>> {
     let (mut transaction, mut ctx) = engine
         .storage
         .shard_state_storage()
-        .begin_replace(&block_id, clear_on_insert)
+        .begin_replace(&block_id)
         .await?;
 
     let mut pg = ProgressBar::builder("downloading state")
