@@ -274,6 +274,8 @@ impl ShardStateStorage {
             elapsed = %humantime::format_duration(instant.elapsed()),
             "finished shard states GC",
         );
+        metrics::counter!("ton_indexer_gc_states_removed").increment(removed_states as u64);
+        metrics::counter!("ton_indexer_gc_cells_removed").increment(removed_cells as u64);
         Ok(top_blocks)
     }
 

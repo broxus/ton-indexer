@@ -6,6 +6,7 @@ use std::time::Duration;
 use anyhow::Result;
 use argh::FromArgs;
 use broxus_util::now;
+use metrics_exporter_tcp::TcpBuilder;
 use serde::{Deserialize, Serialize};
 use tracing_subscriber::EnvFilter;
 
@@ -57,6 +58,13 @@ async fn main() -> Result<()> {
 async fn run(app: App) -> Result<()> {
     // SAFETY: global allocator is set to jemalloc
     unsafe { ton_indexer::alloc::apply_config() };
+
+    // should be used with
+    // `cargo install metrics-observer`
+    TcpBuilder::new()
+        .buffer_size(Some(100 * 1024 * 1024))
+        .install()
+        .ok();
 
     let mut config: Config = broxus_util::read_config(app.config)?;
     config
