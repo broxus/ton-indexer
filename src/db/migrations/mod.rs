@@ -5,7 +5,7 @@ use super::tables;
 
 // declare migrations here as `mod v2_1_x`
 
-const CURRENT_VERSION: Semver = [2, 1, 0];
+const CURRENT_VERSION: Semver = [2, 2, 0];
 
 pub fn apply(db: &WeeDb) -> Result<()> {
     let migrations =
