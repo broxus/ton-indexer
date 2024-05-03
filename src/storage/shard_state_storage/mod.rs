@@ -85,7 +85,7 @@ impl ShardStateStorage {
 
         let _gc_lock = self.gc_lock.lock().await;
 
-        let len = self
+        let (pending_op, len) = self
             .cell_storage
             .store_cell(&mut batch, state.root_cell().clone())?;
 
@@ -107,6 +107,9 @@ impl ShardStateStorage {
         );
 
         self.db.raw().write(batch)?;
+
+        // Ensure that pending operation guard is dropped after the batch is written
+        drop(pending_op);
 
         Ok(if handle.meta().set_has_state() {
             self.block_handle_storage.store_handle(handle)?;
@@ -219,11 +222,16 @@ impl ShardStateStorage {
             let mut batch = rocksdb::WriteBatch::default();
             {
                 let _guard = self.gc_lock.lock().await;
-                let total = self
+
+                let (pending_op, total) = self
                     .cell_storage
                     .remove_cell(&mut batch, &alloc, root_hash)?;
                 batch.delete_cf(&shard_states_cf.bound(), key);
+
                 raw.write_opt(batch, cells_write_options)?;
+
+                // Ensure that pending operation guard is dropped after the batch is written
+                drop(pending_op);
 
                 removed_cells += total;
                 tracing::debug!(
@@ -266,6 +274,8 @@ impl ShardStateStorage {
             elapsed = %humantime::format_duration(instant.elapsed()),
             "finished shard states GC",
         );
+        metrics::counter!("ton_indexer_gc_states_removed").increment(removed_states as u64);
+        metrics::counter!("ton_indexer_gc_cells_removed").increment(removed_cells as u64);
         Ok(top_blocks)
     }
 

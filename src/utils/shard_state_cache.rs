@@ -17,10 +17,12 @@ pub struct ShardStateCache {
 impl ShardStateCache {
     /// Creates cache object. If `config` is `None`, cache is disabled
     pub fn new(config: Option<ShardStateCacheOptions>) -> Self {
-        match config.map(|config| {
+        let config = config.map(|config| {
             let ttl = Duration::from_secs(config.ttl_sec);
             (ttl, ShardStatesMap::default())
-        }) {
+        });
+
+        match config {
             // Cache is enabled and should be cleared every TTL interval
             Some((ttl, map)) => Self {
                 ttl: Some(ttl),

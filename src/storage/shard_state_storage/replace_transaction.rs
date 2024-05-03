@@ -131,6 +131,8 @@ impl<'a> ShardStateReplaceTransaction<'a> {
         let mut tail = [0; 4];
         let mut ctx = FinalizationContext::new(self.db);
 
+        ctx.clear_temp_cells(self.db)?;
+
         // Allocate on heap to prevent big future size
         let mut chunk_buffer = Vec::with_capacity(1 << 20);
         let mut data_buffer = vec![0u8; MAX_DATA_SIZE];
@@ -207,6 +209,10 @@ impl<'a> ShardStateReplaceTransaction<'a> {
         // Current entry contains root cell
         let root_hash = ctx.entries_buffer.repr_hash();
         ctx.final_check(root_hash)?;
+
+        self.cell_storage
+            .apply_temp_cell(&ton_types::UInt256::from(root_hash))?;
+        ctx.clear_temp_cells(self.db)?;
 
         let shard_state_key = (block_id.shard_id, block_id.seq_no).to_vec();
         self.db.shard_states.insert(&shard_state_key, root_hash)?;
@@ -295,13 +301,18 @@ impl<'a> ShardStateReplaceTransaction<'a> {
         };
 
         let mut max_depths = [0u16; 4];
-        for i in 0..hash_count {
+        let mut i = 0;
+        for level in 0..4 {
+            if level != 0 && (is_pruned_cell || ((1 << (level - 1)) & level_mask.mask()) == 0) {
+                continue;
+            }
+
             let mut hasher = Sha256::new();
 
             let level_mask = if is_pruned_cell {
                 level_mask
             } else {
-                ton_types::LevelMask::with_level(i)
+                ton_types::LevelMask::with_level(level)
             };
 
             let d1 = ton_types::cell::calc_d1(
@@ -334,12 +345,12 @@ impl<'a> ShardStateReplaceTransaction<'a> {
                 hasher.update(child_depth.to_be_bytes());
 
                 let depth = &mut max_depths[i as usize];
-                *depth = std::cmp::max(*depth, child_depth + 1);
-
-                if *depth > ton_types::MAX_DEPTH {
-                    return Err(ReplaceTransactionError::InvalidCell)
-                        .context("Max tree depth exceeded");
-                }
+                *depth = child_depth
+                    .checked_add(1)
+                    .map(|next_depth| next_depth.max(*depth))
+                    .filter(|&depth| depth <= ton_types::MAX_DEPTH)
+                    .ok_or(ReplaceTransactionError::InvalidCell)
+                    .context("Max tree depth exceeded")?;
 
                 current_entry.set_depth(i, *depth);
             }
@@ -361,6 +372,8 @@ impl<'a> ShardStateReplaceTransaction<'a> {
             }
 
             current_entry.set_hash(i, hasher.finalize().as_slice());
+
+            i += 1;
         }
 
         // Update pruned branches
@@ -373,7 +386,7 @@ impl<'a> ShardStateReplaceTransaction<'a> {
         let output_buffer = &mut ctx.output_buffer;
         output_buffer.clear();
 
-        output_buffer.extend_from_slice(&[1, 0, 0, 0, 0, 0, 0, 0, cell.cell_type.to_u8().unwrap()]);
+        output_buffer.extend_from_slice(&[cell.cell_type.to_u8().unwrap()]);
         output_buffer.extend_from_slice(&(cell.bit_len as u16).to_le_bytes());
         output_buffer.extend_from_slice(&cell.data[0..(cell.bit_len + 8) / 8]);
         output_buffer.extend_from_slice(&[cell.level_mask, 0, 1, hash_count]); // level_mask, store_hashes, has_hashes, hash_count
@@ -419,7 +432,7 @@ impl<'a> ShardStateReplaceTransaction<'a> {
         };
 
         ctx.write_batch
-            .merge_cf(&ctx.cells_cf, repr_hash, output_buffer.as_slice());
+            .put_cf(&ctx.temp_cells_cf, repr_hash, output_buffer.as_slice());
         ctx.cell_usages.insert(*repr_hash, -1);
 
         // Done
@@ -432,7 +445,7 @@ struct FinalizationContext<'a> {
     cell_usages: FastHashMap<[u8; 32], i32>,
     entries_buffer: EntriesBuffer,
     output_buffer: Vec<u8>,
-    cells_cf: BoundedCfHandle<'a>,
+    temp_cells_cf: BoundedCfHandle<'a>,
     write_batch: rocksdb::WriteBatch,
 }
 
@@ -443,23 +456,19 @@ impl<'a> FinalizationContext<'a> {
             cell_usages: FastHashMap::with_capacity_and_hasher(128, Default::default()),
             entries_buffer: EntriesBuffer::new(),
             output_buffer: Vec::with_capacity(1 << 10),
-            cells_cf: db.cells.cf(),
+            temp_cells_cf: db.temp_cells.cf(),
             write_batch: rocksdb::WriteBatch::default(),
         }
     }
 
-    fn finalize_cell_usages(&mut self) {
-        self.cell_usages.retain(|key, &mut rc| {
-            if rc > 0 {
-                self.write_batch.merge_cf(
-                    &self.cells_cf,
-                    key,
-                    refcount::encode_positive_refcount(rc as u32),
-                );
-            }
+    fn clear_temp_cells(&self, db: &Db) -> Result<(), rocksdb::Error> {
+        let from = &[0x00; 32];
+        let to = &[0xff; 32];
+        db.raw().delete_range_cf(&self.temp_cells_cf, from, to)
+    }
 
-            rc < 0
-        });
+    fn finalize_cell_usages(&mut self) {
+        self.cell_usages.retain(|_, &mut rc| rc < 0);
     }
 
     fn final_check(&self, root_hash: &[u8; 32]) -> Result<()> {

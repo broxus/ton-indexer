@@ -32,8 +32,10 @@ pub fn merge_operator(
 
 pub fn compaction_filter(_level: u32, _key: &[u8], value: &[u8]) -> Decision {
     if value.is_empty() {
+        metrics::counter!("ton_indexer_compaction_removes").increment(1);
         Decision::Remove
     } else {
+        metrics::counter!("ton_indexer_compaction_keeps").increment(1);
         Decision::Keep
     }
 }
@@ -69,10 +71,6 @@ pub fn add_positive_refount(rc: u32, data: Option<&[u8]>, target: &mut Vec<u8>) 
     if let Some(data) = data {
         target.extend_from_slice(data);
     }
-}
-
-pub fn encode_positive_refcount(rc: u32) -> [u8; RC_BYTES] {
-    RcType::from(rc).to_le_bytes()
 }
 
 pub fn encode_negative_refcount(rc: u32) -> [u8; RC_BYTES] {
