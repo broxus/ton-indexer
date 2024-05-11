@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use bytesize::ByteSize;
+use fdlimit::Outcome;
 use weedb::{Caches, WeeDb};
 
 pub use weedb::Stats as RocksdbStats;
@@ -36,7 +37,11 @@ pub struct Db {
 }
 
 impl Db {
-    pub fn open(path: PathBuf, options: DbOptions) -> Result<Arc<Self>> {
+    pub fn open(
+        path: PathBuf,
+        options: DbOptions,
+        collect_rocksdb_stats: bool,
+    ) -> Result<Arc<Self>> {
         tracing::info!(
             rocksdb_lru_capacity = %options.rocksdb_lru_capacity,
             cells_cache_size = %options.cells_cache_size,
@@ -45,9 +50,19 @@ impl Db {
 
         let limit = match fdlimit::raise_fd_limit() {
             // New fd limit
-            Some(limit) => limit,
+            Ok(Outcome::LimitRaised { from, to }) => {
+                tracing::info!("Raised fd limit from {} to {}", from, to);
+                to
+            }
             // Current soft limit
-            None => {
+            Err(e) => {
+                tracing::error!("Failed to raise fd limit: {:?}", e);
+                rlimit::getrlimit(rlimit::Resource::NOFILE)
+                    .unwrap_or((256, 0))
+                    .0
+            }
+            Ok(Outcome::Unsupported) => {
+                tracing::warn!("fd limit raising is not supported on this platform");
                 rlimit::getrlimit(rlimit::Resource::NOFILE)
                     .unwrap_or((256, 0))
                     .0
@@ -65,8 +80,9 @@ impl Db {
 
                 // bigger base level size - less compactions
                 // parallel compactions finishes faster - less write stalls
-
                 opts.set_max_subcompactions(options.max_subcompactions.get() as u32);
+                // all data will go through merge and compaction filters -> no db bloating
+                opts.set_periodic_compaction_seconds(86400);
 
                 // io
                 opts.set_max_open_files(limit as i32);
@@ -83,6 +99,7 @@ impl Db {
                 // cpu
                 opts.set_max_background_jobs(options.low_thread_pool_size.get() as i32);
                 opts.increase_parallelism(options.high_thread_pool_size.get() as i32);
+                // todo: opts.set_compression_options_parallel_threads()
 
                 opts.set_allow_concurrent_memtable_write(false);
                 opts.set_enable_write_thread_adaptive_yield(true);
@@ -106,6 +123,7 @@ impl Db {
             .with_table::<tables::Next1>()
             .with_table::<tables::Next2>()
             .with_table::<tables::PackageEntries>()
+            .with_metrics_update_interval(collect_rocksdb_stats.then(|| Duration::from_secs(5)))
             .build()
             .context("Failed building db")?;
 

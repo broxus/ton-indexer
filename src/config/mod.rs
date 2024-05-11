@@ -6,7 +6,6 @@ use std::path::PathBuf;
 use everscale_network::{adnl, dht, overlay, rldp};
 use rand::Rng;
 use serde::{Deserialize, Serialize};
-use sysinfo::SystemExt;
 
 pub use self::node_keys::*;
 use crate::network::NeighboursOptions;
@@ -21,6 +20,8 @@ pub struct NodeConfig {
 
     pub rocks_db_path: PathBuf,
     pub file_db_path: PathBuf,
+    #[serde(default)]
+    pub collect_rocksdb_stats: bool,
 
     pub state_gc_options: Option<StateGcOptions>,
     pub blocks_gc_options: Option<BlocksGcOptions>,
@@ -45,6 +46,7 @@ impl Default for NodeConfig {
             ip_address: SocketAddrV4::new(std::net::Ipv4Addr::LOCALHOST, 30303),
             adnl_keys: Default::default(),
             rocks_db_path: "db/rocksdb".into(),
+            collect_rocksdb_stats: true,
             file_db_path: "db/file".into(),
             state_gc_options: None,
             blocks_gc_options: None,

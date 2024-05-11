@@ -97,7 +97,11 @@ impl Engine {
         subscriber: Arc<dyn Subscriber>,
     ) -> Result<Arc<Self>> {
         let old_blocks_policy = config.sync_options.old_blocks_policy;
-        let db = Db::open(config.rocks_db_path, config.db_options)?;
+        let db = Db::open(
+            config.rocks_db_path,
+            config.db_options,
+            config.collect_rocksdb_stats,
+        )?;
         let cells_storage_size_bytes = config.db_options.cells_cache_size;
         let storage = Storage::new(
             db.clone(),
