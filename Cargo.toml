@@ -46,7 +46,7 @@ tracing = "0.1"
 broxus-util = { version = "0.2", default-features = false, features = ["alloc"] }
 triomphe = "0.1"
 
-weedb = { version = "0.2.1", features = ["zstd", "lz4", "jemalloc", "metrics"] }
+weedb = { version = "0.2.3", features = ["zstd", "lz4", "jemalloc", "metrics"] }
 
 ton_block = { git = "https://github.com/broxus/ton-labs-block.git" }
 ton_types = { git = "https://github.com/broxus/ton-labs-types.git" }

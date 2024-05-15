@@ -37,11 +37,7 @@ pub struct Db {
 }
 
 impl Db {
-    pub fn open(
-        path: PathBuf,
-        options: DbOptions,
-        collect_rocksdb_stats: bool,
-    ) -> Result<Arc<Self>> {
+    pub fn open(path: PathBuf, options: DbOptions) -> Result<Arc<Self>> {
         tracing::info!(
             rocksdb_lru_capacity = %options.rocksdb_lru_capacity,
             cells_cache_size = %options.cells_cache_size,
@@ -123,7 +119,7 @@ impl Db {
             .with_table::<tables::Next1>()
             .with_table::<tables::Next2>()
             .with_table::<tables::PackageEntries>()
-            .with_metrics_update_interval(collect_rocksdb_stats.then(|| Duration::from_secs(5)))
+            .with_metrics_enabled(options.metrics_update_interval_sec.is_some())
             .build()
             .context("Failed building db")?;
 
@@ -146,16 +142,20 @@ impl Db {
             inner,
         });
 
-        spawn_metrics_loop(&this, Duration::from_secs(5), |this| async move {
-            if let Err(e) = this.update_metrics() {
-                tracing::error!("Failed to update memory usage stats: {}", e);
-            }
-        });
+        if let Some(interval) = options.metrics_update_interval_sec {
+            spawn_metrics_loop(&this, Duration::from_secs(interval), |this| async move {
+                if let Err(e) = this.update_metrics() {
+                    tracing::error!("Failed to update memory usage stats: {}", e);
+                }
+            });
+        }
 
         Ok(this)
     }
 
     fn update_metrics(&self) -> Result<()> {
+        self.inner.refresh_metrics();
+
         let RocksdbStats {
             whole_db_stats,
             block_cache_usage,

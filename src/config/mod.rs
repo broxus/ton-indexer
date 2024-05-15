@@ -20,8 +20,6 @@ pub struct NodeConfig {
 
     pub rocks_db_path: PathBuf,
     pub file_db_path: PathBuf,
-    #[serde(default)]
-    pub collect_rocksdb_stats: bool,
 
     pub state_gc_options: Option<StateGcOptions>,
     pub blocks_gc_options: Option<BlocksGcOptions>,
@@ -46,7 +44,6 @@ impl Default for NodeConfig {
             ip_address: SocketAddrV4::new(std::net::Ipv4Addr::LOCALHOST, 30303),
             adnl_keys: Default::default(),
             rocks_db_path: "db/rocksdb".into(),
-            collect_rocksdb_stats: true,
             file_db_path: "db/file".into(),
             state_gc_options: None,
             blocks_gc_options: None,
@@ -67,6 +64,7 @@ impl Default for NodeConfig {
 #[derive(Debug, Copy, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct DbOptions {
+    pub metrics_update_interval_sec: Option<u64>,
     pub rocksdb_lru_capacity: ByteSize,
     pub cells_cache_size: ByteSize,
     #[serde(default = "default_thread_pool_size")]
@@ -123,6 +121,7 @@ impl Default for DbOptions {
         );
 
         Self {
+            metrics_update_interval_sec: Some(10),
             rocksdb_lru_capacity,
             cells_cache_size,
             low_thread_pool_size: default_thread_pool_size(),
