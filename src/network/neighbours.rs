@@ -386,11 +386,6 @@ impl Neighbours {
     }
 }
 
-#[derive(Debug, Copy, Clone)]
-pub struct NeighboursMetrics {
-    pub peer_search_task_count: usize,
-}
-
 fn ordered_boundaries<T>(min: T, max: T) -> (T, T)
 where
     T: Ord,

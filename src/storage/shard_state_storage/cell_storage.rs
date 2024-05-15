@@ -798,7 +798,7 @@ impl RawCellsCache {
         key: &[u8; 32],
         pending: &PendingOperations,
     ) -> Result<Option<RawCellsCacheItem>, rocksdb::Error> {
-        use quick_cache::GuardResult;
+        use quick_cache::sync::GuardResult;
 
         match self.0.get_value_or_guard(key, None) {
             GuardResult::Value(value) => Ok(Some(value)),

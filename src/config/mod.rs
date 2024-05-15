@@ -6,7 +6,6 @@ use std::path::PathBuf;
 use everscale_network::{adnl, dht, overlay, rldp};
 use rand::Rng;
 use serde::{Deserialize, Serialize};
-use sysinfo::SystemExt;
 
 pub use self::node_keys::*;
 use crate::network::NeighboursOptions;
@@ -65,6 +64,7 @@ impl Default for NodeConfig {
 #[derive(Debug, Copy, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct DbOptions {
+    pub metrics_update_interval_sec: Option<u64>,
     pub rocksdb_lru_capacity: ByteSize,
     pub cells_cache_size: ByteSize,
     #[serde(default = "default_thread_pool_size")]
@@ -121,6 +121,7 @@ impl Default for DbOptions {
         );
 
         Self {
+            metrics_update_interval_sec: Some(10),
             rocksdb_lru_capacity,
             cells_cache_size,
             low_thread_pool_size: default_thread_pool_size(),
