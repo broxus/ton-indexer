@@ -4,12 +4,13 @@ use anyhow::{Context, Result};
 use num_traits::ToPrimitive;
 use ton_types::UInt256;
 
+use crate::db::*;
+use crate::utils::*;
+
 use super::cell_storage::*;
 use super::entries_buffer::*;
 use super::files_context::*;
 use super::shard_state_reader::*;
-use crate::db::*;
-use crate::utils::*;
 
 pub struct ShardStateReplaceTransaction<'a> {
     db: &'a Db,
@@ -491,3 +492,246 @@ enum ReplaceTransactionError {
 }
 
 const MAX_LEVEL: u8 = 3;
+
+#[cfg(test)]
+mod test {
+    use std::fs::File;
+    use std::io;
+    use std::io::{BufReader, Read};
+    use std::path::PathBuf;
+    use std::sync::Arc;
+
+    use crate::db::Db;
+    use crate::DbOptions;
+    use weedb::rocksdb::{IteratorMode, WriteBatch};
+
+    use crate::storage::shard_state_storage::cell_storage::{CellStorage, StorageCell};
+    use crate::storage::shard_state_storage::files_context::FilesContext;
+    use crate::storage::shard_state_storage::replace_transaction::ShardStateReplaceTransaction;
+    use crate::utils::{MinRefMcState, ProgressBar};
+    use anyhow::{Context, Result};
+    use ton_block::{BlockIdExt, ShardIdent};
+    use ton_types::{CellImpl, UInt256};
+    use tracing_subscriber::EnvFilter;
+    use weedb::rocksdb;
+
+    #[tokio::test]
+    #[ignore]
+    async fn insert_and_delete_of_several_shards() -> Result<()> {
+        tracing_subscriber::fmt::fmt()
+            .with_env_filter(EnvFilter::new("info"))
+            .init();
+        let project_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".scratch");
+        let integration_test_path = project_root.join("integration_tests");
+        let current_test_path = integration_test_path.join("insert_and_delete_of_several_shards");
+        std::fs::remove_dir_all(&current_test_path).ok();
+        std::fs::create_dir_all(&current_test_path)?;
+
+        // decompressing the archive
+        let archive_path = integration_test_path.join("states.tar.zst");
+        download_and_verify(
+            "https://tycho-test.broxus.cc",
+            &integration_test_path.to_string_lossy(),
+        )?;
+        let res = std::process::Command::new("tar")
+            .arg("-I")
+            .arg("zstd")
+            .arg("-xf")
+            .arg(&archive_path)
+            .arg("-C")
+            .arg(&current_test_path)
+            .status()?;
+        if !res.success() {
+            return Err(anyhow::anyhow!("Failed to decompress the archive"));
+        }
+        tracing::info!("Decompressed the archive");
+
+        let db = Db::open(current_test_path.join("rocksdb"), DbOptions::default())?;
+
+        let cells_storage = CellStorage::new(db.clone(), 100_000_000);
+        let tracker = MinRefMcState::new();
+
+        for file in std::fs::read_dir(current_test_path.join("states"))? {
+            let file = file?;
+            let filename = file.file_name().to_string_lossy().to_string();
+
+            let block_id = parse_filename(filename.as_ref());
+
+            let mut store_state = ShardStateReplaceTransaction::new(&db, &cells_storage, &tracker);
+
+            let file = File::open(file.path())?;
+            let mut file = BufReader::new(file);
+            let chunk_size = 10_000_000; // size of each chunk in bytes
+            let mut buffer = vec![0u8; chunk_size];
+            let mut pg = ProgressBar::builder("downloading state")
+                .exact_unit("cells")
+                .build();
+
+            let downloads_dir = current_test_path.join("downloads");
+            std::fs::create_dir_all(&downloads_dir)?;
+            let mut files_context = FilesContext::new(downloads_dir, &block_id)
+                .await
+                .context("failed to open files context")?;
+
+            loop {
+                let bytes_read = file.read(&mut buffer)?;
+                if bytes_read == 0 {
+                    break; // End of file
+                }
+
+                let packet = buffer[..bytes_read].to_vec();
+                store_state
+                    .process_packet(&mut files_context, packet, &mut pg)
+                    .await?;
+            }
+
+            let mut pg = ProgressBar::builder("processing state")
+                .with_mapper(|x| bytesize::to_string(x, false))
+                .build();
+            store_state
+                .finalize(&mut files_context, block_id, &mut pg)
+                .await?;
+        }
+        tracing::info!("Finished processing all states");
+        tracing::info!("Starting gc");
+        states_gc(&cells_storage, &db).await?;
+
+        drop(db);
+        drop(cells_storage);
+        rocksdb::DB::destroy(
+            &rocksdb::Options::default(),
+            current_test_path.join("rocksdb"),
+        )?;
+
+        Ok(())
+    }
+
+    async fn states_gc(cell_storage: &Arc<CellStorage>, db: &Db) -> Result<()> {
+        let states_iterator = db.shard_states.iterator(IteratorMode::Start);
+        let bump = bumpalo::Bump::new();
+
+        let total_states = db.shard_states.iterator(IteratorMode::Start).count();
+
+        for (deleted, state) in states_iterator.enumerate() {
+            let (_, value) = state?;
+
+            // check that state actually exists
+            let cell = cell_storage.load_cell(UInt256::from_slice(&value))?;
+            traverse_cell(cell.clone());
+
+            let mut batch = WriteBatch::default();
+            cell_storage.remove_cell(&mut batch, &bump, cell.repr_hash())?;
+
+            // execute batch
+            db.raw().write_opt(batch, db.cells.write_config())?;
+            tracing::info!("State deleted. Progress: {}/{total_states}", deleted + 1);
+            assert!(cell_storage.load_cell(UInt256::from_slice(&value)).is_err());
+        }
+
+        // two compactions in row. First one run merge operators, second one will remove all tombstones
+        db.trigger_compaction().await;
+        db.trigger_compaction().await;
+
+        let cells_left = db.cells.iterator(IteratorMode::Start).count();
+        tracing::info!("States GC finished. Cells left: {cells_left}");
+        assert_eq!(cells_left, 0, "Gc is broken. Press F to pay respect");
+
+        Ok(())
+    }
+
+    fn parse_filename(name: &str) -> BlockIdExt {
+        // Split the remaining string by commas into components
+        let parts: Vec<&str> = name.split(',').collect();
+
+        // Parse each part
+        let workchain: i32 = parts[0].parse().unwrap();
+        let prefix = u64::from_str_radix(parts[1], 16).unwrap();
+        let seqno: u32 = parts[2].parse().unwrap();
+
+        BlockIdExt {
+            shard_id: ShardIdent::with_tagged_prefix(workchain, prefix).unwrap(),
+            seq_no: seqno,
+            root_hash: UInt256::default(),
+            file_hash: UInt256::default(),
+        }
+    }
+
+    fn traverse_cell(cell: Arc<StorageCell>) {
+        let mut stack = vec![cell];
+        while let Some(cell) = stack.pop() {
+            for i in 0..cell.references_count() {
+                stack.push(cell.reference(i).unwrap());
+            }
+        }
+    }
+
+    fn download_and_verify(base_url: &str, dir: &str) -> io::Result<()> {
+        use std::io::{self};
+        use std::path::PathBuf;
+        use std::process::Command;
+
+        fn download_file(url: &str, output: &str) -> io::Result<()> {
+            let status = Command::new("curl")
+                .arg("--request")
+                .arg("GET")
+                .arg("-L")
+                .arg("--url")
+                .arg(url)
+                .arg("--output")
+                .arg(output)
+                .status()?;
+
+            if !status.success() {
+                return Err(io::Error::new(
+                    io::ErrorKind::Other,
+                    "Failed to download file",
+                ));
+            }
+            Ok(())
+        }
+
+        fn verify_checksum(checksum_file: &str, archive_dir: &str) -> io::Result<bool> {
+            let output = Command::new("sha256sum")
+                .arg("-c")
+                .arg(checksum_file)
+                .current_dir(archive_dir)
+                .output()?;
+
+            Ok(output.status.success())
+        }
+
+        // Download the checksum file
+        println!("Downloading checksum file...");
+        let checksum_url = format!("{}/states.tar.zst.sha256", base_url);
+        let checksum_output = format!("{}/states.tar.zst.sha256", dir);
+        download_file(&checksum_url, &checksum_output)?;
+
+        // Check if the archive file exists
+        let archive_path = format!("{}/states.tar.zst", dir);
+        let archive_dir = PathBuf::from(&archive_path)
+            .parent()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+
+        if PathBuf::from(&archive_path).exists() {
+            // Verify the archive against the checksum
+            println!("Verifying existing archive against checksum...");
+            if verify_checksum(&checksum_output, &archive_dir)? {
+                println!("Checksum matches. No need to download the archive.");
+                return Ok(());
+            } else {
+                println!("Checksum does not match. Downloading the archive...");
+            }
+        } else {
+            println!("Archive file does not exist. Downloading the archive...");
+        }
+
+        // Download the archive file
+        let archive_url = format!("{}/states.tar.zst", base_url);
+        download_file(&archive_url, &archive_path)?;
+
+        Ok(())
+    }
+}

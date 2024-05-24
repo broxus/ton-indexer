@@ -156,6 +156,8 @@ impl CellStorage {
                             if value.is_some() {
                                 entry.insert(1); // 1 new reference
                                 return Ok(InsertedCell::Existing);
+                            } else {
+                                panic!("Unexpected value in the cell storage")
                             }
                         }
 
@@ -804,7 +806,16 @@ impl RawCellsCache {
         use quick_cache::sync::GuardResult;
 
         match self.0.get_value_or_guard(key, None) {
-            GuardResult::Value(value) => Ok(Some(value)),
+            GuardResult::Value(value) => {
+                let db_rc = match db.cells.get(key) {
+                    Ok(Some(v)) => refcount::decode_value_with_rc(v.as_ref()).0,
+                    Ok(None) => return Ok(None),
+                    Err(e) => return Ok(None),
+                };
+                let cache_rc = value.header.header.load(Ordering::Acquire);
+                assert_eq!(db_rc, cache_rc);
+                Ok(Some(value))
+            }
             GuardResult::Guard(g) => Ok(if let Some(value) = db.cells.get(key)? {
                 let (rc, data) = refcount::decode_value_with_rc(value.as_ref());
                 data.map(|value| {
@@ -833,8 +844,14 @@ impl RawCellsCache {
         refs_buffer.clear();
 
         // NOTE: `peek` here is used to avoid affecting a "hotness" of the value
+        let rc_from_db = match db.cells.get(key) {
+            Ok(Some(v)) => refcount::decode_value_with_rc(v.as_ref()).0,
+            Ok(None) => return Err(CellStorageError::CellNotFound),
+            Err(e) => return Err(CellStorageError::Internal(e)),
+        };
         if let Some(value) = self.0.peek(key) {
             let rc = value.header.header.load(Ordering::Acquire);
+            assert_eq!(rc, rc_from_db);
             if rc <= 0 {
                 return Err(CellStorageError::CellNotFound);
             }

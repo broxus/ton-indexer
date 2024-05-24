@@ -6,3 +6,4 @@ config.yaml
 Cargo.lock
 /**/.DS_Store
 /logs/
+.scratch
