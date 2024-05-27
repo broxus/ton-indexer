@@ -1,3 +1,5 @@
+use std::io::Write;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
@@ -11,20 +13,20 @@ use super::shard_state_reader::*;
 use crate::db::*;
 use crate::utils::*;
 
-pub struct ShardStateReplaceTransaction<'a> {
-    db: &'a Db,
-    cell_storage: &'a Arc<CellStorage>,
-    min_ref_mc_state: &'a Arc<MinRefMcState>,
+pub struct ShardStateReplaceTransaction {
+    db: Arc<Db>,
+    cell_storage: Arc<CellStorage>,
+    min_ref_mc_state: Arc<MinRefMcState>,
     reader: ShardStatePacketReader,
     header: Option<BocHeader>,
     cells_read: u64,
 }
 
-impl<'a> ShardStateReplaceTransaction<'a> {
+impl<'a> ShardStateReplaceTransaction {
     pub fn new(
-        db: &'a Db,
-        cell_storage: &'a Arc<CellStorage>,
-        min_ref_mc_state: &'a Arc<MinRefMcState>,
+        db: Arc<Db>,
+        cell_storage: Arc<CellStorage>,
+        min_ref_mc_state: Arc<MinRefMcState>,
     ) -> Self {
         Self {
             db,
@@ -40,14 +42,12 @@ impl<'a> ShardStateReplaceTransaction<'a> {
         &self.header
     }
 
-    pub async fn process_packet(
+    pub fn process_packet(
         &mut self,
         ctx: &mut FilesContext,
         packet: Vec<u8>,
         progress_bar: &mut ProgressBar,
     ) -> Result<bool> {
-        use tokio::io::AsyncWriteExt;
-
         let cells_file = ctx.cells_file()?;
 
         self.reader.set_next_packet(packet);
@@ -78,7 +78,7 @@ impl<'a> ShardStateReplaceTransaction<'a> {
             };
 
             buffer[cell_size] = cell_size as u8;
-            cells_file.write_all(&buffer[..cell_size + 1]).await?;
+            cells_file.write_all(&buffer[..cell_size + 1])?;
 
             chunk_size += cell_size as u32 + 1;
             self.cells_read += 1;
@@ -88,7 +88,7 @@ impl<'a> ShardStateReplaceTransaction<'a> {
 
         if chunk_size > 0 {
             tracing::debug!(chunk_size, "creating chunk");
-            cells_file.write_u32_le(chunk_size).await?;
+            cells_file.write_all(&chunk_size.to_le_bytes())?;
         }
 
         if self.cells_read < header.cell_count {
@@ -103,10 +103,11 @@ impl<'a> ShardStateReplaceTransaction<'a> {
         Ok(true)
     }
 
-    pub async fn finalize(
+    pub fn finalize(
         self,
         ctx: &mut FilesContext,
         block_id: ton_block::BlockIdExt,
+        is_running: Arc<AtomicBool>,
         progress_bar: &mut ProgressBar,
     ) -> Result<Arc<ShardStateStuff>> {
         // 2^7 bits + 1 bytes
@@ -123,15 +124,15 @@ impl<'a> ShardStateReplaceTransaction<'a> {
 
         let hashes_file =
             ctx.create_mapped_hashes_file(header.cell_count as usize * HashesEntry::LEN)?;
-        let cells_file = ctx.create_mapped_cells_file().await?;
+        let cells_file = ctx.create_mapped_cells_file()?;
 
         let raw = self.db.raw().as_ref();
         let write_options = self.db.cells.new_write_config();
 
         let mut tail = [0; 4];
-        let mut ctx = FinalizationContext::new(self.db);
+        let mut ctx = FinalizationContext::new(&self.db);
 
-        ctx.clear_temp_cells(self.db)?;
+        ctx.clear_temp_cells(&self.db)?;
 
         // Allocate on heap to prevent big future size
         let mut chunk_buffer = Vec::with_capacity(1 << 20);
@@ -198,7 +199,10 @@ impl<'a> ShardStateReplaceTransaction<'a> {
             }
 
             progress_bar.set_progress((total_size - file_pos) as u64);
-            tokio::task::yield_now().await;
+
+            if !is_running.load(Ordering::Acquire) {
+                anyhow::bail!("cancelled");
+            }
         }
 
         if batch_len > 0 {
@@ -212,7 +216,7 @@ impl<'a> ShardStateReplaceTransaction<'a> {
 
         self.cell_storage
             .apply_temp_cell(&ton_types::UInt256::from(root_hash))?;
-        ctx.clear_temp_cells(self.db)?;
+        ctx.clear_temp_cells(&self.db)?;
 
         let shard_state_key = (block_id.shard_id, block_id.seq_no).to_vec();
         self.db.shard_states.insert(&shard_state_key, root_hash)?;
@@ -228,7 +232,7 @@ impl<'a> ShardStateReplaceTransaction<'a> {
                 Ok(Arc::new(ShardStateStuff::new(
                     block_id,
                     ton_types::Cell::with_cell_impl_arc(cell),
-                    self.min_ref_mc_state,
+                    &self.min_ref_mc_state,
                 )?))
             }
             None => Err(ReplaceTransactionError::NotFound.into()),

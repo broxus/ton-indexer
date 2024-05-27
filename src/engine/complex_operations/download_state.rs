@@ -131,14 +131,13 @@ async fn background_process(
             }
         }
 
-        match transaction.process_packet(&mut ctx, packet, &mut pg).await {
+        match transaction.process_packet(&mut ctx, packet, &mut pg) {
             Ok(true) => {
                 full = true;
                 break;
             }
             Ok(false) => continue,
             Err(e) => {
-                ctx.clear().await?;
                 return Err(e);
             }
         }
@@ -148,17 +147,32 @@ async fn background_process(
     while packets_rx.recv().await.is_some() {}
 
     if !full {
-        ctx.clear().await?;
         return Err(DownloadStateError::UnexpectedEof.into());
     }
 
-    let mut pg = ProgressBar::builder("processing state")
-        .with_mapper(|x| bytesize::to_string(x, false))
-        .build();
-    let result = transaction.finalize(&mut ctx, block_id, &mut pg).await;
+    struct Guard(Arc<AtomicBool>);
 
-    ctx.clear().await?;
-    result
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            self.0.store(false, Ordering::Release);
+        }
+    }
+
+    let guard = Guard(Arc::new(AtomicBool::new(true)));
+    let result = tokio::task::spawn_blocking({
+        let is_running = guard.0.clone();
+        move || {
+            let mut pg = ProgressBar::builder("processing state")
+                .with_mapper(|x| bytesize::to_string(x, false))
+                .build();
+            transaction.finalize(&mut ctx, block_id, is_running, &mut pg)
+        }
+    })
+    .await
+    .unwrap()?;
+
+    drop(guard);
+    Ok(result)
 }
 
 struct Scheduler {

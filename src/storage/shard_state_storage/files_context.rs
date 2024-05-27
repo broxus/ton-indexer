@@ -1,8 +1,8 @@
+use std::fs::File;
+use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use tokio::fs::File;
-use tokio::io::{AsyncWriteExt, BufWriter};
 
 use crate::utils::MappedFile;
 
@@ -32,13 +32,12 @@ impl FilesContext {
             .join(format!("state_hashes_{block_id}"));
 
         let cells_file = Some(BufWriter::new(
-            tokio::fs::OpenOptions::new()
+            std::fs::OpenOptions::new()
                 .write(true)
                 .create(true)
                 .truncate(true)
                 .read(true)
                 .open(&cells_path)
-                .await
                 .context("Failed to create cells file")?,
         ));
 
@@ -47,12 +46,6 @@ impl FilesContext {
             cells_file,
             hashes_path,
         })
-    }
-
-    pub async fn clear(self) -> Result<()> {
-        tokio::fs::remove_file(self.cells_path).await?;
-        tokio::fs::remove_file(self.hashes_path).await?;
-        Ok(())
     }
 
     pub fn cells_file(&mut self) -> Result<&mut BufWriter<File>> {
@@ -67,17 +60,22 @@ impl FilesContext {
         Ok(mapped_file)
     }
 
-    pub async fn create_mapped_cells_file(&mut self) -> Result<MappedFile> {
-        let file = match self.cells_file.take() {
-            Some(mut file) => {
-                file.flush().await?;
-                file.into_inner().into_std().await
-            }
+    pub fn create_mapped_cells_file(&mut self) -> Result<MappedFile> {
+        let mut file = match self.cells_file.take() {
+            Some(file) => file.into_inner()?,
             None => return Err(FilesContextError::AlreadyFinalized.into()),
         };
+        file.flush()?;
 
         let mapped_file = MappedFile::from_existing_file(file)?;
         Ok(mapped_file)
+    }
+}
+
+impl Drop for FilesContext {
+    fn drop(&mut self) {
+        std::fs::remove_file(&self.cells_path).ok();
+        std::fs::remove_file(&self.hashes_path).ok();
     }
 }
 

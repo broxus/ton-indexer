@@ -137,11 +137,15 @@ impl ShardStateStorage {
     pub async fn begin_replace(
         &'_ self,
         block_id: &ton_block::BlockIdExt,
-    ) -> Result<(ShardStateReplaceTransaction<'_>, FilesContext)> {
+    ) -> Result<(ShardStateReplaceTransaction, FilesContext)> {
         let ctx = FilesContext::new(self.downloads_dir.as_ref(), block_id).await?;
 
         Ok((
-            ShardStateReplaceTransaction::new(&self.db, &self.cell_storage, &self.min_ref_mc_state),
+            ShardStateReplaceTransaction::new(
+                self.db.clone(),
+                self.cell_storage.clone(),
+                self.min_ref_mc_state.clone(),
+            ),
             ctx,
         ))
     }
