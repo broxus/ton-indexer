@@ -169,6 +169,8 @@ impl CellStorage {
                             &mut self.buffer,
                         );
 
+                        self.raw_cache.add_refs(key, 1);
+
                         self.new_cells_batch
                             .put_cf(&self.cells_cf, key, self.buffer.as_slice());
 
