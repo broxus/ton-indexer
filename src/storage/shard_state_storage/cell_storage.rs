@@ -91,10 +91,11 @@ impl CellStorage {
             transaction: FastHashMap<[u8; 32], u32>,
             new_cells_batch: rocksdb::WriteBatch,
             new_cell_count: usize,
+            raw_cache: &'a RawCellsCache,
         }
 
         impl<'a> Context<'a> {
-            fn new(db: &'a Db) -> Self {
+            fn new(db: &'a Db, raw_cache: &'a RawCellsCache) -> Self {
                 Self {
                     cells_cf: db.cells.cf(),
                     db,
@@ -102,6 +103,7 @@ impl CellStorage {
                     transaction: Default::default(),
                     new_cells_batch: rocksdb::WriteBatch::default(),
                     new_cell_count: 0,
+                    raw_cache,
                 }
             }
 
@@ -193,13 +195,14 @@ impl CellStorage {
             fn flush_existing_cells(&mut self) -> Result<(), rocksdb::Error> {
                 let mut batch = rocksdb::WriteBatch::default();
 
-                for (key, &refs) in &self.transaction {
-                    if refs == 0 {
+                for (key, &refs_diff) in &self.transaction {
+                    if refs_diff == 0 {
                         continue;
                     }
 
                     self.buffer.clear();
-                    refcount::add_positive_refount(refs, None, &mut self.buffer);
+                    refcount::add_positive_refount(refs_diff, None, &mut self.buffer);
+                    self.raw_cache.add_refs(key, refs_diff);
                     batch.merge_cf(&self.cells_cf, key, self.buffer.as_slice());
                 }
 
@@ -207,7 +210,7 @@ impl CellStorage {
             }
         }
 
-        let mut ctx = Context::new(&self.db);
+        let mut ctx = Context::new(&self.db, &self.raw_cells_cache);
 
         let mut stack = Vec::with_capacity(16);
         if let InsertedCell::New(iter) = ctx.insert_cell(root.as_slice())? {
