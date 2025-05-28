@@ -1251,7 +1251,7 @@ impl Engine {
                         // Apply block
                         let operation = Box::pin(async {
                             let block = block_storage.load_block_data(&handle).await?;
-                            apply_block(self, &handle, &block, mc_seq_no, pre_apply, depth).await?;
+                            apply_block(self, &handle, &block, mc_seq_no, pre_apply, depth).await.unwrap();
                             Ok(())
                         });
                         match self
@@ -1345,7 +1345,7 @@ impl Engine {
                     None,
                     apply_block(self, handle, block, mc_seq_no, pre_apply, depth),
                 )
-                .await?;
+                .await.unwrap();
         }
         Ok(())
     }
