@@ -47,15 +47,16 @@ impl CellStorage {
     }
 
     pub fn apply_temp_cell(&self, root: &UInt256) -> Result<()> {
-        const MAX_NEW_CELLS_BATCH_SIZE: usize = 10000;
+        const MAX_NEW_CELLS_BATCH_SIZE: usize = 5_000_000;
+        const PROGRESS_LOG_INTERVAL: u64 = 1_000_000;
 
-        struct CellHashesIter<'a> {
-            data: rocksdb::DBPinnableSlice<'a>,
+        struct CellHashesIter {
+            data: Vec<u8>, // Avoid storing pinned rocksdb data
             offset: usize,
             remaining_refs: u8,
         }
 
-        impl<'a> Iterator for CellHashesIter<'a> {
+        impl Iterator for CellHashesIter {
             type Item = [u8; 32];
 
             fn next(&mut self) -> Option<Self::Item> {
@@ -79,8 +80,8 @@ impl CellStorage {
             }
         }
 
-        enum InsertedCell<'a> {
-            New(CellHashesIter<'a>),
+        enum InsertedCell {
+            New(CellHashesIter),
             Existing,
         }
 
@@ -88,10 +89,12 @@ impl CellStorage {
             cells_cf: BoundedCfHandle<'a>,
             db: &'a Db,
             buffer: Vec<u8>,
-            transaction: FastHashMap<[u8; 32], u32>,
+            existing_diffs: FastHashMap<[u8; 32], u32>,
+            in_batch_new: FastHashMap<[u8; 32], u32>,
             new_cells_batch: rocksdb::WriteBatch,
             new_cell_count: usize,
             raw_cache: &'a RawCellsCache,
+            processed_cells: u64,
         }
 
         impl<'a> Context<'a> {
@@ -100,22 +103,25 @@ impl CellStorage {
                     cells_cf: db.cells.cf(),
                     db,
                     buffer: Vec::with_capacity(512),
-                    transaction: Default::default(),
+                    existing_diffs: Default::default(),
+                    in_batch_new: Default::default(),
                     new_cells_batch: rocksdb::WriteBatch::default(),
                     new_cell_count: 0,
                     raw_cache,
+                    processed_cells: 0,
                 }
             }
 
-            fn load_temp(&self, key: &[u8; 32]) -> Result<CellHashesIter<'a>, CellStorageError> {
+            fn load_temp(&self, key: &[u8; 32]) -> Result<CellHashesIter, CellStorageError> {
                 let data = match self.db.temp_cells.get(key) {
                     Ok(Some(data)) => data,
                     Ok(None) => return Err(CellStorageError::CellNotFound),
                     Err(e) => return Err(CellStorageError::Internal(e)),
-                };
+                }
+                .to_vec();
 
                 let (offset, remaining_refs) = {
-                    let data = &mut data.as_ref();
+                    let data = &mut data.as_slice();
 
                     let len_before = data.len();
                     let refs = match ton_types::CellData::deserialize(data) {
@@ -138,77 +144,114 @@ impl CellStorage {
                 })
             }
 
-            fn insert_cell(
-                &mut self,
-                key: &[u8; 32],
-            ) -> Result<InsertedCell<'a>, CellStorageError> {
-                Ok(match self.transaction.entry(*key) {
-                    hash_map::Entry::Occupied(mut entry) => {
-                        *entry.get_mut() += 1; // 1 new reference
-                        InsertedCell::Existing
+            fn insert_cell(&mut self, key: &[u8; 32]) -> Result<InsertedCell, CellStorageError> {
+                self.on_cell_processed();
+
+                if let Some(extra) = self.in_batch_new.get_mut(key) {
+                    *extra += 1;
+                    return Ok(InsertedCell::Existing);
+                }
+
+                if let Some(d) = self.existing_diffs.get_mut(key) {
+                    *d += 1;
+                    return Ok(InsertedCell::Existing);
+                }
+
+                if let Some(value) = self.db.cells.get(key).map_err(CellStorageError::Internal)? {
+                    let (rc, value_present) = {
+                        let (rc, v) = refcount::decode_value_with_rc(value.as_ref());
+                        (rc, v.is_some())
+                    };
+                    debug_assert!(rc > 0 && value_present || rc == 0 && !value_present);
+                    if value_present {
+                        *self.existing_diffs.entry(*key).or_default() += 1;
+                        return Ok(InsertedCell::Existing);
                     }
-                    hash_map::Entry::Vacant(entry) => {
-                        if let Some(value) =
-                            self.db.cells.get(key).map_err(CellStorageError::Internal)?
-                        {
-                            let (rc, value) = refcount::decode_value_with_rc(value.as_ref());
-                            debug_assert!(rc > 0 && value.is_some() || rc == 0 && value.is_none());
-                            if value.is_some() {
-                                entry.insert(1); // 1 new reference
-                                return Ok(InsertedCell::Existing);
-                            }
-                        }
+                }
 
-                        entry.insert(0); // 0 new references (the first one is included in the merge below)
-                        let iter = self.load_temp(key)?;
+                let iter = self.load_temp(key)?;
 
-                        self.buffer.clear();
-                        refcount::add_positive_refount(
-                            1,
-                            Some(iter.data.as_ref()),
-                            &mut self.buffer,
-                        );
+                self.buffer.clear();
+                refcount::add_positive_refount(1, Some(iter.data.as_ref()), &mut self.buffer);
 
-                        self.raw_cache.add_refs(key, 1);
+                self.raw_cache.add_refs(key, 1);
 
-                        self.new_cells_batch
-                            .put_cf(&self.cells_cf, key, self.buffer.as_slice());
+                self.new_cells_batch
+                    .put_cf(&self.cells_cf, key, self.buffer.as_slice());
+                self.in_batch_new.entry(*key).or_default();
 
-                        self.new_cell_count += 1;
-                        if self.new_cell_count >= MAX_NEW_CELLS_BATCH_SIZE {
-                            self.flush_new_cells()?;
-                        }
+                self.new_cell_count += 1;
+                if self.new_cell_count >= MAX_NEW_CELLS_BATCH_SIZE {
+                    self.flush_new_cells()?;
+                }
 
-                        InsertedCell::New(iter)
-                    }
-                })
+                Ok(InsertedCell::New(iter))
             }
 
             fn flush_new_cells(&mut self) -> Result<(), rocksdb::Error> {
-                if self.new_cell_count > 0 {
-                    self.db
-                        .raw()
-                        .write(std::mem::take(&mut self.new_cells_batch))?;
-                    self.new_cell_count = 0;
+                if self.new_cell_count == 0 {
+                    return Ok(());
                 }
+
+                for (key, extra) in self.in_batch_new.drain() {
+                    if extra > 0 {
+                        self.buffer.clear();
+                        refcount::add_positive_refount(extra, None, &mut self.buffer);
+                        self.new_cells_batch
+                            .merge_cf(&self.cells_cf, &key, self.buffer.as_slice());
+                        self.raw_cache.add_refs(&key, extra);
+                    }
+                }
+
+                let mut opts = self.db.cells.new_write_config();
+                opts.disable_wal(true);
+
+                self.db
+                    .raw()
+                    .write_opt(std::mem::take(&mut self.new_cells_batch), &opts)?;
+
+                self.new_cell_count = 0;
                 Ok(())
             }
 
             fn flush_existing_cells(&mut self) -> Result<(), rocksdb::Error> {
                 let mut batch = rocksdb::WriteBatch::default();
 
-                for (key, &refs_diff) in &self.transaction {
+                for (key, refs_diff) in self.existing_diffs.drain() {
                     if refs_diff == 0 {
                         continue;
                     }
 
                     self.buffer.clear();
                     refcount::add_positive_refount(refs_diff, None, &mut self.buffer);
-                    self.raw_cache.add_refs(key, refs_diff);
-                    batch.merge_cf(&self.cells_cf, key, self.buffer.as_slice());
+                    self.raw_cache.add_refs(&key, refs_diff);
+                    batch.merge_cf(&self.cells_cf, &key, self.buffer.as_slice());
                 }
 
-                self.db.raw().write(batch)
+                if batch.len() == 0 {
+                    return Ok(());
+                }
+
+                let opts = self.db.cells.write_config();
+                self.db.raw().write_opt(batch, opts)
+            }
+
+            fn on_cell_processed(&mut self) {
+                self.processed_cells += 1;
+                if self.processed_cells % PROGRESS_LOG_INTERVAL == 0 {
+                    let processed_cells = self.processed_cells;
+                    let buffer_size = self.buffer.capacity();
+                    let existing_diffs_count = self.existing_diffs.capacity();
+                    let in_batch_new_count = self.in_batch_new.capacity();
+
+                    tracing::info!(
+                        ?processed_cells,
+                        ?buffer_size,
+                        ?existing_diffs_count,
+                        ?in_batch_new_count,
+                        "apply_temp_cell progress"
+                    );
+                }
             }
         }
 

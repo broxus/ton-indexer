@@ -113,6 +113,7 @@ impl<'a> ShardStateReplaceTransaction {
         // 2^7 bits + 1 bytes
         const MAX_DATA_SIZE: usize = 128;
         const CELLS_PER_BATCH: u64 = 1_000_000;
+        const LOG_EVERY_CELLS: u64 = 1_000_000;
 
         let header = match &self.header {
             Some(header) => header,
@@ -127,7 +128,8 @@ impl<'a> ShardStateReplaceTransaction {
         let cells_file = ctx.create_mapped_cells_file()?;
 
         let raw = self.db.raw().as_ref();
-        let write_options = self.db.cells.new_write_config();
+        let mut write_options = self.db.cells.new_write_config();
+        write_options.disable_wal(true);
 
         let mut tail = [0; 4];
         let mut ctx = FinalizationContext::new(&self.db);
@@ -144,6 +146,7 @@ impl<'a> ShardStateReplaceTransaction {
         let mut file_pos = total_size;
         let mut cell_index = header.cell_count;
         let mut batch_len = 0;
+        let mut processed_cells = 0u64;
         while file_pos >= 4 {
             file_pos -= 4;
             unsafe { cells_file.read_exact_at(file_pos, &mut tail) };
@@ -190,6 +193,34 @@ impl<'a> ShardStateReplaceTransaction {
                 };
 
                 chunk_buffer.truncate(chunk_size);
+
+                processed_cells += 1;
+
+                if processed_cells % LOG_EVERY_CELLS == 0 {
+                    let pruned_len = ctx.pruned_branches.len();
+                    let pruned_capacity = ctx.pruned_branches.capacity();
+                    let usage_len = ctx.cell_usages.len();
+                    let usage_capacity = ctx.cell_usages.capacity();
+                    let write_batch_len = ctx.write_batch.len();
+                    let write_batch_bytes = ctx.write_batch.size_in_bytes();
+                    let chunk_capacity = chunk_buffer.capacity();
+                    let output_capacity = ctx.output_buffer.capacity();
+                    let remaining_cells = cell_index;
+
+                    tracing::info!(
+                        ?processed_cells,
+                        ?remaining_cells,
+                        ?pruned_len,
+                        ?pruned_capacity,
+                        ?usage_len,
+                        ?usage_capacity,
+                        ?write_batch_len,
+                        ?write_batch_bytes,
+                        ?chunk_capacity,
+                        ?output_capacity,
+                        "finalize resource usage"
+                    );
+                }
             }
 
             if batch_len > CELLS_PER_BATCH {
